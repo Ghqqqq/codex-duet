@@ -5,6 +5,11 @@ runtime; all new measurement artifacts live under staging `.test-tmp/`. No
 browser/tool invocation, authenticated model request or live config write was
 made during this investigation.
 
+Follow-up: [reproducible transport validation](transport-validation.md) adds an
+opt-in WS/HTTP/WS diagnostic, offline tests, evidence rules and local acceptance.
+Its implementation does not establish an authenticated latency improvement and
+does not change the findings below.
+
 ## Observed cause
 
 The final browser task's 121.802-second pre-tool interval is dominated by failed
