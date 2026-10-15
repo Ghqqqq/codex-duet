@@ -280,6 +280,36 @@ Each new worker uses `task --fresh --json`; a follow-up uses `task --thread <its
 
 Independent workers may run concurrently. Read-only workers can share a checkout; writes require disjoint owned paths or separate worktrees. Shared job state uses interprocess locking and atomic JSON publication. All active jobs are retained, along with the latest 50 finished jobs. This integration does not change Claude's effort or Ultracode setting; the model still chooses when and how many workers to dispatch.
 
+Workers run companion Bash calls with `dangerouslyDisableSandbox: true`, return
+compact `--report --json` reports with saved raw-output paths, and retain job/thread
+handles for read-only recovery after interruption. Progress and 15-second
+heartbeats go to stderr and the job log. They proceed on conservative assumptions;
+question-only or unfinished results are `needs_input`, never reported as completed.
+
+Task file reports compare content/mode/index snapshots before and after execution,
+including already-dirty files and shell writes. `preExistingChanges` is separate;
+concurrent writers cannot be distinguished by snapshots, and recovery without a
+final snapshot reports partial coverage. Full path lists remain in the saved result.
+
+The parent may deliberately opt in to `task --write --sandbox danger-full-access`
+for Git metadata writes or browser launches. Accepted policies are `read-only`,
+`workspace-write`, and `danger-full-access`; write-capable overrides require `--write`.
+Defaults remain read-only or workspace-write, each follow-up resets its policy,
+and approval policy stays `never`. The selected policy is reported in JSON.
+This controls Codex's sandbox and cannot bypass an enclosing managed/OS sandbox.
+Workers never elevate automatically. See [worker operations](docs/worker-operations.md)
+for protocol details and limitations. Empty inherited broker endpoint variables
+now fall back to the saved workspace broker when reporting session runtime.
+
+`setup --json` distinguishes unreachable authentication probes from confirmed
+logout and reports configuration-only tool availability. Optional
+`setup --sync-tools --dry-run` previews copying allowlisted browser/computer-use
+tool configuration; `setup --sync-tools` applies missing sections with a backup.
+Existing sections are preserved. Credentials and unrelated configuration are not
+copied. See [worker operations](docs/worker-operations.md) for the exact env
+allowlist, optional user-level sandbox/permission settings, unattended workflows,
+recovery commands, retention limits and manual browser timeout checks.
+
 ### Common Configurations
 
 Delegated tasks explicitly default to gpt-6-astra / xhigh; override them with --model / --effort. For other Codex operations, if you want to change the default reasoning effort or model, you can define that inside your user-level or project-level `config.toml`. For example to always use `gpt-5.4-mini` on `high` for a specific project you can add the following to a `.codex/config.toml` file at the root of the directory you started Claude in:
@@ -323,7 +353,12 @@ That means:
 
 ### Will it use the same Codex config I already have?
 
-The plugin reads its private home configuration plus trusted project configuration. Ordinary user configuration is not copied. Runtime flags keep SQLite, logs and credential storage inside the private home. Delegated task model/effort defaults are explicit.
+The plugin reads its private home configuration plus trusted project configuration.
+Ordinary user configuration is not automatically copied. The optional
+`setup --sync-tools` copies only allowlisted tool settings, with a preview and backup;
+it never imports credentials or provider configuration. Runtime flags keep SQLite,
+logs and credential storage inside the private home. Delegated task model/effort
+defaults are explicit.
 
 ### Can I keep using my current API key or base URL setup?
 

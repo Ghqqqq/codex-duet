@@ -1,3 +1,4 @@
+import "./test-environment.mjs";
 import { isolatedCodexCommand } from "../plugins/codex/scripts/lib/codex-home.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";

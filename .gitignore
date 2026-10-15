@@ -148,3 +148,8 @@ vite.config.ts.timestamp-*
 
 output/
 plugins/codex/.generated/
+.test-tmp/
+.test-home/
+.staging-report.md
+.staging-files.txt
+.staging-review.patch

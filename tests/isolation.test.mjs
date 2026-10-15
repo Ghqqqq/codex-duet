@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { CodexAppServerClient } from '../plugins/codex/scripts/lib/app-server.mjs';
 import { buildEnv, installFakeCodex } from './fake-codex-fixture.mjs';
-import { makeTempDir, initGitRepo, run } from './helpers.mjs';
+import { makeTempDir, initGitRepo, run, requireLocalSockets } from './helpers.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const script = path.join(root, 'plugins/codex/scripts/codex-companion.mjs');
@@ -93,10 +93,12 @@ test('exact resume blocks only an active turn on its own thread', () => {
 });
 
 for (const disableBroker of [true, false]) {
-  test(`Codex child stays isolated through ${disableBroker ? 'direct' : 'broker'} transport`, async () => {
+  test(`Codex child stays isolated through ${disableBroker ? 'direct' : 'broker'} transport`, async (t) => {
+    if (!disableBroker && !await requireLocalSockets(t)) return;
     const f = fixture();
     const client = await CodexAppServerClient.connect(f.repo, {env:f.env, disableBroker});
     try {
+      assert.equal(client.transport, disableBroker ? "direct" : "broker");
       const starts = f.state().launches;
       assert.ok(starts.length > 0);
       for (const launch of starts) {
@@ -118,7 +120,8 @@ test('rejects ordinary home and symlink aliases before spawning Codex', async ()
   }
 });
 
-test('refuses inherited broker without matching isolation identity', async () => {
+test('refuses inherited broker without matching isolation identity', async (t) => {
+  if (!await requireLocalSockets(t)) return;
   const f = fixture(); const endpoint = path.join(makeTempDir('cxi-'),'s');
   const server = net.createServer(socket => socket.on('data', data => {
     for (const line of String(data).trim().split('\n')) {
@@ -202,7 +205,8 @@ test('rejects inherited ordinary SQLite storage and its symlink aliases', async 
   }
 });
 
-test('changing private runtime pointer cannot reuse a broker from the previous executable', async () => {
+test('changing private runtime pointer cannot reuse a broker from the previous executable', async (t) => {
+  if (!await requireLocalSockets(t)) return;
   const f=fixture();
   const first=path.join(f.base,'bin','codex');
   const secondDir=path.join(f.base,'second'); fs.mkdirSync(secondDir); installFakeCodex(secondDir);
@@ -210,6 +214,7 @@ test('changing private runtime pointer cannot reuse a broker from the previous e
   const runtime=path.join(f.env.CODEX_COMPANION_HOME,'runtime.json');
   fs.writeFileSync(runtime,JSON.stringify({codexBinary:first}));
   const firstClient=await CodexAppServerClient.connect(f.repo,{env:f.env}); await firstClient.close();
+  assert.equal(firstClient.transport, "broker");
   fs.writeFileSync(runtime,JSON.stringify({codexBinary:path.join(secondDir,'codex')}));
   await assert.rejects(CodexAppServerClient.connect(f.repo,{env:f.env}).then(async client=>{await client.close();}),/runtime|executable|restart/i);
 });

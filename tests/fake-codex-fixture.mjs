@@ -60,6 +60,12 @@ function buildThread(thread) {
   };
 }
 
+function threadSandbox(mode) {
+  if (mode === "danger-full-access") return { type: "dangerFullAccess" };
+  if (mode === "workspace-write") return { type: "workspaceWrite", writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
+  return { type: "readOnly", networkAccess: false };
+}
+
 function buildTurn(id, status = "inProgress", error = null) {
   return { id, status, items: [], error };
 }
@@ -113,8 +119,22 @@ function buildConfigReadResult() {
 }
 
 function send(message) {
+  if (message.method === "item/completed") {
+    const key = message.params.turnId;
+    capturedItems.set(key, [...(capturedItems.get(key) || []), message.params.item]);
+  }
+  if (message.method === "turn/started" || message.method === "turn/completed") {
+    const saved = loadState();
+    const thread = saved.threads.find(t => t.id === message.params.threadId);
+    if (thread) {
+      const turn = { ...message.params.turn, items: capturedItems.get(message.params.turn.id) || [] };
+      thread.turns = [...(thread.turns || []).filter(t => t.id !== turn.id), turn];
+      saveState(saved);
+    }
+  }
   process.stdout.write(JSON.stringify(message) + "\\n");
 }
+const capturedItems = new Map();
 
 function nextThread(state, cwd, ephemeral) {
   const thread = {
@@ -233,6 +253,9 @@ function structuredReviewPayload(prompt) {
 }
 
 function taskPayload(prompt, resume) {
+  if (BEHAVIOR === "question-only") return "Which database should I use?";
+  if (BEHAVIOR === "unfinished-task") return "I will inspect the repository and then implement the change.";
+  if (BEHAVIOR === "verbose-task") return Array.from({ length: 300 }, (_, i) => "Finding " + i + ": details from Codex").join("\\n");
   if (prompt.includes("<task>") && prompt.includes("Only review the work from the previous Claude turn.")) {
     if (BEHAVIOR === "adversarial-clean") {
       return "ALLOW: No blocking issues found in the previous turn.";
@@ -296,6 +319,7 @@ rl.on("line", (line) => {
         break;
 
       case "account/read":
+        if (BEHAVIOR.startsWith("auth-error:")) throw new Error(BEHAVIOR.slice("auth-error:".length));
         send({ id: message.id, result: buildAccountReadResult() });
         break;
 
@@ -306,6 +330,12 @@ rl.on("line", (line) => {
         send({ id: message.id, result: buildConfigReadResult() });
         break;
 
+      case "thread/read": {
+        const thread = ensureThread(state, message.params.threadId);
+        send({ id: message.id, result: { thread: { ...buildThread(thread), turns: thread.turns || [] } } });
+        break;
+      }
+
       case "thread/start": {
         if (BEHAVIOR === "auth-run-fails") {
           throw new Error("authentication expired; run codex login");
@@ -314,7 +344,10 @@ rl.on("line", (line) => {
           throw new Error("thread/start.persistFullHistory requires experimentalApi capability");
         }
         const thread = nextThread(state, message.params.cwd, message.params.ephemeral);
-        send({ id: message.id, result: { thread: buildThread(thread), model: message.params.model || "gpt-5.4", modelProvider: "openai", serviceTier: null, cwd: thread.cwd, approvalPolicy: "never", sandbox: { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false }, reasoningEffort: null } });
+        state.lastThreadStart = message.params;
+        thread.sandbox = threadSandbox(message.params.sandbox);
+        saveState(state);
+        send({ id: message.id, result: { thread: buildThread(thread), model: message.params.model || "gpt-5.4", modelProvider: "openai", serviceTier: null, cwd: thread.cwd, approvalPolicy: "never", sandbox: thread.sandbox, reasoningEffort: null } });
         send({ method: "thread/started", params: { thread: { id: thread.id } } });
         break;
       }
@@ -346,9 +379,11 @@ rl.on("line", (line) => {
           throw new Error("thread/resume.persistFullHistory requires experimentalApi capability");
         }
         const thread = ensureThread(state, message.params.threadId);
+        state.lastThreadResume = message.params;
+        thread.sandbox = threadSandbox(message.params.sandbox);
         thread.updatedAt = now();
         saveState(state);
-        send({ id: message.id, result: { thread: buildThread(thread), model: message.params.model || "gpt-5.4", modelProvider: "openai", serviceTier: null, cwd: thread.cwd, approvalPolicy: "never", sandbox: { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false }, reasoningEffort: null } });
+        send({ id: message.id, result: { thread: buildThread(thread), model: message.params.model || "gpt-5.4", modelProvider: "openai", serviceTier: null, cwd: thread.cwd, approvalPolicy: "never", sandbox: thread.sandbox, reasoningEffort: null } });
         break;
       }
 
@@ -451,10 +486,17 @@ rl.on("line", (line) => {
 	          model: message.params.model ?? null,
 	          effort: message.params.effort ?? null,
           serviceTier: message.params.serviceTier,
+          sandboxPolicy: message.params.sandboxPolicy,
+          approvalPolicy: message.params.approvalPolicy,
 	          prompt
 	        };
 	        saveState(state);
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
+
+        if (BEHAVIOR === "dirty-workspace-task") {
+          for (let i = 0; i < 26; i++) fs.appendFileSync(path.join(thread.cwd, "file-" + i + ".txt"), "worker edit\\n");
+          // Deliberately emits no fileChange events: shell writes need snapshots.
+        }
 
         const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict
           ? structuredReviewPayload(prompt)
@@ -602,6 +644,9 @@ rl.on("line", (line) => {
 	            send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
 	          }, 5000);
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer });
+	        } else if (BEHAVIOR === "slow-recovery-task") {
+            send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+            emitTurnCompletedLater(thread.id, turnId, items, 2000);
 	        } else if (BEHAVIOR === "slow-task") {
 	          emitTurnCompletedLater(thread.id, turnId, items, 400);
 	        } else {
@@ -655,6 +700,16 @@ export function buildEnv(binDir) {
   const sep = process.platform === "win32" ? ";" : ":";
   return {
     ...process.env,
+    HOME: path.join(binDir, "fixture-home"),
+    USERPROFILE: path.join(binDir, "fixture-home"),
+    CODEX_HOME: path.join(binDir, "fixture-home", ".codex"),
+    CODEX_SQLITE_HOME: "",
+    CODEX_COMPANION_HOME: "",
+    CODEX_COMPANION_NORMAL_HOME: "",
+    CODEX_COMPANION_NORMAL_SQLITE_HOME: "",
+    CODEX_COMPANION_BIN: "",
+    CODEX_COMPANION_APP_SERVER_ENDPOINT: "",
+    CODEX_COMPANION_SESSION_ID: "",
     PATH: `${binDir}${sep}${process.env.PATH}`
   };
 }

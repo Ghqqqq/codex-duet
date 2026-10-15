@@ -2,6 +2,10 @@
 
 import { spawn } from "node:child_process";
 import { isolatedCodexCommand } from "./lib/codex-home.mjs";
+import { UNREACHABLE_GUIDANCE } from "./lib/runtime-errors.mjs";
+import { getToolAvailability, syncToolConfig } from "./lib/tool-config.mjs";
+import { buildWorkerReport, persistTaskArtifacts, taskArtifactPaths } from "./lib/worker-report.mjs";
+import { snapshotWorkspace, compareWorkspaceSnapshots } from "./lib/workspace-changes.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -15,6 +19,7 @@ import {
     getCodexAuthStatus,
     getCodexAvailability,
     getSessionRuntimeStatus,
+    readAppServerTurn,
     importExternalAgentSession,
     interruptAppServerTurn,
     parseStructuredOutput,
@@ -78,13 +83,13 @@ function printUsage() {
   console.log(
     [
       "Usage:",
-      "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
+      "  node scripts/codex-companion.mjs setup [--sync-tools [--dry-run]] [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--thread <id>|--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--fast|--normal] [prompt]",
+      "  node scripts/codex-companion.mjs task [--report] [--background] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--thread <id>|--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--fast|--normal] [prompt]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
-      "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
-      "  node scripts/codex-companion.mjs result [job-id] [--json]",
+      "  node scripts/codex-companion.mjs status [job-id|--thread <id>] [--wait] [--all] [--json]",
+      "  node scripts/codex-companion.mjs result [job-id|--thread <id>] [--report] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
     ].join("\n")
   );
@@ -193,7 +198,11 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
   }
-  if (codexStatus.available && !authStatus.loggedIn && authStatus.requiresOpenaiAuth) {
+  if (authStatus.status === "unreachable") {
+    nextSteps.push(UNREACHABLE_GUIDANCE);
+  } else if (authStatus.status === "unknown") {
+    nextSteps.push("Inspect the reported runtime error and rerun setup --json; authentication is unknown.");
+  } else if (codexStatus.available && authStatus.status === "unauthenticated") {
     nextSteps.push(`Run \`!${isolatedCodexCommand(["login"])}\`.`);
     nextSteps.push(`If browser login is blocked, retry with \`!${isolatedCodexCommand(["login", "--device-auth"])}\`.`);
   }
@@ -207,6 +216,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     npm: npmStatus,
     codex: codexStatus,
     auth: authStatus,
+    tools: getToolAvailability(),
     sessionRuntime: getSessionRuntimeStatus(process.env, workspaceRoot),
     reviewGateEnabled: Boolean(config.stopReviewGate),
     actionsTaken,
@@ -217,7 +227,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "sync-tools", "dry-run"]
   });
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
@@ -227,6 +237,14 @@ async function handleSetup(argv) {
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const actionsTaken = [];
+  if (options["dry-run"] && !options["sync-tools"]) throw new Error("--dry-run requires --sync-tools.");
+  if (options["dry-run"] && (options["enable-review-gate"] || options["disable-review-gate"])) throw new Error("Do not combine --dry-run with review-gate changes.");
+  const toolSync = options["sync-tools"] ? syncToolConfig({ dryRun: Boolean(options["dry-run"]) }) : null;
+  // An offline dry run must not start Codex, create its home or refresh auth.
+  if (options["dry-run"]) {
+    outputResult(options.json ? { toolSync } : `${JSON.stringify(toolSync, null, 2)}\n`, options.json);
+    return;
+  }
 
   if (options["enable-review-gate"]) {
     setConfig(workspaceRoot, "stopReviewGate", true);
@@ -237,6 +255,11 @@ async function handleSetup(argv) {
   }
 
   const finalReport = await buildSetupReport(cwd, actionsTaken);
+  if (toolSync) {
+    finalReport.toolSync = toolSync;
+    finalReport.actionsTaken.push(`Tool sync: ${toolSync.added.length} added, ${toolSync.present.length} already present, ${toolSync.skipped.length} skipped.${toolSync.backup ? ` Backup: ${toolSync.backup}` : ""}`);
+    if (toolSync.changed) finalReport.nextSteps.push("Restart the Claude session/shared Codex runtime to load synced tools.");
+  }
   outputResult(options.json ? finalReport : renderSetupReport(finalReport), options.json);
 }
 
@@ -321,11 +344,11 @@ async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
   const timeoutMs = Math.max(0, Number(options.timeoutMs) || DEFAULT_STATUS_WAIT_TIMEOUT_MS);
   const pollIntervalMs = Math.max(100, Number(options.pollIntervalMs) || DEFAULT_STATUS_POLL_INTERVAL_MS);
   const deadline = Date.now() + timeoutMs;
-  let snapshot = buildSingleJobSnapshot(cwd, reference);
+  let snapshot = await refreshJobSnapshot(cwd, reference);
 
   while (isActiveJobStatus(snapshot.job.status) && Date.now() < deadline) {
     await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
-    snapshot = buildSingleJobSnapshot(cwd, reference);
+    snapshot = await refreshJobSnapshot(cwd, reference);
   }
 
   return {
@@ -490,10 +513,9 @@ async function executeTaskRun(request) {
     updateState(workspaceRoot, (state) => {
       const active = state.jobs.find((job) => {
         if (job.id === request.jobId || job.threadId !== resumeThreadId ||
-            !["queued", "running"].includes(job.status)) return false;
-        if (!job.pid) return true;
-        try { process.kill(job.pid, 0); return true; }
-        catch (error) { return error.code !== "ESRCH"; }
+            !(["queued", "running"].includes(job.status) ||
+              (job.status === "failed" && job.turnId && !readStoredJob(workspaceRoot, job.id)?.result))) return false;
+        return true; // A dead wrapper may still own a live Codex turn. Recover first.
       });
       if (active) throw new Error(`Codex thread ${resumeThreadId} is already running in task ${active.id}. Wait for that task before continuing this worker.`);
       const current = state.jobs.find((job) => job.id === request.jobId);
@@ -502,19 +524,33 @@ async function executeTaskRun(request) {
     });
   }
 
+  const before = snapshotWorkspace(workspaceRoot);
+  const sandbox = request.sandbox ?? (request.write ? "workspace-write" : "read-only");
+  const stored = readStoredJob(workspaceRoot, request.jobId);
+  writeJobFile(workspaceRoot, request.jobId, {
+    ...stored, preExistingChanges: before.preExistingChanges, sandbox, approvalPolicy: "never"
+  });
+  request.onProgress?.(`Sandbox: ${sandbox}; approval policy: never. Captured workspace baseline (${before.status}).`);
+
   const result = await runAppServerTurn(workspaceRoot, {
     resumeThreadId,
-    prompt: request.prompt,
+    prompt: request.report ? `${request.prompt || DEFAULT_CONTINUE_PROMPT}\n\n${loadPromptTemplate(ROOT_DIR, "worker-task")}` : request.prompt,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
     serviceTier: request.serviceTier,
-    sandbox: request.write ? "workspace-write" : "read-only",
+    sandbox,
+    explicitSandbox: Boolean(request.sandbox),
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
   });
 
+  Object.assign(result, compareWorkspaceSnapshots(before, snapshotWorkspace(workspaceRoot), result.touchedFiles));
+  return buildTaskExecution(result, request, taskMetadata);
+}
+
+function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task" }) {
   const rawOutput = typeof result.finalMessage === "string" ? result.finalMessage : "";
   const failureMessage = result.error?.message ?? result.stderr ?? "";
   const rendered = renderTaskResult(
@@ -531,18 +567,31 @@ async function executeTaskRun(request) {
   );
   const payload = {
     status: result.status,
+    jobId: request.jobId,
     threadId: result.threadId,
+    turnId: result.turnId,
     rawOutput,
     ...(result.status !== 0 && failureMessage ? { error: failureMessage } : {}),
     touchedFiles: result.touchedFiles,
+    preExistingChanges: result.preExistingChanges ?? [],
+    fileTracking: result.fileTracking,
+    sandbox: result.sandbox ?? request.sandbox ?? "unknown",
+    sandboxPolicy: result.sandboxPolicy ?? null,
+    approvalPolicy: result.approvalPolicy ?? "unknown",
+    commandExecutions: result.commandExecutions ?? [],
     reasoningSummary: result.reasoningSummary
   };
+  const artifacts = persistTaskArtifacts(resolveWorkspaceRoot(request.cwd), request.jobId, payload);
+  const report = buildWorkerReport(payload, { jobId: request.jobId, ...artifacts });
+  Object.assign(payload, artifacts, { workerStatus: report.status });
 
   return {
-    exitStatus: result.status,
+    exitStatus: report.status === "needs_input" ? 2 : result.status,
+    jobStatus: report.status,
     threadId: result.threadId,
     turnId: result.turnId,
     payload,
+    report,
     rendered,
     summary: firstMeaningfulLine(rawOutput, firstMeaningfulLine(failureMessage, `${taskMetadata.title} finished.`)),
     jobTitle: taskMetadata.title,
@@ -611,8 +660,8 @@ function createTrackedProgress(job, options = {}) {
   };
 }
 
-function buildTaskJob(workspaceRoot, taskMetadata, write) {
-  return createCompanionJob({
+function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox) {
+  const job = createCompanionJob({
     prefix: "task",
     kind: "task",
     title: taskMetadata.title,
@@ -621,9 +670,10 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
     summary: taskMetadata.summary,
     write
   });
+  return { ...job, sandbox: sandbox ?? (write ? "workspace-write" : "read-only"), approvalPolicy: "never", ...taskArtifactPaths(workspaceRoot, job.id) };
 }
 
-function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, resumeLast, threadId, jobId }) {
+function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sandbox, resumeLast, threadId, jobId, report }) {
   return {
     cwd,
     model,
@@ -631,9 +681,11 @@ function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, resu
     serviceTier,
     prompt,
     write,
+    sandbox,
     resumeLast,
     threadId,
-    jobId
+    jobId,
+    report
   };
 }
 
@@ -682,10 +734,10 @@ function requireTaskRequest(prompt, resumeLast, threadId) {
 async function runForegroundCommand(job, runner, options = {}) {
   const { logFile, progress } = createTrackedProgress(job, {
     logFile: options.logFile,
-    stderr: !options.json
+    stderr: true
   });
-  const execution = await runTrackedJob(job, () => runner(progress), { logFile });
-  outputResult(options.json ? execution.payload : execution.rendered, options.json);
+  const execution = await runTrackedJob(job, () => runner(progress), { logFile, onStarted: () => progress(`Job handle: ${job.id}; log: ${logFile}${job.rawOutputFile ? `; raw output: ${job.rawOutputFile}` : ""}`) });
+  outputResult(options.report ? (options.json ? execution.report : `${JSON.stringify(execution.report, null, 2)}\n`) : options.json ? execution.payload : execution.rendered, options.json);
   if (execution.exitStatus !== 0) {
     process.exitCode = execution.exitStatus;
   }
@@ -709,22 +761,30 @@ function enqueueBackgroundTask(cwd, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
-  const child = spawnDetachedTaskWorker(cwd, job.id);
   const queuedRecord = {
     ...job,
     status: "queued",
     phase: "queued",
-    pid: child.pid ?? null,
+    pid: null,
     logFile,
     request
   };
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
   upsertJob(job.workspaceRoot, queuedRecord);
+  const child = spawnDetachedTaskWorker(cwd, job.id);
+  // Publish the request before the child can read it. Do not overwrite a
+  // running/completed child record when recording its launch PID.
+  updateState(job.workspaceRoot, state => {
+    const current = state.jobs.find(candidate => candidate.id === job.id);
+    if (current?.status === "queued") current.pid = child.pid ?? null;
+  });
 
   return {
     payload: {
       jobId: job.id,
       status: "queued",
+      sandbox: job.sandbox,
+      approvalPolicy: job.approvalPolicy,
       title: job.title,
       summary: job.summary,
       logFile
@@ -785,8 +845,8 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "thread"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "fast", "normal"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "thread", "sandbox"],
+    booleanOptions: ["json", "report", "write", "resume-last", "resume", "fresh", "background", "fast", "normal"],
     aliasMap: {
       m: "model"
     }
@@ -813,6 +873,14 @@ async function handleTask(argv) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
   }
   const write = Boolean(options.write);
+  const sandbox = options.sandbox;
+  if (sandbox !== undefined && !["read-only", "workspace-write", "danger-full-access"].includes(sandbox)) {
+    throw new Error("--sandbox must be read-only, workspace-write, or danger-full-access.");
+  }
+  if (sandbox && sandbox !== "read-only" && !write) {
+    throw new Error("--sandbox workspace-write or danger-full-access requires explicit --write authorization.");
+  }
+  if (sandbox === "read-only" && write) throw new Error("--sandbox read-only cannot be combined with --write.");
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast: Boolean(resumeLast || threadId)
@@ -822,7 +890,7 @@ async function handleTask(argv) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast, threadId);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox);
     const request = buildTaskRequest({
       cwd,
       model,
@@ -830,16 +898,18 @@ async function handleTask(argv) {
       serviceTier,
       prompt,
       write,
+      sandbox,
       resumeLast,
       threadId,
-      jobId: job.id
+      jobId: job.id,
+      report: Boolean(options.report)
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
     return;
   }
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+  const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox);
   await runForegroundCommand(
     job,
     (progress) =>
@@ -850,12 +920,14 @@ async function handleTask(argv) {
         serviceTier,
         prompt,
         write,
+        sandbox,
         resumeLast,
         threadId,
         jobId: job.id,
+        report: Boolean(options.report),
         onProgress: progress
       }),
-    { json: options.json }
+    { json: options.json, report: Boolean(options.report) }
   );
 }
 
@@ -917,22 +989,61 @@ async function handleTaskWorker(argv) {
   );
 }
 
+function processAlive(pid) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error.code !== "ESRCH"; }
+}
+
+async function refreshJobSnapshot(cwd, reference) {
+  let snapshot = buildSingleJobSnapshot(cwd, reference);
+  const { workspaceRoot, job } = snapshot;
+  const stored = readStoredJob(workspaceRoot, job.id);
+  if (!stored || stored.result || job.jobClass !== "task" || job.status === "cancelled" || processAlive(job.pid)) return snapshot;
+  if (!job.threadId || !job.turnId) {
+    return { ...snapshot, recovery: { status: "unknown", detail: "No exact thread/turn handle was recorded. Inspect the job log; do not automatically rerun the task." } };
+  }
+  try {
+    const result = await readAppServerTurn(cwd, job);
+    if (!result) return { ...snapshot, recovery: { status: "unknown", detail: "The recorded turn is not readable. It may not have been persisted; do not automatically rerun it." } };
+    if (result.turnStatus === "inProgress") return { ...snapshot, recovery: { status: "running", detail: "The wrapper stopped; the recorded Codex turn is still in progress." } };
+    if (!["completed", "failed", "interrupted"].includes(result.turnStatus)) return { ...snapshot, recovery: { status: "unknown", detail: `Unrecognized turn status: ${result.turnStatus}` } };
+    // A later recovery cannot compare against the current tree: subsequent
+    // turns may have edited it. Keep exact-turn events and mark coverage partial.
+    Object.assign(result, {
+      preExistingChanges: stored.preExistingChanges ?? [],
+      fileTracking: { status: "partial", basis: "Recovered exact-turn file-change events only; no end-of-turn workspace snapshot survived." },
+      sandbox: stored.sandbox ?? "unknown", approvalPolicy: stored.approvalPolicy ?? "unknown"
+    });
+    const execution = buildTaskExecution(result, { cwd, jobId: job.id, write: job.write });
+    const completedAt = nowIso();
+    const patch = { status: execution.jobStatus, phase: execution.jobStatus === "completed" ? "done" : execution.jobStatus, pid: null, completedAt, summary: execution.summary, recovered: true, rawOutputFile: execution.payload.rawOutputFile, resultFile: execution.payload.resultFile };
+    writeJobFile(workspaceRoot, job.id, { ...stored, ...patch, result: execution.payload, report: execution.report, rendered: execution.rendered });
+    upsertJob(workspaceRoot, { id: job.id, ...patch });
+    appendLogLine(job.logFile, `Recovered recorded turn ${job.turnId}; status ${execution.jobStatus}. No new turn submitted.`);
+    snapshot = buildSingleJobSnapshot(cwd, job.id);
+    return { ...snapshot, recovery: { status: "recovered", detail: "Fetched the exact persisted turn without rerunning it." } };
+  } catch (error) {
+    return { ...snapshot, recovery: { status: "unreachable", detail: error.message } };
+  }
+}
+
 async function handleStatus(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
+    valueOptions: ["cwd", "thread", "timeout-ms", "poll-interval-ms"],
     booleanOptions: ["json", "all", "wait"]
   });
 
   const cwd = resolveCommandCwd(options);
-  const reference = positionals[0] ?? "";
+  const reference = options.thread ?? positionals[0] ?? "";
   if (reference) {
     const snapshot = options.wait
       ? await waitForSingleJobSnapshot(cwd, reference, {
           timeoutMs: options["timeout-ms"],
           pollIntervalMs: options["poll-interval-ms"]
         })
-      : buildSingleJobSnapshot(cwd, reference);
-    outputCommandResult(snapshot, renderJobStatusReport(snapshot.job), options.json);
+      : await refreshJobSnapshot(cwd, reference);
+    outputCommandResult(snapshot, `${renderJobStatusReport(snapshot.job)}${snapshot.recovery ? `Recovery: ${snapshot.recovery.detail}\n` : ""}`, options.json);
     return;
   }
 
@@ -944,16 +1055,31 @@ async function handleStatus(argv) {
   outputResult(renderStatusPayload(report, options.json), options.json);
 }
 
-function handleResult(argv) {
+async function handleResult(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    valueOptions: ["cwd", "thread"],
+    booleanOptions: ["json", "report"]
   });
 
   const cwd = resolveCommandCwd(options);
-  const reference = positionals[0] ?? "";
+  const reference = options.thread ?? positionals[0] ?? "";
+  if (reference) {
+    const snapshot = await refreshJobSnapshot(cwd, reference);
+    if (snapshot.recovery && snapshot.recovery.status !== "recovered") {
+      const pending = { status: snapshot.recovery.status, jobId: snapshot.job.id, threadId: snapshot.job.threadId, turnId: snapshot.job.turnId, logFile: snapshot.job.logFile, rawOutputFile: snapshot.job.rawOutputFile, resultFile: snapshot.job.resultFile, error: snapshot.job.errorMessage ?? null, recovery: snapshot.recovery };
+      outputCommandResult(pending, `${snapshot.recovery.detail}\n`, options.json);
+      process.exitCode = 2;
+      return;
+    }
+  }
   const { workspaceRoot, job } = resolveResultJob(cwd, reference);
   const storedJob = readStoredJob(workspaceRoot, job.id);
+  if (options.report) {
+    const report = storedJob?.report ?? buildWorkerReport(storedJob?.result ?? { status: 1, error: storedJob?.errorMessage ?? "No stored result." }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile });
+    outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
+    if (report.status !== "completed") process.exitCode = report.status === "needs_input" ? 2 : 1;
+    return;
+  }
   const payload = {
     job,
     storedJob
@@ -1090,7 +1216,7 @@ async function main() {
       await handleStatus(argv);
       break;
     case "result":
-      handleResult(argv);
+      await handleResult(argv);
       break;
     case "task-resume-candidate":
       handleTaskResumeCandidate(argv);

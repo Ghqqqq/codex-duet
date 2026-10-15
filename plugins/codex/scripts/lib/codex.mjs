@@ -43,6 +43,7 @@ import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable } from "./process.mjs";
+import { classifyRuntimeError } from "./runtime-errors.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
@@ -559,6 +560,23 @@ function applyTurnNotification(state, message) {
 async function captureTurn(client, threadId, startRequest, options = {}) {
   const state = createTurnCaptureState(threadId, options);
   const previousHandler = client.notificationHandler;
+  let lastActivity = Date.now(), itemCount = 0, toolCount = 0;
+  const started = Date.now();
+  const seenItems = new Set();
+  const trackActivity = message => {
+    lastActivity = Date.now();
+    const item = message.params?.item;
+    if (item && !seenItems.has(`${extractThreadId(message)}:${item.id}`)) {
+      seenItems.add(`${extractThreadId(message)}:${item.id}`);
+      itemCount++;
+      if (!["agentMessage", "userMessage", "reasoning"].includes(item.type)) toolCount++;
+    }
+  };
+  const heartbeat = setInterval(() => {
+    emitProgress(options.onProgress,
+      `Progress: thread=${threadId} turn=${state.turnId ?? "starting"}; ${itemCount} items, ${toolCount} tools; elapsed ${Math.floor((Date.now() - started) / 1000)}s; last activity ${Math.floor((Date.now() - lastActivity) / 1000)}s ago.`, null);
+  }, Math.max(250, Number(process.env.CODEX_COMPANION_PROGRESS_INTERVAL_MS) || 15000));
+  heartbeat.unref?.();
 
   client.setNotificationHandler((message) => {
     if (!state.turnId) {
@@ -577,7 +595,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
         }
         return;
     }
-
+    trackActivity(message);
     applyTurnNotification(state, message);
   });
 
@@ -587,9 +605,12 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     state.turnId = response.turn?.id ?? null;
     if (state.turnId) {
       state.threadTurnIds.set(state.threadId, state.turnId);
+      // The response can precede notifications (or they may be dropped).
+      emitProgress(options.onProgress, `Turn handle: ${state.turnId}.`, "starting", { threadId: state.threadId, turnId: state.turnId });
     }
     for (const message of state.bufferedNotifications) {
       if (belongsToTurn(state, message)) {
+        trackActivity(message);
         applyTurnNotification(state, message);
       } else {
         if (previousHandler) {
@@ -603,8 +624,12 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       completeTurn(state, response.turn);
     }
 
-    return await state.completion;
+    return await Promise.race([
+      state.completion,
+      client.exitPromise.then(() => { throw client.exitError ?? new Error("Codex connection closed before turn completion; recover the recorded job."); })
+    ]);
   } finally {
+    clearInterval(heartbeat);
     clearCompletionTimer(state);
     client.setNotificationHandler(previousHandler ?? null);
   }
@@ -732,6 +757,7 @@ async function requestExternalAgentSessionImport(client, params) {
 async function startThread(client, cwd, options = {}) {
   const response = await client.request("thread/start", buildThreadParams(cwd, options));
   const threadId = response.thread.id;
+  emitProgress(options.onProgress, `Thread handle: ${threadId}.`, "starting", { threadId });
   if (options.threadName) {
     try {
       await client.request("thread/name/set", { threadId, name: options.threadName });
@@ -780,6 +806,8 @@ function formatProviderLabel(providerId, providerConfig = null) {
 function buildAuthStatus(fields = {}) {
   return {
     available: true,
+    status: fields.loggedIn ? "authenticated" : "unauthenticated",
+    reason: null,
     loggedIn: false,
     detail: "not authenticated",
     source: "unknown",
@@ -858,7 +886,8 @@ function buildAppServerAuthStatus(accountResponse, configResponse) {
 
   return buildAuthStatus({
     loggedIn: false,
-    detail: `${providerLabel} requires OpenAI authentication`,
+    status: requiresOpenaiAuth === true ? "unauthenticated" : "unknown",
+    detail: requiresOpenaiAuth === true ? `${providerLabel} requires OpenAI authentication` : "The runtime did not establish an authentication state",
     source: "app-server",
     requiresOpenaiAuth,
     provider: providerId
@@ -877,7 +906,7 @@ async function getCodexAuthStatusFromClient(client, cwd) {
   } catch (error) {
     return buildAuthStatus({
       loggedIn: false,
-      detail: error instanceof Error ? error.message : String(error),
+      ...classifyRuntimeError(error),
       source: "app-server"
     });
   }
@@ -893,6 +922,8 @@ export function getCodexAvailability(cwd) {
   if (!appServerStatus.available) {
     return {
       available: false,
+      status: "unavailable",
+      reason: "runtime-unavailable",
       detail: `${versionStatus.detail}; advanced runtime unavailable: ${appServerStatus.detail}`
     };
   }
@@ -904,7 +935,7 @@ export function getCodexAvailability(cwd) {
 }
 
 export function getSessionRuntimeStatus(env = process.env, cwd = process.cwd()) {
-  const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(cwd)?.endpoint ?? null;
+  const endpoint = env?.[BROKER_ENDPOINT_ENV]?.trim() || loadBrokerSession(cwd)?.endpoint || null;
   if (endpoint) {
     return {
       mode: "shared",
@@ -927,6 +958,8 @@ export async function getCodexAuthStatus(cwd, options = {}) {
   if (!availability.available) {
     return {
       available: false,
+      status: "unavailable",
+      reason: "runtime-unavailable",
       loggedIn: false,
       detail: availability.detail,
       source: "availability",
@@ -947,7 +980,7 @@ export async function getCodexAuthStatus(cwd, options = {}) {
   } catch (error) {
     return buildAuthStatus({
       loggedIn: false,
-      detail: error instanceof Error ? error.message : String(error),
+      ...classifyRuntimeError(error),
       source: "app-server"
     });
   } finally {
@@ -1100,6 +1133,7 @@ export async function runAppServerTurn(cwd, options = {}) {
 
   return withAppServer(cwd, async (client) => {
     let threadId;
+    let threadPolicy;
 
     if (options.resumeThreadId) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
@@ -1109,15 +1143,18 @@ export async function runAppServerTurn(cwd, options = {}) {
         ephemeral: false
       });
       threadId = response.thread.id;
+      threadPolicy = response.sandbox;
     } else {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
       const response = await startThread(client, cwd, {
         model: options.model,
         sandbox: options.sandbox,
         ephemeral: options.persistThread ? false : true,
-        threadName: options.persistThread ? options.threadName : options.threadName ?? null
+        threadName: options.persistThread ? options.threadName : options.threadName ?? null,
+        onProgress: options.onProgress
       });
       threadId = response.thread.id;
+      threadPolicy = response.sandbox;
     }
 
     emitProgress(options.onProgress, `Thread ready (${threadId}).`, "starting", {
@@ -1129,6 +1166,14 @@ export async function runAppServerTurn(cwd, options = {}) {
       throw new Error("A prompt is required for this Codex run.");
     }
 
+    // SandboxPolicy comes from thread/start or thread/resume, preserving the
+    // runtime's roots/network defaults. An explicit task opt-in is also applied
+    // to turn/start. Each invocation resumes with its own policy, so elevation
+    // cannot leak into an ordinary follow-up on the same thread.
+    const sandbox = { readOnly: "read-only", workspaceWrite: "workspace-write", dangerFullAccess: "danger-full-access" }[threadPolicy?.type];
+    if (sandbox !== (options.sandbox ?? "read-only")) {
+      throw new Error("Codex did not acknowledge the requested sandbox policy; refusing to start the turn.");
+    }
     const turnState = await captureTurn(
       client,
       threadId,
@@ -1139,13 +1184,18 @@ export async function runAppServerTurn(cwd, options = {}) {
           model: options.model ?? null,
           effort: options.effort ?? null,
           serviceTier: options.serviceTier ?? null,
-          outputSchema: options.outputSchema ?? null
+          outputSchema: options.outputSchema ?? null,
+          approvalPolicy: "never",
+          ...(options.explicitSandbox ? { sandboxPolicy: threadPolicy } : {})
         }),
       { onProgress: options.onProgress }
     );
 
     return {
       status: buildResultStatus(turnState),
+      sandbox,
+      sandboxPolicy: threadPolicy,
+      approvalPolicy: "never",
       threadId,
       turnId: turnState.turnId,
       finalMessage: turnState.lastAgentMessage,
@@ -1158,6 +1208,30 @@ export async function runAppServerTurn(cwd, options = {}) {
       commandExecutions: turnState.commandExecutions
     };
   });
+}
+
+// Recovery is read-only: never resume a thread or submit another turn.
+export async function readAppServerTurn(cwd, { threadId, turnId }) {
+  const client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true });
+  try {
+    const response = await client.request("thread/read", { threadId, includeTurns: true });
+    const turn = response.thread?.turns?.find(candidate => candidate.id === turnId);
+    if (!turn) return null;
+    const items = turn.items ?? [];
+    const fileChanges = items.filter(item => item.type === "fileChange");
+    return {
+      status: turn.status === "completed" ? 0 : 1,
+      turnStatus: turn.status,
+      threadId,
+      turnId: turn.id,
+      finalMessage: items.filter(item => item.type === "agentMessage").at(-1)?.text ?? "",
+      error: turn.error,
+      stderr: turn.error?.message ?? "",
+      reasoningSummary: items.filter(item => item.type === "reasoning").flatMap(item => extractReasoningSections(item.summary)),
+      touchedFiles: collectTouchedFiles(fileChanges),
+      commandExecutions: items.filter(item => item.type === "commandExecution")
+    };
+  } finally { await client.close(); }
 }
 
 export async function findLatestTaskThread(cwd) {

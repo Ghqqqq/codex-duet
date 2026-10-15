@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
+import { initGitRepo, makeTempDir, run, requireLocalSockets } from "./helpers.mjs";
 import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
@@ -230,7 +230,7 @@ test("transfer delegates the current Claude session directly to native import", 
   const payload = JSON.parse(result.stdout);
   const canonicalSourcePath = fs.realpathSync(sourcePath);
   assert.equal(payload.threadId, "thr_1");
-  assert.equal(payload.resumeCommand, isolatedCodexCommand(["resume", "thr_1"]));
+  assert.equal(payload.resumeCommand, isolatedCodexCommand(["resume", "thr_1"], { ...buildEnv(binDir), HOME: home, CODEX_HOME: path.join(home, ".codex") }));
   assert.equal(payload.sourcePath, canonicalSourcePath);
   assert.equal(payload.sessionId, sessionId);
 
@@ -892,7 +892,8 @@ test("task can finish after subagent work even if the parent turn/completed even
   assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
 });
 
-test("task using the shared broker still completes when Codex spawns subagents", () => {
+test("task using the shared broker still completes when Codex spawns subagents", async (t) => {
+  if (!await requireLocalSockets(t)) return;
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir, "with-subagent");
@@ -909,9 +910,7 @@ test("task using the shared broker still completes when Codex spawns subagents",
   });
   assert.equal(review.status, 0, review.stderr);
 
-  if (!loadBrokerSession(repo)) {
-    return;
-  }
+  assert.ok(loadBrokerSession(repo), "socket-capable runtime must start a broker");
 
   const result = run("node", [SCRIPT, "task", "challenge the current design"], {
     cwd: repo,
@@ -1739,7 +1738,8 @@ test("cancel with a job id can still target an active job from another Claude se
   assert.equal(state.jobs[0].status, "cancelled");
 });
 
-test("cancel sends turn interrupt to the shared app-server before killing a brokered task", async () => {
+test("cancel sends turn interrupt to the shared app-server before killing a brokered task", async (t) => {
+  if (!await requireLocalSockets(t)) return;
   const repo = makeTempDir();
   const binDir = makeTempDir();
   const fakeStatePath = path.join(binDir, "fake-codex-state.json");
@@ -1770,6 +1770,7 @@ test("cancel sends turn interrupt to the shared app-server before killing a brok
     return null;
   }, { timeoutMs: 15000 });
 
+  assert.ok(loadBrokerSession(repo), "cancellation must exercise broker transport");
   const cancelResult = run("node", [SCRIPT, "cancel", jobId, "--json"], {
     cwd: repo,
     env
@@ -2118,7 +2119,8 @@ test("stop hook runs the actual task when auth status looks stale", () => {
   assert.match(payload.reason, /Missing empty-state guard/i);
 });
 
-test("commands lazily start and reuse one shared app-server after first use", async () => {
+test("commands lazily start and reuse one shared app-server after first use", async (t) => {
+  if (!await requireLocalSockets(t)) return;
   const repo = makeTempDir();
   const binDir = makeTempDir();
   const fakeStatePath = path.join(binDir, "fake-codex-state.json");
@@ -2139,9 +2141,7 @@ test("commands lazily start and reuse one shared app-server after first use", as
   assert.equal(review.status, 0, review.stderr);
 
   const brokerSession = loadBrokerSession(repo);
-  if (!brokerSession) {
-    return;
-  }
+  assert.ok(brokerSession, "socket-capable runtime must start a broker");
 
   const adversarial = run("node", [SCRIPT, "adversarial-review"], {
     cwd: repo,
@@ -2163,7 +2163,8 @@ test("commands lazily start and reuse one shared app-server after first use", as
   assert.equal(cleanup.status, 0, cleanup.stderr);
 });
 
-test("setup reuses an existing shared app-server without starting another one", () => {
+test("setup reuses an existing shared app-server without starting another one", async (t) => {
+  if (!await requireLocalSockets(t)) return;
   const repo = makeTempDir();
   const binDir = makeTempDir();
   const fakeStatePath = path.join(binDir, "fake-codex-state.json");
@@ -2184,9 +2185,7 @@ test("setup reuses an existing shared app-server without starting another one", 
   assert.equal(review.status, 0, review.stderr);
 
   const brokerSession = loadBrokerSession(repo);
-  if (!brokerSession) {
-    return;
-  }
+  assert.ok(brokerSession, "socket-capable runtime must start a broker");
 
   const setup = run("node", [SCRIPT, "setup", "--json"], {
     cwd: repo,
@@ -2208,7 +2207,8 @@ test("setup reuses an existing shared app-server without starting another one", 
   assert.equal(cleanup.status, 0, cleanup.stderr);
 });
 
-test("status reports shared session runtime when a lazy broker is active", () => {
+test("status reports shared session runtime when a lazy broker is active", async (t) => {
+  if (!await requireLocalSockets(t)) return;
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir);
@@ -2224,9 +2224,7 @@ test("status reports shared session runtime when a lazy broker is active", () =>
   });
   assert.equal(review.status, 0, review.stderr);
 
-  if (!loadBrokerSession(repo)) {
-    return;
-  }
+  assert.ok(loadBrokerSession(repo), "socket-capable runtime must start a broker");
 
   const result = run("node", [SCRIPT, "status"], {
     cwd: repo,

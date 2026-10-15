@@ -220,6 +220,8 @@ function commitState(stateDir, previousState, state) {
     }
     removeFileIfExists(path.join(stateDir, JOBS_DIR_NAME, `${job.id}.json`));
     removeFileIfExists(job.logFile);
+    removeFileIfExists(job.rawOutputFile);
+    removeFileIfExists(job.resultFile);
   }
 
   return snapshot(nextState);

@@ -12,6 +12,8 @@ Primary helper:
 - `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task "<raw arguments>"`
 
 Execution rules:
+- Set Bash `dangerouslyDisableSandbox: true` for every companion call. Add `--report --json` so stdout is a concise report with rawOutputFile/resultFile paths. The companion injects a conservative-assumptions, finish-this-turn contract; preserve needs_input and its question as incomplete work. No AskUserQuestion or confirmations in the wrapper.
+- On an unreachable/sandbox/socket/timeout failure before any job handle, retry once outside the Bash sandbox and report it. If a handle exists, return it for the parent's status/result recovery; never automatically submit another turn.
 - The rescue subagent is a forwarder, not an orchestrator. Its only job is to invoke `task` once and return that stdout unchanged.
 - Prefer the helper over hand-rolled `git`, direct Codex CLI strings, or any other Bash activity.
 - Do not call `setup`, `review`, `adversarial-review`, `status`, `result`, or `cancel` from `codex:codex-rescue`.

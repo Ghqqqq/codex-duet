@@ -205,7 +205,12 @@ test("native Codex worker preserves identity, native lifecycle, and parallel own
   assert.match(worker, /single-quoted heredoc delimiter that does not occur as a complete line/i);
   assert.match(worker, /<<'CODEX_WORKER_PROMPT'/);
   assert.match(worker, /Shell-quote every dynamic runtime argument separately/i);
-  assert.match(worker, /Return the helper's `threadId`, status, raw Codex output, touched files/i);
+  assert.match(worker, /concise structured report, targeting 60 lines or fewer/i);
+  assert.match(worker, /dangerouslyDisableSandbox: true/);
+  assert.match(worker, /one automatic retry/);
+  assert.match(worker, /needs_input/);
+  assert.match(worker, /Never call AskUserQuestion/);
+  assert.match(worker, /result '<job-id>' --report --json/);
   assert.match(worker, /Preserve captured stderr and the command's exit status on failure/i);
   assert.match(worker, /parent may summarize the result for the user/i);
   assert.match(worker, /do not require the final user response to reproduce all helper output/i);
@@ -259,7 +264,9 @@ test("setup command can offer Codex install and still points users to codex logi
   const setup = read("commands/setup.md");
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
 
-  assert.match(setup, /argument-hint:\s*'\[--enable-review-gate\|--disable-review-gate\]'/);
+  assert.match(setup, /argument-hint:.*--sync-tools.*--dry-run.*--enable-review-gate\|--disable-review-gate/);
+  assert.match(setup, /auth.status.*unreachable/);
+  assert.match(setup, /Never present a login command for this branch/);
   assert.match(setup, /AskUserQuestion/);
   assert.match(setup, /npm install -g @openai\/codex/);
   assert.match(setup, /codex-companion\.mjs" setup --json \$ARGUMENTS/);

@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "Local isolated variant of openai/codex-plugin-cc; independent sessions and login.",
-    "version": "1.0.6-isolated.3"
+    "version": "1.0.6-isolated.5"
   },
   "plugins": [
     {
       "name": "codex",
       "description": "Use Codex from Claude Code to review code or delegate tasks.",
-      "version": "1.0.6-isolated.3",
+      "version": "1.0.6-isolated.5",
       "author": {
         "name": "OpenAI"
       },

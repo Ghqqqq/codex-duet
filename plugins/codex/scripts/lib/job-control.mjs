@@ -198,6 +198,10 @@ function matchJobReference(jobs, reference, predicate = () => true) {
   if (exact) {
     return exact;
   }
+  const threadMatches = filtered.filter(job => job.threadId === reference);
+  if (threadMatches.length) {
+    return threadMatches.sort((a, b) => String(b.createdAt ?? b.startedAt ?? b.updatedAt).localeCompare(String(a.createdAt ?? a.startedAt ?? a.updatedAt)))[0];
+  }
 
   const prefixMatches = filtered.filter((job) => job.id.startsWith(reference));
   if (prefixMatches.length === 1) {
@@ -256,13 +260,10 @@ export function buildSingleJobSnapshot(cwd, reference, options = {}) {
 export function resolveResultJob(cwd, reference) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const jobs = sortJobsNewestFirst(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
-  const selected = matchJobReference(
-    jobs,
-    reference,
-    (job) => job.status === "completed" || job.status === "failed" || job.status === "cancelled"
-  );
+  const selected = reference ? matchJobReference(jobs, reference) : jobs.find(job => !["queued", "running"].includes(job.status));
 
   if (selected) {
+    if (["queued", "running"].includes(selected.status)) throw new Error(`Job ${selected.id} is still ${selected.status}. Check /codex:status and try again once it finishes.`);
     return { workspaceRoot, job: selected };
   }
 

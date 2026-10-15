@@ -186,6 +186,7 @@ export function renderSetupReport(report) {
     `- npm: ${report.npm.detail}`,
     `- codex: ${report.codex.detail}`,
     `- auth: ${report.auth.detail}`,
+    ...(report.tools ? [`- tools (configuration only): browser ${report.tools.browser}, computer-use ${report.tools.computerUse}, node_repl ${report.tools.nodeRepl}`] : []),
     `- session runtime: ${report.sessionRuntime.label}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     ""
