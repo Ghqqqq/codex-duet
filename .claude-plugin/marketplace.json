@@ -1,0 +1,21 @@
+{
+  "name": "codex-isolated-local",
+  "owner": {
+    "name": "Local isolation customization (upstream OpenAI)"
+  },
+  "metadata": {
+    "description": "Local isolated variant of openai/codex-plugin-cc; independent sessions and login.",
+    "version": "1.0.6-isolated.3"
+  },
+  "plugins": [
+    {
+      "name": "codex",
+      "description": "Use Codex from Claude Code to review code or delegate tasks.",
+      "version": "1.0.6-isolated.3",
+      "author": {
+        "name": "OpenAI"
+      },
+      "source": "./plugins/codex"
+    }
+  ]
+}
