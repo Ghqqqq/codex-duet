@@ -16,6 +16,7 @@ import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { ensureBrokerSession, loadBrokerSession } from "./broker-lifecycle.mjs";
 import { isolatedCodexArgs, isolatedCodexEnv, resolveCodexBinary, resolveCodexRuntimeIdentity, resolveIsolatedCodexHome } from "./codex-home.mjs";
 import { terminateProcessTree } from "./process.mjs";
+import { decideServerRequest, logServerRequest, normalizeBrowserOrigins } from "./server-requests.mjs";
 
 const PLUGIN_MANIFEST_URL = new URL("../../.claude-plugin/plugin.json", import.meta.url);
 const PLUGIN_MANIFEST = JSON.parse(fs.readFileSync(PLUGIN_MANIFEST_URL, "utf8"));
@@ -68,6 +69,8 @@ class AppServerClientBase {
     this.notificationHandler = null;
     this.lineBuffer = "";
     this.transport = "unknown";
+    this.serverRequestHandler = null;
+    this.serverRequestPolicy = { approvedBrowserOrigins: normalizeBrowserOrigins(options.approvedBrowserOrigins ?? []), threadId: null, turnId: null };
 
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
@@ -93,7 +96,9 @@ class AppServerClientBase {
     this.nextId += 1;
 
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, method });
+      const threadId = params && typeof params === "object" && "threadId" in params ? params.threadId : null;
+      if (method === "turn/start") this.setServerRequestContext(threadId, null);
+      this.pending.set(id, { resolve, reject, method, threadId });
       this.sendMessage({ id, method, params });
     });
   }
@@ -144,6 +149,7 @@ class AppServerClientBase {
       if (message.error) {
         pending.reject(createProtocolError(message.error.message ?? `codex app-server ${pending.method} failed.`, message.error));
       } else {
+        if (pending.method === "turn/start") this.setServerRequestContext(pending.threadId, message.result?.turn?.id ?? null);
         pending.resolve(message.result ?? {});
       }
       return;
@@ -155,10 +161,16 @@ class AppServerClientBase {
   }
 
   handleServerRequest(message) {
-    this.sendMessage({
-      id: message.id,
-      error: buildJsonRpcError(-32601, `Unsupported server request: ${message.method}`)
-    });
+    if (this.serverRequestHandler) { this.serverRequestHandler(message); return; }
+    const { reply, summary } = decideServerRequest(message, this.serverRequestPolicy);
+    // Logging precedes the reply; a logging failure must never grant access.
+    logServerRequest(summary, this.options.onServerRequestLog);
+    this.sendMessage(reply);
+  }
+
+  setServerRequestContext(threadId, turnId) {
+    this.serverRequestPolicy.threadId = threadId;
+    this.serverRequestPolicy.turnId = turnId;
   }
 
   handleExit(error) {

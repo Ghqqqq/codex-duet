@@ -3,12 +3,22 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildWorkerReport, classifyWorkerOutcome } from "../plugins/codex/scripts/lib/worker-report.mjs";
+import { buildWorkerReport, classifyWorkerOutcome, classifyBrowserBlocker } from "../plugins/codex/scripts/lib/worker-report.mjs";
 import { makeTempDir, run, initGitRepo } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
 const stateModule = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
+test("stale browser claims have a distinct blocker with the owning session ID", () => {
+  const text = "Tab 123 is already part of browser session 00000000-0000-0000-0000-000000000001";
+  const report = buildWorkerReport({ status: 0, rawOutput: text });
+  assert.equal(report.status, "needs_input");
+  assert.deepEqual(report.browserBlocker, { kind: "stale_browser_tab_claim", tabId: "123", sessionId: "00000000-0000-0000-0000-000000000001" });
+  assert.match(report.blockers[0], /stale_browser_tab_claim.*00000000-0000-0000-0000-000000000001/);
+  assert.equal(buildWorkerReport({ status: 1, error: text }).browserBlocker.kind, "stale_browser_tab_claim");
+  assert.equal(classifyBrowserBlocker("a tab is already part of another session"), null);
+  assert.equal(classifyBrowserBlocker("Tab 123 is already part of browser session malformed"), null);
+});
 function fixture(behavior) {
   const dir = makeTempDir();
   installFakeCodex(dir, behavior);
@@ -76,6 +86,18 @@ test("fully populated report stays within 60 lines including dirty paths and san
   });
   assert.equal(report.status, "needs_input");
   assert.equal(report.preExistingChangesOmitted, 26);
+  assert.ok(`${JSON.stringify(report, null, 2)}\n`.split("\n").length <= 60);
+});
+
+test("compact report budgets origin grants and a stale claim without losing the session ID", () => {
+  const report = buildWorkerReport({
+    status: 0, rawOutput: "Tab 123 is already part of browser session 00000000-0000-0000-0000-000000000001\nAssumptions\nPending decision\nMore findings\nOther findings",
+    touchedFiles: Array(40).fill("changed.js"), preExistingChanges: Array(30).fill("dirty.js"),
+    commandExecutions: Array(10).fill({ command: "node --test", exitCode: 0, status: "completed" }),
+    approvedBrowserOrigins: Array.from({ length: 10 }, (_, i) => `https://fixture${i}.example`)
+  });
+  assert.equal(report.approvedBrowserOriginsOmitted, 7);
+  assert.equal(report.browserBlocker.sessionId, "00000000-0000-0000-0000-000000000001");
   assert.ok(`${JSON.stringify(report, null, 2)}\n`.split("\n").length <= 60);
 });
 

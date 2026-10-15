@@ -1,4 +1,6 @@
-# Codex plugin for Claude Code — local isolated variant
+# Duet — Claude Code × Codex
+
+Duet lets Claude Code hand coding, research and review work to Codex workers that run in parallel in an isolated Codex home, then brings back short, recoverable reports instead of raw transcripts.
 
 Based on [OpenAI codex-plugin-cc](https://github.com/openai/codex-plugin-cc), upstream db52e28 / 1.0.6. This local fork uses `~/.claude/codex-isolated` for data and separate file credentials. It uses the same account after a separate login. Normal Codex history is not imported. Custom absolute `CODEX_COMPANION_HOME` is supported; overlaps with the normal home are rejected.
 
@@ -301,14 +303,90 @@ Workers never elevate automatically. See [worker operations](docs/worker-operati
 for protocol details and limitations. Empty inherited broker endpoint variables
 now fall back to the saved workspace broker when reporting session runtime.
 
+Browser assignments must open a fresh session-owned tab and close it at the end,
+including on failure. Never claim an existing user tab. A stale-claim error is
+reported as `stale_browser_tab_claim` with its full owning browser session ID.
+With the user's explicit consent for each origin, the parent can pass repeatable
+`task --approve-browser-origin https://example.com` flags. Workers forward only
+the supplied flags and never add them after a denial; follow-ups do not inherit
+them. Origins are normalized (scheme/host case and default ports); paths, trailing
+slashes, queries, fragments, userinfo and wildcards are rejected. Task/status/result
+reports show this invocation's grants.
+
+The flag currently approves only schema-defined network-only command-approval
+requests with an exact origin and current turn match. Other requests are logged
+safely and keep their unsupported reply. **The bundled CUA origin elicitation
+is still unsupported:** its schema leaves the approval metadata opaque, and a
+live shape probe could not run under this sandbox. See [browser approval evidence
+and the denied-probe command](docs/browser-approvals.md). Sandbox elevation does
+not resolve this protocol limitation.
+
 `setup --json` distinguishes unreachable authentication probes from confirmed
 logout and reports configuration-only tool availability. Optional
 `setup --sync-tools --dry-run` previews copying allowlisted browser/computer-use
 tool configuration; `setup --sync-tools` applies missing sections with a backup.
-Existing sections are preserved. Credentials and unrelated configuration are not
-copied. See [worker operations](docs/worker-operations.md) for the exact env
+It now builds missing `mcp_servers.cua_repl` and its env table from the installed
+unified-computer-use template and validated ChatGPT app resources, even when the
+ordinary config has no CUA entry. The new entry enables Chrome/browser only,
+rewrites its home/trust paths to the isolated home and loads the official dynamic
+tool instructions. Existing sections, including hand-written CUA, are preserved
+byte-for-byte. Dry-run `toolSync.append` is the exact text that would be appended;
+no config, backup, lock, runtime or home is created by a preview.
+
+For a relocated installation, use
+`setup --sync-tools --dry-run --cua-template /absolute/.mcp.json --chatgpt-resources /absolute/ChatGPT.app/Contents/Resources`.
+These optional selectors require `--sync-tools`. Missing templates or required
+assets fail before any write. Credentials and unrelated configuration are not
+copied. See [worker operations](docs/worker-operations.md) for discovery order, env
 allowlist, optional user-level sandbox/permission settings, unattended workflows,
 recovery commands, retention limits and manual browser timeout checks.
+
+### Delay before the first tool call
+
+The 2026-10-15 browser verification's 121.802-second pre-tool delay was dominated
+by inference transport timeouts: the isolated runtime logs show a WebSocket
+prewarm timeout, then six roughly 15-second connection attempts before HTTP
+fallback. CUA initialized in about 0.22 seconds; the eventual tool envelope was
+0.200 seconds. Three separate stdio initialize/tools-list measurements took
+28.5–31.9 ms without invoking any tools. This is not evidence of a 120-second MCP
+startup wait, tool discovery delay or prolonged model reasoning.
+
+For the measured ChatGPT-login runtime (`0.162.0-alpha.17.2`), the proposed
+user-level isolated config change selects a separate HTTP provider. Put
+`model_provider` at the top level, before any table headers:
+
+```toml
+model_provider = "openai-http"
+
+[model_providers.openai-http]
+name = "OpenAI HTTP"
+base_url = "https://chatgpt.com/backend-api/codex"
+wire_api = "responses"
+requires_openai_auth = true
+supports_websockets = false
+```
+
+Merge the table if it already exists and restart the shared runtime. The installed
+CLI accepted this configuration in an offline check; it rejects overriding the
+reserved `model_providers.openai` table and marks the old
+`features.responses_websockets*` flags removed. This example retains isolated
+ChatGPT authentication and the observed endpoint; API-key/custom-provider users
+must retain their own endpoint/auth settings and set `supports_websockets = false`
+on their selected custom provider. It selects HTTP instead of attempting the
+failing WebSocket transport; on a healthy network,
+HTTP gives up WebSocket continuation benefits. Provider transport behavior is
+documented in the [configuration reference](https://developers.openai.com/codex/config-reference)
+and [app-server transport guidance](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).
+No live config was changed and no authenticated end-to-end speedup was measured;
+the failed connection's underlying network cause remains unknown.
+
+Lowering `mcp_servers.cua_repl.startup_timeout_sec` from 120 to 10 only limits a
+future stalled MCP initialization, with a risk of excluding a slow server. It
+does not remove these WebSocket retries. Disabling unused `node_repl` removes its
+tools; changing deferred tool visibility is not a verified lazy-start solution.
+Sync preserves both the existing node_repl configuration and the template startup
+timeout. See [delay evidence](docs/cua-delay-investigation.md) for timestamps,
+source locations, measurements and limits.
 
 ### Common Configurations
 

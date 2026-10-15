@@ -5,6 +5,7 @@ import { isolatedCodexCommand } from "./lib/codex-home.mjs";
 import { UNREACHABLE_GUIDANCE } from "./lib/runtime-errors.mjs";
 import { getToolAvailability, syncToolConfig } from "./lib/tool-config.mjs";
 import { buildWorkerReport, persistTaskArtifacts, taskArtifactPaths } from "./lib/worker-report.mjs";
+import { normalizeBrowserOrigins } from "./lib/server-requests.mjs";
 import { snapshotWorkspace, compareWorkspaceSnapshots } from "./lib/workspace-changes.mjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -83,10 +84,10 @@ function printUsage() {
   console.log(
     [
       "Usage:",
-      "  node scripts/codex-companion.mjs setup [--sync-tools [--dry-run]] [--enable-review-gate|--disable-review-gate] [--json]",
+      "  node scripts/codex-companion.mjs setup [--sync-tools [--dry-run] [--cua-template <file>] [--chatgpt-resources <dir>]] [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--report] [--background] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--thread <id>|--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--fast|--normal] [prompt]",
+      "  node scripts/codex-companion.mjs task [--report] [--background] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--approve-browser-origin <origin>]... [--thread <id>|--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--fast|--normal] [prompt]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id|--thread <id>] [--wait] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id|--thread <id>] [--report] [--json]",
@@ -226,7 +227,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
 
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
+    valueOptions: ["cwd", "cua-template", "chatgpt-resources"],
     booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "sync-tools", "dry-run"]
   });
 
@@ -238,8 +239,14 @@ async function handleSetup(argv) {
   const workspaceRoot = resolveCommandWorkspace(options);
   const actionsTaken = [];
   if (options["dry-run"] && !options["sync-tools"]) throw new Error("--dry-run requires --sync-tools.");
+  for (const key of ["cua-template", "chatgpt-resources"]) {
+    if (options[key] !== undefined) {
+      if (!options["sync-tools"]) throw new Error(`--${key} requires --sync-tools.`);
+      if (!path.isAbsolute(options[key]) || !options[key].trim()) throw new Error(`--${key} requires an absolute path.`);
+    }
+  }
   if (options["dry-run"] && (options["enable-review-gate"] || options["disable-review-gate"])) throw new Error("Do not combine --dry-run with review-gate changes.");
-  const toolSync = options["sync-tools"] ? syncToolConfig({ dryRun: Boolean(options["dry-run"]) }) : null;
+  const toolSync = options["sync-tools"] ? syncToolConfig({ dryRun: Boolean(options["dry-run"]), cuaTemplate: options["cua-template"], chatgptResources: options["chatgpt-resources"] }) : null;
   // An offline dry run must not start Codex, create its home or refresh auth.
   if (options["dry-run"]) {
     outputResult(options.json ? { toolSync } : `${JSON.stringify(toolSync, null, 2)}\n`, options.json);
@@ -541,6 +548,7 @@ async function executeTaskRun(request) {
     serviceTier: request.serviceTier,
     sandbox,
     explicitSandbox: Boolean(request.sandbox),
+    approvedBrowserOrigins: request.approvedBrowserOrigins ?? [],
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
@@ -562,7 +570,8 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
     {
       title: taskMetadata.title,
       jobId: request.jobId ?? null,
-      write: Boolean(request.write)
+      write: Boolean(request.write),
+      approvedBrowserOrigins: result.approvedBrowserOrigins ?? request.approvedBrowserOrigins ?? []
     }
   );
   const payload = {
@@ -578,6 +587,7 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
     sandbox: result.sandbox ?? request.sandbox ?? "unknown",
     sandboxPolicy: result.sandboxPolicy ?? null,
     approvalPolicy: result.approvalPolicy ?? "unknown",
+    approvedBrowserOrigins: result.approvedBrowserOrigins ?? request.approvedBrowserOrigins ?? [],
     commandExecutions: result.commandExecutions ?? [],
     reasoningSummary: result.reasoningSummary
   };
@@ -625,7 +635,7 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
 }
 
 function renderQueuedTaskLaunch(payload) {
-  return `${payload.title} started in the background as ${payload.jobId}. Check /codex:status ${payload.jobId} for progress.\n`;
+  return `${payload.title} started in the background as ${payload.jobId}. Check /codex:status ${payload.jobId} for progress.\nApproved browser origins (this job): ${(payload.approvedBrowserOrigins ?? []).join(", ") || "none"}\n`;
 }
 
 function getJobKindLabel(kind, jobClass) {
@@ -660,7 +670,7 @@ function createTrackedProgress(job, options = {}) {
   };
 }
 
-function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox) {
+function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins = []) {
   const job = createCompanionJob({
     prefix: "task",
     kind: "task",
@@ -670,10 +680,10 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox) {
     summary: taskMetadata.summary,
     write
   });
-  return { ...job, sandbox: sandbox ?? (write ? "workspace-write" : "read-only"), approvalPolicy: "never", ...taskArtifactPaths(workspaceRoot, job.id) };
+  return { ...job, sandbox: sandbox ?? (write ? "workspace-write" : "read-only"), approvalPolicy: "never", approvedBrowserOrigins, ...taskArtifactPaths(workspaceRoot, job.id) };
 }
 
-function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sandbox, resumeLast, threadId, jobId, report }) {
+function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins = [], resumeLast, threadId, jobId, report }) {
   return {
     cwd,
     model,
@@ -682,6 +692,7 @@ function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sand
     prompt,
     write,
     sandbox,
+    approvedBrowserOrigins,
     resumeLast,
     threadId,
     jobId,
@@ -785,6 +796,7 @@ function enqueueBackgroundTask(cwd, job, request) {
       status: "queued",
       sandbox: job.sandbox,
       approvalPolicy: job.approvalPolicy,
+      approvedBrowserOrigins: job.approvedBrowserOrigins ?? [],
       title: job.title,
       summary: job.summary,
       logFile
@@ -846,6 +858,7 @@ async function handleReview(argv) {
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["model", "effort", "cwd", "prompt-file", "thread", "sandbox"],
+    repeatableOptions: ["approve-browser-origin"],
     booleanOptions: ["json", "report", "write", "resume-last", "resume", "fresh", "background", "fast", "normal"],
     aliasMap: {
       m: "model"
@@ -853,6 +866,7 @@ async function handleTask(argv) {
   });
 
   const cwd = resolveCommandCwd(options);
+  const approvedBrowserOrigins = normalizeBrowserOrigins(options["approve-browser-origin"] ?? []);
   const workspaceRoot = resolveCommandWorkspace(options);
   const model = normalizeRequestedModel(options.model) ?? "gpt-6-astra";
   const effort = normalizeReasoningEffort(options.effort) ?? "xhigh";
@@ -890,7 +904,7 @@ async function handleTask(argv) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast, threadId);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox);
+    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins);
     const request = buildTaskRequest({
       cwd,
       model,
@@ -899,6 +913,7 @@ async function handleTask(argv) {
       prompt,
       write,
       sandbox,
+      approvedBrowserOrigins,
       resumeLast,
       threadId,
       jobId: job.id,
@@ -909,7 +924,7 @@ async function handleTask(argv) {
     return;
   }
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox);
+  const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins);
   await runForegroundCommand(
     job,
     (progress) =>
@@ -921,6 +936,7 @@ async function handleTask(argv) {
         prompt,
         write,
         sandbox,
+        approvedBrowserOrigins,
         resumeLast,
         threadId,
         jobId: job.id,
@@ -1013,7 +1029,8 @@ async function refreshJobSnapshot(cwd, reference) {
     Object.assign(result, {
       preExistingChanges: stored.preExistingChanges ?? [],
       fileTracking: { status: "partial", basis: "Recovered exact-turn file-change events only; no end-of-turn workspace snapshot survived." },
-      sandbox: stored.sandbox ?? "unknown", approvalPolicy: stored.approvalPolicy ?? "unknown"
+      sandbox: stored.sandbox ?? "unknown", approvalPolicy: stored.approvalPolicy ?? "unknown",
+      approvedBrowserOrigins: stored.approvedBrowserOrigins ?? []
     });
     const execution = buildTaskExecution(result, { cwd, jobId: job.id, write: job.write });
     const completedAt = nowIso();
@@ -1066,7 +1083,7 @@ async function handleResult(argv) {
   if (reference) {
     const snapshot = await refreshJobSnapshot(cwd, reference);
     if (snapshot.recovery && snapshot.recovery.status !== "recovered") {
-      const pending = { status: snapshot.recovery.status, jobId: snapshot.job.id, threadId: snapshot.job.threadId, turnId: snapshot.job.turnId, logFile: snapshot.job.logFile, rawOutputFile: snapshot.job.rawOutputFile, resultFile: snapshot.job.resultFile, error: snapshot.job.errorMessage ?? null, recovery: snapshot.recovery };
+      const pending = { status: snapshot.recovery.status, jobId: snapshot.job.id, threadId: snapshot.job.threadId, turnId: snapshot.job.turnId, logFile: snapshot.job.logFile, rawOutputFile: snapshot.job.rawOutputFile, resultFile: snapshot.job.resultFile, approvedBrowserOrigins: snapshot.job.approvedBrowserOrigins ?? [], error: snapshot.job.errorMessage ?? null, recovery: snapshot.recovery };
       outputCommandResult(pending, `${snapshot.recovery.detail}\n`, options.json);
       process.exitCode = 2;
       return;
@@ -1075,7 +1092,7 @@ async function handleResult(argv) {
   const { workspaceRoot, job } = resolveResultJob(cwd, reference);
   const storedJob = readStoredJob(workspaceRoot, job.id);
   if (options.report) {
-    const report = storedJob?.report ?? buildWorkerReport(storedJob?.result ?? { status: 1, error: storedJob?.errorMessage ?? "No stored result." }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile });
+    const report = storedJob?.report ?? buildWorkerReport({ approvedBrowserOrigins: storedJob?.approvedBrowserOrigins ?? [], ...(storedJob?.result ?? { status: 1, error: storedJob?.errorMessage ?? "No stored result." }) }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile });
     outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
     if (report.status !== "completed") process.exitCode = report.status === "needs_input" ? 2 : 1;
     return;

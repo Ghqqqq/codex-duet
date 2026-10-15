@@ -1,9 +1,9 @@
 {
-  "name": "@openai/codex-plugin-cc",
-  "version": "1.0.6-isolated.5",
+  "name": "codex-duet",
+  "version": "1.0.6-isolated.6",
   "private": true,
   "type": "module",
-  "description": "Use Codex from Claude Code to review code or delegate tasks.",
+  "description": "Duet: delegate coding, research and review from Claude Code to parallel Codex workers.",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=18.18.0"

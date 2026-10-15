@@ -21,8 +21,51 @@ permission rules allowing the companion command. Missing prerequisites are
 reported as blockers. The interactive `/codex:setup` install offer and
 `/codex:rescue` continuation chooser are separate user-facing paths; dynamic
 workflows should invoke `codex:codex-worker` directly, not those choosers.
-Codex server requests for approval/input receive an unsupported-request error;
-the runtime does not open an interactive confirmation flow.
+Codex server requests for approval/input are logged safely and receive an
+unsupported-request error unless they meet the explicit origin policy below.
+The runtime does not open an interactive confirmation flow.
+
+## Browser assignments and origin approvals
+
+Every browser assignment opens a fresh session-owned tab, retains its handle,
+and closes it in cleanup on completion or failure. Never claim an existing user
+tab or close an unrelated tab. An error `Tab <id> is already part of browser
+session <session-id>` is a distinct `stale_browser_tab_claim` blocker; report the
+full session ID and any cleanup failure. The report classifier recognizes the
+full UUID form and includes `browserBlocker` with kind, tab ID and session ID.
+It conservatively marks an otherwise successful turn as `needs_input`; it does
+not infer that the old session is dead or release its claim.
+
+With the user's explicit consent per origin, the parent may supply repeated
+`task --approve-browser-origin https://example.com` flags. The worker forwards
+them exactly as supplied. The CLI normalizes scheme/host case and default ports,
+deduplicates, and rejects paths (even `/`), queries, fragments, userinfo,
+wildcards and malformed values before starting the runtime. There is no implicit
+subdomain or redirect grant. Each invocation, including `--thread`, starts with
+only its own flags; the flag is never added automatically after denial.
+
+Normalized `approvedBrowserOrigins` are stored with foreground/background jobs,
+task/status/result JSON and text reports, and interrupted-result recovery.
+Compact reports show up to three origins with an omitted count; job metadata and
+the full result retain every origin. The option does not change sandbox policy
+or `approvalPolicy: never`, and never grants session-wide authority.
+
+Only schema-defined **network-only** `item/commandExecution/requestApproval`
+requests for the current thread/turn can receive `{ "decision": "accept" }`.
+Commands, policy amendments, general permissions, input requests and opaque MCP
+elicitations keep the existing `-32601` reply. In particular, this does **not** yet
+approve the bundled CUA elicitation path: its metadata is opaque in the installed
+schema, and the sandbox blocked a live shape probe. See [schema evidence,
+limitations and the parent probe command](browser-approvals.md).
+
+Each callback reaching a task is logged before its reply, with a safe method,
+request ID (string IDs hashed), kind, normalized origin when available, decision
+and reason (`origin-match`, `no-flag`, `origin-mismatch`, `unsupported-method`,
+`malformed-request`, `not-network-only`, or `turn-mismatch`). Opaque elicitations
+also record fixed allowlisted field names/types, never their payload values.
+Unknown method strings are hashed. Broker callbacks go to the owning task;
+another client cannot answer them. Requests with no active job or a disconnected
+owner fail closed and log to broker stderr, since no job log remains available.
 
 ## Sandbox and permissions
 
@@ -109,14 +152,19 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --sync-tools --js
 
 The preview is offline and makes no writes or Codex calls. It returns toolSync,
 not an authentication report. The source is the normal `config.toml` selected by
-`CODEX_COMPANION_NORMAL_HOME`, then `CODEX_HOME`, then `~/.codex`. The destination
+`CODEX_COMPANION_NORMAL_HOME`, then `CODEX_HOME`, then `~/.codex`. Missing CUA also
+uses the installed unified-computer-use template and ChatGPT app resources (below).
+The destination
 is the isolated home. Home overlap, config symlinks and shared config inodes are
 rejected before writing. The source is read-only; credentials, provider/auth
 configuration, remote marketplace URLs, arbitrary MCP servers and unrelated
 plugins are never imported.
 
 Sync adds missing sections only and leaves existing sections byte-for-byte,
-including an existing node_repl server and its separate env table. It creates a
+including existing node_repl/CUA servers and their separate env tables. Presence
+preserves even disabled/incomplete CUA definitions; sync does not repair them.
+`toolSync.append` contains the exact added text, including separating newlines,
+without echoing the destination's existing contents. It creates a
 timestamped private backup of an existing destination config before the first
 change and writes atomically under an exclusive sync lock. Repeated runs are
 no-ops. A new config has no prior file to back up. If a process is killed during
@@ -161,6 +209,80 @@ selected syntax fails closed. Unrelated configuration text is preserved.
 available/missing/unknown **based on configuration only**. It does not verify
 installed assets, extension connectivity or tool execution. Restart the Claude
 session/shared Codex runtime after a sync to load the configuration.
+
+### Modern CUA registration
+
+Missing `mcp_servers.cua_repl` is rebuilt from the bundled
+`unified-computer-use/.mcp.json`. The app's disabled `command = "node"` placeholder
+is resolved into its actual node, CUA launcher, node_repl, browser service and CLI
+paths; all five files must exist and the three executables must be executable.
+The launcher loads the official dynamic tool instructions. No session state or
+instruction strings are imported. Chrome/browser is the only newly enabled
+surface; IAB, MCP Apps and native computer control need separate verification.
+
+Discovery first checks resources inferred from the source node_repl executable,
+then `/Applications/ChatGPT.app/Contents/Resources` and the user's `Applications`
+directory. It prefers their bundled template, then installed
+`plugins/cache/openai-bundled/unified-computer-use/<version>/.mcp.json` (newest
+numeric version first), then `.tmp/bundled-marketplaces/openai-bundled` under the
+normal home. An injected template's command can locate relocated app resources.
+The resolver validates the known installed layout; it does not execute templates
+or install missing assets. Unsupported layouts fail with instructions.
+
+Optional selectors, both requiring `--sync-tools`:
+
+```text
+--cua-template /absolute/path/to/.mcp.json
+--chatgpt-resources /absolute/ChatGPT.app/Contents/Resources
+```
+
+An explicit template is authoritative. An explicit resource directory disables
+fallback to other apps/caches, including when its template or assets are missing.
+Existing CUA is detected before any template/resource lookup, so re-running sync
+needs no app discovery for that server. Resource failure aborts the whole sync
+before even planned node_repl additions are written.
+
+CUA's setting allowlist is `command`, `args`, `enabled`, `enabled_tools`,
+`omit_tools_from`, `startup_timeout_sec`, `tool_timeout_sec`. Launch paths are
+rebuilt, enabled is true, tools must be exactly `js`, `js_reset`, `turn_ended`, and
+the template must specify `code_mode`, `deferred` visibility exclusions. Positive
+integer timeouts up to 600 seconds are accepted (defaults 120/30 when absent).
+Nested `tools` overrides, env forwarding, headers and arbitrary arguments are
+excluded. CUA's env allowlist is:
+
+```text
+CODEX_HOME
+CUA_REPL_NODE_REPL_PATH
+CUA_REPL_ENABLED_SURFACES
+NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS
+NODE_REPL_NODE_MODULE_DIRS
+NODE_REPL_NODE_PATH
+NODE_REPL_TRUSTED_CODE_PATHS
+NODE_REPL_TRUSTED_SERVICES
+BROWSER_USE_AVAILABLE_BACKENDS
+BROWSER_USE_TINYSKY_ENABLED
+BROWSER_USE_CODEX_APP_BUILD_FLAVOR
+BROWSER_USE_CODEX_APP_VERSION
+CODEX_CLI_PATH
+```
+
+Homes, executable/module paths, services and surfaces are reconstructed, never
+copied verbatim. Trusted paths contain only the isolated home and app modules.
+The native-pipe timeout accepts decimal 1–10000, Tinysky accepts `0`/`1`, flavor
+accepts `prod`/`beta`/`alpha`/`dev`, and version accepts a bounded dotted numeric
+string. Invalid optional env values are discarded. XML Info.plist version and
+the production bundle identifier supply app metadata when available. Other home,
+auth, token, identity, IPC, backend, instruction and session keys are excluded.
+`CUA_SETTING_KEYS`/`CUA_ENV_KEYS` in `cua-config.mjs` enumerate this boundary;
+legacy node_repl handling above is unchanged.
+
+`tools.cuaRepl` and browser/computer availability recognize direct CUA entries,
+still as configuration-only evidence. A closed TOML inline parent that would
+need extending is rejected, since appending a child table would be invalid TOML.
+
+The recorded 120-second pre-tool delay was primarily inference WebSocket retries,
+not MCP startup. See [the measurements and transport workaround](cua-delay-investigation.md)
+and the [README](../README.md#delay-before-the-first-tool-call).
 
 ## Results, progress and recovery
 

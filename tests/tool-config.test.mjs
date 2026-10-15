@@ -4,11 +4,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { makeTempDir, run } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
+import { installCuaFixture } from "./cua-config-fixture.mjs";
 import { getToolAvailability, readToolConfig, syncToolConfig, NODE_REPL_ENV_KEYS } from "../plugins/codex/scripts/lib/tool-config.mjs";
 
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
 function fixture() {
   const base = makeTempDir();
+  const cua = installCuaFixture(base);
   const env = { HOME: base, CODEX_HOME: path.join(base, "normal"), CODEX_COMPANION_HOME: path.join(base, "isolated") };
   fs.mkdirSync(env.CODEX_HOME);
   const source = path.join(env.CODEX_HOME, "config.toml");
@@ -34,7 +36,7 @@ enabled = true
 [plugins."unlisted@openai-bundled"]
 enabled = true
 [mcp_servers.node_repl]
-command = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl"
+command = "${cua.resources}/cua_node/bin/node_repl"
 args = [ # multiline array
 ]
 startup_timeout_sec = 120
@@ -59,7 +61,7 @@ test("tool sync uses exact env/plugin allowlists, preserves code sources and bac
   const before = 'model = "private-model"\n# preserve this comment\n[projects."/repo"]\ntrust_level = "trusted"\n';
   fs.writeFileSync(f.destination, before);
   const preview = syncToolConfig({ env: f.env, dryRun: true });
-  assert.equal(preview.added.length, 6);
+  assert.equal(preview.added.length, 8);
   assert.equal(fs.readFileSync(f.destination, "utf8"), before);
   assert.equal(fs.readdirSync(f.env.CODEX_COMPANION_HOME).length, 1);
   const result = syncToolConfig({ env: f.env });
@@ -80,7 +82,7 @@ test("tool sync uses exact env/plugin allowlists, preserves code sources and bac
   assert.doesNotMatch(JSON.stringify(result), /DO-NOT-COPY/);
   const again = syncToolConfig({ env: f.env });
   assert.equal(again.changed, false);
-  assert.equal(again.present.length, 6);
+  assert.equal(again.present.length, 7);
   assert.equal(again.backup, null);
   assert.equal(fs.readFileSync(f.destination, "utf8"), after);
   assert.equal(getToolAvailability(f.env).browser, "available");
@@ -89,7 +91,7 @@ test("tool sync uses exact env/plugin allowlists, preserves code sources and bac
 test("reference-style preexisting tables including separate env table are a byte-exact no-op", () => {
   const f = fixture();
   fs.mkdirSync(f.env.CODEX_COMPANION_HOME);
-  fs.writeFileSync(f.destination, f.config.replaceAll(f.env.CODEX_HOME, f.env.CODEX_COMPANION_HOME));
+  fs.writeFileSync(f.destination, f.config.replaceAll(f.env.CODEX_HOME, f.env.CODEX_COMPANION_HOME) + '\n[mcp_servers.cua_repl]\ncommand = "existing-cua"\n[mcp_servers.cua_repl.env]\nCUA_REPL_ENABLED_SURFACES = "browser"\n');
   const before = fs.readFileSync(f.destination, "utf8");
   assert.equal(syncToolConfig({ env: f.env }).changed, false);
   assert.equal(fs.readFileSync(f.destination, "utf8"), before);

@@ -16,6 +16,7 @@ const readline = require("node:readline");
 	const STATE_PATH = ${JSON.stringify(statePath)};
 	const BEHAVIOR = ${JSON.stringify(behavior)};
 	const interruptibleTurns = new Map();
+  const serverRequests = new Map();
 
 	function loadState() {
 	  if (!fs.existsSync(STATE_PATH)) {
@@ -308,6 +309,14 @@ rl.on("line", (line) => {
   const state = loadState();
 
   try {
+    if (message.method === undefined && serverRequests.has(message.id)) {
+      const pending = serverRequests.get(message.id);
+      serverRequests.delete(message.id);
+      state.serverRequestReplies = [...(state.serverRequestReplies || []), message];
+      saveState(state);
+      if (!serverRequests.size) emitTurnCompleted(pending.threadId, pending.turnId, { completed: { type: "agentMessage", id: "approval-result", text: "Completed fixture request handling.", phase: "final_answer" } });
+      return;
+    }
     switch (message.method) {
       case "initialize":
         state.capabilities = message.params.capabilities || null;
@@ -492,6 +501,26 @@ rl.on("line", (line) => {
 	        };
 	        saveState(state);
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
+
+        if (BEHAVIOR === "server-requests") {
+          const base = { itemId: "fixture-item", threadId: thread.id, turnId, startedAtMs: 0, command: null, reason: "DO_NOT_LOG_FIXTURE", networkApprovalContext: { protocol: "https", host: "EXAMPLE.COM:443" } };
+          const requests = [
+            { method: "item/commandExecution/requestApproval", params: base },
+            { method: "item/commandExecution/requestApproval", params: { ...base, networkApprovalContext: { protocol: "https", host: "other.example" } } },
+            { method: "item/commandExecution/requestApproval", params: { ...base, command: "DO_NOT_LOG_FIXTURE" } },
+            { method: "item/commandExecution/requestApproval", params: { ...base, networkApprovalContext: { protocol: "https", host: "example.com/private" } } },
+            { method: "mcpServer/elicitation/request", params: { serverName: "cua_repl", threadId: thread.id, turnId, mode: "form", message: "DO_NOT_LOG_FIXTURE", requestedSchema: { type: "object", properties: {} }, _meta: { origin: "https://example.com", tool_name: "access_browser_origin" } } },
+            { method: "item/permissions/requestApproval", params: { threadId: thread.id, turnId, permissions: { network: { enabled: true } }, reason: "DO_NOT_LOG_FIXTURE" } },
+            { method: "item/tool/requestUserInput", params: { threadId: thread.id, turnId, questions: ["DO_NOT_LOG_FIXTURE"] } },
+            { method: "item/fileChange/requestApproval", params: { threadId: thread.id, turnId, reason: "DO_NOT_LOG_FIXTURE" } }
+          ];
+          for (const [index, request] of requests.entries()) {
+            const id = "fixture-request-" + index;
+            serverRequests.set(id, { threadId: thread.id, turnId });
+            send({ id, ...request });
+          }
+          break;
+        }
 
         if (BEHAVIOR === "dirty-workspace-task") {
           for (let i = 0; i < 26; i++) fs.appendFileSync(path.join(thread.cwd, "file-" + i + ".txt"), "worker edit\\n");

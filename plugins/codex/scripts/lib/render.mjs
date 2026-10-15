@@ -130,6 +130,7 @@ function pushJobDetails(lines, job, options = {}) {
   if (job.phase) {
     lines.push(`  Phase: ${job.phase}`);
   }
+  if (job.approvedBrowserOrigins) lines.push(`  Approved browser origins (this job): ${job.approvedBrowserOrigins.join(", ") || "none"}`);
   if (options.showElapsed && job.elapsed) {
     lines.push(`  Elapsed: ${job.elapsed}`);
   }
@@ -316,12 +317,13 @@ export function renderNativeReviewResult(result, meta) {
 
 export function renderTaskResult(parsedResult, meta) {
   const rawOutput = typeof parsedResult?.rawOutput === "string" ? parsedResult.rawOutput : "";
+  const origins = meta?.approvedBrowserOrigins?.length ? `Approved browser origins (this job): ${meta.approvedBrowserOrigins.join(", ")}\n\n` : "";
   if (rawOutput) {
-    return rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    return origins + (rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`);
   }
 
   const message = String(parsedResult?.failureMessage ?? "").trim() || "Codex did not return a final message.";
-  return `${message}\n`;
+  return `${origins}${message}\n`;
 }
 
 export function renderStatusReport(report) {
@@ -405,7 +407,8 @@ export function renderStoredJobResult(job, storedJob) {
     (typeof storedJob?.result?.codex?.stdout === "string" && storedJob.result.codex.stdout) ||
     "";
   if (rawOutput) {
-    const output = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    const origins = storedJob?.result?.approvedBrowserOrigins ?? job.approvedBrowserOrigins ?? [];
+    const output = `${origins.length ? `Approved browser origins (this job): ${origins.join(", ")}\n\n` : ""}${rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`}`;
     if (!threadId) {
       return output;
     }

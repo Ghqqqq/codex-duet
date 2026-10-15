@@ -9,6 +9,7 @@ import { resolveIsolatedCodexHome, resolveCodexRuntimeIdentity } from "./lib/cod
 import { parseArgs } from "./lib/args.mjs";
 import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
 import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
+import { ServerRequestRelay, logServerRequest } from "./lib/server-requests.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
 
@@ -72,8 +73,18 @@ async function main() {
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
   const sockets = new Set();
+  const requests = new ServerRequestRelay({ send, respond: message => appClient.sendMessage(message), log: summary => logServerRequest(summary) });
+  appClient.serverRequestHandler = message => {
+    // All callbacks during a stream reach its job log, including unsupported
+    // requests from child threads. The task policy checks exact thread/turn IDs.
+    const owner = activeStreamSocket ?? activeRequestSocket;
+    // A callback may share the stdout chunk containing turn/start's response.
+    // Let that response reach the task first so it knows the acknowledged turn.
+    queueMicrotask(() => requests.request(message, owner));
+  };
 
   function clearSocketOwnership(socket) {
+    requests.disconnect(socket);
     if (activeRequestSocket === socket) {
       activeRequestSocket = null;
     }
@@ -144,6 +155,11 @@ async function main() {
           });
           continue;
         }
+
+        if (requests.response(message, socket)) continue;
+        // A response with an unknown/expired server request ID is never a new
+        // client request (nor permission to answer another job's callback).
+        if (message.method === undefined) continue;
 
         if (message.id !== undefined && message.method === "initialize") {
           send(socket, {

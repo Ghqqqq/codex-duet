@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
+import { buildCuaConfig } from "./cua-config.mjs";
 
 export const TOOL_PLUGINS = ["browser", "chrome", "computer-use", "unified-computer-use"];
 export const NODE_REPL_ENV_KEYS = [
@@ -14,7 +15,7 @@ export const NODE_REPL_ENV_KEYS = [
 ];
 const selected = keys => keys[0] === "marketplaces" ||
   (keys[0] === "plugins" && TOOL_PLUGINS.some(name => keys[1] === `${name}@openai-bundled`)) ||
-  (keys[0] === "mcp_servers" && keys[1] === "node_repl");
+  (keys[0] === "mcp_servers" && ["node_repl", "cua_repl"].includes(keys[1]));
 
 // A conservative TOML reader for tool settings. Unrelated statements are kept
 // byte-for-byte. Unsupported selected values fail closed, never copied as text.
@@ -128,7 +129,7 @@ function assign(root, keys, value) {
   target[last] = value;
 }
 
-export function readToolConfig(text) {
+export function readToolConfig(text, { inlineTables = [] } = {}) {
   const result = Object.create(null);
   let section = [];
   for (const statement of statements(text)) {
@@ -137,7 +138,7 @@ export function readToolConfig(text) {
     if (line.startsWith("[")) {
       const header = /^\[([^\n]+)\]\s*(?:#.*)?$/.exec(line);
       if (!header || line.startsWith("[[")) {
-        if (/marketplaces|plugins|node_repl/.test(line)) throw new Error("Unsupported tool table header.");
+        if (/marketplaces|plugins|node_repl|cua_repl/.test(line)) throw new Error("Unsupported tool table header.");
         section = ["ignored-array-table"];
       } else {
         section = keyPath(header[1]);
@@ -152,7 +153,11 @@ export function readToolConfig(text) {
     const match = /^((?:"(?:\\.|[^"\\])*"|'[^']*'|[^=])+)=([\s\S]*)$/.exec(line);
     if (!match) { if (selected(section)) throw new Error("Unsupported tool assignment."); continue; }
     const keys = [...section, ...keyPath(match[1].trim())];
-    if (selected(keys) || (keys.length === 1 && ["plugins", "mcp_servers"].includes(keys[0]))) assign(result, keys, valueOf(match[2]));
+    if (selected(keys) || (keys.length === 1 && ["plugins", "mcp_servers"].includes(keys[0]))) {
+      const value = valueOf(match[2]);
+      if (value && typeof value === "object" && !Array.isArray(value)) inlineTables.push(keys);
+      assign(result, keys, value);
+    }
   }
   return result;
 }
@@ -174,7 +179,7 @@ function toml(value) {
   return JSON.stringify(value);
 }
 
-export function syncToolConfig({ env = process.env, dryRun = false } = {}) {
+export function syncToolConfig({ env = process.env, dryRun = false, cuaTemplate, chatgptResources } = {}) {
   const paths = configPaths(env);
   // Refuse aliases of config files as well as overlapping home directories.
   for (const file of [paths.source, paths.destination]) {
@@ -186,7 +191,8 @@ export function syncToolConfig({ env = process.env, dryRun = false } = {}) {
   }
   const sourceText = readOptional(paths.source);
   const before = readOptional(paths.destination);
-  const source = readToolConfig(sourceText), destination = readToolConfig(before);
+  const inlineTables = [];
+  const source = readToolConfig(sourceText), destination = readToolConfig(before, { inlineTables });
   const added = [], present = [], skipped = [], sections = [];
   // Only path-shaped data is portable. No arbitrary env, shell code, headers,
   // credentials, token arguments, remote marketplace URLs or provider config.
@@ -197,6 +203,9 @@ export function syncToolConfig({ env = process.env, dryRun = false } = {}) {
     for (const key of keys) existing = existing?.[key];
     if (existing !== undefined) { present.push(label); return; }
     if (!Object.keys(values).length) return;
+    if (inlineTables.some(parent => parent.length < keys.length && parent.every((key, i) => keys[i] === key))) {
+      throw new Error("Cannot extend an inline tool table; convert it to ordinary TOML tables before syncing. No configuration was written.");
+    }
     added.push(label);
     sections.push(`[${keys.map(k => JSON.stringify(k)).join(".")}]\n${Object.entries(values).map(([k, v]) => `${JSON.stringify(k)} = ${toml(v)}`).join("\n")}\n`);
   }
@@ -242,7 +251,20 @@ export function syncToolConfig({ env = process.env, dryRun = false } = {}) {
     if (!safe.command || (repl.args !== undefined && !safe.args)) skipped.push("mcp_servers.node_repl: incomplete safe launch configuration; not copied");
     else add(["mcp_servers", "node_repl"], safe);
   }
-  const report = { dryRun, source: paths.source, destination: paths.destination, sourceFound: Boolean(sourceText), added, present, skipped, backup: null, changed: added.length > 0 };
+  let cuaSource = null;
+  // Presence is checked before discovery: an existing hand-written (even
+  // disabled/partial) server and its env remain byte-exact, without an app lookup.
+  if (destination.mcp_servers?.cua_repl !== undefined) present.push("mcp_servers.cua_repl");
+  else {
+    const cua = buildCuaConfig({ ...paths, env, source, cuaTemplate, chatgptResources });
+    add(["mcp_servers", "cua_repl"], cua.settings);
+    add(["mcp_servers", "cua_repl", "env"], cua.env);
+    cuaSource = { template: cua.template, resources: cua.resources };
+  }
+  // Exact append-only preview; never echo existing destination text, which may
+  // contain credentials. Dry runs do not create a home, lock, backup or runtime.
+  const append = sections.length ? `${before.endsWith("\n") ? "" : "\n"}\n${sections.join("\n")}` : "";
+  const report = { dryRun, source: paths.source, destination: paths.destination, sourceFound: Boolean(sourceText), cuaSource, added, present, skipped, append, backup: null, changed: added.length > 0 };
   if (dryRun || !report.changed) return report;
   fs.mkdirSync(paths.isolated, { recursive: true, mode: 0o700 });
   // Serialize writers and refuse a config modified since the read.
@@ -255,7 +277,8 @@ export function syncToolConfig({ env = process.env, dryRun = false } = {}) {
       report.backup = `${paths.destination}.backup-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}`;
       fs.writeFileSync(report.backup, before, { flag: "wx", mode: 0o600 });
     }
-    fs.writeFileSync(temporary, `${before}${before.endsWith("\n") ? "" : "\n"}\n${sections.join("\n")}`, { flag: "wx", mode: 0o600 });
+    fs.writeFileSync(temporary, `${before}${append}`, { flag: "wx", mode: 0o600 });
+    if (readOptional(paths.destination) !== before) throw new Error("Config changed during tool sync; retry.");
     fs.renameSync(temporary, paths.destination);
   } finally {
     fs.closeSync(fd);
@@ -272,14 +295,19 @@ export function getToolAvailability(env = process.env) {
     const enabled = name => config.plugins?.[`${name}@openai-bundled`]?.enabled === true;
     const repl = config.mcp_servers?.node_repl;
     const nodeRepl = Boolean(repl?.command) && repl.enabled !== false;
+    const cua = config.mcp_servers?.cua_repl;
+    const cuaRepl = Boolean(cua?.command) && cua.enabled !== false;
+    const cuaBrowser = cuaRepl && cua.env?.CUA_REPL_ENABLED_SURFACES?.split(",").includes("browser");
+    const cuaComputer = cuaRepl && cua.env?.CUA_REPL_ENABLED_SURFACES?.split(",").includes("computer");
     const marketplace = Boolean(config.marketplaces?.["openai-bundled"]);
     return {
-      browser: marketplace && nodeRepl && (enabled("browser") || enabled("chrome")) ? "available" : "missing",
-      computerUse: marketplace && nodeRepl && (enabled("computer-use") || enabled("unified-computer-use")) ? "available" : "missing",
+      browser: cuaBrowser || marketplace && nodeRepl && (enabled("browser") || enabled("chrome")) ? "available" : "missing",
+      computerUse: cuaComputer || marketplace && nodeRepl && (enabled("computer-use") || enabled("unified-computer-use")) ? "available" : "missing",
       nodeRepl: nodeRepl ? "available" : "missing",
+      cuaRepl: cuaRepl ? "available" : "missing",
       basis: "configuration-only; assets, extension connection and live tools are not probed"
     };
   } catch {
-    return { browser: "unknown", computerUse: "unknown", nodeRepl: "unknown", basis: "config could not be read safely" };
+    return { browser: "unknown", computerUse: "unknown", nodeRepl: "unknown", cuaRepl: "unknown", basis: "config could not be read safely" };
   }
 }

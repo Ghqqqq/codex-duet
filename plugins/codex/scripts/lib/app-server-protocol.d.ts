@@ -56,6 +56,8 @@ export interface CodexAppServerClientOptions {
   brokerEndpoint?: string;
   disableBroker?: boolean;
   reuseExistingBroker?: boolean;
+  approvedBrowserOrigins?: string[];
+  onServerRequestLog?: (summary: { method: string; requestId: string | number; kind: string; decision: string; reason: string; origin?: string; fields?: string[] }) => void;
 }
 
 export interface AppServerMethodMap {

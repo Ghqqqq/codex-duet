@@ -185,7 +185,7 @@ export async function runTrackedJob(job, runner, options = {}) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
     if (job.rawOutputFile && !fs.existsSync(job.rawOutputFile)) fs.writeFileSync(job.rawOutputFile, `${errorMessage}\n`, { mode: 0o600 });
-    if (job.resultFile && !fs.existsSync(job.resultFile)) fs.writeFileSync(job.resultFile, `${JSON.stringify({ status: 1, error: errorMessage, threadId: existing.threadId ?? null, turnId: existing.turnId ?? null })}\n`, { mode: 0o600 });
+    if (job.resultFile && !fs.existsSync(job.resultFile)) fs.writeFileSync(job.resultFile, `${JSON.stringify({ status: 1, error: errorMessage, threadId: existing.threadId ?? null, turnId: existing.turnId ?? null, approvedBrowserOrigins: existing.approvedBrowserOrigins ?? [] })}\n`, { mode: 0o600 });
     const completedAt = nowIso();
     writeJobFile(job.workspaceRoot, job.id, {
       ...existing,

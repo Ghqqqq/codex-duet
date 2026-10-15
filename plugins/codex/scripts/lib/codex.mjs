@@ -603,6 +603,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     const response = await startRequest();
     options.onResponse?.(response, state);
     state.turnId = response.turn?.id ?? null;
+    client.setServerRequestContext(threadId, state.turnId);
     if (state.turnId) {
       state.threadTurnIds.set(state.threadId, state.turnId);
       // The response can precede notifications (or they may be dropped).
@@ -632,13 +633,14 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     clearInterval(heartbeat);
     clearCompletionTimer(state);
     client.setNotificationHandler(previousHandler ?? null);
+    client.setServerRequestContext(null, null);
   }
 }
 
-async function withAppServer(cwd, fn) {
+async function withAppServer(cwd, fn, options = {}) {
   let client = null;
   try {
-    client = await CodexAppServerClient.connect(cwd);
+    client = await CodexAppServerClient.connect(cwd, options);
     const result = await fn(client);
     await client.close();
     return result;
@@ -657,7 +659,7 @@ async function withAppServer(cwd, fn) {
       throw error;
     }
 
-    const directClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
+    const directClient = await CodexAppServerClient.connect(cwd, { ...options, disableBroker: true });
     try {
       return await fn(directClient);
     } finally {
@@ -1085,7 +1087,7 @@ export async function runAppServerReview(cwd, options = {}) {
       error: turnState.error,
       stderr: cleanCodexStderr(client.stderr)
     };
-  });
+  }, { onServerRequestLog: summary => emitProgress(options.onProgress, `Server request ${JSON.stringify(summary)}`, null) });
 }
 
 export async function importExternalAgentSession(cwd, options = {}) {
@@ -1196,6 +1198,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       sandbox,
       sandboxPolicy: threadPolicy,
       approvalPolicy: "never",
+      approvedBrowserOrigins: options.approvedBrowserOrigins ?? [],
       threadId,
       turnId: turnState.turnId,
       finalMessage: turnState.lastAgentMessage,
@@ -1207,6 +1210,9 @@ export async function runAppServerTurn(cwd, options = {}) {
       touchedFiles: collectTouchedFiles(turnState.fileChanges),
       commandExecutions: turnState.commandExecutions
     };
+  }, {
+    approvedBrowserOrigins: options.approvedBrowserOrigins ?? [],
+    onServerRequestLog: summary => emitProgress(options.onProgress, `Server request ${JSON.stringify(summary)}`, null)
   });
 }
 
