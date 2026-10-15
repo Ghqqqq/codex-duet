@@ -272,6 +272,13 @@ function taskPayload(prompt, resume) {
 }
 
 const args = process.argv.slice(2);
+if (args[0] === "features" && args[1] === "list" && BEHAVIOR.startsWith("transport-")) {
+  const state = loadState();
+  state.configChecks = [...(state.configChecks || []), { args, home: process.env.CODEX_HOME,
+    inheritedApiKey: Boolean(process.env.OPENAI_API_KEY), inheritedBroker: Boolean(process.env.CODEX_COMPANION_APP_SERVER_ENDPOINT) }];
+  saveState(state);
+  process.exit(BEHAVIOR === "transport-unsupported" ? 1 : 0);
+}
 if (args[0] === "--version") {
   console.log("codex-cli test");
   process.exit(0);
@@ -356,7 +363,7 @@ rl.on("line", (line) => {
         state.lastThreadStart = message.params;
         thread.sandbox = threadSandbox(message.params.sandbox);
         saveState(state);
-        send({ id: message.id, result: { thread: buildThread(thread), model: message.params.model || "gpt-5.4", modelProvider: "openai", serviceTier: null, cwd: thread.cwd, approvalPolicy: "never", sandbox: thread.sandbox, reasoningEffort: null } });
+        send({ id: message.id, result: { thread: buildThread(thread), model: message.params.model || "gpt-5.4", modelProvider: BEHAVIOR.startsWith("transport-") && BEHAVIOR !== "transport-ignored" ? message.params.modelProvider : "openai", serviceTier: null, cwd: thread.cwd, approvalPolicy: "never", sandbox: thread.sandbox, reasoningEffort: null } });
         send({ method: "thread/started", params: { thread: { id: thread.id } } });
         break;
       }
@@ -501,6 +508,23 @@ rl.on("line", (line) => {
 	        };
 	        saveState(state);
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
+
+        if (BEHAVIOR.startsWith("transport-")) {
+          const ws = state.lastThreadStart.config["model_providers.duet-transport-probe"].supports_websockets;
+          state.transportTurns = [...(state.transportTurns || []), { ws, params: message.params, thread: state.lastThreadStart }];
+          saveState(state);
+          if (ws) {
+            console.error("2026-10-15T09:59:51.242484Z INFO codex_api::endpoint::responses_websocket: connecting to websocket: wss://example.invalid/private?token=DO_NOT_LOG");
+            console.error("2026-10-15T10:00:06.104972Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: timeout, url: DO_NOT_LOG");
+            console.error("2026-10-15T10:01:47.274665Z WARN codex_core::client: falling back to HTTP");
+          }
+          if (BEHAVIOR === "transport-hang") { setInterval(() => {}, 1000); break; }
+          if (BEHAVIOR === "transport-mutate-config" && !ws) fs.appendFileSync(path.join(process.env.CODEX_HOME, "config.toml"), "# fixture mutation\\n");
+          console.error('2026-10-15T10:01:53.288Z INFO codex_otel::events::session_telemetry: event.name="codex.api_request" http.response.status_code=200 endpoint="/responses"');
+          const tool = { type: "mcpToolCall", id: "cua-probe", server: "cua_repl", tool: BEHAVIOR === "transport-wrong-tool" ? "js_reset" : "js", status: "inProgress" };
+          emitTurnCompleted(thread.id, turnId, BEHAVIOR === "transport-no-tool" ? [] : [{ started: tool, completed: { ...tool, status: "completed", result: { content: [{ type: "text", text: "2" }] }, error: BEHAVIOR === "transport-tool-error" ? { message: "fixture error" } : null } }]);
+          break;
+        }
 
         if (BEHAVIOR === "server-requests") {
           const base = { itemId: "fixture-item", threadId: thread.id, turnId, startedAtMs: 0, command: null, reason: "DO_NOT_LOG_FIXTURE", networkApprovalContext: { protocol: "https", host: "EXAMPLE.COM:443" } };
