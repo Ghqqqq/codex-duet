@@ -25,7 +25,7 @@ the native worker runtime, isolation and lifecycle work are Duet additions.
   `task --follow` call that returns only when Codex finishes, asks a question, or
   the 570 s wait budget ends (then one `wait` call per further 9.5 minutes). No
   10–30 s polling loop, no transcription of the feed by an Opus-class model.
-- **Live activity for humans.** `wait` in feed mode (no `--json`) streams redacted
+- **Live activity for humans.** `wait` in feed mode (no `--json`) streams
   assistant snippets, command lines with exits/durations, file changes, tool
   names/status and plan titles; `/codex:status` shows the current item and
   phase. Tool arguments, command output and page content are excluded. JSON mode

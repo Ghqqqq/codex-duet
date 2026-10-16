@@ -1,20 +1,11 @@
 import { createHash } from "node:crypto";
 
-// Redact before truncating: cutting a credential first can hide its signature.
-// This is a conservative display filter, not a semantic secret detector.
+// Display cleanup only: strip ANSI escapes and control/bidi characters so
+// snippets stay single-line and terminal-safe. Credential redaction was removed
+// deliberately (it blanked ordinary `NAME=value` text such as `ANSWER=Yes`);
+// the parent and the worker report see Codex's text as written.
 export function redactActivity(value) {
   return String(value ?? "")
-    .replace(/\b(authorization\s*[:=]\s*)("(?:\\.|[^"\\])*"|'[^']*'|[^\r\n"'`,;]+)/gi, "$1[REDACTED]")
-    .replace(/\bBearer\s+[^\s"'`,;]+/gi, "Bearer [REDACTED]")
-    .replace(/(\b[a-z][a-z\d+.-]*:\/\/)[^\s/@]+@/gi, "$1[REDACTED]@")
-    .replace(/([?&](?:[^\s=&#]*(?:token|key|password|secret|auth|signature|credential)[^\s=&#]*|sig)=)[^\s&#"']*/gi, "$1[REDACTED]")
-    // Env-style assignments are uppercase by convention; matching them case-insensitively
-    // would also blank harmless flags such as --effort=xhigh.
-    .replace(/(\b[A-Z_][A-Z\d_]*\s*=\s*)("(?:\\.|[^"\\])*"|'[^']*'|[^\s;,|&)]*)/g, "$1[REDACTED]")
-    .replace(/(\b[\w.-]*(?:key|token|password|secret|credential)[\w.-]*\s*[:=]\s*)("(?:\\.|[^"\\])*"|'[^']*'|[^\s;,|&)]*)/gi, "$1[REDACTED]")
-    .replace(/\b(?:sk-[\w-]+|gh[pousr]_[\w]+|github_pat_[\w]+|xox[a-z]-[\w-]+|eyJ[A-Za-z\d_-]+(?:\.[A-Za-z\d_-]+){0,2})/g, "[REDACTED]")
-    .replace(/\b[a-f\d]{32,}\b/gi, "[REDACTED]")
-    .replace(/(?<![\w/+\-])[A-Za-z\d_+/\-]{48,}={0,2}(?![\w/+\-])/g, "[REDACTED]")
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, " ");
 }

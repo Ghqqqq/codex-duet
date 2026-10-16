@@ -512,11 +512,11 @@ rl.on("line", (line) => {
         if (BEHAVIOR === "w9-feed") {
           send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
           const event = (method, item) => send({ method, params: { threadId: thread.id, turnId, item } });
-          const command = { id: "feed-command", type: "commandExecution", command: "npm test TOKEN=PRIVATE_FIXTURE_TOKEN https://user:PRIVATE_FIXTURE_PASSWORD@example.com?token=PRIVATE_FIXTURE_QUERY", status: "inProgress" };
+          const command = { id: "feed-command", type: "commandExecution", command: "npm test TOKEN=SHOWN_FIXTURE_TOKEN https://user:SHOWN_FIXTURE_PASSWORD@example.com?token=SHOWN_FIXTURE_QUERY", status: "inProgress" };
           setTimeout(() => event("item/started", command), 250);
           setTimeout(() => {
             event("item/completed", { ...command, status: "completed", exitCode: 0, durationMs: 425, aggregatedOutput: "PRIVATE_FIXTURE_OUTPUT" });
-            event("item/completed", { id: "feed-message", type: "agentMessage", text: "Inspecting the fixture. PASSWORD=PRIVATE_FIXTURE_MESSAGE " + "x".repeat(350), phase: "commentary" });
+            event("item/completed", { id: "feed-message", type: "agentMessage", text: "Inspecting the fixture. PASSWORD=SHOWN_FIXTURE_MESSAGE " + "x".repeat(350), phase: "commentary" });
             event("item/completed", { id: "feed-file", type: "fileChange", changes: [{ path: "src/example.mjs", kind: { type: "update" }, diff: "PRIVATE_FIXTURE_DIFF" }] });
           }, 700);
           setTimeout(() => {
@@ -536,8 +536,8 @@ rl.on("line", (line) => {
           send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
           send({ method: "mcpServer/startupStatus/updated", params: { name: "fixture", status: "ready", threadId: thread.id } });
           process.stderr.write("WebSocket timeout; retrying; falling back to HTTP\\n");
-          send({ method: "item/started", params: { threadId: thread.id, turnId, item: { id: "fixture-command", type: "commandExecution", command: "npm test TOKEN=PRIVATE_FIXTURE_ARGUMENT", status: "inProgress" } } });
-          send({ method: "item/completed", params: { threadId: thread.id, turnId, item: { id: "fixture-command", type: "commandExecution", command: "npm test TOKEN=PRIVATE_FIXTURE_ARGUMENT", exitCode: 0, status: "completed", aggregatedOutput: "PRIVATE_FIXTURE_OUTPUT" } } });
+          send({ method: "item/started", params: { threadId: thread.id, turnId, item: { id: "fixture-command", type: "commandExecution", command: "npm test TOKEN=SHOWN_FIXTURE_ARGUMENT", status: "inProgress" } } });
+          send({ method: "item/completed", params: { threadId: thread.id, turnId, item: { id: "fixture-command", type: "commandExecution", command: "npm test TOKEN=SHOWN_FIXTURE_ARGUMENT", exitCode: 0, status: "completed", aggregatedOutput: "PRIVATE_FIXTURE_OUTPUT" } } });
           send({ method: "turn/plan/updated", params: { threadId: thread.id, turnId, plan: [{ step: "Inspect fixture", status: "completed" }] } });
           if (BEHAVIOR === "w5-parent") {
             const id = "fixture-parent-request";

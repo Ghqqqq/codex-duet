@@ -187,22 +187,11 @@ test("broker prewarm is non-blocking and idle exit reaps the server group", asyn
 });
 
 
-test("activity redacts credentials before truncation and selects no tool payloads", () => {
-  const secrets = [
-    ["KEY=assignment-secret", "assignment-secret"], ["TOKEN='two word secret'", "two word secret"],
-    ['PASSWORD="another secret"', "another secret"], ["client_secret:secret-value", "secret-value"],
-    ["Authorization: Bearer header-secret", "header-secret"], ["Bearer bearer-secret", "bearer-secret"],
-    ["Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"], ["Authorization: Token unusual-secret", "unusual-secret"],
-    ['PASSWORD="multiline secret\nsecond-line"', "multiline secret"],
-    ["https://user:url-secret@example.com/path", "url-secret"],
-    ["https://example.com?access_token=query-secret&api_key=second-secret", "query-secret"],
-    ["https://example.com?X-Amz-Signature=signed-secret", "signed-secret"],
-    ["abc " + "a1".repeat(32), "a1".repeat(32)], ["abc " + "AbCd12+/".repeat(10), "AbCd12+/".repeat(10)],
-    ["sk-fixture123", "sk-fixture123"], ["ghp_fixture123", "ghp_fixture123"], ["xoxb-fixture-123", "xoxb-fixture-123"],
-    ["eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjoxfQ.signature", "eyJhbGciOiJIUzI1NiJ9"]
-  ];
-  for (const [value, secret] of secrets) { const redacted = redactActivity(value); assert.ok(!redacted.includes(secret), value); assert.match(redacted, /REDACTED/); }
-  assert.equal(redactActivity("npm test src/example.mjs"), "npm test src/example.mjs");
+test("activity keeps text as written (no credential heuristics), strips terminal noise and selects no tool payloads", () => {
+  for (const value of ["ANSWER=Yes", "KEY=assignment-value", "Authorization: Bearer header-value", "https://user:pw@example.com/path", "sk-fixture123", "npm test src/example.mjs"]) {
+    assert.equal(redactActivity(value), value);
+  }
+  assert.equal(redactActivity("\x1b[31mred\x1b[0m\u202eflip\x07"), "red flip ", "ANSI escapes are removed; control/bidi characters become spaces");
   const starts = new Map();
   const tool = { type: "mcpToolCall", server: "fixture", tool: "inspect", status: "completed", arguments: "PRIVATE_ARGS", result: "PRIVATE_RESULT", output: "PRIVATE_OUTPUT" };
   assert.doesNotMatch(JSON.stringify(itemActivity(tool, "completed", starts, "t")), /PRIVATE/);
@@ -212,7 +201,7 @@ test("activity redacts credentials before truncation and selects no tool payload
   assert.equal(command.command.length, 160);
   assert.equal(itemActivity({ type: "commandExecution" }, "completed", starts, "c", 225)[0].durationMs, 125);
   assert.equal(planActivity([{ step: "word ".repeat(100) }])[0].steps[0].length, 80);
-  assert.equal(itemActivity({ type: "commandExecution", command: 'PASSWORD="multiline secret\nsecond-line" node script\nPRIVATE_BODY' }, "completed", starts, "c")[0].command, 'PASSWORD=[REDACTED] node script');
+  assert.equal(itemActivity({ type: "commandExecution", command: 'FOO="first\nsecond-line" node script\nPRIVATE_BODY' }, "completed", starts, "c")[0].command, 'FOO="first', "only the first command line is shown");
 });
 
 test("feed streams before return, returns early and persists independent owner cursors", async () => {
@@ -328,11 +317,11 @@ test("legacy session-ID owners remain readable and session-scoped without implic
   assert.equal(json(f.call("result", launch.jobId, "--json", "--report"), 1).interruptionReason, "session_end");
 });
 
-test("orphan threshold and questionMessage are deterministic, single-line and redacted", () => {
+test("orphan threshold and questionMessage are deterministic and single-line", () => {
   const job = { status: "running", leaseSec: 180, leaseExpiresAt: 181000, leaseRenewedAt: 1000 };
   assert.equal(leaseSnapshot(job, 65999).orphaned, false);
   assert.deepEqual(leaseSnapshot(job, 66000), { orphaned: true, leaseRemainingSec: 115, leaseRenewedAt: 1000 });
-  assert.equal(questionMessage({ id: "q-1", text: "Which\nchoice? TOKEN=secret", options: ["Small\r\nchange", "Large"] }), 'Question q-1: Which choice? TOKEN=[REDACTED] | Options: "Small change"; "Large"');
+  assert.equal(questionMessage({ id: "q-1", text: "Which\nchoice? TOKEN=value", options: ["Small\r\nchange", "Large"] }), 'Question q-1: Which choice? TOKEN=value | Options: "Small change"; "Large"');
   assert.equal(questionMessage({ id: "q-2", text: "Choose?", options: [] }), "Question q-2: Choose? | Options: (none)");
 });
 

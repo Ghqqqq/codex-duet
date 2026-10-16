@@ -25,13 +25,14 @@ not token-by-token: assistant snippets ≤300 characters, command first lines
 and plan step titles ≤80. Durations use protocol milliseconds or observed
 start/completion time; missing duration/exit is explicit, never invented.
 Tool arguments, command outputs, diffs, reasoning and page-content payloads are
-never selected. Text is redacted **before** truncation: assignments, authorization
-headers, bearer tokens, URL userinfo/query credentials, long hex/base64 blobs and
-known key/JWT prefixes. Redaction is conservative and heuristic, not semantic DLP;
-a model can still put sensitive prose in a message, so the prompt forbids copying
-payloads into progress. Raw result artifacts keep their existing private behavior.
+never selected. Text is shown as Codex wrote it; only ANSI escapes and
+control/bidi characters are stripped so snippets stay single-line and
+terminal-safe. Credential redaction heuristics were removed in 1.0.6-isolated.12
+because they blanked ordinary `NAME=value` text (for example `ANSWER=Yes`); the
+prompt still forbids copying payloads into progress. Raw result artifacts keep
+their existing private behavior.
 
-Redacted events and monotonically increasing sequence numbers live in job state;
+Events and monotonically increasing sequence numbers live in job state;
 `activityCursors` uses a hashed reader/owner key. Each explicit owner has an
 independent cursor, and ownerless observers share a separate cursor. Reading as
 an observer cannot consume the worker's feed or renew its lease. Feed cursors
@@ -75,7 +76,7 @@ Exact successful dynamic-tool result (original request ID retained):
 
 `needs_answer` includes a one-line `questionMessage`:
 `Question <id>: <text> | Options: "First"; "Second"` (or `(none)`). Whitespace is
-normalized and display secrets are redacted; the native worker must send this
+normalized to one line; the native worker must send this
 field verbatim to `main` once per question. SendMessage is allowed ONLY for this
 purpose: no progress, completion claims or placeholders. The final result is
 only the agent's return value. Worker messages that are not verbatim questions
@@ -279,7 +280,7 @@ edit files, use a browser, access secrets, or commit. After Yes, report completi
 ```
 
 Open the worker in the Agent view. Its Bash description must match the previous
-headline; actual redacted command lines, status/duration and assistant snippets
+headline; actual command lines, status/duration and assistant snippets
 must appear while each wait is still running, before the final JSON. Command
 output/tool arguments must be absent. The worker sends exactly the companion's
 questionMessage once, with no progress/completion SendMessage. Compare the text

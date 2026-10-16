@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.6-isolated.12
+
+- Removed credential redaction heuristics from activity snippets, question messages and worker reports: they blanked ordinary `NAME=value` text such as `ANSWER=Yes`. Only ANSI escapes and control/bidi characters are still stripped so lines stay single-line and terminal-safe.
+
 ## 1.0.6-isolated.11
 
 - Stop spending Claude quota on polling: the `codex-worker` agent runs on Haiku and makes ONE blocking `task --follow --json --report` call (Bash `timeout: 600000`) that returns only on completion, a parent question, or the 570 s wait budget; further waits are one call per 9.5 minutes. `wait` defaults to `--timeout-sec 570` (max 3600), returns early on activity only with an explicit `--min-interval-sec`, and reports at most the 12 newest activity events plus `activityCount`/`activityOmitted`.

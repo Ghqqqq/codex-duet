@@ -94,9 +94,8 @@ completion return immediately. The worker never paraphrases or re-prints the fee
 The feed selects assistant snippets (300 chars), command first lines (160 chars)
 with exits/durations, file path/kind, MCP/dynamic tool names/status/durations and
 plan titles (80 chars each). It never copies tool arguments, command outputs,
-diffs or page payloads. Redaction precedes truncation and covers assignments,
-authorization/bearer headers, URL userinfo/query credentials, key/JWT prefixes and
-long base64/hex blobs. It is heuristic; do not put secrets/page prose in progress
+diffs or page payloads. Text is shown as written (ANSI escapes and control
+characters stripped); there is no credential redaction, so do not put secrets/page prose in progress
 messages. Events are retained in job state, with a separate cursor for each
 explicit owner and one shared ownerless observer cursor. Use one wait per owner
 at a time. A crash between line delivery and cursor persistence can replay a line.
