@@ -42,9 +42,10 @@ test('exact worker threads survive interleaved tasks and background follow-ups',
   let completed;
   for (let i = 0; i < 100; i++) {
     try {
-      const files = fs.readdirSync(f.env.CLAUDE_PLUGIN_DATA, { recursive: true });
+      const stateRoot = path.join(f.env.CODEX_COMPANION_HOME, 'duet', 'state');
+      const files = fs.readdirSync(stateRoot, { recursive: true });
       const file = files.find(name => path.basename(name) === `${queued.jobId}.json`);
-      if (file) completed = JSON.parse(fs.readFileSync(path.join(f.env.CLAUDE_PLUGIN_DATA, file)));
+      if (file) completed = JSON.parse(fs.readFileSync(path.join(stateRoot, file)));
     } catch {}
     if (completed?.status === 'completed') break;
     await new Promise(resolve => setTimeout(resolve, 50));

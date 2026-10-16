@@ -72,7 +72,7 @@ test("question detection keeps delivered findings with an optional follow-up com
   assert.equal(classifyWorkerOutcome("I will implement the changes once tests have passed."), "needs_input");
   assert.equal(classifyWorkerOutcome("", 1), "failed");
   const report = buildWorkerReport({ status: 0, rawOutput: "Fixed issue", touchedFiles: Array(40).fill("a.js"), commandExecutions: [{ command: "node --test", exitCode: 1, status: "failed" }] });
-  assert.equal(report.touchedFilesOmitted, 30);
+  assert.equal(report.touchedFilesOmitted, 31);
   assert.match(report.verification[0], /exit 1, failed/);
 });
 
@@ -85,7 +85,7 @@ test("fully populated report stays within 60 lines including dirty paths and san
     fileTracking: { status: "complete", basis: "fixture snapshots" }
   });
   assert.equal(report.status, "needs_input");
-  assert.equal(report.preExistingChangesOmitted, 26);
+  assert.equal(report.preExistingChangesOmitted, 27);
   assert.ok(`${JSON.stringify(report, null, 2)}\n`.split("\n").length <= 60);
 });
 

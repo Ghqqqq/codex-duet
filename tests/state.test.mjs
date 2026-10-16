@@ -5,39 +5,24 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTempDir } from "./helpers.mjs";
-import { resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, saveState } from "../plugins/codex/scripts/lib/state.mjs";
+import { ensureStateDir, resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, resolveStateRoot, saveState } from "../plugins/codex/scripts/lib/state.mjs";
 
-test("resolveStateDir uses a temp-backed per-workspace directory", () => {
+test("resolveStateDir is a per-workspace directory under the isolated home, independent of CLAUDE_PLUGIN_DATA and the temp dir", () => {
   const workspace = makeTempDir();
   const stateDir = resolveStateDir(workspace);
+  const stateRoot = resolveStateRoot();
 
-  assert.equal(stateDir.startsWith(os.tmpdir()), true);
+  assert.equal(stateRoot, path.join(path.resolve(process.env.CODEX_COMPANION_HOME), "duet", "state"));
+  assert.equal(path.dirname(stateDir), stateRoot);
   assert.match(path.basename(stateDir), /.+-[a-f0-9]{16}$/);
-  assert.match(stateDir, new RegExp(`^${os.tmpdir().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
-});
-
-test("resolveStateDir uses CLAUDE_PLUGIN_DATA when it is provided", () => {
-  const workspace = makeTempDir();
-  const pluginDataDir = makeTempDir();
-  const previousPluginDataDir = process.env.CLAUDE_PLUGIN_DATA;
-  process.env.CLAUDE_PLUGIN_DATA = pluginDataDir;
-
-  try {
-    const stateDir = resolveStateDir(workspace);
-
-    assert.equal(stateDir.startsWith(path.join(pluginDataDir, "state")), true);
-    assert.match(path.basename(stateDir), /.+-[a-f0-9]{16}$/);
-    assert.match(
-      stateDir,
-      new RegExp(`^${path.join(pluginDataDir, "state").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)
-    );
-  } finally {
-    if (previousPluginDataDir == null) {
-      delete process.env.CLAUDE_PLUGIN_DATA;
-    } else {
-      process.env.CLAUDE_PLUGIN_DATA = previousPluginDataDir;
-    }
+  assert.equal(stateDir.startsWith(os.tmpdir() + path.sep + "codex-companion-isolated"), false);
+  // The plugin id (and so CLAUDE_PLUGIN_DATA) changed when the marketplace was
+  // renamed; the state location must not follow it, nor vanish outside Claude.
+  for (const env of [{ ...process.env, CLAUDE_PLUGIN_DATA: makeTempDir() }, { ...process.env, CLAUDE_PLUGIN_DATA: "" }]) {
+    assert.equal(resolveStateDir(workspace, env), stateDir);
   }
+  ensureStateDir(workspace);
+  for (const dir of [stateRoot, stateDir, path.join(stateDir, "jobs")]) assert.equal(fs.statSync(dir).mode & 0o777, 0o700, dir);
 });
 
 test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", () => {

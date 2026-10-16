@@ -37,7 +37,9 @@ export function buildWorkerReport(payload, meta = {}) {
   const commands = payload.commandExecutions ?? [];
   const preExisting = payload.preExistingChanges ?? [];
   const origins = payload.approvedBrowserOrigins ?? [];
-  const touchedLimit = browserBlocker ? 6 : 10;
+  // Budgets keep a fully populated report within about 60 lines, including the
+  // run settings (model/effort/serviceTier) below.
+  const touchedLimit = browserBlocker ? 5 : 9;
   const findingsLimit = payload.startupTimings ? 1 : origins.length > 3 ? 1 : origins.length ? 2 : 5;
   const assumptionIndex = findings.findIndex(line => /^(?:#+\s*)?(?:\*\*)?assumptions?\b/i.test(line));
   return {
@@ -48,6 +50,10 @@ export function buildWorkerReport(payload, meta = {}) {
     exitCode: payload.status,
     sandbox: payload.sandbox ?? "unknown",
     approvalPolicy: payload.approvalPolicy ?? "unknown",
+    // Run settings, so the parent can confirm e.g. that --fast took effect.
+    model: payload.model ?? meta.request?.model ?? null,
+    effort: payload.effort ?? meta.request?.effort ?? null,
+    serviceTier: payload.serviceTier ?? meta.request?.serviceTier ?? null,
     ...(payload.startupTimings ? { startupTimings: Object.entries(payload.startupTimings).map(([phase, value]) => `${phase}: ${value == null ? "unobserved" : typeof value === "number" ? `${value}ms` : `elapsed=${value.elapsedMs ?? "unknown"}ms${value.durationMs !== undefined ? ` duration=${value.durationMs}ms` : ""}`}`).join("; ") } : {}),
     ...(payload.startupWarning ? { startupWarning: payload.startupWarning } : {}),
     ...(payload.interruptionReason ? { interruptionReason: payload.interruptionReason, interruptionConfirmed: payload.interruptionConfirmed } : {}),
@@ -57,11 +63,11 @@ export function buildWorkerReport(payload, meta = {}) {
     resultFile: meta.resultFile ?? null,
     touchedFiles: touched.slice(0, touchedLimit).map(s => shorten(s)),
     touchedFilesOmitted: Math.max(0, touched.length - touchedLimit),
-    preExistingChanges: preExisting.slice(0, 4).map(s => shorten(s)),
-    preExistingChangesOmitted: Math.max(0, preExisting.length - 4),
+    preExistingChanges: preExisting.slice(0, 3).map(s => shorten(s)),
+    preExistingChangesOmitted: Math.max(0, preExisting.length - 3),
     fileTrackingStatus: payload.fileTracking?.status ?? "partial",
     fileTrackingBasis: payload.fileTracking?.basis ?? "Reported file-change events only; no workspace snapshot.",
-    verification: commands.slice(origins.length ? -3 : -4).map(c => shorten(`${c.command ?? "command"}: exit ${c.exitCode ?? "unknown"}, ${c.status ?? "unknown"}`)),
+    verification: commands.slice(origins.length ? -2 : -3).map(c => shorten(`${c.command ?? "command"}: exit ${c.exitCode ?? "unknown"}, ${c.status ?? "unknown"}`)),
     verificationBasis: "Captured command events; parent has not independently verified.",
     keyFindings: findings.slice(0, findingsLimit).map(s => shorten(s)),
     findingsBasis: "Codex-reported, not independently verified; full output includes any omitted assumptions and details.",

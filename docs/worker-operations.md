@@ -172,7 +172,7 @@ send interruption and bound the wait for completion. `cancel` waits up to six
 seconds and reports `confirmed` only after terminal turn/result evidence,
 otherwise `unconfirmed` (exit 2). A legacy record without a live control-aware
 worker is not killed by stored PID. SessionEnd requests only its session's jobs
-across worktrees under the same plugin-data root. Busy state locks are reported
+across worktrees under the same state root (`<isolated-home>/duet/state`). Busy state locks are reported
 as unconfirmed without exceeding the hook budget; lease expiry is the fallback.
 It avoids shutting down a broker shared by other sessions. Broker disconnects
 interrupt the lost owner's turn; a four-second failure deadline closes that owned
@@ -210,7 +210,7 @@ If policy forbids that parameter, the worker returns the permission blocker.
 
 ### Deliberate Codex sandbox opt-in
 
-Persist a default for all workspaces sharing this plugin data directory:
+Persist a default for all workspaces sharing this isolated home:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --default-sandbox workspace-write --dry-run --json
@@ -475,8 +475,12 @@ and the [README](../README.md#delay-before-the-first-tool-call).
 
 Native workers use `task --report --json`. This retains legacy full-output task
 and result behavior when `--report` is omitted. The compact report includes
-status, jobId, threadId, turnId, touched files, command verification evidence,
+status, jobId, threadId, turnId, the sandbox and approval policy, the `model`,
+`effort` and `serviceTier` the runtime actually used (from the thread-start or
+thread-resume response, overridden by per-call flags; the request's values when
+the runtime reported none), touched files, command verification evidence,
 Codex-reported findings, blockers and output paths, targeting at most 60 lines.
+`task --json`, `wait --report` and `result --report` carry the same three fields.
 `touchedFiles` combines turn file-change events with before/after SHA-256 content,
 executable-mode and Git-index comparisons. All tracked and nonignored untracked
 files are sampled, including files dirty before the turn, so shell writes and
@@ -491,10 +495,27 @@ if the server emitted a file-change event.
 The progress log excludes model message/reasoning bodies, command arguments and tool outputs.
 The full final text is in `<job-id>.output.txt`; the raw result, command events
 and reasoning summaries are in `<job-id>.result.json`. Progress/messages are in
-`<job-id>.log`. These live beside the job record, under `CLAUDE_PLUGIN_DATA/state`
-or the isolated companion's per-workspace temporary job directory. The latest
-50 finished jobs are retained; temp-backed records may be removed by OS cleanup.
-Use persistent CLAUDE_PLUGIN_DATA for recovery across machine cleanup/reboots.
+`<job-id>.log`. These live beside the job record in the isolated home,
+`<isolated-home>/duet/state/<workspace-slug>-<hash>/jobs/`
+(`~/.claude/codex-isolated/duet/state/…` by default; directories `0700`, files
+`0600`), the same place for a terminal, a Claude session and the SessionEnd
+hook. `CLAUDE_PLUGIN_DATA` and the temp dir no longer decide the location. The
+latest 50 finished jobs per workspace are retained.
+
+Releases before 1.0.6-isolated.15 wrote the same layout under
+`CLAUDE_PLUGIN_DATA/state` (`~/.claude/plugins/data/codex-codex-isolated-local`
+or `…/codex-duet`, depending on the plugin ID at the time) or, outside Claude,
+under `$TMPDIR/codex-companion-isolated`. The first command touching a workspace
+merges whatever exists there into the new directory, under the new directory's
+lock: existing jobs are not overwritten, the newer `updatedAt` wins for an ID
+present on both sides, the index is deduplicated, recorded absolute artifact
+paths stay as they are (readable in place), the legacy directories are left
+alone, and a marker (`.legacy-migration.json`, listing each merged source) makes
+the merge idempotent across concurrent first commands. A legacy job whose
+worker is still alive is served from its legacy directory (listed, `wait`-able,
+cancellable through its record) and merged once that worker exits. A busy
+legacy lock is retried later. Lookups by job ID, ID prefix or `--thread` that
+miss in the new directory search the legacy directories and import the match.
 
 Job ID and log/output paths are persisted and printed on stderr before execution;
 thread and turn IDs are persisted as soon as the server returns them. Progress

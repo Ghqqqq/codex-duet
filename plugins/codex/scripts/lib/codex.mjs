@@ -87,8 +87,11 @@ function buildThreadParams(cwd, options = {}) {
 // verified live that without it the server starts and `mcpServerStatus/list`
 // shows the tool, yet the model never sees `mcp__duet_parent.ask_parent`.
 export function parentBridgeConfig(bridge) {
-  const env = { [PARENT_BRIDGE_ENV.cwd]: bridge.cwd, [PARENT_BRIDGE_ENV.threadId]: bridge.threadId };
-  for (const key of ["CLAUDE_PLUGIN_DATA", "TMPDIR"]) if (process.env[key]) env[key] = process.env[key];
+  // The bridge finds job state through the isolated home, like every other
+  // helper process; pass it explicitly because Codex starts MCP servers with a
+  // reduced environment.
+  const env = { [PARENT_BRIDGE_ENV.cwd]: bridge.cwd, [PARENT_BRIDGE_ENV.threadId]: bridge.threadId, CODEX_COMPANION_HOME: resolveIsolatedCodexHome() };
+  for (const key of ["TMPDIR"]) if (process.env[key]) env[key] = process.env[key];
   return { mcp_servers: { [PARENT_BRIDGE_SERVER]: {
     command: process.execPath, args: [fileURLToPath(new URL("../parent-bridge-mcp.mjs", import.meta.url))], env,
     enabled: true, enabled_tools: ["ask_parent"], omit_tools_from: ["code_mode", "deferred"],
@@ -1227,6 +1230,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     if (options.signal?.aborted) throw new Error("Task interrupted during startup.");
     let threadId;
     let threadPolicy;
+    let threadSettings = {};
 
     const threadBegan = Date.now();
     if (options.resumeThreadId) {
@@ -1240,6 +1244,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       });
       threadId = response.thread.id;
       threadPolicy = response.sandbox;
+      threadSettings = response;
     } else {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
       const response = await startThread(client, cwd, {
@@ -1252,6 +1257,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       });
       threadId = response.thread.id;
       threadPolicy = response.sandbox;
+      threadSettings = response;
     }
 
     onTiming(options.resumeThreadId ? "threadResume" : "threadStart", Date.now() - threadBegan);
@@ -1300,6 +1306,10 @@ export async function runAppServerTurn(cwd, options = {}) {
       sandbox,
       sandboxPolicy: options.explicitSandbox ? turnPolicy : threadPolicy,
       approvalPolicy: "never",
+      // What this turn ran with: the per-turn request, else the thread's setting.
+      model: options.model ?? threadSettings.model ?? null,
+      effort: options.effort ?? threadSettings.reasoningEffort ?? null,
+      serviceTier: options.serviceTier ?? threadSettings.serviceTier ?? null,
       approvedBrowserOrigins: options.approvedBrowserOrigins ?? [],
       threadId,
       turnId: turnState.turnId,

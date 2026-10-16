@@ -4,17 +4,21 @@ import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
+import { resolveIsolatedCodexHome } from "./codex-home.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const STATE_VERSION = 1;
-const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
-const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion-isolated");
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
 const STATE_BASELINE = Symbol("stateBaseline");
 const LOCK_TIMEOUT_MS = 10000;
 const LOCK_WAIT = new Int32Array(new SharedArrayBuffer(4));
+// Legacy-state merge: a busy legacy lock is retried later, never waited on for long.
+const LEGACY_MIGRATION_FILE = ".legacy-migration.json";
+const LEGACY_LOCK_TIMEOUT_MS = 1500;
+const LEGACY_RETRY_MS = 10000;
+const isActiveStatus = status => status === "queued" || status === "running";
 
 function nowIso() {
   return new Date().toISOString();
@@ -30,7 +34,9 @@ function defaultState() {
   };
 }
 
-export function resolveStateDir(cwd) {
+// One directory per workspace, named by its basename plus a hash of its
+// canonical path; the same key is used under every state root, old or new.
+function workspaceKey(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   let canonicalWorkspaceRoot = workspaceRoot;
   try {
@@ -42,9 +48,20 @@ export function resolveStateDir(cwd) {
   const slugSource = path.basename(workspaceRoot) || "workspace";
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
-  const pluginDataDir = process.env[PLUGIN_DATA_ENV];
-  const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
-  return path.join(stateRoot, `${slug}-${hash}`);
+  return `${slug}-${hash}`;
+}
+
+// Job state lives in the isolated Codex home, next to duet/config.toml: one
+// location whatever the plugin is called and however the helper is invoked.
+// CLAUDE_PLUGIN_DATA is derived from the plugin id, which changed when the
+// marketplace was renamed, and the temp-dir fallback could be cleared; both are
+// read only as legacy sources below.
+export function resolveStateRoot(env = process.env) {
+  return path.join(resolveIsolatedCodexHome(env), "duet", "state");
+}
+
+export function resolveStateDir(cwd, env = process.env) {
+  return path.join(resolveStateRoot(env), workspaceKey(cwd));
 }
 
 export function resolveStateFile(cwd) {
@@ -55,8 +72,52 @@ export function resolveJobsDir(cwd) {
   return path.join(resolveStateDir(cwd), JOBS_DIR_NAME);
 }
 
+function createStateDir(stateDir) {
+  fs.mkdirSync(path.join(stateDir, JOBS_DIR_NAME), { recursive: true, mode: 0o700 });
+}
+
 export function ensureStateDir(cwd) {
-  fs.mkdirSync(resolveJobsDir(cwd), { recursive: true });
+  createStateDir(resolveStateDir(cwd));
+}
+
+function isDirectory(candidate) {
+  try { return fs.statSync(candidate).isDirectory(); } catch { return false; }
+}
+function within(parent, child) {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+function canonical(candidate) {
+  try { return fs.realpathSync.native(candidate); } catch { return path.resolve(candidate); }
+}
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error.code !== "ESRCH"; }
+}
+
+// Roots used by earlier releases, newest layout first. Only existing directories
+// are returned; in test mode only directories inside the test root.
+export function legacyStateRoots(env = process.env) {
+  const home = env.HOME || env.USERPROFILE || os.homedir();
+  const pluginData = path.join(home, ".claude", "plugins", "data");
+  const candidates = [
+    env.CLAUDE_PLUGIN_DATA ? path.join(env.CLAUDE_PLUGIN_DATA, "state") : null,
+    path.join(pluginData, "codex-duet", "state"),
+    path.join(pluginData, "codex-codex-isolated-local", "state"),
+    path.join(env.TMPDIR ? path.resolve(env.TMPDIR) : os.tmpdir(), "codex-companion-isolated")
+  ].filter(Boolean);
+  const current = resolveStateRoot(env);
+  const testRoot = env.CODEX_COMPANION_TEST_MODE === "1" ? canonical(env.CODEX_COMPANION_TEST_ROOT || "") : null;
+  const roots = [];
+  for (const candidate of candidates) {
+    if (!isDirectory(candidate)) continue;
+    const resolved = canonical(candidate);
+    if (roots.includes(resolved) || within(current, resolved) || within(resolved, current)) continue;
+    if (testRoot && !within(testRoot, resolved)) continue;
+    roots.push(resolved);
+  }
+  return roots;
 }
 
 function readState(stateFile) {
@@ -86,7 +147,9 @@ function snapshot(state) {
 }
 
 export function loadState(cwd) {
-  return snapshot(readState(resolveStateFile(cwd)));
+  const stateDir = resolveStateDir(cwd);
+  ensureMigrated(stateDir);
+  return snapshot(readState(path.join(stateDir, STATE_FILE_NAME)));
 }
 
 function removeFileIfExists(filePath) {
@@ -118,9 +181,12 @@ function reclaimDeadLock(lockDir) {
   removeEmptyDirectory(lockDir);
 }
 
-function withStateLock(cwd, action, { lockTimeoutMs = LOCK_TIMEOUT_MS } = {}) {
-  const stateDir = resolveStateDir(cwd);
-  fs.mkdirSync(path.join(stateDir, JOBS_DIR_NAME), { recursive: true });
+// The lock protocol is shared with earlier releases, so a legacy directory can
+// be locked the same way while an older session may still be writing to it.
+const HELD_LOCKS = new Set();
+function lockStateDir(stateDir, action, { lockTimeoutMs = LOCK_TIMEOUT_MS, create = true } = {}) {
+  if (HELD_LOCKS.has(stateDir)) throw new Error(`Re-entrant Codex job-state lock: ${stateDir}`);
+  if (create) createStateDir(stateDir);
   const lockDir = path.join(stateDir, ".state-lock");
   const owner = `owner-${process.pid}-${randomUUID()}`;
   const candidate = path.join(stateDir, `.${owner}`);
@@ -142,8 +208,10 @@ function withStateLock(cwd, action, { lockTimeoutMs = LOCK_TIMEOUT_MS } = {}) {
         Atomics.wait(LOCK_WAIT, 0, 0, 10);
       }
     }
+    HELD_LOCKS.add(stateDir);
     return action(stateDir);
   } finally {
+    HELD_LOCKS.delete(stateDir);
     if (acquired) {
       removeFileIfExists(path.join(lockDir, owner));
       removeEmptyDirectory(lockDir);
@@ -152,6 +220,14 @@ function withStateLock(cwd, action, { lockTimeoutMs = LOCK_TIMEOUT_MS } = {}) {
       removeEmptyDirectory(candidate);
     }
   }
+}
+
+function withStateLock(cwd, action, options = {}) {
+  const stateDir = resolveStateDir(cwd);
+  return lockStateDir(stateDir, () => {
+    migrateUnderLock(stateDir);
+    return action(stateDir);
+  }, options);
 }
 
 function writeJsonAtomically(filePath, value) {
@@ -169,6 +245,225 @@ function pruneJobs(jobs) {
   return [...jobs]
     .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
     .filter(job => job.status === "queued" || job.status === "running" || historyCount++ < MAX_JOBS);
+}
+
+// ---------------------------------------------------------------------------
+// Legacy-state migration
+//
+// Earlier releases stored this workspace's jobs under one of legacyStateRoots().
+// The first access to a workspace under the new root merges every legacy copy
+// in, once, under the new directory's lock (so concurrent starters serialize
+// and the second one finds the marker). A legacy job whose worker process is
+// still alive is not copied: that worker keeps writing its own record, so the
+// job is served in place from the legacy directory until it ends, then merged.
+// Records keep their format; artifact paths (log/raw/result) stay where they
+// are and remain readable. Nothing is deleted from a legacy directory.
+// ---------------------------------------------------------------------------
+const MIGRATION = new Map();
+
+function readJsonOrNull(file) {
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
+}
+function markerFileOf(stateDir) { return path.join(stateDir, LEGACY_MIGRATION_FILE); }
+function markerMtime(stateDir) {
+  try { return fs.statSync(markerFileOf(stateDir)).mtimeMs; } catch { return 0; }
+}
+function readMarker(stateDir) {
+  const marker = readJsonOrNull(markerFileOf(stateDir));
+  if (!marker || marker.version !== 1 || typeof marker.sources !== "object" || !Array.isArray(marker.pending)) {
+    return { version: 1, migratedAt: null, sources: {}, pending: [] };
+  }
+  return marker;
+}
+function writeMarker(stateDir, marker) {
+  writeJsonAtomically(markerFileOf(stateDir), { ...marker, migratedAt: nowIso() });
+}
+// Index entries never carry raw results or the activity journal (see updateJob).
+function indexEntryOf(record) {
+  const { result, report, rendered, activity, ...entry } = record;
+  const interruptionReason = result?.interruptionReason ?? report?.interruptionReason;
+  if (interruptionReason) Object.assign(entry, { interruptionReason, interruptionConfirmed: result?.interruptionConfirmed ?? report?.interruptionConfirmed });
+  return entry;
+}
+const updatedAtOf = (...records) => records.reduce((latest, record) => {
+  const value = String(record?.updatedAt ?? "");
+  return value > latest ? value : latest;
+}, "");
+
+// Every job a directory knows: index entries plus private job files (a file
+// may briefly exist before its index entry does).
+function readWorkspaceRecords(dir, onlyId = null) {
+  const state = readState(path.join(dir, STATE_FILE_NAME));
+  const records = new Map();
+  for (const job of state.jobs) {
+    if (typeof job?.id === "string" && (onlyId === null || job.id === onlyId)) records.set(job.id, { id: job.id, index: job, file: null });
+  }
+  let names = [];
+  if (onlyId !== null) names = [`${onlyId}.json`];
+  else { try { names = fs.readdirSync(path.join(dir, JOBS_DIR_NAME)); } catch (error) { if (error.code !== "ENOENT") throw error; } }
+  for (const name of names) {
+    const match = /^(.+)\.json$/.exec(name);
+    if (!match || name.endsWith(".result.json")) continue;
+    const record = readJsonOrNull(path.join(dir, JOBS_DIR_NAME, name));
+    if (!record || typeof record !== "object" || Array.isArray(record)) continue;
+    const id = match[1], entry = records.get(id) ?? { id, index: null, file: null };
+    entry.file = { id, ...record };
+    records.set(id, entry);
+  }
+  return { config: state.config, records };
+}
+function readLegacyRecords(legacyDir, onlyId = null) {
+  try {
+    return lockStateDir(legacyDir, () => readWorkspaceRecords(legacyDir, onlyId), { lockTimeoutMs: LEGACY_LOCK_TIMEOUT_MS, create: false });
+  } catch (error) {
+    if (/Timed out waiting for the Codex job-state lock/.test(error.message)) return null;
+    throw error;
+  }
+}
+const isLive = (record, fallbackPid = null) => isActiveStatus(record?.status) && processAlive(record?.pid ?? fallbackPid);
+
+// Merge selected legacy records into the (already locked) new directory.
+// Newer updatedAt wins; a live legacy job is only noted as pending.
+function mergeLegacyRecords(stateDir, legacyDir, legacy, marker, selected = null) {
+  const stateFile = path.join(stateDir, STATE_FILE_NAME), jobsDir = path.join(stateDir, JOBS_DIR_NAME);
+  const state = readState(stateFile), current = new Map(state.jobs.map(job => [job.id, job]));
+  const imports = new Map();
+  let pending = 0;
+  for (const { id, index, file } of legacy.records.values()) {
+    if (selected && !selected.has(id)) continue;
+    const entry = { ...(index ?? {}), ...(file ? indexEntryOf(file) : {}) };
+    if (isLive(entry)) {
+      if (!marker.pending.some(item => item.id === id)) marker.pending.push({ id, stateDir: legacyDir, pid: entry.pid ?? null, noticedAt: nowIso() });
+      pending += 1;
+      continue;
+    }
+    const existing = current.get(id), existingFile = readJsonOrNull(path.join(jobsDir, `${id}.json`));
+    if ((existing || existingFile) && !(updatedAtOf(entry, file) > updatedAtOf(existing, existingFile))) continue;
+    imports.set(id, { entry, file });
+  }
+  if (!imports.size) {
+    // Carry over a configured review gate when this directory is still at defaults.
+    const config = selected ? state.config : mergeLegacyConfig(state.config, legacy.config);
+    if (!isDeepStrictEqual(config, state.config)) commitState(stateDir, state, { ...state, config });
+    return { at: nowIso(), imported: 0, pending };
+  }
+  const merged = new Map(current);
+  for (const [id, { entry }] of imports) merged.set(id, entry);
+  const retained = new Set(pruneJobs([...merged.values()]).map(job => job.id));
+  for (const [id, { file }] of imports) {
+    if (file && retained.has(id)) writeJsonAtomically(path.join(jobsDir, `${id}.json`), file);
+  }
+  commitState(stateDir, state, { ...state, config: selected ? state.config : mergeLegacyConfig(state.config, legacy.config), jobs: [...merged.values()] });
+  return { at: nowIso(), imported: imports.size, pending };
+}
+function mergeLegacyConfig(config, legacyConfig) {
+  const defaults = defaultState().config, next = { ...config };
+  for (const [key, value] of Object.entries(legacyConfig ?? {})) {
+    if (!Object.hasOwn(next, key) || isDeepStrictEqual(next[key], defaults[key])) next[key] = value;
+  }
+  return next;
+}
+
+// Re-check jobs served in place; merge each one as soon as its worker is gone.
+function settlePending(stateDir, marker) {
+  let changed = false;
+  for (const item of [...marker.pending]) {
+    const legacy = isDirectory(item.stateDir) ? readLegacyRecords(item.stateDir, item.id) : { config: {}, records: new Map() };
+    if (legacy === null) continue;
+    const record = legacy.records.get(item.id);
+    if (record && isLive(record.file ?? record.index, record.index?.pid ?? item.pid)) continue;
+    marker.pending = marker.pending.filter(other => other !== item);
+    if (record) mergeLegacyRecords(stateDir, item.stateDir, legacy, marker, new Set([item.id]));
+    changed = true;
+  }
+  return changed;
+}
+
+function remember(stateDir, marker, retryAt = null) {
+  const status = { pending: marker.pending, retryAt, markerMtimeMs: markerMtime(stateDir), checkedAt: Date.now() };
+  MIGRATION.set(stateDir, status);
+  return status;
+}
+const PENDING_RECHECK_MS = 1000;
+
+// Runs with the new directory's lock held. Cheap once memoized: a process
+// scans for legacy directories once; only pending (in-place) jobs are re-read.
+function migrateUnderLock(stateDir) {
+  const memo = MIGRATION.get(stateDir);
+  const retryDue = memo?.retryAt != null && Date.now() >= memo.retryAt;
+  if (memo && !retryDue && (!memo.pending.length || Date.now() - memo.checkedAt < PENDING_RECHECK_MS)) return memo;
+  const marker = readMarker(stateDir);
+  let changed = false, retryAt = null;
+  if (!memo || retryDue) {
+    const key = path.basename(stateDir);
+    for (const root of legacyStateRoots()) {
+      const legacyDir = path.join(root, key);
+      if (marker.sources[legacyDir] || !isDirectory(legacyDir)) continue;
+      const legacy = readLegacyRecords(legacyDir);
+      if (legacy === null) { retryAt = Date.now() + LEGACY_RETRY_MS; continue; }
+      marker.sources[legacyDir] = mergeLegacyRecords(stateDir, legacyDir, legacy, marker);
+      changed = true;
+    }
+  }
+  if (marker.pending.length && settlePending(stateDir, marker)) changed = true;
+  if (changed || !fs.existsSync(markerFileOf(stateDir))) writeMarker(stateDir, marker);
+  return remember(stateDir, marker, retryAt);
+}
+
+// Read paths call this before touching the directory. The fast path is a map
+// lookup; while jobs are pending, the marker is re-read when another process
+// has changed it.
+function ensureMigrated(stateDir, lockOptions = {}) {
+  let memo = MIGRATION.get(stateDir);
+  if (memo && !memo.pending.length && (memo.retryAt == null || Date.now() < memo.retryAt)) return memo;
+  if (memo?.pending.length) {
+    if (markerMtime(stateDir) !== memo.markerMtimeMs) memo = remember(stateDir, readMarker(stateDir), memo.retryAt);
+    if (Date.now() - memo.checkedAt < PENDING_RECHECK_MS) return memo;
+  }
+  // Inside this process's own critical section the lock is already held.
+  if (HELD_LOCKS.has(stateDir)) return migrateUnderLock(stateDir);
+  return lockStateDir(stateDir, () => migrateUnderLock(stateDir), lockOptions);
+}
+
+// A job served in place lives in its legacy directory until its worker ends.
+function jobStateDir(cwd, jobId) {
+  const stateDir = resolveStateDir(cwd);
+  const status = ensureMigrated(stateDir);
+  return status.pending.find(item => item.id === jobId)?.stateDir ?? stateDir;
+}
+function pendingJobs(stateDir, status) {
+  const jobs = [];
+  for (const item of status.pending) {
+    const entry = readState(path.join(item.stateDir, STATE_FILE_NAME)).jobs.find(job => job.id === item.id)
+      ?? readJsonOrNull(path.join(item.stateDir, JOBS_DIR_NAME, `${item.id}.json`));
+    if (entry) jobs.push(indexEntryOf({ id: item.id, ...entry }));
+  }
+  return jobs;
+}
+
+// Fallback for a job id (or thread id / id prefix) unknown to the new
+// directory after migration, for example one written by a still-running older
+// session: merge it in, or serve it in place while its worker is alive.
+export function importLegacyJob(cwd, reference) {
+  if (!reference) return false;
+  const stateDir = resolveStateDir(cwd), key = path.basename(stateDir);
+  const matches = record => record.id === reference || record.file?.threadId === reference || record.index?.threadId === reference || record.id.startsWith(reference);
+  for (const root of legacyStateRoots()) {
+    const legacyDir = path.join(root, key);
+    if (!isDirectory(legacyDir)) continue;
+    const legacy = readLegacyRecords(legacyDir);
+    if (legacy === null) continue;
+    const selected = new Set([...legacy.records.values()].filter(matches).map(record => record.id));
+    if (!selected.size) continue;
+    return lockStateDir(stateDir, () => {
+      const marker = readMarker(stateDir);
+      const outcome = mergeLegacyRecords(stateDir, legacyDir, legacy, marker, selected);
+      writeMarker(stateDir, marker);
+      remember(stateDir, marker, MIGRATION.get(stateDir)?.retryAt ?? null);
+      return outcome.imported > 0 || outcome.pending > 0;
+    });
+  }
+  return false;
 }
 
 function mergeChangedFields(baseline, requested, current) {
@@ -269,19 +564,33 @@ export function upsertJob(cwd, jobPatch) {
   });
 }
 
+// Jobs still served in place from a legacy directory are listed alongside,
+// replacing any stale copy of the same id.
 export function listJobs(cwd) {
-  return loadState(cwd).jobs;
+  const stateDir = resolveStateDir(cwd);
+  const status = ensureMigrated(stateDir);
+  const jobs = readState(path.join(stateDir, STATE_FILE_NAME)).jobs;
+  if (!status.pending.length) return jobs;
+  const pending = pendingJobs(stateDir, status), ids = new Set(pending.map(job => job.id));
+  return [...jobs.filter(job => !ids.has(job.id)), ...pending];
 }
 
 // SessionEnd can run from the parent checkout while workers use other worktrees.
 // Inspect only this plugin-data root, and verify each record's workspace mapping.
 export function listSessionJobs(cwd, sessionId) {
-  const root = path.dirname(resolveStateDir(cwd));
+  const ownDir = resolveStateDir(cwd), root = path.dirname(ownDir);
+  // Jobs an older release started in this workspace's legacy directory are
+  // merged or served in place first; a busy lock is not waited on (the hook has
+  // a 5 s budget) and the owner lease remains the fallback.
+  let pending = [];
+  try { pending = pendingJobs(ownDir, ensureMigrated(ownDir, { lockTimeoutMs: 1000 })); } catch { /* reported by the lease fallback */ }
   if (!fs.existsSync(root)) return [];
+  const pendingIds = new Set(pending.map(job => job.id));
   return fs.readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory()).flatMap(entry => {
     const directory = path.join(root, entry.name);
-    return readState(path.join(directory, STATE_FILE_NAME)).jobs.map(job => ({
-      ...job, workspaceRoot: job.workspaceRoot ?? (directory === resolveStateDir(cwd) ? cwd : null)
+    const indexed = readState(path.join(directory, STATE_FILE_NAME)).jobs.filter(job => directory !== ownDir || !pendingIds.has(job.id));
+    return [...indexed, ...(directory === ownDir ? pending : [])].map(job => ({
+      ...job, workspaceRoot: job.workspaceRoot ?? (directory === ownDir ? cwd : null)
     })).filter(job => {
       if ((job.sessionId === undefined ? job.ownerId : job.sessionId) !== sessionId || typeof job.workspaceRoot !== "string") return false;
       try { return resolveStateDir(job.workspaceRoot) === directory; } catch { return false; }
@@ -303,7 +612,7 @@ export function getConfig(cwd) {
 }
 
 export function writeJobFile(cwd, jobId, payload) {
-  return withStateLock(cwd, stateDir => {
+  return lockStateDir(jobStateDir(cwd, jobId), stateDir => {
     const jobFile = path.join(stateDir, JOBS_DIR_NAME, `${jobId}.json`);
     writeJsonAtomically(jobFile, payload);
     return jobFile;
@@ -317,7 +626,7 @@ export function readJobFile(jobFile) {
 // One lock covers both the full record and index, including concurrent lease,
 // answer, cancellation and progress updates. A stale reader cannot erase them.
 export function updateJob(cwd, jobId, mutate, options = {}) {
-  return withStateLock(cwd, stateDir => {
+  return lockStateDir(jobStateDir(cwd, jobId), stateDir => {
     const state = readState(path.join(stateDir, STATE_FILE_NAME));
     const file = path.join(stateDir, JOBS_DIR_NAME, `${jobId}.json`);
     const indexed = state.jobs.find(j => j.id === jobId);
@@ -340,11 +649,13 @@ export function updateJob(cwd, jobId, mutate, options = {}) {
 }
 
 export function resolveJobLogFile(cwd, jobId) {
-  ensureStateDir(cwd);
-  return path.join(resolveJobsDir(cwd), `${jobId}.log`);
+  const stateDir = jobStateDir(cwd, jobId);
+  createStateDir(stateDir);
+  return path.join(stateDir, JOBS_DIR_NAME, `${jobId}.log`);
 }
 
 export function resolveJobFile(cwd, jobId) {
-  ensureStateDir(cwd);
-  return path.join(resolveJobsDir(cwd), `${jobId}.json`);
+  const stateDir = jobStateDir(cwd, jobId);
+  createStateDir(stateDir);
+  return path.join(stateDir, JOBS_DIR_NAME, `${jobId}.json`);
 }

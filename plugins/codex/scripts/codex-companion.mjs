@@ -630,6 +630,9 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
     sandbox: result.sandbox ?? request.sandbox ?? "unknown",
     sandboxPolicy: result.sandboxPolicy ?? null,
     approvalPolicy: result.approvalPolicy ?? "unknown",
+    model: result.model ?? request.model ?? null,
+    effort: result.effort ?? request.effort ?? null,
+    serviceTier: result.serviceTier ?? request.serviceTier ?? null,
     approvedBrowserOrigins: result.approvedBrowserOrigins ?? request.approvedBrowserOrigins ?? [],
     commandExecutions: result.commandExecutions ?? [],
     reasoningSummary: result.reasoningSummary,
@@ -1122,6 +1125,13 @@ async function handleTaskWorker(argv) {
   );
 }
 
+// Reports stored by earlier releases lack the run settings; fill them from the
+// recorded request so task/wait/result --report always show them.
+function withRunSettings(report, request) {
+  for (const key of ["model", "effort", "serviceTier"]) report[key] ??= request?.[key] ?? null;
+  return report;
+}
+
 function processAlive(pid) {
   if (!pid) return false;
   try { process.kill(pid, 0); return true; }
@@ -1149,7 +1159,7 @@ async function refreshJobSnapshot(cwd, reference) {
       sandbox: stored.sandbox ?? "unknown", approvalPolicy: stored.approvalPolicy ?? "unknown",
       approvedBrowserOrigins: stored.approvedBrowserOrigins ?? []
     });
-    const execution = buildTaskExecution(result, { cwd, jobId: job.id, write: job.write });
+    const execution = buildTaskExecution(result, { cwd, jobId: job.id, write: job.write, model: stored.request?.model, effort: stored.request?.effort, serviceTier: stored.request?.serviceTier });
     const completedAt = nowIso();
     const patch = { status: execution.jobStatus, phase: execution.jobStatus === "completed" ? "done" : execution.jobStatus, pid: null, completedAt, summary: execution.summary, recovered: true, rawOutputFile: execution.payload.rawOutputFile, resultFile: execution.payload.resultFile };
     updateJob(workspaceRoot, job.id, () => ({ ...patch, result: execution.payload, report: execution.report, rendered: execution.rendered }));
@@ -1214,7 +1224,7 @@ async function handleResult(argv) {
   const storedJob = readStoredJob(workspaceRoot, job.id);
   if (options.report) {
     const report = storedJob?.report ?? buildWorkerReport({ approvedBrowserOrigins: storedJob?.approvedBrowserOrigins ?? [], ...(storedJob?.result ?? { status: 1, error: storedJob?.errorMessage ?? "No stored result." }) }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile });
-    Object.assign(report, leaseExpiryReport(storedJob ?? job));
+    Object.assign(withRunSettings(report, storedJob?.request), leaseExpiryReport(storedJob ?? job));
     outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
     if (report.status !== "completed") process.exitCode = report.status === "needs_input" ? 2 : 1;
     return;
@@ -1367,6 +1377,7 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
         // Compact reports may contain captured commands and assistant snippets too.
         // Preserve handles/paths; redact only display text, never serialized JSON.
         if (terminal) {
+          withRunSettings(report, current.request);
           for (const key of ["verification", "keyFindings", "assumptions", "blockers"]) {
             if (report[key]) report[key] = report[key].map(redactActivity);
           }

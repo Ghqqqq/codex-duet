@@ -92,7 +92,7 @@ export function loadBrokerSession(cwd) {
 
 export function saveBrokerSession(cwd, session) {
   const stateDir = resolveStateDir(cwd);
-  fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(resolveBrokerStateFile(cwd), `${JSON.stringify(session, null, 2)}\n`, "utf8");
 }
 

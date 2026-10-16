@@ -780,7 +780,9 @@ export function buildEnv(binDir) {
     USERPROFILE: path.join(binDir, "fixture-home"),
     CODEX_HOME: path.join(binDir, "fixture-home", ".codex"),
     CODEX_SQLITE_HOME: "",
-    CODEX_COMPANION_HOME: "",
+    // Job state lives in the isolated home, so helper processes share the test
+    // process's isolated home unless a fixture selects its own.
+    CODEX_COMPANION_HOME: process.env.CODEX_COMPANION_HOME ?? "",
     CODEX_COMPANION_NORMAL_HOME: "",
     CODEX_COMPANION_NORMAL_SQLITE_HOME: "",
     CODEX_COMPANION_BIN: "",

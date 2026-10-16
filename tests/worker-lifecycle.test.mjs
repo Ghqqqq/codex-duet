@@ -176,7 +176,7 @@ test("broker prewarm is non-blocking and idle exit reaps the server group", asyn
   const warmed = run(process.execPath, [hook, "SessionStart"], { cwd: f.repo, env: f.env, input: JSON.stringify({ session_id: "fixture-session", cwd: f.repo }) });
   assert.equal(warmed.status, 0, warmed.stderr); assert.ok(Date.now() - start < 2000);
   // The helper state root is selected by the child env, not this test's default.
-  const stateRoot = path.join(f.env.CLAUDE_PLUGIN_DATA, "state");
+  const stateRoot = path.join(f.env.CODEX_COMPANION_HOME, "duet", "state");
   const broker = await waitUntil(() => {
     if (!fs.existsSync(stateRoot)) return null;
     const dir = fs.readdirSync(stateRoot)[0]; const file = dir && path.join(stateRoot, dir, "broker.json");
@@ -466,8 +466,8 @@ test("task --continue resumes the job's thread with its recorded authorization a
   const bridge = resume.config.mcp_servers.duet_parent;
   assert.equal(bridge.command, process.execPath); assert.match(bridge.args[0], /parent-bridge-mcp\.mjs$/);
   assert.equal(bridge.env[PARENT_BRIDGE_ENV.threadId], done.threadId, "the bridge is bound to the thread, not the job"); assert.equal(bridge.env[PARENT_BRIDGE_ENV.cwd], f.repo);
-  assert.equal(bridge.env.CLAUDE_PLUGIN_DATA, f.env.CLAUDE_PLUGIN_DATA); assert.equal(bridge.tool_timeout_sec, 900 + 120);
-  assert.equal(Object.keys(bridge.env).filter(k => !["CLAUDE_PLUGIN_DATA", "TMPDIR", PARENT_BRIDGE_ENV.threadId, PARENT_BRIDGE_ENV.cwd].includes(k)).length, 0, "no other environment leaks into the bridge");
+  assert.equal(fs.realpathSync(bridge.env.CODEX_COMPANION_HOME), fs.realpathSync(f.env.CODEX_COMPANION_HOME), "the bridge reaches job state through the isolated home"); assert.equal(bridge.tool_timeout_sec, 900 + 120);
+  assert.equal(Object.keys(bridge.env).filter(k => !["CODEX_COMPANION_HOME", "TMPDIR", PARENT_BRIDGE_ENV.threadId, PARENT_BRIDGE_ENV.cwd].includes(k)).length, 0, "no other environment leaks into the bridge");
   assert.deepEqual(bridge.omit_tools_from, ["code_mode", "deferred"], "the tool must stay out of the deferred set or the model never sees it");
   assert.equal(bridge.tools.ask_parent.approval_mode, "approve", "approvalPolicy never would otherwise reject the call");
   assert.match(f.state().lastTurnStart.prompt, /continue with the next step/);

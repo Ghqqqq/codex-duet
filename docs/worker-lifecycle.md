@@ -189,9 +189,28 @@ Cancel returns unconfirmed (exit 2) if evidence is unavailable, including legacy
 records without a control-aware worker. It does not kill a historical PID.
 
 SessionEnd writes cancellation controls for this Claude session and waits up to
-four seconds inside the hook's five-second budget, across worktrees sharing its
-plugin-data root. Busy state locks are reported unconfirmed without blocking;
-lease expiry remains the fallback. History remains recoverable.
+four seconds inside the hook's five-second budget, across worktrees sharing the
+state root `<isolated-home>/duet/state`. Busy state locks are reported
+unconfirmed without blocking; lease expiry remains the fallback. History remains
+recoverable.
+
+Job state lives in the isolated home (`~/.claude/codex-isolated/duet/state/`,
+beside `duet/config.toml`), never under `CLAUDE_PLUGIN_DATA` or the temp dir, so
+every entry point of one machine shares one set of records. Directories from
+releases before 1.0.6-isolated.15 (`~/.claude/plugins/data/codex-*/state`,
+`$TMPDIR/codex-companion-isolated`) are merged lazily per workspace, once, under
+the new directory's lock, with a marker (`.legacy-migration.json`) and an
+in-process memo so the steady-state cost is a map lookup. The merge never
+overwrites a newer record, never deletes or rewrites legacy files, and respects a
+legacy directory's own `.state-lock` (a busy one is retried later). A legacy job
+whose recorded `pid` is alive is *pending*: it stays in its legacy directory, is
+listed and waited on from there, receives `cancel`/SessionEnd controls there,
+and is merged when that worker exits. Owner, lease and adoption rules are
+unchanged by the move; `adopt` and `task --continue` on a migrated job behave as
+on a native one. A job or thread reference unknown to the new directory falls
+back to the legacy directories and imports the match, covering records an older
+session writes after the merge. SessionEnd runs the same check for its own
+workspace with a bounded lock wait before cancelling.
 It never shuts down a shared broker used by another session. The broker interrupts
 turns when their owner socket disconnects and closes its server group after a
 bounded failure deadline. With no clients or active turns it exits after 60 seconds

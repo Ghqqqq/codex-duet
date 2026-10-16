@@ -51,7 +51,9 @@ the native worker runtime, isolation and lifecycle work are Duet additions.
   worker without a new turn.
 - **Isolated home.** Authentication, sessions, SQLite and logs live in
   `~/.claude/codex-isolated`, separate from your everyday `~/.codex`. Credentials
-  are never copied.
+  are never copied. Job state (`duet/state/`) and plugin settings
+  (`duet/config.toml`) live in the same home, so a terminal and a Claude
+  session always see the same jobs.
 - **Honest reports.** Compact JSON reports separate captured facts from Codex's
   claims, list touched files against a before/after snapshot (pre-existing dirt
   reported separately), and keep handles for read-only recovery.
@@ -82,9 +84,8 @@ the install ID is `codex@duet`, commands are `/codex:*` and the agents are
 `codex:codex-worker` and `codex:codex-rescue`.
 
 Upgrading from the earlier `codex@codex-isolated-local` ID: uninstall it and remove
-that marketplace, add this one again, and install `codex@duet`. Claude Code keys
-plugin data by ID, so copy `~/.claude/plugins/data/codex-codex-isolated-local` to
-`~/.claude/plugins/data/codex-duet` first if you want to keep job history.
+that marketplace, add this one again, and install `codex@duet`. Job history is
+kept automatically: see [Job state and migration](#job-state-and-migration).
 
 Then check the runtime and sign in to the isolated home once:
 
@@ -422,6 +423,49 @@ model_reasoning_effort = "high"
 
 See the [Codex configuration reference](https://developers.openai.com/codex/config-reference).
 
+### Job state and migration
+
+Job records, logs and result artifacts live in the isolated home, next to the
+plugin's settings file:
+
+```text
+~/.claude/codex-isolated/duet/config.toml                  # default sandbox, browser approval
+~/.claude/codex-isolated/duet/state/<workspace>/state.json # per-workspace job index
+~/.claude/codex-isolated/duet/state/<workspace>/jobs/      # <id>.json, .log, .output.txt, .result.json
+~/.claude/codex-isolated/duet/state/<workspace>/broker.json
+```
+
+`<workspace>` is a slug plus hash of the workspace root. Directories are created
+`0700`, files `0600`. The location depends only on the isolated home
+(`CODEX_COMPANION_HOME` or `~/.claude/codex-isolated`), so a terminal, a Claude
+session and the SessionEnd hook read and write the same records;
+`CLAUDE_PLUGIN_DATA` is no longer involved.
+
+Earlier releases stored state under `CLAUDE_PLUGIN_DATA/state`, which Claude Code
+derives from the plugin ID (`~/.claude/plugins/data/codex-codex-isolated-local`,
+then `~/.claude/plugins/data/codex-duet`), and under
+`$TMPDIR/codex-companion-isolated` when the companion ran outside Claude. The
+first command that touches a workspace merges those directories into the new one,
+once, under the new directory's state lock:
+
+- Nothing is overwritten and nothing is deleted. A job present in several places
+  keeps the record with the newer `updatedAt`; the index is deduplicated by ID;
+  the old directories stay where they are.
+- Absolute artifact paths (`logFile`, `rawOutputFile`, `resultFile`) are kept as
+  recorded and remain readable in place; nothing is rewritten.
+- A legacy job whose worker is still running is served in place until that
+  worker ends, so `wait`, `status`, `cancel` and SessionEnd keep working through
+  the upgrade; it is merged afterwards.
+- A busy legacy lock is retried later rather than waited on. Concurrent first
+  commands migrate once; the marker is `<workspace>/.legacy-migration.json`.
+- `status`/`result`/`wait`/`adopt`/`cancel`/`task --continue` with a job or thread
+  ID that is unknown to the new directory look in the legacy directories and
+  import the match, so a job an older session writes after the merge is found.
+
+Record format, owner/lease semantics and command output fields are unchanged.
+Once no older release runs anymore, the legacy directories can be removed by
+hand.
+
 ## Troubleshooting
 
 **Slow first tool call.** Each job records startup timings: broker connect/spawn,
@@ -480,6 +524,10 @@ session store.
   service; a future runtime may change it.
 - File tracking cannot attribute edits when several writers share a checkout, and
   ignored files and submodule contents are not hashed.
+- Legacy state directories are merged, never removed. A job whose worker from an
+  older release is still running stays in its legacy directory until that
+  worker exits; `cancel` for such a job records the request but cannot confirm
+  the interruption (exit 2), as for any record without a control-aware worker.
 
 ## Development
 
@@ -487,7 +535,7 @@ session store.
 npm test
 ```
 
-The suite (195 tests) uses temporary Codex homes and plugin data only, refuses to
+The suite (202 tests) uses temporary Codex homes and plugin data only, refuses to
 run against `~/.claude/codex-isolated` or `~/.codex`, and asserts that no spawned
 process survives. Local-socket tests are skipped inside a sandbox; run the suite
 outside it for full coverage.

@@ -2,7 +2,7 @@ import { leaseSnapshot, leaseExpiryReport } from "./job-runtime.mjs";
 import fs from "node:fs";
 
 import { getSessionRuntimeStatus } from "./codex.mjs";
-import { getConfig, listJobs, readJobFile, resolveJobFile } from "./state.mjs";
+import { getConfig, importLegacyJob, listJobs, readJobFile, resolveJobFile } from "./state.mjs";
 import { SESSION_ID_ENV } from "./tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
@@ -183,11 +183,24 @@ export function enrichJob(job, options = {}) {
 }
 
 export function readStoredJob(workspaceRoot, jobId) {
-  const jobFile = resolveJobFile(workspaceRoot, jobId);
+  let jobFile = resolveJobFile(workspaceRoot, jobId);
+  // Unknown here: it may have been written under an earlier release's state
+  // location (for example before the plugin was renamed). Merge it in once.
+  if (!fs.existsSync(jobFile) && importLegacyJob(workspaceRoot, jobId)) jobFile = resolveJobFile(workspaceRoot, jobId);
   if (!fs.existsSync(jobFile)) {
     return null;
   }
   return readJobFile(jobFile);
+}
+
+const referenceMatches = (job, reference) => job.id === reference || job.threadId === reference || job.id.startsWith(reference);
+
+// The job list, extended from legacy state locations when a requested
+// reference is not known to the current one.
+function listJobsFor(workspaceRoot, reference) {
+  const jobs = listJobs(workspaceRoot);
+  if (!reference || jobs.some(job => referenceMatches(job, reference)) || !importLegacyJob(workspaceRoot, reference)) return jobs;
+  return listJobs(workspaceRoot);
 }
 
 function matchJobReference(jobs, reference, predicate = () => true) {
@@ -247,7 +260,7 @@ export function buildStatusSnapshot(cwd, options = {}) {
 
 export function buildSingleJobSnapshot(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const jobs = sortJobsNewestFirst(listJobsFor(workspaceRoot, reference));
   const selected = matchJobReference(jobs, reference);
   if (!selected) {
     throw new Error(`No job found for "${reference}". Run /codex:status to inspect known jobs.`);
@@ -261,7 +274,7 @@ export function buildSingleJobSnapshot(cwd, reference, options = {}) {
 
 export function resolveResultJob(cwd, reference) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
+  const jobs = sortJobsNewestFirst(reference ? listJobsFor(workspaceRoot, reference) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
   const selected = reference ? matchJobReference(jobs, reference) : jobs.find(job => !["queued", "running"].includes(job.status));
 
   if (selected) {
@@ -283,7 +296,7 @@ export function resolveResultJob(cwd, reference) {
 
 export function resolveCancelableJob(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const jobs = sortJobsNewestFirst(listJobsFor(workspaceRoot, reference));
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
 
   if (reference) {
