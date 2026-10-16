@@ -95,7 +95,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id|--thread <id>] [--wait] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id|--thread <id>] [--report] [--json]",
-      "  node scripts/codex-companion.mjs wait <job-id> [--timeout-sec 570] [--min-interval-sec <s>] [--owner <id>] [--after-question <id>] [--json] --report",
+      "  node scripts/codex-companion.mjs wait <job-id> [--timeout-sec 570] [--min-interval-sec <s>] [--owner <id>] [--after-question <id>] [--feed-limit 150] [--json] --report",
       "  node scripts/codex-companion.mjs adopt <job-id> [--cwd <path>] [--json]",
       "  node scripts/codex-companion.mjs answer <job-id> --owner <ownerId> --question <id> --json < answer.txt",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]",
@@ -930,7 +930,7 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "thread", "continue", "sandbox", "lease-sec", "question-timeout-sec", "owner", "timeout-sec"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "thread", "continue", "sandbox", "lease-sec", "question-timeout-sec", "owner", "timeout-sec", "feed-limit"],
     repeatableOptions: ["approve-browser-origin"],
     booleanOptions: ["json", "report", "write", "resume-last", "resume", "fresh", "background", "detached", "follow", "fast", "normal"],
     aliasMap: {
@@ -973,27 +973,24 @@ async function handleTask(argv) {
   if (resumeLast && fresh) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
   }
+  // Permission model: the parent adjusts Codex's sandbox per call with --sandbox
+  // (like choosing a permission mode for a native subagent); without it the
+  // configured default applies, which is danger-full-access unless the user ran
+  // `setup --default-sandbox`. --write survives as a floor (at least
+  // workspace-write) and --write=false as an explicit read-only request.
   let write = continued ? Boolean(continued.write) : Boolean(options.write);
   let sandbox = continued ? continued.sandbox ?? (continued.write ? "workspace-write" : "read-only") : options.sandbox;
   if (sandbox !== undefined && !SANDBOX_MODES.includes(sandbox)) {
     throw new Error("--sandbox must be read-only, workspace-write, or danger-full-access.");
   }
-  if (sandbox && sandbox !== "read-only" && !write) {
-    throw new Error("--sandbox workspace-write or danger-full-access requires explicit --write authorization.");
-  }
   if (sandbox === "read-only" && write) throw new Error("--sandbox read-only cannot be combined with --write.");
   if (!continued && sandbox === undefined) {
     const configured = defaultSandboxSetup().defaultSandbox;
-    if (options.write === undefined) {
-      // Preserve legacy default turn behavior when no setting exists/read-only.
-      // Write-capable defaults explicitly reach both thread and turn policies.
-      if (configured !== "read-only") { sandbox = configured; write = true; }
-    } else if (write && configured === "danger-full-access") {
-      // --write is a floor, not a ceiling: it guarantees at least workspace-write
-      // and never downgrades a configured danger-full-access default.
-      sandbox = configured;
-    }
+    if (options.write === false) sandbox = "read-only";
+    else if (write && configured === "read-only") sandbox = "workspace-write";
+    else sandbox = configured;
   }
+  write = sandbox !== "read-only";
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast: Boolean(resumeLast || threadId)
@@ -1023,7 +1020,7 @@ async function handleTask(argv) {
     if (options.follow) {
       // Native-like single call: submit, then stay attached as the owner until the
       // job ends, needs an answer, or the wait budget runs out.
-      await waitForJob(workspaceRoot, job, { owner: job.ownerId, timeoutSec: options["timeout-sec"], json: options.json });
+      await waitForJob(workspaceRoot, job, { owner: job.ownerId, timeoutSec: options["timeout-sec"], feedLimit: options["feed-limit"], json: options.json });
       return;
     }
     if (options.detached) {
@@ -1304,9 +1301,16 @@ function handleAdopt(argv) {
 // one call per ~9.5 minutes instead of one every 10-30 seconds. Early return on
 // activity is opt-in (--min-interval-sec) for human-facing feed consumers.
 const WAIT_DEFAULT_SEC = 570, WAIT_MAX_SEC = 3600, REPORTED_ACTIVITY_LIMIT = 12;
+// Feed mode (no --json) streams one line per Codex event so the Bash output in a
+// Claude agent view shows Codex working live. Every streamed line also lands in
+// that agent's context when the call returns, so one call streams at most
+// --feed-limit lines (0 = unlimited) and summarizes the rest in the final JSON.
+const FEED_LIMIT_DEFAULT = 150;
 
-async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSec, afterQuestion, json }) {
+async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSec, afterQuestion, feedLimit, json }) {
   const timeout = seconds(timeoutSec, WAIT_DEFAULT_SEC, "--timeout-sec", WAIT_MAX_SEC);
+  const feedMax = feedLimit === undefined ? FEED_LIMIT_DEFAULT : /^\d+$/.test(String(feedLimit)) ? Number(feedLimit) : (() => { throw new Error("--feed-limit must be a non-negative integer."); })();
+  let streamed = 0;
   const minimum = minIntervalSec === undefined ? null : seconds(minIntervalSec, 10, "--min-interval-sec", WAIT_MAX_SEC);
   const reader = activityReader(owner), started = Date.now(), activity = [];
   let cursor = readStoredJob(workspaceRoot, job.id).activityCursors?.[reader] ?? 0;
@@ -1344,8 +1348,10 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
       if (moved) { detachReason = "moved"; await finish({ ...moved, ...reported(), cursor }, 2); return; }
       const next = (current.activity ?? []).filter(event => event.seq > cursor);
       for (const event of next) {
-        if (!json) {
-          try { await writeLine(formatActivity(event)); }
+        if (!json && (feedMax === 0 || streamed < feedMax)) {
+          streamed += 1;
+          const line = streamed === feedMax ? `${formatActivity(event)}\n… feed paused after ${feedMax} lines; later events are counted in the final JSON (activityCount) and shown by /codex:status` : formatActivity(event);
+          try { await writeLine(line); }
           catch (error) { if (error.code !== "EPIPE") throw error; detach("stdout_closed"); process.exitCode = 130; return; }
         }
         activity.push(event); cursor = event.seq;
@@ -1376,11 +1382,11 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
 }
 
 async function handleWait(argv) {
-  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "timeout-sec", "min-interval-sec", "owner", "after-question"], booleanOptions: ["json", "report"] });
+  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "timeout-sec", "min-interval-sec", "owner", "after-question", "feed-limit"], booleanOptions: ["json", "report"] });
   if (!positionals[0]) throw new Error("wait requires a job id.");
   const cwd = resolveCommandCwd(options);
   const { workspaceRoot, job } = buildSingleJobSnapshot(cwd, positionals[0]);
-  await waitForJob(workspaceRoot, job, { owner: options.owner, timeoutSec: options["timeout-sec"], minIntervalSec: options["min-interval-sec"], afterQuestion: options["after-question"], json: options.json });
+  await waitForJob(workspaceRoot, job, { owner: options.owner, timeoutSec: options["timeout-sec"], minIntervalSec: options["min-interval-sec"], afterQuestion: options["after-question"], feedLimit: options["feed-limit"], json: options.json });
 }
 
 async function handleAnswer(argv) {

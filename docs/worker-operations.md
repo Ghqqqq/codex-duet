@@ -6,8 +6,10 @@ acceptance criteria. For follow-ups, supply that worker's exact thread ID. No
 hand-written environment or sandbox instructions are needed in each assignment.
 The worker sets Bash `dangerouslyDisableSandbox: true` on every companion call.
 This affects the outer Claude Bash sandbox. Codex tasks use the plugin's configured
-sandbox default (initially `read-only`) and always receive `approvalPolicy: "never"`.
-Workers normally omit sandbox/write flags so that this configured choice applies.
+sandbox default (`danger-full-access` unless lowered with `setup --default-sandbox`)
+and always receive `approvalPolicy: "never"`. Workers omit `--sandbox` so that this
+default applies and pass `--sandbox read-only|workspace-write` only when the
+parent narrows one assignment.
 
 Parallel workers need disjoint write ownership or separate worktrees. A worker
 starts one detached Codex turn and loops `wait` for progress, questions and completion.
@@ -80,14 +82,18 @@ owner fail closed and log to broker stderr, since no job log remains available.
 
 ## Detached execution, questions and cleanup
 
-The native worker runs ONE `task --fresh --follow --json --report` (Bash
+The native worker runs ONE `task --fresh --follow --report` (Bash
 `timeout: 600000`): it enqueues the detached task-worker and stays attached as
 owner until the job ends, a question is pending, or the 570 s wait budget ends
-(`status: running`; then `wait <job> --owner <ownerId> --json --report` once per
+(`status: running`; then `wait <job> --owner <ownerId> --report` once per
 further 9.5 minutes). Scripts may still use `task --detached` plus `wait`. Feed
-mode (`wait` without `--json`) flushes activity lines as they arrive and ends with
-ONE final JSON line containing the snapshot/report plus `activity` (12 newest),
-`activityCount`/`activityOmitted` and `cursor`. `--timeout-sec` accepts 1–3600;
+mode (no `--json`, what the worker uses) flushes one activity line per Codex event
+as it arrives, so the agent's Bash output in Claude Code shows Codex working live,
+and ends with ONE final JSON line containing the snapshot/report plus `activity`
+(12 newest), `activityCount`/`activityOmitted` and `cursor`. One call streams at
+most `--feed-limit` lines (default 150, `0` = unlimited) because every streamed
+line also enters the agent's context; after the cap a single notice line is
+printed and later events are only counted. `--json` prints the final line only. `--timeout-sec` accepts 1–3600;
 early return on activity requires an explicit `--min-interval-sec`. Questions and
 completion return immediately. The worker never paraphrases or re-prints the feed.
 
@@ -127,10 +133,13 @@ sessionId remain readable and SessionEnd falls back to their session-ID ownerId.
 
 An attached owner wait heartbeats once a second (`ownerAttached`, lease renewal)
 and marks itself detached on SIGINT/SIGTERM/SIGHUP, parent-PID change or closed
-stdout. When the user stops the native agent, the task-worker sees the lost owner
-and interrupts the turn after the grace period (15 s, `CODEX_COMPANION_OWNER_GRACE_SEC`)
-with `interruptionReason: owner_lost`, confirmed like any other interruption. A
-normal return followed by silence still falls back to lease expiry.
+stdout. When the user stops the native agent, the task-worker sees that mark at
+its next 250 ms tick and interrupts the turn immediately with
+`interruptionReason: owner_stopped`. An owner that dies without a mark (SIGKILL,
+crash) is detected by its silent heartbeat after the grace period (5 s,
+`CODEX_COMPANION_OWNER_GRACE_SEC`) as `owner_lost`. Both are confirmed like any
+other interruption. A normal return followed by silence still falls back to
+lease expiry.
 
 A stopped native agent cannot resume in Claude Code 2.1.301. Every interrupted or
 failed report carries `continuationCommand`:
@@ -141,7 +150,7 @@ With the user's explicit consent the parent runs it through a new worker; it is
 never run automatically. For a job that is still running, a replacement worker's
 FIRST action is `adopt <jobId> --json`, which atomically rotates ownerId and
 renews the unexpired lease without starting a turn; it then runs
-`wait <jobId> --owner <newOwnerId> --json --report`. The replacement inherits
+`wait <jobId> --owner <newOwnerId> --report`. The replacement inherits
 thread/turn, pending question and delivered activity cursor. Old wait/status/answer
 calls return `ownership_moved` (exit 2) without renewing or answering. Adoption
 moves SessionEnd scope to the caller's Claude session when available.
@@ -201,35 +210,31 @@ If policy forbids that parameter, the worker returns the permission blocker.
 Persist a default for all workspaces sharing this plugin data directory:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --default-sandbox danger-full-access --dry-run --json
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --default-sandbox danger-full-access --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --default-sandbox workspace-write --dry-run --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --default-sandbox workspace-write --json
 ```
 
 The accepted values are `read-only`, `workspace-write`, and `danger-full-access`.
 The setting is `default_sandbox` in `<isolated-home>/duet/config.toml`
 (`~/.claude/codex-isolated/duet/config.toml` by default), so a terminal and a
 Claude session always read the same value. Writes merge with a private backup;
-dry-run is offline. `setup --json` reports `defaultSandbox`. An unset default is
-read-only. With no per-call flags, write-capable defaults imply write and reach
-both thread and turn policies, including detached tasks/resumes. Explicit
-`--sandbox` takes precedence and still requires explicit `--write` for a
-write-capable value. `--write` alone is a floor: it selects workspace-write
-unless the configured default is danger-full-access, which it keeps;
-`--write=false` selects read-only. Workers pass `--write` for assignments that
-edit files. Use `setup --default-sandbox read-only` to reset the default. Review
-commands keep their separate read-only behavior.
+dry-run is offline. `setup --json` reports `defaultSandbox`. The built-in default
+is `danger-full-access`: workers get the same permission level as the user's own
+Codex app in full-access mode, and the sandbox reaches both thread and turn
+policies, including detached tasks/resumes. The parent adjusts one call with
+`task --sandbox <mode>` in either direction; no other flag is needed. `--write`
+alone is a floor (at least workspace-write, never narrowing a broader default) and
+`--write=false` selects read-only; `--write --sandbox read-only` is rejected.
+Review commands keep their separate read-only behavior.
 
-For an assignment that needs Git metadata writes (such as `.git/index.lock`) or
-launching a browser harness, the parent can explicitly request:
+For an assignment that must not touch anything, the parent narrows one call:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --fresh --write --sandbox danger-full-access --report --json 'Run the authorized Git/browser assignment within the supplied paths.'
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --fresh --sandbox read-only --report --json 'Investigate and report; change nothing.'
 ```
 
-`--sandbox` accepts exactly `read-only`, `workspace-write`, or `danger-full-access`.
-Write-capable policies require `--write`; `--write --sandbox read-only` is rejected.
-This conservative guard also applies to a browser-only assignment requiring full
-access. Never choose elevation automatically on an EPERM or browser failure.
+Never choose elevation automatically on an EPERM or browser failure when the
+parent narrowed a call; return the denial to the parent.
 Without per-call flags, the configured default applies. Every thread resume explicitly
 sets this invocation's sandbox, preventing inheritance from a prior elevated task.
 Background jobs persist the requested policy before starting. Completed JSON/report

@@ -37,10 +37,11 @@ the native worker runtime, isolation and lifecycle work are Duet additions.
   times out (15 minutes by default) and Codex proceeds on a conservative
   assumption that it reports.
 - **Stops that stop.** Every job has a unique owner. While an owner `wait` is
-  attached it heartbeats once a second; if the owner dies (user stops the agent,
-  Bash kill, closed pipe) and nothing re-attaches within 15 s, the worker
-  interrupts the Codex turn (`owner_lost`). The 180 s lease remains the fallback
-  for an owner that returned normally and never came back. `cancel` reports
+  attached it heartbeats once a second. If the user stops the agent (signal,
+  parent shell gone, closed pipe) the wait marks its exit and the worker
+  interrupts the Codex turn immediately (`owner_stopped`); an owner killed
+  outright is noticed within 5 s (`owner_lost`). The 180 s lease remains the
+  fallback for an owner that returned normally and never came back. `cancel` reports
   confirmed versus unconfirmed termination; ending the Claude session interrupts
   that session's jobs. Idle brokers exit after 60 s.
 - **Resume after a stop.** Every interrupted/failed report carries
@@ -110,12 +111,14 @@ What happens under the hood:
 
 1. Claude spawns `codex:codex-worker` (Haiku) with a bounded assignment
    (objective, owned paths, constraints, acceptance criteria).
-2. The worker runs ONE `task --fresh --follow --json --report …` call with Bash
-   `timeout: 600000`. The helper submits the job, stays attached as its owner and
-   returns a single JSON line when Codex finishes, asks a question, or the 570 s
-   wait budget ends (`status: running`, then one `wait <job> --owner <ownerId>
-   --json --report` per further 9.5 minutes). Feed mode (`wait` without `--json`)
-   remains available for humans and scripts; cursors are per owner.
+2. The worker runs ONE `task --fresh --follow --report …` call with Bash
+   `timeout: 600000`. The helper submits the job, stays attached as its owner,
+   streams one line per Codex event while it runs (open the agent in Claude Code
+   to watch Codex work live; at most `--feed-limit` lines per call, default 150)
+   and ends with a single JSON line when Codex finishes, asks a question, or the
+   570 s wait budget ends (`status: running`, then one `wait <job> --owner
+   <ownerId> --report` per further 9.5 minutes). `--json` suppresses the feed for
+   scripts; cursors are per owner.
 3. If Codex calls `ask_parent`, the call returns `needs_answer`; the worker sends
    `questionMessage` verbatim to Claude once, waits with `--after-question`, and
    passes the reply to `answer <job> --owner <ownerId> --question <id>`.
@@ -143,13 +146,14 @@ Claude Code 2.1.301 can stop background agents through these UI actions:
 - `x` in a subagent's detail view.
 
 A stopped native agent cannot be resumed with SendMessage. Stopping it kills the
-worker's blocking helper call; the attached owner `wait` either marks itself
-detached (signal, parent shell gone, closed stdout) or simply stops heartbeating.
-If no owner re-attaches within the grace period (15 s, `CODEX_COMPANION_OWNER_GRACE_SEC`),
-the detached task worker interrupts the Codex turn with `interruptionReason:
-owner_lost` and confirms the interruption. Thread context and on-disk edits
-persist. The grace period exists so a Bash timeout kill followed by an immediate
-`wait` re-run does not interrupt anything.
+worker's blocking helper call. If the attached owner `wait` can mark its exit
+(signal, parent shell gone, closed stdout) the detached task worker interrupts
+the Codex turn at its next tick with `interruptionReason: owner_stopped`; if the
+owner simply stops heartbeating (SIGKILL, crash) the interruption follows after
+the grace period (5 s, `CODEX_COMPANION_OWNER_GRACE_SEC`) as `owner_lost`. Both
+are confirmed like any other interruption. Thread context and on-disk edits
+persist. A `wait` that returned normally (budget, question, terminal state)
+never starts either clock, so the gap between two worker calls is safe.
 
 The interrupted report (and `result --report --json`, `/codex:status <jobId>`)
 carries an exact `continuationCommand`:
@@ -183,12 +187,13 @@ half the lease for shorter leases).
 | Model | `gpt-6-astra` | `--model <name>` (`spark` maps to `gpt-5.3-codex-spark`) |
 | Reasoning effort | `xhigh` | `--effort none…xhigh` or `--effort max` where the model supports it |
 | Speed | normal | `--fast` requests the fast tier for that call only; `--normal` resets |
-| Codex sandbox | Configured default, initially `read-only` | `setup --default-sandbox <mode>` (stored in `~/.claude/codex-isolated/duet/config.toml`); per-call `--write` guarantees at least `workspace-write` without narrowing a broader default; `--write --sandbox danger-full-access` for full access |
+| Codex sandbox | `danger-full-access` (full access, like the Codex app's own full-access mode) | Lower the default with `setup --default-sandbox read-only\|workspace-write` (stored in `~/.claude/codex-isolated/duet/config.toml`); narrow or widen one call with `task --sandbox <mode>`; `--write` is a floor (at least `workspace-write`), `--write=false` an explicit read-only call |
 | Approval policy | `never` | — |
 
-Workers pass `--write` for assignments that edit files. Each follow-up uses its
-own flags and the current configured sandbox default; only `task --continue`
-deliberately inherits the original job's settings. Per-call write access, fast
+The parent chooses a sandbox per call the way it would choose a permission mode
+for a native subagent; without a flag the configured default applies. Each
+follow-up uses its own flags and the current configured default; only
+`task --continue` deliberately inherits the original job's settings. Per-call write access, fast
 mode and browser grants are otherwise never inherited from an earlier turn, and
 workers never elevate after a denial. Companion Bash calls run with
 `dangerouslyDisableSandbox: true` because the runtime needs network access and
@@ -331,14 +336,12 @@ to **Codex Computer Use.app**. Setup does not grant OS permissions or probe tool
 After changing tool/browser configuration, restart the Claude session/shared
 Codex runtime when other workers have finished.
 
-The sandbox default is stored in `CLAUDE_PLUGIN_DATA/config.toml`, or in
-`<isolated-home>/duet/config.toml` when plugin data is unset. Use the same plugin
-data directory when applying setup and launching workers. With neither task
-flag, a write-capable default implies `--write`; an explicit `--sandbox` wins
-and retains the existing explicit `--write` requirement for write-capable modes.
-`--write` alone selects workspace-write. Restore a conservative default with
-`setup --default-sandbox read-only`; use `task --sandbox read-only` for one call.
-Review commands remain read-only.
+The sandbox default is stored in `<isolated-home>/duet/config.toml` and is
+`danger-full-access` until you lower it. An explicit `task --sandbox <mode>` wins
+for that call in either direction and needs no other flag; `--write` alone
+guarantees at least workspace-write and `--write=false` requests read-only.
+Lower the default with `setup --default-sandbox read-only` or `workspace-write`;
+use `task --sandbox read-only` for one call. Review commands remain read-only.
 
 `setup --browser-approval ask` removes only top-level `approval_mode` from the
 isolated `browser/config.toml`; existing per-origin grants and download/upload/
@@ -448,7 +451,7 @@ session store.
 
 - `ask_parent`, `--follow`, owner loss, `--continue`, lease expiry and
   cancellation are covered by fixture tests against a fake app-server. The
-  per-thread MCP bridge, owner loss (`owner_lost` after the grace period) and
+  per-thread MCP bridge, owner loss (`owner_stopped`/`owner_lost`) and
   `--continue` were also exercised live against the real app-server
   (`codex-cli 0.162.0-alpha.17.2`), including back-to-back `ask_parent` round
   trips on one resumed thread; that live smoke is still a manual step, not CI.
@@ -456,9 +459,11 @@ session store.
   and a per-thread MCP server override on resumed threads. Runtimes that reject
   either registration fall back to a final `needs_input` report.
 - Codex edits bypass Claude Code's own permission prompts and edit tracking; the
-  report's `touchedFiles`/`preExistingChanges` and the Codex sandbox are the
-  controls. Owner loss is detected by heartbeat with a 15 s grace, so a stop is
-  near-immediate rather than instantaneous.
+  report's `touchedFiles`/`preExistingChanges`, the Codex sandbox and your git
+  history are the controls (`git diff`/`git status` show everything a worker
+  changed; Claude's own rewind does not). An owner that is killed outright
+  (SIGKILL) is detected by heartbeat with a 5 s grace; a signalled stop is
+  immediate.
 - The owner lease is lifecycle coordination between local processes, not an
   authentication boundary.
 - Browser origin persistence follows the format used by the bundled browser

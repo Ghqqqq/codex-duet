@@ -15,9 +15,13 @@ export const ownerId = jobId => `${jobId}-${randomUUID()}`;
 // gone, closed stdout) or its heartbeat stops, the worker interrupts the turn once
 // this grace period passes without a re-attach. The grace covers a Claude Bash
 // timeout kill followed by an immediate re-run of wait; a user stop never re-attaches.
+// Grace applies only to a silent owner (heartbeat stopped without a detach mark,
+// e.g. SIGKILL). The attached owner renews at least once a second, so 5 s is
+// several missed beats. An owner that could mark its exit (signal, parent gone,
+// closed pipe) is treated like a killed native subagent: stop immediately.
 export const OWNER_GRACE_MS = (() => {
   const raw = process.env.CODEX_COMPANION_OWNER_GRACE_SEC;
-  return /^\d+$/.test(raw ?? "") && Number(raw) >= 1 && Number(raw) <= 600 ? Number(raw) * 1000 : 15000;
+  return /^\d+$/.test(raw ?? "") && Number(raw) >= 1 && Number(raw) <= 600 ? Number(raw) * 1000 : 5000;
 })();
 export function renewLease(cwd, id, owner) {
   return updateJob(cwd, id, job => {
@@ -27,7 +31,7 @@ export function renewLease(cwd, id, owner) {
   });
 }
 // reason: null (attach) | "returned" (clean exit: timeout/terminal/question) |
-// "signal" | "parent_exit" | "stdout_closed" (abnormal exits start the grace clock).
+// "signal" | "parent_exit" | "stdout_closed" (the owner was stopped: interrupt now).
 export function markOwnerAttachment(cwd, id, owner, reason = null) {
   return updateJob(cwd, id, job => {
     if (!owner || job.ownerId !== owner) return null;
@@ -40,7 +44,7 @@ export function markOwnerAttachment(cwd, id, owner, reason = null) {
 export function ownerLost(job, now = Date.now()) {
   if (!ACTIVE.has(job.status)) return false;
   if (job.ownerAttached) return Boolean(job.leaseRenewedAt) && now - job.leaseRenewedAt >= OWNER_GRACE_MS;
-  return Boolean(job.ownerDetachedAt) && job.ownerDetachReason !== "returned" && now - job.ownerDetachedAt >= OWNER_GRACE_MS;
+  return Boolean(job.ownerDetachedAt) && job.ownerDetachReason !== null && job.ownerDetachReason !== "returned";
 }
 const quote = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 const companionCommand = args => `node ${quote(fileURLToPath(new URL("../codex-companion.mjs", import.meta.url)))} ${args}`;
@@ -183,7 +187,9 @@ export class JobRuntime {
         const job = readJobFile(resolveJobFile(cwd, id));
         if (job.cancelRequested) this.stop(job.cancelRequested.reason);
         else if (job.leaseExpiresAt && Date.now() >= job.leaseExpiresAt) this.stop("lease_expired");
-        else if (!foreground && ownerLost(job)) this.stop("owner_lost");
+        // owner_stopped: the owner marked its exit (user stopped the agent/wait).
+        // owner_lost: the heartbeat went silent (killed outright or crashed).
+        else if (!foreground && ownerLost(job)) this.stop(job.ownerAttached ? "owner_lost" : "owner_stopped");
         else if (foreground && !this.reason) renewLease(cwd, id, foregroundOwner);
       } catch { this.stop("owner_state_unavailable"); }
     };

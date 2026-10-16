@@ -59,11 +59,11 @@ does not grant OS permissions or run a live tool probe.
 `--default-sandbox read-only|workspace-write|danger-full-access` is an independent,
 offline setup operation with `--dry-run` and backups. It stores `default_sandbox`
 in `<isolated-home>/duet/config.toml`, shared by terminal and Claude sessions.
-Use the same plugin data directory for setup and workers. With no task flags,
-the saved policy applies and write-capable defaults imply write. Explicit
-per-call flags win; `--write` alone selects workspace-write, and explicit
-write-capable `--sandbox` values still require `--write`. `setup --json` reports
-`defaultSandbox`. Workers never modify or elevate this setting after a denial.
+The built-in default is `danger-full-access` (workers run like the user's own
+Codex app in full-access mode); this setting lowers it. Explicit per-call flags
+win: `task --sandbox <mode>` narrows or widens one call on its own, `--write`
+alone guarantees at least workspace-write, `--write=false` requests read-only.
+`setup --json` reports `defaultSandbox`. Workers never modify this setting.
 
 `--browser-approval never-ask|ask` writes or removes only top-level approval_mode
 in the isolated browser/config.toml. `never-ask` stores `"never_ask"` and permits

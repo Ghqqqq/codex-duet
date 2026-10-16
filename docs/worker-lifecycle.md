@@ -1,7 +1,7 @@
 # Native worker lifecycle and protocol evidence
 
 Duet's native Claude Agent (a Haiku relay) makes ONE blocking call per
-assignment: `task --fresh --follow --json --report`. `--follow` enqueues the same
+assignment: `task --fresh --follow --report`. `--follow` enqueues the same
 detached task-worker that `--detached` uses, then runs the owner `wait` loop in
 the same process, so the Claude side spends no tokens while Codex works. The call
 returns a single JSON line when the job ends, a parent question is pending, or the
@@ -134,13 +134,14 @@ An attached owner `wait` (`--owner`, including `task --follow`) records
 its heartbeat. On SIGINT/SIGTERM/SIGHUP, a changed parent PID or a closed stdout
 pipe it marks `ownerDetachReason: signal|parent_exit|stdout_closed` and exits 130;
 a normal return (timeout, terminal, question) marks `returned`. The detached
-task-worker's 250 ms tick stops the turn with `owner_lost` when an attached
-owner's heartbeat is older than the grace period, or an abnormally detached owner
-has not re-attached within it (15 s, `CODEX_COMPANION_OWNER_GRACE_SEC`, 1–600).
-The grace absorbs a Claude Bash timeout kill followed by an immediate `wait`
-re-run; a user stop never re-attaches, so the turn is interrupted and confirmed
-within roughly the grace period instead of the 180 s lease. A `returned` owner
-that never comes back still falls back to lease expiry.
+task-worker's 250 ms tick stops the turn with `owner_stopped` as soon as it sees
+an abnormal detach mark (a user stop is treated like killing a native subagent),
+and with `owner_lost` when an attached owner's heartbeat is older than the grace
+period (5 s, `CODEX_COMPANION_OWNER_GRACE_SEC`, 1–600), which only happens to an
+owner that could not mark its exit (SIGKILL, crash). Claude Code moves a Bash
+call that hits its timeout to the background instead of killing it, so no grace
+is needed for that case. A `returned` owner that never comes back still falls
+back to lease expiry.
 
 Claude Code 2.1.301 cannot resume a native agent stopped by the user. Every
 interrupted or failed report (and `result --report --json`) carries
@@ -387,10 +388,11 @@ Expect `lease_expired`, no owner rotation or new turn, interruption confirmation
 when available, and the exact unexecuted `task --continue` continuation command.
 
 For owner-loss acceptance, start a `--follow` smoke in a terminal and kill that
-process with SIGKILL while Codex is still working. Within about 15 s an ownerless
-`status '<jobId>' --json` must show the job interrupted with
-`interruptionReason: owner_lost`, `interruptionConfirmed: true` and the same
-continuation command. Running that continuation (one new turn on the same thread)
+process with SIGTERM while Codex is still working: within about a second an
+ownerless `status '<jobId>' --json` must show the job interrupted with
+`interruptionReason: owner_stopped`. Repeat with SIGKILL: within about 5 s the
+job must show `interruptionReason: owner_lost`. Both carry
+`interruptionConfirmed: true` and the same continuation command. Running that continuation (one new turn on the same thread)
 must show `duet_parent` in the thread's MCP servers and let `ask_parent` reach a
 new owner `wait`.
 If interruption is still in progress, poll ownerless status/result until terminal.

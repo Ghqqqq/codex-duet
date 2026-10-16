@@ -18,8 +18,9 @@ If the user did pass a job ID:
 
 This command is an observer: do not supply `--owner` or renew worker leases.
 A stopped worker agent cannot resume. When the user stops one, the companion
-notices the lost owner and interrupts the Codex turn within about 15 s
-(`interruptionReason: owner_lost`); the report then carries the exact
+interrupts the Codex turn immediately (`interruptionReason: owner_stopped`; an
+owner killed outright is noticed within about 5 s as `owner_lost`); the report
+then carries the exact
 `continuationCommand` (`task --continue <jobId> --follow --report --json`), which
 starts ONE new turn on the same Codex thread with the job's recorded settings.
 With the user's explicit consent, run it through a new `codex:codex-worker`

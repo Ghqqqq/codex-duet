@@ -172,16 +172,16 @@ test("browser approval dry-run and ask do not create a missing home; mixed chang
 test("default sandbox persists plugin-wide in the isolated home regardless of CLAUDE_PLUGIN_DATA", () => {
   const f = fixture(), root = path.join(f.env.CODEX_COMPANION_HOME, "duet"), file = path.join(root, "config.toml");
   const setup = options => defaultSandboxSetup({ env: f.env, ...options });
-  assert.equal(setup().defaultSandbox, "read-only");
-  assert.equal(setup({ mode: "danger-full-access", dryRun: true }).defaultSandbox, "danger-full-access");
+  assert.equal(setup().defaultSandbox, "danger-full-access", "built-in default: full access, like the user's own Codex app");
+  assert.equal(setup({ mode: "read-only", dryRun: true }).defaultSandbox, "read-only");
   assert.equal(fs.existsSync(root), false);
   fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(file, 'keep = "value"\n');
-  const result = setup({ mode: "danger-full-access" });
+  const result = setup({ mode: "read-only" });
   assert.equal(result.file, file);
   assert.equal(fs.readFileSync(result.backups[0], "utf8"), 'keep = "value"\n');
-  assert.equal(setup().defaultSandbox, "danger-full-access");
-  assert.deepEqual(setup({ mode: "danger-full-access" }).changedFiles, []);
-  assert.equal(setup({ mode: "read-only" }).defaultSandbox, "read-only");
+  assert.equal(setup().defaultSandbox, "read-only");
+  assert.deepEqual(setup({ mode: "read-only" }).changedFiles, []);
+  assert.equal(setup({ mode: "danger-full-access" }).defaultSandbox, "danger-full-access");
   assert.throws(() => setup({ mode: "full" }), /--default-sandbox/);
   // A terminal (no plugin data) and a Claude session (plugin data set) read the same file.
   const terminal = defaultSandboxSetup({ env: { ...f.env, CLAUDE_PLUGIN_DATA: "" }, mode: "workspace-write" });

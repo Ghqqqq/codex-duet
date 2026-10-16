@@ -120,7 +120,7 @@ test("recovery fetches the exact lost turn, even after a later turn on the same 
   assert.equal(JSON.parse(recovered.stdout).turnId, first.turnId);
   assert.equal(JSON.parse(recovered.stdout).fileTrackingStatus, "partial");
   assert.match(JSON.parse(recovered.stdout).fileTrackingBasis, /Recovered exact-turn/);
-  assert.equal(JSON.parse(recovered.stdout).sandbox, "read-only");
+  assert.equal(JSON.parse(recovered.stdout).sandbox, "danger-full-access", "the recovered report keeps the sandbox the job actually ran with");
   assert.equal(JSON.parse(f.call("result", "--thread", first.threadId, "--report", "--json").stdout).turnId, second.turnId);
   assert.equal(f.state().nextTurnId, 3, "recovery must not submit a third turn");
 });

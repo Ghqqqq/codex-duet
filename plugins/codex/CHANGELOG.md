@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.6-isolated.13
+
+- Permissions like a native subagent's: the built-in sandbox default is now `danger-full-access` (the same level as the user's own Codex app in full-access mode, approval policy `never`). `setup --default-sandbox read-only|workspace-write` lowers it; the parent narrows or widens one call with `task --sandbox <mode>` alone. `--write` remains a floor (at least workspace-write) and `--write=false` an explicit read-only request; the "write-capable `--sandbox` requires `--write`" rule is gone. The sandbox now always reaches the turn policy too.
+- Live view inside the agent: the worker's single call is `task --fresh --follow --report` (feed mode). It streams one line per Codex event (commands, file changes, tool calls, assistant snippets) while running, so opening the `codex-worker` agent in Claude Code shows Codex working live, and ends with the JSON line. New `--feed-limit <n>` (default 150, `0` = unlimited) bounds how many lines one call streams, because each line also enters the worker's context; later events are counted in the final JSON.
+- Stops are immediate: an owner wait that can mark its exit (signal, parent shell gone, closed stdout) now makes the task-worker interrupt the turn at its next tick (`interruptionReason: owner_stopped`). Only a silently dead owner (SIGKILL, crash) waits for the heartbeat grace, lowered from 15 s to 5 s (`owner_lost`).
+- Worker contract, `/codex:status`, `/codex:setup`, README and docs updated for the new defaults.
+
 ## 1.0.6-isolated.12
 
 - Removed credential redaction heuristics from activity snippets, question messages and worker reports: they blanked ordinary `NAME=value` text such as `ANSWER=Yes`. Only ANSI escapes and control/bidi characters are still stripped so lines stay single-line and terminal-safe.

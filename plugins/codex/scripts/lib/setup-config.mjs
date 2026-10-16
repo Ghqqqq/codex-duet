@@ -116,6 +116,9 @@ export function browserOriginSetup({ allow = [], revoke = [], approval, env = pr
 }
 
 export const SANDBOX_MODES = ["read-only", "workspace-write", "danger-full-access"];
+// Workers run like the user's own Codex app in full-access mode unless the user
+// lowers the default here or the parent narrows one call with --sandbox.
+export const BUILTIN_DEFAULT_SANDBOX = "danger-full-access";
 export function defaultSandboxSetup({ mode, env = process.env, dryRun = false } = {}) {
   if (mode !== undefined && !SANDBOX_MODES.includes(mode)) throw new Error("--default-sandbox must be read-only, workspace-write, or danger-full-access.");
   // One location for every caller: the isolated home is known both inside a
@@ -124,7 +127,7 @@ export function defaultSandboxSetup({ mode, env = process.env, dryRun = false } 
   const root = path.join(resolveIsolatedCodexHome(env), "duet");
   const file = path.join(root, "config.toml"), before = read(root, file);
   const after = mode === undefined ? before : setTomlField(before, ["default_sandbox"], mode);
-  const defaultSandbox = readTomlField(after, ["default_sandbox"]) ?? "read-only";
+  const defaultSandbox = readTomlField(after, ["default_sandbox"]) ?? BUILTIN_DEFAULT_SANDBOX;
   if (!SANDBOX_MODES.includes(defaultSandbox)) throw new Error("Invalid saved default_sandbox; repair it with setup --default-sandbox.");
   return { file, defaultSandbox, ...apply(root, [{ file, before, after }], dryRun) };
 }

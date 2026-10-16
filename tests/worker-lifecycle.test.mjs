@@ -374,6 +374,18 @@ test("default wait blocks through activity and caps the reported activity list",
   const capped = json(f.call("wait", launch.jobId, "--owner", "capped-reader", "--timeout-sec", "1", "--json"));
   assert.equal(capped.activity.length, 12); assert.equal(capped.activityOmitted, capped.activityCount - 12); assert.ok(capped.activityCount >= 20);
   assert.equal(capped.activity.at(-1).seq, capped.cursor, "the newest events are the ones kept");
+  // Feed mode streams at most --feed-limit lines per call (the agent's context pays for each one).
+  const limited = f.call("wait", launch.jobId, "--owner", "feed-reader", "--timeout-sec", "1", "--feed-limit", "5", "--report");
+  assert.equal(limited.status, 0, limited.stderr);
+  const limitedLines = limited.stdout.trim().split("\n");
+  assert.equal(limitedLines.filter(line => !line.startsWith("{") && !line.startsWith("…")).length, 5, "five feed lines, then the pause notice");
+  assert.match(limitedLines[5], /^… feed paused after 5 lines/);
+  const limitedFinal = JSON.parse(limitedLines.at(-1));
+  assert.ok(limitedFinal.activityCount >= 20, "events after the cap are still counted and cursor-tracked");
+  assert.equal(limitedFinal.activity.at(-1).seq, limitedFinal.cursor);
+  const unlimited = f.call("wait", launch.jobId, "--owner", "all-reader", "--timeout-sec", "1", "--feed-limit", "0", "--report");
+  assert.equal(unlimited.stdout.trim().split("\n").length - 1, JSON.parse(unlimited.stdout.trim().split("\n").at(-1)).activityCount, "--feed-limit 0 streams every event");
+  assert.match(f.call("wait", launch.jobId, "--feed-limit", "many", "--timeout-sec", "1").stderr, /--feed-limit/);
   json(f.call("cancel", launch.jobId, "--json"));
 });
 
@@ -386,32 +398,42 @@ test("an owner wait that dies abruptly interrupts the worker after the grace per
   const killedAt = Date.now();
   const result = json(f.call("wait", launch.jobId, "--timeout-sec", "15", "--json", "--report"), 1);
   assert.equal(result.status, "interrupted"); assert.equal(result.interruptionReason, "owner_lost"); assert.equal(result.interruptionConfirmed, true);
-  assert.ok(Date.now() - killedAt < 12000, "interruption follows the grace period, not the 180 s lease");
+  assert.ok(Date.now() - killedAt < 8000, "interruption follows the grace period, not the 180 s lease");
   assert.ok(result.continuationCommand.includes(`task --continue '${launch.jobId}'`));
   assert.equal(f.state().lastInterrupt.turnId, result.turnId);
 });
 
-test("a signalled owner wait detaches, and a re-attach within the grace period keeps the turn alive", async () => {
-  const f = fixture(); f.env.CODEX_COMPANION_OWNER_GRACE_SEC = "3";
+test("a signalled owner wait stops the worker immediately; only a silent owner gets the grace period", async () => {
+  const f = fixture();
   const launch = json(f.call("task", "--detached", "--json", "fixture"));
   const owner = spawnOwned(process.execPath, [script, "wait", launch.jobId, "--owner", launch.ownerId, "--timeout-sec", "60", "--json"], { cwd: f.repo, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
-  await waitUntil(() => job(f, launch.jobId).ownerAttached);
-  owner.kill("SIGTERM");
+  await waitUntil(() => job(f, launch.jobId).ownerAttached && job(f, launch.jobId).turnId);
+  owner.kill("SIGTERM"); // Claude Code stopping the agent's Bash call, or Ctrl+C on a terminal --follow.
+  const signalledAt = Date.now();
   const code = await new Promise(resolve => owner.on("close", resolve));
   assert.equal(code, 130);
+  const result = json(f.call("wait", launch.jobId, "--timeout-sec", "10", "--json", "--report"), 1);
+  assert.equal(result.status, "interrupted"); assert.equal(result.interruptionReason, "owner_stopped"); assert.equal(result.interruptionConfirmed, true);
+  assert.ok(Date.now() - signalledAt < 3000, `an explicit detach does not wait for the grace period (${Date.now() - signalledAt} ms)`);
+  assert.ok(result.continuationCommand.includes(`task --continue '${launch.jobId}'`));
   const detached = job(f, launch.jobId);
-  assert.equal(detached.ownerAttached, false); assert.equal(detached.ownerDetachReason, "signal"); assert.ok(detached.ownerDetachedAt);
-  // This test process uses the default 15 s grace; the worker child uses the 3 s override above.
-  assert.equal(ownerLost(detached, detached.ownerDetachedAt + 14999), false); assert.equal(ownerLost(detached, detached.ownerDetachedAt + 15000), true);
-  assert.equal(ownerLost({ ...detached, ownerAttached: true, leaseRenewedAt: detached.ownerDetachedAt }, detached.ownerDetachedAt + 15000), true, "a stale heartbeat while attached also counts");
-  assert.equal(ownerLost({ ...detached, ownerDetachReason: "returned" }, detached.ownerDetachedAt + 60000), false);
-  const again = json(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--timeout-sec", "1", "--json"));
-  assert.equal(again.status, "running"); assert.equal(job(f, launch.jobId).ownerDetachReason, "returned");
-  await delay(3600);
-  assert.equal(job(f, launch.jobId).status, "running", "a clean return followed by silence falls back to the lease, not the grace clock");
-  json(f.call("wait", launch.jobId, "--owner", "not-the-owner", "--timeout-sec", "1", "--json"));
-  assert.equal(job(f, launch.jobId).ownerDetachReason, "returned", "a non-owner reader neither attaches nor detaches");
-  assert.equal(json(f.call("cancel", launch.jobId, "--json")).confirmation, "confirmed");
+  assert.equal(detached.ownerAttached, false); assert.equal(detached.ownerDetachReason, "signal");
+  // ownerLost semantics, evaluated directly (this process uses the default 5 s grace).
+  const active = { ...detached, status: "running" };
+  assert.equal(ownerLost(active, active.ownerDetachedAt + 1), true, "signal/parent_exit/stdout_closed detaches count immediately");
+  assert.equal(ownerLost({ ...active, ownerDetachReason: "returned" }, active.ownerDetachedAt + 60000), false, "a clean return falls back to the lease");
+  assert.equal(ownerLost({ ...active, ownerDetachReason: null, ownerDetachedAt: null }, active.ownerDetachedAt + 60000), false, "never attached: lease only");
+  const silent = { ...active, ownerAttached: true, leaseRenewedAt: 1000 };
+  assert.equal(ownerLost(silent, 1000 + 4999), false); assert.equal(ownerLost(silent, 1000 + 5000), true, "a silent heartbeat is given 5 s");
+  // A clean return followed by silence (the worker between two wait calls) is not a stop.
+  const second = json(f.call("task", "--detached", "--json", "fixture"));
+  json(f.call("wait", second.jobId, "--owner", second.ownerId, "--timeout-sec", "1", "--json"));
+  assert.equal(job(f, second.jobId).ownerDetachReason, "returned");
+  await delay(5600);
+  assert.equal(job(f, second.jobId).status, "running", "a clean return followed by silence falls back to the lease, not the grace clock");
+  json(f.call("wait", second.jobId, "--owner", "not-the-owner", "--timeout-sec", "1", "--json"));
+  assert.equal(job(f, second.jobId).ownerDetachReason, "returned", "a non-owner reader neither attaches nor detaches");
+  assert.equal(json(f.call("cancel", second.jobId, "--json")).confirmation, "confirmed");
 });
 
 test("task --follow submits and waits in one call as the owner", () => {
@@ -428,7 +450,7 @@ test("task --follow submits and waits in one call as the owner", () => {
 
 test("task --continue resumes the job's thread with its recorded authorization and a parent bridge", async () => {
   const f = fixture("slow-task");
-  const first = json(f.call("task", "--detached", "--json", "--write", "first assignment"));
+  const first = json(f.call("task", "--detached", "--json", "--sandbox", "workspace-write", "first assignment"));
   const done = json(f.call("wait", first.jobId, "--json", "--report"));
   assert.equal(done.status, "completed"); assert.equal(done.sandbox, "workspace-write");
   for (const extra of [["--write"], ["--sandbox", "read-only"], ["--thread", done.threadId], ["--model", "other"], ["--approve-browser-origin", "https://example.com"]]) {
@@ -438,7 +460,7 @@ test("task --continue resumes the job's thread with its recorded authorization a
   assert.match(f.call("task", "--continue", "missing-job", "--json").stderr, /No stored job/);
   const second = json(f.call("task", "--continue", first.jobId, "--follow", "--report", "--json", "continue with the next step"));
   assert.equal(second.status, "completed"); assert.notEqual(second.jobId, first.jobId); assert.equal(second.threadId, done.threadId);
-  assert.equal(second.sandbox, "workspace-write", "write authorization is inherited from the original job");
+  assert.equal(second.sandbox, "workspace-write", "the original job's narrowed sandbox is inherited, not the full-access default");
   const resume = f.state().lastThreadResume;
   assert.equal(resume.threadId, done.threadId); assert.equal(resume.sandbox, "workspace-write");
   const bridge = resume.config.mcp_servers.duet_parent;
