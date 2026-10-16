@@ -1,17 +1,17 @@
 {
-  "name": "codex-isolated-local",
+  "name": "duet",
   "owner": {
-    "name": "Local isolation customization (upstream OpenAI)"
+    "name": "Duet (fork of openai/codex-plugin-cc)"
   },
   "metadata": {
-    "description": "Duet — local isolated fork of openai/codex-plugin-cc with independent sessions and login.",
-    "version": "1.0.6-isolated.7"
+    "description": "Duet — Codex workers as native Claude Code subagents, in an isolated Codex home. Fork of openai/codex-plugin-cc.",
+    "version": "1.0.6-isolated.8"
   },
   "plugins": [
     {
       "name": "codex",
       "description": "Duet: delegate coding, research and review from Claude Code to parallel Codex workers.",
-      "version": "1.0.6-isolated.7",
+      "version": "1.0.6-isolated.8",
       "author": {
         "name": "OpenAI"
       },

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.6-isolated.8
+
+- Rename the marketplace to `duet`; the install ID becomes `codex@duet`. The plugin name, `/codex:*` commands and `codex:codex-worker` agent are unchanged. README documents the upgrade path and plugin-data migration.
+
 ## 1.0.6-isolated.7
 
 - Run native workers as one detached task with owner-renewed leases and bounded `wait` progress snapshots. Show startup phases, safe item summaries and WebSocket retry warnings in logs and reports.

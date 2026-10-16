@@ -53,13 +53,19 @@ Add the marketplace and install the plugin:
 
 ```bash
 /plugin marketplace add Ghqqqq/codex-duet        # or an absolute path to a local checkout
-/plugin install codex@codex-isolated-local
+/plugin install codex@duet
 /reload-plugins
 ```
 
 The repository is private, so the GitHub form needs Git credentials that can read
-it. The plugin keeps the `codex` command namespace: commands are `/codex:*` and the
-agents are `codex:codex-worker` and `codex:codex-rescue`.
+it. The marketplace is `duet`; the plugin keeps the `codex` command namespace, so
+the install ID is `codex@duet`, commands are `/codex:*` and the agents are
+`codex:codex-worker` and `codex:codex-rescue`.
+
+Upgrading from the earlier `codex@codex-isolated-local` ID: uninstall it and remove
+that marketplace, add this one again, and install `codex@duet`. Claude Code keys
+plugin data by ID, so copy `~/.claude/plugins/data/codex-codex-isolated-local` to
+`~/.claude/plugins/data/codex-duet` first if you want to keep job history.
 
 Then check the runtime and sign in to the isolated home once:
 
@@ -125,30 +131,90 @@ all active jobs and the latest 50 finished jobs are kept.
 
 ## Commands
 
-| Command | Purpose |
-| --- | --- |
-| `/codex:review [--base <ref>] [--background]` | Read-only Codex review of the working tree or a branch. |
-| `/codex:adversarial-review [focus…]` | Steerable review that challenges design choices and assumptions. |
-| `/codex:rescue <task>` | Hand a one-off task to Codex through the `codex-rescue` agent (`--resume`, `--fresh`, `--background`). |
-| `/codex:transfer` | Turn the current Claude session into a Codex thread you can resume in Codex. |
-| `/codex:status [job]` / `/codex:result [job]` | Inspect running or finished jobs and their stored output. |
-| `/codex:cancel [job]` | Interrupt a job and report whether termination was confirmed. |
-| `/codex:setup` | Readiness check plus the configuration actions below. |
+### `/codex:review`
 
-Companion subcommands used by workers (`node scripts/codex-companion.mjs …`):
-`task`, `wait`, `answer`, `status`, `result`, `cancel`, `setup`. Run it without
-arguments for full usage.
+Runs a read-only Codex review of your uncommitted changes, or of your branch
+compared to a base such as `main` with `--base <ref>`. It supports `--wait` and
+`--background`, and takes no focus text; use `/codex:adversarial-review` for that.
 
-### Review gate
+```bash
+/codex:review
+/codex:review --base main
+/codex:review --background
+```
+
+### `/codex:adversarial-review`
+
+A steerable review that challenges the chosen design: assumptions, tradeoffs,
+failure modes and safer alternatives.
+It uses the same review target selection as `/codex:review`, including `--base <ref>`,
+and accepts focus text after the flags. It is read-only.
+
+```bash
+/codex:adversarial-review
+/codex:adversarial-review --base main challenge whether this was the right caching and retry design
+/codex:adversarial-review --background look for race conditions and question the chosen approach
+```
+
+### `/codex:rescue`
+
+Hands a one-off task to Codex through the `codex:codex-rescue` subagent: investigate
+a bug, try a fix, continue a previous Codex task, or take a cheaper pass with a
+smaller model. It supports `--background`, `--wait`, `--resume` and `--fresh`.
+
+```bash
+/codex:rescue investigate why the tests started failing
+/codex:rescue --resume apply the top fix from the last run
+/codex:rescue --model gpt-5.4-mini --effort medium investigate the flaky integration test
+/codex:rescue --model spark fix the issue quickly
+```
+
+If you do not pass `--model` or `--effort`, delegated tasks use `gpt-6-astra` and `xhigh`.
+If you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`. For planned,
+parallel work Claude uses `codex:codex-worker` instead (see above).
+
+### `/codex:transfer`
+
+Creates a persistent Codex thread from the current Claude Code session and prints
+the isolated `codex-isolated.mjs --home <directory> resume <session-id>` command,
+so you can continue the same context directly in Codex. `--source <jsonl>`
+overrides the transcript path supplied by the SessionStart hook.
+
+### `/codex:status`
+
+Shows running and recent Codex jobs for the current repository, or one job with
+`/codex:status <job-id>`.
+
+### `/codex:result`
+
+Shows the stored output of a finished job, including the Codex session ID for
+resuming it in Codex.
+
+### `/codex:cancel`
+
+Interrupts an active job and reports whether termination was confirmed.
+
+### `/codex:setup`
+
+Checks whether Codex is installed, reachable and logged in. If Codex is missing
+and npm is available, it can offer to install Codex for you. It also runs the
+configuration actions described under [Configuration](#configuration).
+
+The optional review gate runs a targeted Codex review of Claude's last turn from a
+`Stop` hook and blocks the stop if it finds issues:
 
 ```bash
 /codex:setup --enable-review-gate
 /codex:setup --disable-review-gate
 ```
 
-When enabled, a `Stop` hook runs a targeted Codex review of Claude's last turn and
-blocks the stop if it finds issues. This can create long Claude/Codex loops and
-consume usage quickly; enable it only while you are watching the session.
+This can create long Claude/Codex loops and consume usage quickly; enable it only
+while you are watching the session.
+
+### Companion subcommands
+
+Workers call `node scripts/codex-companion.mjs` directly: `task`, `wait`, `answer`,
+`status`, `result`, `cancel` and `setup`. Run it without arguments for full usage.
 
 ## Configuration
 
