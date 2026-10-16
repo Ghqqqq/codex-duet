@@ -37,7 +37,7 @@ export function buildWorkerReport(payload, meta = {}) {
   const preExisting = payload.preExistingChanges ?? [];
   const origins = payload.approvedBrowserOrigins ?? [];
   const touchedLimit = browserBlocker ? 6 : 10;
-  const findingsLimit = origins.length > 3 ? 1 : origins.length ? 2 : 5;
+  const findingsLimit = payload.startupTimings ? 1 : origins.length > 3 ? 1 : origins.length ? 2 : 5;
   const assumptionIndex = findings.findIndex(line => /^(?:#+\s*)?(?:\*\*)?assumptions?\b/i.test(line));
   return {
     status,
@@ -47,6 +47,9 @@ export function buildWorkerReport(payload, meta = {}) {
     exitCode: payload.status,
     sandbox: payload.sandbox ?? "unknown",
     approvalPolicy: payload.approvalPolicy ?? "unknown",
+    ...(payload.startupTimings ? { startupTimings: Object.entries(payload.startupTimings).map(([phase, value]) => `${phase}: ${value == null ? "unobserved" : typeof value === "number" ? `${value}ms` : `elapsed=${value.elapsedMs ?? "unknown"}ms${value.durationMs !== undefined ? ` duration=${value.durationMs}ms` : ""}`}`).join("; ") } : {}),
+    ...(payload.startupWarning ? { startupWarning: payload.startupWarning } : {}),
+    ...(payload.interruptionReason ? { interruptionReason: payload.interruptionReason, interruptionConfirmed: payload.interruptionConfirmed } : {}),
     approvedBrowserOrigins: origins.slice(0, 3),
     ...(origins.length > 3 ? { approvedBrowserOriginsOmitted: origins.length - 3 } : {}),
     rawOutputFile: meta.rawOutputFile ?? null,

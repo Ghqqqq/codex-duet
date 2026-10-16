@@ -10,12 +10,13 @@
 import fs from "node:fs";
 import net from "node:net";
 import process from "node:process";
-import { spawn } from "node:child_process";
+import { spawnOwned as spawn } from "./process.mjs";
 import readline from "node:readline";
 import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { ensureBrokerSession, loadBrokerSession } from "./broker-lifecycle.mjs";
 import { isolatedCodexArgs, isolatedCodexEnv, resolveCodexBinary, resolveCodexRuntimeIdentity, resolveIsolatedCodexHome } from "./codex-home.mjs";
-import { terminateProcessTree } from "./process.mjs";
+import { stopOwnedProcessGroup } from "./process.mjs";
+import { isParentQuestion } from "./job-runtime.mjs";
 import { decideServerRequest, logServerRequest, normalizeBrowserOrigins } from "./server-requests.mjs";
 
 const PLUGIN_MANIFEST_URL = new URL("../../.claude-plugin/plugin.json", import.meta.url);
@@ -33,7 +34,7 @@ const DEFAULT_CLIENT_INFO = {
 
 /** @type {InitializeCapabilities} */
 const DEFAULT_CAPABILITIES = {
-  experimentalApi: false,
+  experimentalApi: true,
   requestAttestation: false,
   optOutNotificationMethods: [
     "item/agentMessage/delta",
@@ -71,6 +72,8 @@ class AppServerClientBase {
     this.transport = "unknown";
     this.serverRequestHandler = null;
     this.serverRequestPolicy = { approvedBrowserOrigins: normalizeBrowserOrigins(options.approvedBrowserOrigins ?? []), threadId: null, turnId: null };
+    this.abortHandler = () => { this.abortTimer ??= setTimeout(() => { void this.close(); }, 4500); };
+    options.signal?.addEventListener("abort", this.abortHandler);
 
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
@@ -155,6 +158,8 @@ class AppServerClientBase {
       return;
     }
 
+    if (message.method === "duet/runtime") this.options.onRuntimeEvent?.(message.params);
+    if (message.method === "mcpServer/startupStatus/updated" && message.params?.status === "ready") this.options.onRuntimeEvent?.({ mcpReady: true });
     if (message.method && this.notificationHandler) {
       this.notificationHandler(/** @type {AppServerNotification} */ (message));
     }
@@ -162,6 +167,14 @@ class AppServerClientBase {
 
   handleServerRequest(message) {
     if (this.serverRequestHandler) { this.serverRequestHandler(message); return; }
+    if (this.options.onParentQuestion && isParentQuestion(message, this.serverRequestPolicy)) {
+      const { summary } = decideServerRequest(message, this.serverRequestPolicy);
+      logServerRequest({ ...summary, kind: "parent-question", decision: "pending", reason: "ask-parent" }, this.options.onServerRequestLog);
+      Promise.resolve(this.options.onParentQuestion(message)).then(result => {
+        if (!this.closed) this.sendMessage({ id: message.id, result });
+      }).catch(() => { if (!this.closed) this.sendMessage({ id: message.id, result: { success: false, contentItems: [{ type: "inputText", text: "Parent question unavailable. Proceed conservatively and report missing essential input." }] } }); });
+      return;
+    }
     const { reply, summary } = decideServerRequest(message, this.serverRequestPolicy);
     // Logging precedes the reply; a logging failure must never grant access.
     logServerRequest(summary, this.options.onServerRequestLog);
@@ -174,6 +187,8 @@ class AppServerClientBase {
   }
 
   handleExit(error) {
+    clearTimeout(this.abortTimer);
+    this.options.signal?.removeEventListener("abort", this.abortHandler);
     if (this.exitResolved) {
       return;
     }
@@ -206,7 +221,8 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       env,
       stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
-      windowsHide: true
+      windowsHide: true,
+      detached: process.platform !== "win32"
     });
 
     this.proc.stdout.setEncoding("utf8");
@@ -214,6 +230,11 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
 
     this.proc.stderr.on("data", (chunk) => {
       this.stderr += chunk;
+      const recent = this.stderr.slice(-2048);
+      if (!this.startupWarning && /websocket|switching to http|falling back.*http/i.test(recent) && /retry|timed? ?out|timeout|fallback|falling back|switching/i.test(recent)) {
+        this.startupWarning = "WebSocket retry/fallback observed. Consider setup --transport http after reviewing the transport trade-offs; restart the runtime. Defaults were not changed.";
+        this.options.onRuntimeEvent?.({ startupWarning: this.startupWarning });
+      }
     });
 
     this.proc.on("error", (error) => {
@@ -244,39 +265,15 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
   }
 
   async close() {
-    if (this.closed) {
-      await this.exitPromise;
-      return;
-    }
-
-    this.closed = true;
-
-    if (this.readline) {
-      this.readline.close();
-    }
-
-    if (this.proc && !this.proc.killed) {
-      this.proc.stdin.end();
-      setTimeout(() => {
-        if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
-          // On Windows with shell: true, the direct child is cmd.exe.
-          // Use terminateProcessTree to kill the entire tree including
-          // the grandchild node process.
-          if (process.platform === "win32") {
-            try {
-              terminateProcessTree(this.proc.pid);
-            } catch {
-              // Best-effort cleanup inside an unref'd timer — swallow errors
-              // to avoid crashing the host process during shutdown.
-            }
-          } else {
-            this.proc.kill("SIGTERM");
-          }
-        }
-      }, 50).unref?.();
-    }
-
-    await this.exitPromise;
+    if (this.closePromise) return this.closePromise;
+    this.closePromise = (async () => {
+      this.closed = true;
+      this.readline?.close();
+      this.proc?.stdin.end();
+      await stopOwnedProcessGroup(this.proc, 150);
+      await Promise.race([this.exitPromise, new Promise(resolve => setTimeout(resolve, 500))]);
+    })();
+    return this.closePromise;
   }
 
   sendMessage(message) {
@@ -320,6 +317,7 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
       clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
       capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
     });
+    this.options.onRuntimeEvent?.({ startupTimings: identity.startupTimings ?? {}, startupWarning: identity.startupWarning ?? null });
     if (identity.codexCompanionHome !== resolveIsolatedCodexHome(this.options.env ?? process.env)) {
       this.socket.destroy();
       throw new Error("Codex broker isolation identity does not match the requested home. Restart the Claude session.");
@@ -340,8 +338,12 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
     this.closed = true;
     if (this.socket) {
       this.socket.end();
+      const deadline = setTimeout(() => this.socket.destroy(), 300);
+      await this.exitPromise;
+      clearTimeout(deadline);
+    } else {
+      this.handleExit(null);
     }
-    await this.exitPromise;
   }
 
   sendMessage(message) {
@@ -356,6 +358,8 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
 
 export class CodexAppServerClient {
   static async connect(cwd, options = {}) {
+    if (options.signal?.aborted) throw new Error("Task interrupted before runtime connection.");
+    const began = Date.now();
     resolveIsolatedCodexHome(options.env ?? process.env);
     let brokerEndpoint = null;
     if (!options.disableBroker) {
@@ -368,10 +372,16 @@ export class CodexAppServerClient {
         brokerEndpoint = brokerSession?.endpoint ?? null;
       }
     }
+    if (options.signal?.aborted) throw new Error("Task interrupted during broker startup.");
     const client = brokerEndpoint
       ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint })
       : new SpawnedCodexAppServerClient(cwd, options);
-    await client.initialize();
+    options.onClient?.(client);
+    options.onRuntimeEvent?.({ timing: { phase: "brokerConnectSpawn", durationMs: Date.now() - began } });
+    const initializeAt = Date.now();
+    try { await client.initialize(); } catch (error) { await client.close().catch(() => {}); throw error; }
+    client.startupTimings = { appServerInitialize: Date.now() - initializeAt };
+    options.onRuntimeEvent?.({ timing: { phase: client.transport === "broker" ? "brokerHandshake" : "appServerInitialize", durationMs: Date.now() - initializeAt } });
     return client;
   }
 }

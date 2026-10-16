@@ -45,13 +45,13 @@ function tokens(text) {
   return out;
 }
 
-function keyPath(text) {
+export function keyPath(text) {
   const parts = tokens(text);
   if (!parts.length || parts.some((t, i) => i % 2 ? t.value !== "." || t.string : !t.string && !/^[\w-]+$/.test(t.value)) || parts.length % 2 === 0) throw new Error("Unsupported TOML tool key.");
   return parts.filter((_, i) => i % 2 === 0).map(t => t.value);
 }
 
-function valueOf(text) {
+export function valueOf(text) {
   const parts = tokens(text);
   let i = 0;
   function value() {
@@ -90,7 +90,7 @@ function valueOf(text) {
 }
 
 // Split only at top-level newlines (including unrelated multiline strings).
-function statements(text) {
+export function statements(text) {
   const result = [];
   let start = 0, quote = null, triple = false, depth = 0, comment = false;
   for (let i = 0; i < text.length; i++) {

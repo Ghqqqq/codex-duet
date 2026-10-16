@@ -68,10 +68,31 @@ async function main() {
   writePidFile(pidFile);
 
   const runtimeIdentity = resolveCodexRuntimeIdentity();
-  const appClient = await CodexAppServerClient.connect(cwd, { disableBroker: true });
   let activeRequestSocket = null;
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
+  const activeTurns = new Map();
+  let appClient;
+  const signals = ["SIGTERM", "SIGINT", "SIGHUP"];
+  // Install before initialize: readiness timeout may stop this broker while
+  // its separately grouped app-server is still waiting for initialize.
+  const stopStarting = () => { void appClient?.close().catch(() => {}); };
+  for (const signal of signals) process.on(signal, stopStarting);
+  try {
+    appClient = await CodexAppServerClient.connect(cwd, {
+      disableBroker: true,
+      onClient: client => { appClient = client; },
+      onRuntimeEvent: event => {
+        const owner = activeStreamSocket ?? activeRequestSocket;
+        if (owner) send(owner, { method: "duet/runtime", params: event });
+      }
+    });
+  } catch (error) {
+    if (pidFile && fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
+    throw error;
+  } finally {
+    for (const signal of signals) process.off(signal, stopStarting);
+  }
   const sockets = new Set();
   const requests = new ServerRequestRelay({ send, respond: message => appClient.sendMessage(message), log: summary => logServerRequest(summary) });
   appClient.serverRequestHandler = message => {
@@ -85,6 +106,11 @@ async function main() {
 
   function clearSocketOwnership(socket) {
     requests.disconnect(socket);
+    for (const [threadId, turn] of activeTurns) if (turn.owner === socket) {
+      void appClient.request("turn/interrupt", { threadId, turnId: turn.id }).catch(() => {});
+      // Lost owners cannot leave a still-running server behind indefinitely.
+      setTimeout(() => { if (activeTurns.get(threadId) === turn) void shutdown(server); }, 4000).unref();
+    }
     if (activeRequestSocket === socket) {
       activeRequestSocket = null;
     }
@@ -96,10 +122,8 @@ async function main() {
 
   function routeNotification(message) {
     const target = activeRequestSocket ?? activeStreamSocket;
-    if (!target) {
-      return;
-    }
-    send(target, message);
+    if (message.method === "turn/completed") activeTurns.delete(message.params?.threadId);
+    if (target) send(target, message);
     if (message.method === "turn/completed" && activeStreamSocket === target) {
       const threadId = message.params?.threadId ?? null;
       if (!threadId || !activeStreamThreadIds || activeStreamThreadIds.has(threadId)) {
@@ -112,12 +136,17 @@ async function main() {
     }
   }
 
+  let closing = false;
   async function shutdown(server) {
+    if (closing) return;
+    closing = true;
+    clearInterval(idleTimer);
+    for (const [threadId, turn] of activeTurns) void appClient.request("turn/interrupt", { threadId, turnId: turn.id }).catch(() => {});
     for (const socket of sockets) {
-      socket.end();
+      requests.disconnect(socket); socket.destroy();
     }
     await appClient.close().catch(() => {});
-    await new Promise((resolve) => server.close(resolve));
+    if (server.listening) await new Promise((resolve) => server.close(resolve));
     if (listenTarget.kind === "unix" && fs.existsSync(listenTarget.path)) {
       fs.unlinkSync(listenTarget.path);
     }
@@ -126,7 +155,9 @@ async function main() {
     }
   }
 
-  appClient.setNotificationHandler(routeNotification);
+  // A response and terminal notification may arrive in the same stdout chunk.
+  // Record the response's active turn before routing its completion.
+  appClient.setNotificationHandler(message => queueMicrotask(() => routeNotification(message)));
 
   const server = net.createServer((socket) => {
     sockets.add(socket);
@@ -167,7 +198,8 @@ async function main() {
             result: {
               userAgent: "codex-companion-broker",
               codexCompanionHome: resolveIsolatedCodexHome(),
-              codexCompanionRuntime: runtimeIdentity
+              codexCompanionRuntime: runtimeIdentity,
+              startupTimings: appClient.startupTimings, startupWarning: appClient.startupWarning ?? null
             }
           });
           continue;
@@ -191,7 +223,7 @@ async function main() {
           isInterruptRequest(message) && activeStreamSocket && activeStreamSocket !== socket && !activeRequestSocket;
 
         if (
-          ((activeRequestSocket && activeRequestSocket !== socket) || (activeStreamSocket && activeStreamSocket !== socket)) &&
+          ((activeTurns.size && !activeStreamSocket) || (activeRequestSocket && activeRequestSocket !== socket) || (activeStreamSocket && activeStreamSocket !== socket)) &&
           !allowInterruptDuringActiveStream
         ) {
           send(socket, {
@@ -223,6 +255,8 @@ async function main() {
           if (isStreaming) {
             activeStreamSocket = socket;
             activeStreamThreadIds = buildStreamThreadIds(message.method, message.params ?? {}, result);
+            if (result.turn?.id) activeTurns.set(message.params.threadId, { id: result.turn.id, owner: socket });
+            if (socket.destroyed) clearSocketOwnership(socket);
           }
           if (activeRequestSocket === socket) {
             activeRequestSocket = null;
@@ -253,17 +287,17 @@ async function main() {
     });
   });
 
-  process.on("SIGTERM", async () => {
-    await shutdown(server);
-    process.exit(0);
-  });
-
-  process.on("SIGINT", async () => {
-    await shutdown(server);
-    process.exit(0);
-  });
-
-  server.listen(listenTarget.path);
+  let lastBusy = Date.now();
+  const idleMs = Math.max(1000, (Number(process.env.CODEX_COMPANION_BROKER_IDLE_SEC) || 60) * 1000);
+  const idleTimer = setInterval(() => {
+    if (sockets.size || activeTurns.size || activeRequestSocket) lastBusy = Date.now();
+    else if (Date.now() - lastBusy >= idleMs) void shutdown(server);
+  }, 250);
+  for (const signal of signals) process.on(signal, () => { void shutdown(server); });
+  appClient.exitPromise.then(() => { void shutdown(server); });
+  try {
+    await new Promise((resolve, reject) => { server.once("error", reject); server.listen(listenTarget.path, resolve); });
+  } catch (error) { await shutdown(server); throw error; }
 }
 
 main().catch((error) => {

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawnOwned as spawn } from "../plugins/codex/scripts/lib/process.mjs";
 import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
@@ -786,7 +786,7 @@ test("task forwards model selection and reasoning effort to app-server turn/star
   assert.equal(fakeState.lastTurnStart.effort, "low");
 });
 
-test("task logs reasoning summaries and assistant messages to the job log", () => {
+test("task progress log omits reasoning and assistant message bodies", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir, "with-reasoning");
@@ -804,13 +804,11 @@ test("task logs reasoning summaries and assistant messages to the job log", () =
   const stateDir = resolveStateDir(repo);
   const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
   const log = fs.readFileSync(state.jobs[0].logFile, "utf8");
-  assert.match(log, /Reasoning summary/);
-  assert.match(log, /Inspected the prompt, gathered evidence, and checked the highest-risk paths first/);
-  assert.match(log, /Assistant message/);
-  assert.match(log, /Handled the requested task/);
+  assert.match(log, /Task completed/);
+  assert.doesNotMatch(log, /Reasoning summary|Inspected the prompt|Assistant message|Handled the requested task/);
 });
 
-test("task logs subagent reasoning and messages with a subagent prefix", () => {
+test("task progress reports collaboration activity without subagent message bodies", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir, "with-subagent");
@@ -828,14 +826,8 @@ test("task logs subagent reasoning and messages with a subagent prefix", () => {
   const stateDir = resolveStateDir(repo);
   const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
   const log = fs.readFileSync(state.jobs[0].logFile, "utf8");
-  assert.match(log, /Starting subagent design-challenger via collaboration tool: wait\./);
-  assert.match(log, /Subagent design-challenger reasoning:/);
-  assert.match(log, /Questioned the retry strategy and the cache invalidation boundaries\./);
-  assert.match(log, /Subagent design-challenger:/);
-  assert.match(
-    log,
-    /The design assumes retries are harmless, but they can duplicate side effects without stronger idempotency guarantees\./
-  );
+  assert.match(log, /collabAgentToolCall/);
+  assert.doesNotMatch(log, /Questioned the retry strategy|The design assumes retries|Subagent design-challenger reasoning/);
 });
 
 test("task waits for the main thread to complete before returning the final result", () => {
@@ -1540,7 +1532,7 @@ test("result for a finished write-capable task returns the raw Codex final respo
   assert.match(result.stdout, /Resume in Codex: .*codex-isolated\.mjs.*resume.*thr_[a-z0-9]+/i);
 });
 
-test("cancel stops an active background job and marks it cancelled", async (t) => {
+test("cancel does not kill an unverified legacy PID or claim confirmation", async (t) => {
   const workspace = makeTempDir();
   const stateDir = resolveStateDir(workspace);
   const jobsDir = path.join(stateDir, "jobs");
@@ -1613,26 +1605,13 @@ test("cancel stops an active background job and marks it cancelled", async (t) =
     cwd: workspace
   });
 
-  assert.equal(cancelResult.status, 0, cancelResult.stderr);
-  assert.equal(JSON.parse(cancelResult.stdout).status, "cancelled");
-
-  await waitFor(() => {
-    try {
-      process.kill(sleeper.pid, 0);
-      return false;
-    } catch (error) {
-      return error?.code === "ESRCH";
-    }
-  });
-
+  assert.equal(cancelResult.status, 2, cancelResult.stderr);
+  assert.equal(JSON.parse(cancelResult.stdout).confirmation, "unconfirmed");
+  assert.doesNotThrow(() => process.kill(sleeper.pid, 0));
   const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
-  const cancelled = state.jobs.find((job) => job.id === "task-live");
-  assert.equal(cancelled.status, "cancelled");
-  assert.equal(cancelled.pid, null);
-
-  const stored = JSON.parse(fs.readFileSync(jobFile, "utf8"));
-  assert.equal(stored.status, "cancelled");
-  assert.match(fs.readFileSync(logFile, "utf8"), /Cancelled by user/);
+  assert.equal(state.jobs.find(job => job.id === "task-live").cancelRequested.reason, "cancelled_by_user");
+  assert.equal(JSON.parse(fs.readFileSync(jobFile)).status, "running");
+  assert.match(fs.readFileSync(logFile, "utf8"), /awaiting confirmation/);
 });
 
 test("cancel without a job id ignores active jobs from other Claude sessions", () => {
@@ -1731,14 +1710,15 @@ test("cancel with a job id can still target an active job from another Claude se
     cwd: workspace,
     env
   });
-  assert.equal(cancel.status, 0, cancel.stderr);
+  assert.equal(cancel.status, 2, cancel.stderr);
   assert.equal(JSON.parse(cancel.stdout).jobId, "task-other");
 
   const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
-  assert.equal(state.jobs[0].status, "cancelled");
+  assert.equal(state.jobs[0].status, "running");
+  assert.equal(state.jobs[0].cancelRequested.reason, "cancelled_by_user");
 });
 
-test("cancel sends turn interrupt to the shared app-server before killing a brokered task", async (t) => {
+test("cancel confirms turn interruption through the shared app-server", async (t) => {
   if (!await requireLocalSockets(t)) return;
   const repo = makeTempDir();
   const binDir = makeTempDir();
@@ -1804,7 +1784,7 @@ test("cancel sends turn interrupt to the shared app-server before killing a brok
   assert.equal(cleanup.status, 0, cleanup.stderr);
 });
 
-test("session end fully cleans up jobs for the ending session", async (t) => {
+test("session end requests scoped interrupts and retains history without killing legacy PIDs", async (t) => {
   const repo = makeTempDir();
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
@@ -1906,24 +1886,12 @@ test("session end fully cleans up jobs for the ending session", async (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(fs.existsSync(otherSessionLog), true);
   assert.equal(fs.existsSync(otherJobFile), true);
-  assert.deepEqual(
-    fs.readdirSync(path.dirname(otherJobFile)).sort(),
-    [path.basename(otherJobFile), path.basename(otherSessionLog)].sort()
-  );
-
-  await waitFor(() => {
-    try {
-      process.kill(sleeper.pid, 0);
-      return false;
-    } catch (error) {
-      return error?.code === "ESRCH";
-    }
-  });
-
+  assert.equal(fs.existsSync(completedJobFile), true);
+  assert.equal(fs.existsSync(runningJobFile), true);
+  assert.doesNotThrow(() => process.kill(sleeper.pid, 0));
   const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
-  assert.deepEqual(state.jobs.map((job) => job.id), ["review-other"]);
-  const otherJob = state.jobs[0];
-  assert.equal(otherJob.logFile, otherSessionLog);
+  assert.equal(state.jobs.find(job => job.id === "review-running").cancelRequested.reason, "session_end");
+  assert.equal(state.jobs.find(job => job.id === "review-other").cancelRequested, undefined);
 });
 
 test("stop hook runs a stop-time review task and blocks on findings when the review gate is enabled", () => {

@@ -296,7 +296,7 @@ if (args[0] !== "app-server") {
 }
 const bootState = loadState();
 bootState.appServerStarts = (bootState.appServerStarts || 0) + 1;
-bootState.launches = [...(bootState.launches || []), { home: process.env.CODEX_HOME, sqlite: process.env.CODEX_SQLITE_HOME, args }];
+bootState.launches = [...(bootState.launches || []), { pid: process.pid, home: process.env.CODEX_HOME, sqlite: process.env.CODEX_SQLITE_HOME, args }];
 saveState(bootState);
 
 const rl = readline.createInterface({ input: process.stdin });
@@ -314,11 +314,12 @@ rl.on("line", (line) => {
       serverRequests.delete(message.id);
       state.serverRequestReplies = [...(state.serverRequestReplies || []), message];
       saveState(state);
-      if (!serverRequests.size) emitTurnCompleted(pending.threadId, pending.turnId, { completed: { type: "agentMessage", id: "approval-result", text: "Completed fixture request handling.", phase: "final_answer" } });
+      if (!serverRequests.size && state.lastInterrupt?.turnId !== pending.turnId) emitTurnCompleted(pending.threadId, pending.turnId, { completed: { type: "agentMessage", id: "approval-result", text: "Completed fixture request handling.", phase: "final_answer" } });
       return;
     }
     switch (message.method) {
       case "initialize":
+        if (BEHAVIOR === "w5-initialize-hang") break;
         state.capabilities = message.params.capabilities || null;
         saveState(state);
         send({ id: message.id, result: { userAgent: "fake-codex-app-server" } });
@@ -458,6 +459,12 @@ rl.on("line", (line) => {
         }
         const turnId = nextTurnId(state);
         send({ id: message.id, result: { turn: buildTurn(turnId), reviewThreadId: reviewThread.id } });
+        if (BEHAVIOR === "w5-review") {
+          saveState(state);
+          const timer = setTimeout(() => emitTurnCompleted(reviewThread.id, turnId, []), 30000);
+          interruptibleTurns.set(turnId, { threadId: reviewThread.id, timer });
+          break;
+        }
         emitTurnCompleted(reviewThread.id, turnId, [
           {
             started: { type: "enteredReviewMode", id: turnId, review: "current changes" }
@@ -501,6 +508,23 @@ rl.on("line", (line) => {
 	        };
 	        saveState(state);
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
+
+        if (BEHAVIOR === "w5-parent" || BEHAVIOR === "w5-working") {
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          send({ method: "mcpServer/startupStatus/updated", params: { name: "fixture", status: "ready", threadId: thread.id } });
+          process.stderr.write("WebSocket timeout; retrying; falling back to HTTP\\n");
+          send({ method: "item/started", params: { threadId: thread.id, turnId, item: { id: "fixture-command", type: "commandExecution", command: "npm test PRIVATE_FIXTURE_ARGUMENT", status: "inProgress" } } });
+          send({ method: "item/completed", params: { threadId: thread.id, turnId, item: { id: "fixture-command", type: "commandExecution", command: "npm test PRIVATE_FIXTURE_ARGUMENT", exitCode: 0, status: "completed", aggregatedOutput: "PRIVATE_FIXTURE_OUTPUT" } } });
+          send({ method: "turn/plan/updated", params: { threadId: thread.id, turnId, plan: [{ step: "PRIVATE_FIXTURE_PLAN", status: "completed" }] } });
+          if (BEHAVIOR === "w5-parent") {
+            const id = "fixture-parent-request";
+            serverRequests.set(id, { threadId: thread.id, turnId });
+            send({ id, method: "item/tool/call", params: { threadId: thread.id, turnId, callId: "fixture-call", tool: "ask_parent", arguments: { question: "Which fixture approach?", options: ["Small", "Broad"] } } });
+          }
+          const timer = setTimeout(() => emitTurnCompleted(thread.id, turnId, { completed: { type: "agentMessage", id: "fixture-done", text: "Completed fixture work.", phase: "final_answer" } }), 30000);
+          interruptibleTurns.set(turnId, { threadId: thread.id, timer });
+          break;
+        }
 
         if (BEHAVIOR === "server-requests") {
           const base = { itemId: "fixture-item", threadId: thread.id, turnId, startedAtMs: 0, command: null, reason: "DO_NOT_LOG_FIXTURE", networkApprovalContext: { protocol: "https", host: "EXAMPLE.COM:443" } };

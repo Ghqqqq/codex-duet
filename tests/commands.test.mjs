@@ -1,3 +1,4 @@
+import "./test-environment.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -182,18 +183,22 @@ test("native Codex worker preserves identity, native lifecycle, and parallel own
 
   assert.match(worker, /^name: codex-worker$/m);
   assert.match(worker, /^model: inherit$/m);
-  assert.match(worker, /^tools: Bash, Read$/m);
+  assert.match(worker, /^tools: Bash, Read, SendMessage$/m);
   assert.doesNotMatch(worker, /^skills:/m);
   assert.match(worker, /multiple independent parallel workers/i);
-  assert.match(worker, /task --fresh --json/);
-  assert.match(worker, /task --thread <threadId> --json/);
+  assert.match(worker, /task --fresh --detached --json --report/);
+  assert.match(worker, /task --thread <threadId> --detached --json --report/);
   assert.match(worker, /Never use `--resume-last`/);
   assert.match(worker, /exact `threadId` from that result or explicitly supplied by the parent/i);
-  assert.match(worker, /The parent controls foreground\/background execution through the native `Agent` tool/i);
-  assert.match(worker, /Do not pass the runtime `--background` flag/i);
+  assert.match(worker, /native Agent stays alive as the owner/i);
+  assert.match(worker, /wait <jobId> --timeout-sec 45 --json --report/);
+  assert.match(worker, /description.*headline/i);
+  assert.match(worker, /send the question ID, text and options to `main` using `SendMessage`/i);
+  assert.match(worker, /answer <jobId> --question <id> --json.*stdin heredoc/i);
+  assert.match(worker, /lease defaults to 180 seconds/i);
   assert.match(worker, /Start exactly one Codex turn/i);
-  assert.match(worker, /use `Read` only on that exact output file/i);
-  assert.match(worker, /Waiting must not start another Codex turn/i);
+  assert.match(worker, /read only that output file/i);
+  assert.match(worker, /Never submit another task to poll or answer a question/i);
   assert.match(worker, /Do not finish with only a queued\/running acknowledgement/i);
   assert.match(worker, /--model gpt-6-astra --effort xhigh --normal/);
   assert.match(worker, /parent may select `--effort max`/i);

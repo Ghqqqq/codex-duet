@@ -33,6 +33,8 @@ export function normalizeBrowserOrigins(values = []) {
 }
 
 export function unsupportedServerRequest(message) {
+  // browser-service oee persists accept/decline only; cancel avoids a stale deny.
+  if (message.method === "mcpServer/elicitation/request") return { id: message.id, result: { action: "cancel" } };
   return { id: message.id, error: { code: -32601, message: methods.has(message.method) ? `Unsupported server request: ${message.method}` : "Unsupported server request" } };
 }
 
@@ -47,6 +49,8 @@ export function decideServerRequest(message, { approvedBrowserOrigins = [], thre
   const reply = unsupportedServerRequest(message);
   const p = message.params;
   if (message.method === "mcpServer/elicitation/request") {
+    summary.decision = "cancelled";
+    summary.reason = "unsupported-elicitation-nonpersistent";
     if (["form", "openai/form", "openaiForm", "url"].includes(p?.mode)) summary.kind = `elicitation-${p.mode}`;
     // Fixed field-name allowlist for a future denied probe. Never traverse a
     // page's requestedSchema, print arbitrary keys, or retain metadata values.
@@ -61,7 +65,6 @@ export function decideServerRequest(message, { approvedBrowserOrigins = [], thre
     // Observation only: the schema's _meta is opaque. An origin-shaped value
     // may be safely summarized, but cannot authorize the elicitation.
     try { summary.origin = normalizeBrowserOrigin(p?._meta?.origin); } catch { /* no valid origin */ }
-    summary.reason = "unsupported-method";
   }
   // Schema evidence: ServerRequest /oneOf/0 and /definitions/NetworkApprovalContext.
   // General permissions have only network.enabled; opaque elicitation _meta has
@@ -139,6 +142,11 @@ export class ServerRequestRelay {
     this.pending.delete(message.id);
     if (pending.message.method === "item/commandExecution/requestApproval" && object(message.result) && Object.keys(message.result).length === 1 && message.result.decision === "accept") {
       this.respond({ id: pending.message.id, result: { decision: "accept" } });
+    } else if (pending.message.method === "item/tool/call" && pending.message.params?.tool === "ask_parent" &&
+        object(message.result) && typeof message.result.success === "boolean" && Array.isArray(message.result.contentItems) &&
+        message.result.contentItems.length === 1 && message.result.contentItems[0]?.type === "inputText" &&
+        typeof message.result.contentItems[0].text === "string" && message.result.contentItems[0].text.length <= 8000) {
+      this.respond({ id: pending.message.id, result: { success: message.result.success, contentItems: [{ type: "inputText", text: message.result.contentItems[0].text }] } });
     } else this.respond(unsupportedServerRequest(pending.message));
     return true;
   }

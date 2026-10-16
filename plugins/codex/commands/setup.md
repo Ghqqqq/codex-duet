@@ -1,6 +1,6 @@
 ---
 description: Check whether the local Codex CLI is ready and optionally toggle the stop-time review gate
-argument-hint: '[--sync-tools [--dry-run] [--cua-template <file>] [--chatgpt-resources <dir>]] [--enable-review-gate|--disable-review-gate]'
+argument-hint: '[--sync-tools [--dry-run]] [--enable-review-gate|--disable-review-gate] [--transport http|websocket|status] [--allow-browser-origin <origin>|--revoke-browser-origin <origin>|--list-browser-origins]'
 allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
 ---
 
@@ -41,15 +41,23 @@ If `auth.status` is `unreachable` (including workspace routing discovery timeout
 
 `--sync-tools --dry-run` is an offline preview and returns toolSync without auth checks. Present its exact `append` text and source paths directly. `--sync-tools` copies only allowlisted tool settings and builds missing Chrome-only `cua_repl` and env tables from the installed bundled template and validated ChatGPT resources. Existing destination sections (including hand-written CUA) are preserved; present added/present/skipped names and backup path. Optional `--cua-template <absolute-file>` and `--chatgpt-resources <absolute-dir>` select a relocated installation; both require `--sync-tools`. Missing resources fail before any config write. Do not automatically invoke tool sync from a worker.
 
-Setup never grants browser-origin authority or opens tabs. For later browser tasks,
-the parent supplies `task --approve-browser-origin <origin>` only with explicit
-user consent per origin. It is a task flag, not a setup/settings option, and is
-never inherited or added after denial. The installed CUA elicitation format remains
-unsupported; see [browser approval evidence](../../../docs/browser-approvals.md).
-Browser assignments must use a fresh session-owned tab, close it in cleanup, and
-report stale tab claims with the full owning session ID.
+Transport/browser setup is offline. `--transport status` only reads selected
+transport; explicit `--transport http|websocket` merges a named ChatGPT provider
+and selector, with a timestamped private backup. Recognize the existing matching
+hand-written block as a no-op. Do not change transport automatically based on a
+warning or assume a live speedup; restart the runtime after an actual change when
+other assignments are finished.
 
-Output rules:
-- Present the final setup output to the user.
-- If installation was skipped, present the original setup output.
-- Only for `auth.status: unauthenticated`, preserve the exact isolated `codex-isolated.mjs` login command returned by setup. Do not substitute a bare Codex login.
+With explicit user consent per origin, `--allow-browser-origin <origin>` merges
+the official `<CODEX_HOME>/browser/config.toml` allowed list and removes exact
+stale denied entries from `browser/sessions/*.toml`. `--revoke-browser-origin`
+removes the global allow and adds a global deny; `--list-browser-origins` lists
+normalized entries. Allow/revoke are repeatable; both use strict bare-origin
+validation. Preserve other content, show changed files and backups, and support
+`--dry-run`. Run transport and browser mutations separately from other setup
+operations. Never run these commands automatically after a denial or from a worker.
+Unsupported MCP elicitations now return nonpersistent cancel. The task-only
+`--approve-browser-origin` flag remains a separate per-invocation network-egress
+grant. See [persistence evidence](../../../docs/browser-approvals.md).
+Browser assignments use fresh owned tabs, close them in cleanup, and report stale
+claims with the full session ID. Setup never opens or controls a browser.

@@ -71,12 +71,17 @@ test("only an exact origin, current turn, network-only schema request receives a
   }
 });
 
-test("opaque browser elicitations and every other server request stay unsupported with safe summaries", () => {
+test("opaque browser elicitations cancel without persistence; other requests stay unsupported", () => {
   for (const method of ["mcpServer/elicitation/request", "item/permissions/requestApproval", "item/fileChange/requestApproval", "item/tool/requestUserInput", "item/tool/call", "account/chatgptAuthTokens/refresh", "attestation/generate", "applyPatchApproval", "execCommandApproval"]) {
     const result = decideServerRequest({ id: "DO_NOT_LOG_FIXTURE", method, params: { mode: "form", message: "DO_NOT_LOG_FIXTURE", _meta: { origin: "https://EXAMPLE.COM:443", tool_name: "access_browser_origin" }, permissions: { network: { enabled: true } } } }, policy);
-    assert.equal(result.reply.error.code, -32601);
+    if (method === "mcpServer/elicitation/request") {
+      assert.deepEqual(result.reply.result, { action: "cancel" });
+      assert.equal(result.summary.reason, "unsupported-elicitation-nonpersistent");
+    } else {
+      assert.equal(result.reply.error.code, -32601);
+      assert.equal(result.summary.reason, "unsupported-method");
+    }
     assert.equal(result.summary.method, method);
-    assert.equal(result.summary.reason, "unsupported-method");
     assert.doesNotMatch(JSON.stringify(result.summary), /DO_NOT_LOG_FIXTURE|access_browser_origin|"permissions":/);
     if (method === "mcpServer/elicitation/request") {
       assert.equal(result.summary.origin, "https://example.com");
@@ -86,6 +91,17 @@ test("opaque browser elicitations and every other server request stay unsupporte
   const unknown = decideServerRequest({ id: "DO_NOT_LOG_FIXTURE", method: "DO_NOT_LOG_FIXTURE", params: {} }, policy);
   assert.doesNotMatch(JSON.stringify(unknown.summary), /DO_NOT_LOG_FIXTURE/);
   for (const params of [null, [], {}, { networkApprovalContext: null }]) assert.equal(decideServerRequest({ ...request(), params }, policy).reply.error.code, -32601);
+});
+
+test("broker relay returns a schema-correct parent answer only from its owning client", () => {
+  const sent = [], replies = [], owner = {}, stranger = {};
+  const relay = new ServerRequestRelay({ send: (socket, message) => sent.push(message), respond: message => replies.push(message), log: () => {} });
+  relay.request({ id: 27, method: "item/tool/call", params: { tool: "ask_parent" } }, owner);
+  const result = { success: true, contentItems: [{ type: "inputText", text: "Small" }] };
+  relay.response({ id: sent[0].id, result }, stranger);
+  assert.equal(replies.length, 0);
+  relay.response({ id: sent[0].id, result }, owner);
+  assert.deepEqual(replies, [{ id: 27, result }]);
 });
 
 test("broker relay routes only to the owner, rejects other sockets and fails closed on disconnect", () => {
@@ -120,7 +136,7 @@ test("task requests are logged, origin flags persist in task/status/result and r
   assert.deepEqual(status.job.approvedBrowserOrigins, report.approvedBrowserOrigins);
   assert.deepEqual(JSON.parse(f.call("result", report.jobId, "--report", "--json").stdout).approvedBrowserOrigins, report.approvedBrowserOrigins);
   assert.deepEqual(f.state().serverRequestReplies[0].result, { decision: "accept" });
-  assert.ok(f.state().serverRequestReplies.slice(1).every(r => r.error.code === -32601));
+  assert.ok(f.state().serverRequestReplies.slice(1).every(r => r.error?.code === -32601 || r.result?.action === "cancel"));
   const log = fs.readFileSync(status.job.logFile, "utf8");
   assert.equal(log.split("Server request ").length - 1, 8);
   for (const reason of ["origin-match", "origin-mismatch", "not-network-only", "malformed-request", "unsupported-method"]) assert.ok(log.includes(reason), reason);
@@ -130,7 +146,7 @@ test("task requests are logged, origin flags persist in task/status/result and r
   const follow = f.call("task", "--json", "--thread", report.threadId, "fixture follow-up");
   assert.equal(follow.status, 0, follow.stderr);
   assert.deepEqual(JSON.parse(follow.stdout).approvedBrowserOrigins, []);
-  assert.ok(f.state().serverRequestReplies.slice(8).every(r => r.error.code === -32601));
+  assert.ok(f.state().serverRequestReplies.slice(8).every(r => r.error?.code === -32601 || r.result?.action === "cancel"));
   assert.match(follow.stderr, /no-flag/);
 });
 

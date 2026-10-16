@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { spawnOwned as spawn } from "./lib/process.mjs";
 import { isolatedCodexCommand } from "./lib/codex-home.mjs";
 import { UNREACHABLE_GUIDANCE } from "./lib/runtime-errors.mjs";
 import { getToolAvailability, syncToolConfig } from "./lib/tool-config.mjs";
 import { buildWorkerReport, persistTaskArtifacts, taskArtifactPaths } from "./lib/worker-report.mjs";
 import { normalizeBrowserOrigins } from "./lib/server-requests.mjs";
+import { browserOriginSetup, transportSetup } from "./lib/setup-config.mjs";
+import { JobRuntime, ACTIVE, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot } from "./lib/job-runtime.mjs";
+import { updateJob } from "./lib/state.mjs";
 import { snapshotWorkspace, compareWorkspaceSnapshots } from "./lib/workspace-changes.mjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -91,7 +94,11 @@ function printUsage() {
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id|--thread <id>] [--wait] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id|--thread <id>] [--report] [--json]",
-      "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
+      "  node scripts/codex-companion.mjs wait <job-id> [--timeout-sec 45] [--owner <id>] [--after-question <id>] --json --report",
+      "  node scripts/codex-companion.mjs answer <job-id> --question <id> --json < answer.txt",
+      "  node scripts/codex-companion.mjs cancel [job-id] [--json]",
+      "  task lifecycle: --detached [--lease-sec 180] [--question-timeout-sec 900] [--owner <id>]",
+      "  setup: --transport http|websocket|status; --allow-browser-origin <origin>; --revoke-browser-origin <origin>; --list-browser-origins"
     ].join("\n")
   );
 }
@@ -227,8 +234,9 @@ async function buildSetupReport(cwd, actionsTaken = []) {
 
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "cua-template", "chatgpt-resources"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "sync-tools", "dry-run"]
+    valueOptions: ["cwd", "cua-template", "chatgpt-resources", "transport"],
+    repeatableOptions: ["allow-browser-origin", "revoke-browser-origin"],
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "sync-tools", "dry-run", "list-browser-origins"]
   });
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
@@ -238,6 +246,16 @@ async function handleSetup(argv) {
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const actionsTaken = [];
+  if (options.transport !== undefined || options["allow-browser-origin"] || options["revoke-browser-origin"] || options["list-browser-origins"]) {
+    if (options["sync-tools"] || options["enable-review-gate"] || options["disable-review-gate"]) throw new Error("Run transport/browser setup separately from tool sync and review-gate changes.");
+    // Validate every supplied origin before any file write.
+    const allow = normalizeBrowserOrigins(options["allow-browser-origin"] ?? []), revoke = normalizeBrowserOrigins(options["revoke-browser-origin"] ?? []);
+    if (options.transport !== undefined && (allow.length || revoke.length || options["list-browser-origins"])) throw new Error("Run transport and browser-origin setup separately.");
+    const report = options.transport !== undefined ? { transport: transportSetup({ mode: options.transport, dryRun: Boolean(options["dry-run"]) }) }
+      : { browserOrigins: browserOriginSetup({ allow, revoke, dryRun: Boolean(options["dry-run"]) }) };
+    outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
+    return;
+  }
   if (options["dry-run"] && !options["sync-tools"]) throw new Error("--dry-run requires --sync-tools.");
   for (const key of ["cua-template", "chatgpt-resources"]) {
     if (options[key] !== undefined) {
@@ -402,13 +420,15 @@ async function executeReviewRun(request) {
     const result = await runAppServerReview(request.cwd, {
       target: reviewTarget,
       model: request.model,
-      onProgress: request.onProgress
+      onProgress: request.onProgress,
+      signal: request.signal
     });
     const payload = {
       review: reviewName,
       target,
       threadId: result.threadId,
       sourceThreadId: result.sourceThreadId,
+      turnEnded: Boolean(result.turnEnded),
       codex: {
         status: result.status,
         stderr: result.stderr,
@@ -445,7 +465,8 @@ async function executeReviewRun(request) {
     model: request.model,
     sandbox: "read-only",
     outputSchema: readOutputSchema(REVIEW_SCHEMA),
-    onProgress: request.onProgress
+    onProgress: request.onProgress,
+    signal: request.signal
   });
   const parsed = parseStructuredOutput(result.finalMessage, {
     status: result.status,
@@ -455,6 +476,7 @@ async function executeReviewRun(request) {
     review: reviewName,
     target,
     threadId: result.threadId,
+    turnEnded: Boolean(result.turnEnded),
     context: {
       repoRoot: context.repoRoot,
       branch: context.branch,
@@ -539,7 +561,9 @@ async function executeTaskRun(request) {
   });
   request.onProgress?.(`Sandbox: ${sandbox}; approval policy: never. Captured workspace baseline (${before.status}).`);
 
-  const result = await runAppServerTurn(workspaceRoot, {
+  const runtime = new JobRuntime(workspaceRoot, request.jobId, { foreground: !request.detached, onProgress: request.onProgress });
+  let result;
+  try { result = await runAppServerTurn(workspaceRoot, {
     resumeThreadId,
     prompt: request.report ? `${request.prompt || DEFAULT_CONTINUE_PROMPT}\n\n${loadPromptTemplate(ROOT_DIR, "worker-task")}` : request.prompt,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
@@ -550,9 +574,16 @@ async function executeTaskRun(request) {
     explicitSandbox: Boolean(request.sandbox),
     approvedBrowserOrigins: request.approvedBrowserOrigins ?? [],
     onProgress: request.onProgress,
+    signal: runtime.abort.signal,
+    onParentQuestion: message => runtime.question(message),
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
-  });
+  }); } catch (error) {
+    if (!runtime.reason) throw error;
+    const saved = readStoredJob(workspaceRoot, request.jobId);
+    result = { status: 1, threadId: saved.threadId, turnId: saved.turnId, finalMessage: "Task interrupted.", touchedFiles: [], turnEnded: false };
+  } finally { runtime.close(); }
+  if (runtime.reason) Object.assign(result, { interruptionReason: runtime.reason, interruptionConfirmed: Boolean(result.turnEnded), status: 1 });
 
   Object.assign(result, compareWorkspaceSnapshots(before, snapshotWorkspace(workspaceRoot), result.touchedFiles));
   return buildTaskExecution(result, request, taskMetadata);
@@ -589,10 +620,14 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
     approvalPolicy: result.approvalPolicy ?? "unknown",
     approvedBrowserOrigins: result.approvedBrowserOrigins ?? request.approvedBrowserOrigins ?? [],
     commandExecutions: result.commandExecutions ?? [],
-    reasoningSummary: result.reasoningSummary
+    reasoningSummary: result.reasoningSummary,
+    startupTimings: result.startupTimings ?? {}, startupWarning: result.startupWarning ?? null,
+    turnEnded: Boolean(result.turnEnded),
+    interruptionReason: result.interruptionReason ?? null, interruptionConfirmed: result.interruptionConfirmed ?? null
   };
   const artifacts = persistTaskArtifacts(resolveWorkspaceRoot(request.cwd), request.jobId, payload);
   const report = buildWorkerReport(payload, { jobId: request.jobId, ...artifacts });
+  if (payload.interruptionReason) report.status = payload.interruptionReason === "cancelled_by_user" ? "cancelled" : "interrupted";
   Object.assign(payload, artifacts, { workerStatus: report.status });
 
   return {
@@ -670,7 +705,7 @@ function createTrackedProgress(job, options = {}) {
   };
 }
 
-function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins = []) {
+function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins = [], lifecycle = {}) {
   const job = createCompanionJob({
     prefix: "task",
     kind: "task",
@@ -680,10 +715,12 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
     summary: taskMetadata.summary,
     write
   });
-  return { ...job, sandbox: sandbox ?? (write ? "workspace-write" : "read-only"), approvalPolicy: "never", approvedBrowserOrigins, ...taskArtifactPaths(workspaceRoot, job.id) };
+  return { ...job, ownerId: lifecycle.owner ?? ownerId(), leaseSec: lifecycle.leaseSec ?? 180, questionTimeoutSec: lifecycle.questionTimeoutSec ?? 900,
+    leaseExpiresAt: Date.now() + (lifecycle.leaseSec ?? 180) * 1000,
+    sandbox: sandbox ?? (write ? "workspace-write" : "read-only"), approvalPolicy: "never", approvedBrowserOrigins, ...taskArtifactPaths(workspaceRoot, job.id) };
 }
 
-function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins = [], resumeLast, threadId, jobId, report }) {
+function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins = [], resumeLast, threadId, jobId, report, detached = false }) {
   return {
     cwd,
     model,
@@ -696,7 +733,8 @@ function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sand
     resumeLast,
     threadId,
     jobId,
-    report
+    report,
+    detached
   };
 }
 
@@ -834,16 +872,29 @@ async function handleReviewCommand(argv, config) {
   });
   await runForegroundCommand(
     job,
-    (progress) =>
-      executeReviewRun({
+    async (progress) => {
+      const runtime = new JobRuntime(workspaceRoot, job.id, { foreground: true, onProgress: progress });
+      let execution;
+      try { execution = await executeReviewRun({
         cwd,
         base: options.base,
         scope: options.scope,
         model: options.model,
         focusText,
         reviewName: config.reviewName,
-        onProgress: progress
-      }),
+        onProgress: progress,
+        signal: runtime.abort.signal
+      }); } catch (error) {
+        if (!runtime.reason) throw error;
+        const stored = readStoredJob(workspaceRoot, job.id);
+        execution = { threadId: stored.threadId, turnId: stored.turnId, payload: { turnEnded: false } };
+      } finally { runtime.close(); }
+      if (runtime.reason) {
+        Object.assign(execution.payload, { status: 1, interruptionReason: runtime.reason, interruptionConfirmed: execution.payload.turnEnded === true });
+        Object.assign(execution, { exitStatus: 1, jobStatus: runtime.reason === "cancelled_by_user" ? "cancelled" : "interrupted", rendered: "Review interrupted.\n" });
+      }
+      return execution;
+    },
     { json: options.json }
   );
 }
@@ -857,9 +908,9 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "thread", "sandbox"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "thread", "sandbox", "lease-sec", "question-timeout-sec", "owner"],
     repeatableOptions: ["approve-browser-origin"],
-    booleanOptions: ["json", "report", "write", "resume-last", "resume", "fresh", "background", "fast", "normal"],
+    booleanOptions: ["json", "report", "write", "resume-last", "resume", "fresh", "background", "detached", "fast", "normal"],
     aliasMap: {
       m: "model"
     }
@@ -867,6 +918,7 @@ async function handleTask(argv) {
 
   const cwd = resolveCommandCwd(options);
   const approvedBrowserOrigins = normalizeBrowserOrigins(options["approve-browser-origin"] ?? []);
+  const lifecycle = { owner: options.owner ?? ownerId(), leaseSec: seconds(options["lease-sec"] ?? process.env.CODEX_COMPANION_LEASE_SEC, 180, "--lease-sec"), questionTimeoutSec: seconds(options["question-timeout-sec"], 900, "--question-timeout-sec") };
   const workspaceRoot = resolveCommandWorkspace(options);
   const model = normalizeRequestedModel(options.model) ?? "gpt-6-astra";
   const effort = normalizeReasoningEffort(options.effort) ?? "xhigh";
@@ -900,11 +952,11 @@ async function handleTask(argv) {
     resumeLast: Boolean(resumeLast || threadId)
   });
 
-  if (options.background) {
+  if (options.background || options.detached) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast, threadId);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins);
+    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle);
     const request = buildTaskRequest({
       cwd,
       model,
@@ -917,14 +969,25 @@ async function handleTask(argv) {
       resumeLast,
       threadId,
       jobId: job.id,
-      report: Boolean(options.report)
+      report: Boolean(options.report || options.detached), detached: true
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
+    if (options.detached) {
+      // Return quickly even if a model/provider is slow. Missing handles remain
+      // null and are published by wait as soon as the runtime acknowledges them.
+      for (const deadline = Date.now() + 1200; Date.now() < deadline;) {
+        const current = readStoredJob(workspaceRoot, job.id);
+        Object.assign(payload, progressSnapshot(current));
+        if (current.turnId || !ACTIVE.has(current.status) || current.pendingQuestion) break;
+        await sleep(50);
+      }
+      payload.ownerId = job.ownerId;
+    }
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
     return;
   }
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins);
+  const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle);
   await runForegroundCommand(
     job,
     (progress) =>
@@ -1047,13 +1110,15 @@ async function refreshJobSnapshot(cwd, reference) {
 
 async function handleStatus(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "thread", "timeout-ms", "poll-interval-ms"],
+    valueOptions: ["cwd", "thread", "timeout-ms", "poll-interval-ms", "owner"],
     booleanOptions: ["json", "all", "wait"]
   });
 
   const cwd = resolveCommandCwd(options);
   const reference = options.thread ?? positionals[0] ?? "";
   if (reference) {
+    const selected = buildSingleJobSnapshot(cwd, reference);
+    renewLease(selected.workspaceRoot, selected.job.id, options.owner ?? ownerId());
     const snapshot = options.wait
       ? await waitForSingleJobSnapshot(cwd, reference, {
           timeoutMs: options["timeout-ms"],
@@ -1141,64 +1206,50 @@ function handleTaskResumeCandidate(argv) {
 }
 
 async function handleCancel(argv) {
-  const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd"],
-    booleanOptions: ["json"]
-  });
-
+  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd"], booleanOptions: ["json"] });
   const cwd = resolveCommandCwd(options);
-  const reference = positionals[0] ?? "";
-  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process.env });
-  const existing = readStoredJob(workspaceRoot, job.id) ?? {};
-  const threadId = existing.threadId ?? job.threadId ?? null;
-  const turnId = existing.turnId ?? job.turnId ?? null;
-
-  const interrupt = await interruptAppServerTurn(cwd, { threadId, turnId });
-  if (interrupt.attempted) {
-    appendLogLine(
-      job.logFile,
-      interrupt.interrupted
-        ? `Requested Codex turn interrupt for ${turnId} on ${threadId}.`
-        : `Codex turn interrupt failed${interrupt.detail ? `: ${interrupt.detail}` : "."}`
-    );
+  const { workspaceRoot, job } = resolveCancelableJob(cwd, positionals[0] ?? "", { env: process.env });
+  requestCancel(workspaceRoot, job.id);
+  appendLogLine(job.logFile, "Cancelled by user: interrupt requested; awaiting confirmation.");
+  let current;
+  for (const deadline = Date.now() + 6000; Date.now() < deadline;) {
+    current = readStoredJob(workspaceRoot, job.id);
+    if (!ACTIVE.has(current.status)) break;
+    await sleep(100);
   }
+  const confirmed = current?.result?.interruptionConfirmed === true ||
+    (!ACTIVE.has(current?.status) && current?.result?.turnEnded === true);
+  const payload = { jobId: job.id, status: confirmed ? "cancelled" : "interrupt_unconfirmed", confirmation: confirmed ? "confirmed" : "unconfirmed",
+    turnInterruptAttempted: true, turnInterrupted: confirmed, reason: "cancelled_by_user" };
+  outputCommandResult(payload, `${JSON.stringify(payload, null, 2)}\n`, options.json);
+  if (!confirmed) process.exitCode = 2;
+}
 
-  terminateProcessTree(job.pid ?? Number.NaN);
-  appendLogLine(job.logFile, "Cancelled by user.");
+async function handleWait(argv) {
+  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "timeout-sec", "owner", "after-question"], booleanOptions: ["json", "report"] });
+  if (!positionals[0]) throw new Error("wait requires a job id.");
+  const cwd = resolveCommandCwd(options), timeout = seconds(options["timeout-sec"], 45, "--timeout-sec", 60);
+  const { workspaceRoot, job } = buildSingleJobSnapshot(cwd, positionals[0]);
+  for (const deadline = Date.now() + timeout * 1000;;) {
+    const current = renewLease(workspaceRoot, job.id, options.owner ?? ownerId());
+    if (!ACTIVE.has(current.status)) return handleResult([job.id, "--cwd", cwd, "--report", ...(options.json ? ["--json"] : [])]);
+    const pending = current.pendingQuestion;
+    if ((pending && pending.answer === undefined && pending.id !== options["after-question"]) || Date.now() >= deadline) {
+      const snapshot = progressSnapshot(current);
+      outputResult(options.json ? snapshot : `${JSON.stringify(snapshot, null, 2)}\n`, options.json);
+      return;
+    }
+    await sleep(250);
+  }
+}
 
-  const completedAt = nowIso();
-  const nextJob = {
-    ...job,
-    status: "cancelled",
-    phase: "cancelled",
-    pid: null,
-    completedAt,
-    errorMessage: "Cancelled by user."
-  };
-
-  writeJobFile(workspaceRoot, job.id, {
-    ...existing,
-    ...nextJob,
-    cancelledAt: completedAt
-  });
-  upsertJob(workspaceRoot, {
-    id: job.id,
-    status: "cancelled",
-    phase: "cancelled",
-    pid: null,
-    errorMessage: "Cancelled by user.",
-    completedAt
-  });
-
-  const payload = {
-    jobId: job.id,
-    status: "cancelled",
-    title: job.title,
-    turnInterruptAttempted: interrupt.attempted,
-    turnInterrupted: interrupt.interrupted
-  };
-
-  outputCommandResult(payload, renderCancelReport(nextJob), options.json);
+async function handleAnswer(argv) {
+  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "question"], booleanOptions: ["json"] });
+  if (!positionals[0] || !options.question) throw new Error("answer requires a job id and --question <id>; pass answer text on stdin.");
+  const cwd = resolveCommandCwd(options), { workspaceRoot, job } = buildSingleJobSnapshot(cwd, positionals[0]);
+  answerQuestion(workspaceRoot, job.id, options.question, readStdinIfPiped());
+  const payload = { jobId: job.id, questionId: options.question, status: "answer_submitted" };
+  outputResult(options.json ? payload : `${JSON.stringify(payload)}\n`, options.json);
 }
 
 async function main() {
@@ -1228,6 +1279,12 @@ async function main() {
       break;
     case "task-worker":
       await handleTaskWorker(argv);
+      break;
+    case "wait":
+      await handleWait(argv);
+      break;
+    case "answer":
+      await handleAnswer(argv);
       break;
     case "status":
       await handleStatus(argv);

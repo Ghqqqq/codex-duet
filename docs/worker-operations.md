@@ -9,7 +9,8 @@ This affects the outer Claude Bash sandbox. Codex defaults to `read-only` or
 `workspace-write` with `--write`, and always receives `approvalPolicy: "never"`.
 
 Parallel workers need disjoint write ownership or separate worktrees. A worker
-runs one Codex turn and waits for completion. It does not ask questions, install
+starts one detached Codex turn and loops `wait` for progress, questions and completion.
+It forwards mid-task questions to the parent with SendMessage, and does not install
 software, log in, or modify settings. The `--report` prompt contract tells Codex
 to proceed on conservative assumptions and report them. A question-only or
 unfinished response becomes `needs_input` with its question, exit code 2, and a
@@ -22,7 +23,8 @@ reported as blockers. The interactive `/codex:setup` install offer and
 `/codex:rescue` continuation chooser are separate user-facing paths; dynamic
 workflows should invoke `codex:codex-worker` directly, not those choosers.
 Codex server requests for approval/input are logged safely and receive an
-unsupported-request error unless they meet the explicit origin policy below.
+unsupported-request error unless they meet the explicit origin policy or registered
+ask_parent contract. Unsupported MCP elicitations instead receive nonpersistent cancel.
 The runtime does not open an interactive confirmation flow.
 
 ## Browser assignments and origin approvals
@@ -52,20 +54,79 @@ or `approvalPolicy: never`, and never grants session-wide authority.
 
 Only schema-defined **network-only** `item/commandExecution/requestApproval`
 requests for the current thread/turn can receive `{ "decision": "accept" }`.
-Commands, policy amendments, general permissions, input requests and opaque MCP
-elicitations keep the existing `-32601` reply. In particular, this does **not** yet
-approve the bundled CUA elicitation path: its metadata is opaque in the installed
-schema, and the sandbox blocked a live shape probe. See [schema evidence,
-limitations and the parent probe command](browser-approvals.md).
+Commands, policy amendments, general permissions and input requests keep the
+existing `-32601` reply. Unsupported MCP elicitations now receive
+`{ "action": "cancel" }`, avoiding persisted denial. For explicit durable browser
+consent use `setup --allow-browser-origin <origin>`; revoke with
+`setup --revoke-browser-origin <origin>`, list with `setup --list-browser-origins`.
+Allow merges the official global `[origins] allowed` array, removes the exact
+origin from global/per-thread `denied`, and reports changed files/backups. Revoke
+removes the global allow and adds a global deny. Unrelated content is preserved;
+symlinks, hard-linked files, unsupported selected TOML and concurrent changes are
+rejected. These commands are offline and support `--dry-run`. Workers never run
+them after denial; the parent needs explicit user consent per origin. See
+[browser persistence evidence](browser-approvals.md).
 
 Each callback reaching a task is logged before its reply, with a safe method,
 request ID (string IDs hashed), kind, normalized origin when available, decision
 and reason (`origin-match`, `no-flag`, `origin-mismatch`, `unsupported-method`,
-`malformed-request`, `not-network-only`, or `turn-mismatch`). Opaque elicitations
+`malformed-request`, `not-network-only`, `turn-mismatch`, or
+`unsupported-elicitation-nonpersistent`). Opaque elicitations
 also record fixed allowlisted field names/types, never their payload values.
 Unknown method strings are hashed. Broker callbacks go to the owning task;
 another client cannot answer them. Requests with no active job or a disconnected
 owner fail closed and log to broker stderr, since no job log remains available.
+
+## Detached execution, questions and cleanup
+
+Start `task --fresh --detached --report --json`; retain jobId, ownerId and any
+acknowledged thread/turn handles. Poll `wait <job> --timeout-sec 45 --json --report`.
+Timeout snapshots contain a ≤60-character headline, phase/elapsed, startup timings,
+current item and four recent completed items. Command summaries contain only a
+command family/classification and exit code, not arbitrary arguments. File paths,
+tool names and plan step counts are bounded. Set each native Bash description to
+the last headline. Thread/turn IDs can initially be null; wait publishes them.
+
+`ask_parent` is registered on new threads through experimental `dynamicTools`.
+On `needs_answer`, SendMessage the question to `main` once per question ID, keep waiting with
+`--after-question <id> --timeout-sec 5`, then pass the answer on stdin to
+`answer <job> --question <id> --json`. The callback stays pending, so the reply
+continues the same turn. Text/options are private job state, not progress logs;
+answers are removed after delivery. Default timeout is 900 seconds, configurable
+per task with `--question-timeout-sec`; on timeout Codex receives conservative
+assumption guidance. Old threads/runtimes without the tool keep final needs_input.
+
+Leases default to 180 seconds (`--lease-sec`, or CODEX_COMPANION_LEASE_SEC).
+Owner identity defaults to CODEX_COMPANION_OWNER_ID, then the Claude session ID,
+then local; `task --owner <id>` overrides it. Pass the same `--owner` to wait/status.
+Only matching owner calls renew. Foreground tasks renew while their owning process
+runs; detached workers cannot renew their own lease. The lease is a lifecycle
+mechanism, not authentication against other local processes. Expiry, cancel,
+SessionEnd and SIGTERM/SIGHUP/SIGINT resolve pending questions, send interruption,
+and bound the wait for completion. `cancel` waits up to six seconds and reports
+`confirmed` only after a terminal turn/result, otherwise `unconfirmed` (exit 2).
+A legacy record without a live control-aware worker is not killed by stored PID.
+SessionEnd preserves history and requests only its session's jobs across worktrees
+under the same plugin-data root. Busy state locks are reported as unconfirmed
+without exceeding the hook budget; lease expiry remains the fallback. It avoids shutting
+down a broker shared by other sessions. Broker disconnects interrupt the lost
+owner's turn; a four-second failure deadline closes that owned server group.
+
+SessionStart launches prewarm detached. A broker with no clients/active turns
+exits after 60 seconds (CODEX_COMPANION_BROKER_IDLE_SEC). Shutdown reaps its owned
+app-server process group. No process-name scan or historical PID kill is used.
+See [schema details, test isolation, limitations and acceptance commands](worker-lifecycle.md).
+
+Startup timing fields are milliseconds: duration for connection/initialization/
+thread/turn operations, elapsed from task runtime entry for first model/tool/MCP
+observations. A reused broker reports its original initialization duration plus
+this client's handshake. MCP ready means the first observed ready notification,
+not proof that every server is ready; null means unobserved. Progress and final
+reports include a WebSocket retry/fallback warning when observed on stderr.
+`setup --transport http|websocket|status` is an explicit offline action; it preserves
+the selected named ChatGPT provider block, takes a timestamped backup before writes,
+and does not change defaults or claim a measured speedup. Restart after an actual
+configuration change, once other live work has finished.
 
 ## Sandbox and permissions
 
@@ -301,6 +362,7 @@ Non-Git/unreadable snapshots are marked partial and fall back to available event
 Concurrent edits can appear in the comparison; a snapshot cannot prove which
 worker caused them. An edit reverted before the final snapshot is visible only
 if the server emitted a file-change event.
+The progress log excludes model message/reasoning bodies, command arguments and tool outputs.
 The full final text is in `<job-id>.output.txt`; the raw result, command events
 and reasoning summaries are in `<job-id>.result.json`. Progress/messages are in
 `<job-id>.log`. These live beside the job record, under `CLAUDE_PLUGIN_DATA/state`

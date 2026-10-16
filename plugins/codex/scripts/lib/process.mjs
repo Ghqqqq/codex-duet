@@ -1,5 +1,36 @@
-import { spawnSync } from "node:child_process";
+import { spawnSync, spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
+
+// Tests share only a fresh suite-owned process ledger. Never discover/kill by
+// executable name, inherited broker PID, or a user's existing runtime state.
+export function spawnOwned(command, args, options = {}) {
+  if (process.env.CODEX_COMPANION_TEST_MODE === "1") options = { ...options, env: { ...process.env, ...options.env } };
+  const child = spawn(command, args, options);
+  const env = options.env ?? process.env;
+  if (env.CODEX_COMPANION_TEST_MODE === "1" && env.CODEX_COMPANION_TEST_PROCESSES && child.pid) {
+    const dir = env.CODEX_COMPANION_TEST_PROCESSES;
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = path.join(dir, `${child.pid}.json`);
+    const record = { pid: child.pid, detached: Boolean(options.detached), spawnedBy: process.pid, exited: false };
+    fs.writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
+    child.once("exit", () => { try { fs.writeFileSync(file, JSON.stringify({ ...record, exited: true })); } catch {} });
+  }
+  return child;
+}
+
+export async function stopOwnedProcessGroup(child, graceMs = 500) {
+  if (!child?.pid) return;
+  const signal = value => {
+    try { if (process.platform === "win32") terminateProcessTree(child.pid); else process.kill(-child.pid, value); }
+    catch (e) { if (e.code !== "ESRCH") throw e; }
+  };
+  signal("SIGTERM");
+  await new Promise(resolve => setTimeout(resolve, graceMs));
+  // Also kill descendants whose group leader exited first.
+  signal("SIGKILL");
+}
 
 export function runCommand(command, args = [], options = {}) {
   const result = spawnSync(command, args, {

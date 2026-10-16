@@ -3,10 +3,12 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { spawn } from "node:child_process";
+import { spawnOwned as spawn } from "./process.mjs";
 import { fileURLToPath } from "node:url";
 import { createBrokerEndpoint, parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { resolveStateDir } from "./state.mjs";
+import { resolveIsolatedCodexHome } from "./codex-home.mjs";
+import { stopOwnedProcessGroup } from "./process.mjs";
 
 export const PID_FILE_ENV = "CODEX_COMPANION_APP_SERVER_PID_FILE";
 export const LOG_FILE_ENV = "CODEX_COMPANION_APP_SERVER_LOG_FILE";
@@ -43,6 +45,8 @@ export async function waitForBrokerEndpoint(endpoint, timeoutMs = 2000) {
 export async function sendBrokerShutdown(endpoint) {
   await new Promise((resolve) => {
     const socket = connectToEndpoint(endpoint);
+    const timer = setTimeout(() => { socket.destroy(); resolve(); }, 1000);
+    socket.once("close", () => clearTimeout(timer));
     socket.setEncoding("utf8");
     socket.on("connect", () => {
       socket.write(`${JSON.stringify({ id: 1, method: "broker/shutdown", params: {} })}\n`);
@@ -111,6 +115,7 @@ async function isBrokerEndpointReady(endpoint) {
 }
 
 export async function ensureBrokerSession(cwd, options = {}) {
+  resolveIsolatedCodexHome(options.env ?? process.env);
   const existing = loadBrokerSession(cwd);
   if (existing && (await isBrokerEndpointReady(existing.endpoint))) {
     return existing;
@@ -148,6 +153,8 @@ export async function ensureBrokerSession(cwd, options = {}) {
 
   const ready = await waitForBrokerEndpoint(endpoint, options.timeoutMs ?? 2000);
   if (!ready) {
+    // This ChildProcess was spawned here; never kill an inherited saved PID.
+    await stopOwnedProcessGroup(child);
     teardownBrokerSession({
       endpoint,
       pidFile,

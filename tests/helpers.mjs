@@ -45,7 +45,7 @@ export function writeExecutable(filePath, source) {
 export function run(command, args, options = {}) {
   return spawnSync(command, args, {
     cwd: options.cwd,
-    env: options.env,
+    env: { ...process.env, ...options.env },
     encoding: "utf8",
     input: options.input,
     shell: options.shell ?? (process.platform === "win32" && !path.isAbsolute(command)),

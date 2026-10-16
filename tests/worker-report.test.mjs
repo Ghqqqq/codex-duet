@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawnOwned as spawn } from "../plugins/codex/scripts/lib/process.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildWorkerReport, classifyWorkerOutcome, classifyBrowserBlocker } from "../plugins/codex/scripts/lib/worker-report.mjs";

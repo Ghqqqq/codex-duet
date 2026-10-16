@@ -46,7 +46,7 @@ export type {
   UserInput
 };
 
-export type ThreadStartParams = Omit<RawThreadStartParams, "persistExtendedHistory">;
+export type ThreadStartParams = Omit<RawThreadStartParams, "persistExtendedHistory" | "dynamicTools"> & { dynamicTools?: Array<{ type: string; name: string; description: string; inputSchema: unknown }> };
 export type ThreadResumeParams = Omit<RawThreadResumeParams, "persistExtendedHistory">;
 
 export interface CodexAppServerClientOptions {
@@ -57,11 +57,15 @@ export interface CodexAppServerClientOptions {
   disableBroker?: boolean;
   reuseExistingBroker?: boolean;
   approvedBrowserOrigins?: string[];
+  signal?: AbortSignal;
+  onParentQuestion?: (message: any) => Promise<{ success: boolean; contentItems: Array<{ type: string; text: string }> }>;
+  onRuntimeEvent?: (event: any) => void;
+  onClient?: (client: { close(): Promise<void> }) => void;
   onServerRequestLog?: (summary: { method: string; requestId: string | number; kind: string; decision: string; reason: string; origin?: string; fields?: string[] }) => void;
 }
 
 export interface AppServerMethodMap {
-  initialize: { params: InitializeParams; result: InitializeResponse & { codexCompanionHome?: string; codexCompanionRuntime?: string } };
+  initialize: { params: InitializeParams; result: InitializeResponse & { codexCompanionHome?: string; codexCompanionRuntime?: string; startupTimings?: Record<string, unknown>; startupWarning?: string | null } };
   "externalAgentConfig/import": { params: ExternalAgentConfigImportParams; result: ExternalAgentConfigImportResponse };
   "thread/start": { params: ThreadStartParams; result: ThreadStartResponse };
   "thread/resume": { params: ThreadResumeParams; result: ThreadResumeResponse };

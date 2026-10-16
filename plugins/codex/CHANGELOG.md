@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.6-isolated.7
+
+- Run native workers as one detached task with owner-renewed leases and bounded `wait` progress snapshots. Show startup phases, safe item summaries and WebSocket retry warnings in logs and reports.
+- Register experimental `ask_parent` for same-turn questions, add stdin `answer`, and route native Agent questions to `main` with SendMessage. Bound unanswered questions to 15 minutes; retain final `needs_input` when registration is unavailable.
+- Interrupt on cancellation, lease expiry, session end and worker signals; distinguish confirmed turn completion from unconfirmed cancellation. Prewarm the shared broker without blocking SessionStart, exit idle brokers and reap owned app-server process groups.
+- Harden fixture isolation with temporary homes/data, real-home/executable guards, a spawned-process ledger and teardown survivor assertions. Explain the inherited-environment path behind the archived baseline leak.
+- Add explicit, backed-up, idempotent `setup --transport http|websocket|status` without changing defaults. Add official browser allow/revoke/list setup, preserving unrelated TOML and removing exact stale per-thread denies when granting consent.
+- Return nonpersistent MCP elicitation cancel instead of unsupported errors; document installed browser-service decline/cancel persistence and schema evidence. Keep per-task network-origin grants separate from durable browser consent.
+- Add fixture coverage for progress, questions, timeouts, interruption, session cleanup, broker idle exit, home guards and setup merges. Live model/browser acceptance remains a separate parent check.
+
 ## 1.0.6-isolated.6
 
 - Require fresh session-owned browser tabs and cleanup; classify full-UUID stale tab claims as distinct blockers with the owning session ID.

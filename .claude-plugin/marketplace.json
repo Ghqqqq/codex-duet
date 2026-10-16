@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "Duet — local isolated fork of openai/codex-plugin-cc with independent sessions and login.",
-    "version": "1.0.6-isolated.6"
+    "version": "1.0.6-isolated.7"
   },
   "plugins": [
     {
       "name": "codex",
       "description": "Duet: delegate coding, research and review from Claude Code to parallel Codex workers.",
-      "version": "1.0.6-isolated.6",
+      "version": "1.0.6-isolated.7",
       "author": {
         "name": "OpenAI"
       },

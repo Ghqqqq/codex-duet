@@ -20,6 +20,7 @@
  *   rejectCompletion: (error: unknown) => void,
  *   finalTurn: Turn | null,
  *   completed: boolean,
+ *   turnEndedObserved: boolean,
  *   finalAnswerSeen: boolean,
  *   pendingCollaborations: Set<string>,
  *   activeSubagentTurns: Set<string>,
@@ -31,9 +32,11 @@
  *   messages: Array<{ lifecycle: string, phase: string | null, text: string }>,
  *   fileChanges: ThreadItem[],
  *   commandExecutions: ThreadItem[],
+ *   safeProgress: boolean,
  *   onProgress: ProgressReporter | null
  * }} TurnCaptureState
  */
+import { ASK_PARENT, safeItem } from "./job-runtime.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { resolveIsolatedCodexHome, resolveCodexBinary, isolatedCodexEnv } from "./codex-home.mjs";
@@ -68,6 +71,7 @@ function buildThreadParams(cwd, options = {}) {
     approvalPolicy: options.approvalPolicy ?? "never",
     sandbox: options.sandbox ?? "read-only",
     serviceName: SERVICE_NAME,
+    ...(options.parentQuestions ? { dynamicTools: [ASK_PARENT] } : {}),
     ephemeral: options.ephemeral ?? true
   };
 }
@@ -322,6 +326,7 @@ function createTurnCaptureState(threadId, options = {}) {
     rejectCompletion,
     finalTurn: null,
     completed: false,
+    turnEndedObserved: false,
     finalAnswerSeen: false,
     pendingCollaborations: new Set(),
     activeSubagentTurns: new Set(),
@@ -333,7 +338,8 @@ function createTurnCaptureState(threadId, options = {}) {
     messages: [],
     fileChanges: [],
     commandExecutions: [],
-    onProgress: options.onProgress ?? null
+    onProgress: options.onProgress ?? null,
+    safeProgress: Boolean(options.safeProgress)
   };
 }
 
@@ -354,6 +360,7 @@ function completeTurn(state, turn = null, options = {}) {
 
   if (turn) {
     state.finalTurn = turn;
+    state.turnEndedObserved = turn.status !== "inProgress";
     if (!state.turnId) {
       state.turnId = turn.id;
     }
@@ -433,7 +440,7 @@ function recordItem(state, item, lifecycle, threadId = null) {
           scheduleInferredCompletion(state);
         }
       }
-      if (lifecycle === "completed") {
+      if (lifecycle === "completed" && !state.safeProgress) {
         const sourceLabel = labelForThread(state, threadId);
         emitLogEvent(state.onProgress, {
           message: sourceLabel ? `Subagent ${sourceLabel}: ${shorten(item.text, 96)}` : `Assistant message captured: ${shorten(item.text, 96)}`,
@@ -464,7 +471,7 @@ function recordItem(state, item, lifecycle, threadId = null) {
   if (item.type === "reasoning" && lifecycle === "completed") {
     const nextSections = extractReasoningSections(item.summary);
     state.reasoningSummary = mergeReasoningSections(state.reasoningSummary, nextSections);
-    if (nextSections.length > 0) {
+    if (nextSections.length > 0 && !state.safeProgress) {
       const sourceLabel = labelForThread(state, threadId);
       emitLogEvent(state.onProgress, {
         message: sourceLabel
@@ -524,20 +531,25 @@ function applyTurnNotification(state, message) {
     case "item/started":
       recordItem(state, message.params.item, "started", message.params.threadId ?? null);
       {
-        const update = describeStartedItem(state, message.params.item);
-        emitProgress(state.onProgress, update?.message, update?.phase ?? null);
+        const item = safeItem(message.params.item, "started");
+        const update = state.safeProgress ? item && { message: item.summary, phase: item.type === "fileChange" ? "editing" : item.summary.includes("tests") ? "verifying" : "running" } : describeStartedItem(state, message.params.item);
+        emitProgress(state.onProgress, update?.message, update?.phase ?? null, item ? { item } : {});
       }
       break;
     case "item/completed":
       recordItem(state, message.params.item, "completed", message.params.threadId ?? null);
       {
-        const update = describeCompletedItem(state, message.params.item);
-        emitProgress(state.onProgress, update?.message, update?.phase ?? null);
+        const item = safeItem(message.params.item, "completed");
+        const update = state.safeProgress ? item && { message: `${item.summary} completed${item.exitCode !== undefined ? ` (exit ${item.exitCode})` : ""}.`, phase: "running" } : describeCompletedItem(state, message.params.item);
+        emitProgress(state.onProgress, update?.message, update?.phase ?? null, item ? { item } : {});
       }
+      break;
+    case "turn/plan/updated":
+      emitProgress(state.onProgress, "Plan updated.", "planning", { item: { type: "plan", summary: "plan updated", lifecycle: "completed", steps: (message.params.plan ?? []).length } });
       break;
     case "error":
       state.error = message.params.error;
-      emitProgress(state.onProgress, `Codex error: ${message.params.error.message}`, "failed");
+      emitProgress(state.onProgress, state.safeProgress ? "Codex reported an error; inspect the final result." : `Codex error: ${message.params.error.message}`, "failed");
       break;
     case "turn/completed":
       if ((message.params.threadId ?? null) !== state.threadId) {
@@ -563,9 +575,12 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
   let lastActivity = Date.now(), itemCount = 0, toolCount = 0;
   const started = Date.now();
   const seenItems = new Set();
+  let firstModel = false, firstTool = false;
   const trackActivity = message => {
     lastActivity = Date.now();
     const item = message.params?.item;
+    if (item && !firstModel) { firstModel = true; options.onTiming?.("firstModelEvent"); }
+    if (item && !["agentMessage", "userMessage", "reasoning", "plan"].includes(item.type) && !firstTool) { firstTool = true; options.onTiming?.("firstToolCall"); }
     if (item && !seenItems.has(`${extractThreadId(message)}:${item.id}`)) {
       seenItems.add(`${extractThreadId(message)}:${item.id}`);
       itemCount++;
@@ -599,8 +614,18 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     applyTurnNotification(state, message);
   });
 
+  let interruptTimer = null;
+  const interrupt = () => {
+    const turnId = state.turnId ?? client.serverRequestPolicy.turnId;
+    if (turnId) void client.request("turn/interrupt", { threadId, turnId }).catch(() => {});
+    if (!interruptTimer) interruptTimer = setTimeout(() => { void client.close(); }, 4000);
+  };
+  options.signal?.addEventListener("abort", interrupt);
   try {
+    if (options.signal?.aborted) throw new Error("Task interrupted before turn start.");
+    const turnBegan = Date.now();
     const response = await startRequest();
+    options.onTiming?.("turnStart", Date.now() - turnBegan);
     options.onResponse?.(response, state);
     state.turnId = response.turn?.id ?? null;
     client.setServerRequestContext(threadId, state.turnId);
@@ -609,6 +634,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       // The response can precede notifications (or they may be dropped).
       emitProgress(options.onProgress, `Turn handle: ${state.turnId}.`, "starting", { threadId: state.threadId, turnId: state.turnId });
     }
+    if (options.signal?.aborted) interrupt();
     for (const message of state.bufferedNotifications) {
       if (belongsToTurn(state, message)) {
         trackActivity(message);
@@ -630,6 +656,8 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       client.exitPromise.then(() => { throw client.exitError ?? new Error("Codex connection closed before turn completion; recover the recorded job."); })
     ]);
   } finally {
+    options.signal?.removeEventListener("abort", interrupt);
+    clearTimeout(interruptTimer);
     clearInterval(heartbeat);
     clearCompletionTimer(state);
     client.setNotificationHandler(previousHandler ?? null);
@@ -757,7 +785,13 @@ async function requestExternalAgentSessionImport(client, params) {
 }
 
 async function startThread(client, cwd, options = {}) {
-  const response = await client.request("thread/start", buildThreadParams(cwd, options));
+  let response;
+  try { response = await client.request("thread/start", buildThreadParams(cwd, options)); }
+  catch (error) {
+    if (!options.parentQuestions || !/dynamicTools|dynamic.tools|experimental/i.test(error.message) || ![-32600, -32601, -32602].includes(error.rpcCode)) throw error;
+    emitProgress(options.onProgress, "Parent questions unavailable in this runtime; final needs_input fallback remains enabled.", "starting");
+    response = await client.request("thread/start", buildThreadParams(cwd, { ...options, parentQuestions: false }));
+  }
   const threadId = response.thread.id;
   emitProgress(options.onProgress, `Thread handle: ${threadId}.`, "starting", { threadId });
   if (options.threadName) {
@@ -1065,6 +1099,7 @@ export async function runAppServerReview(cwd, options = {}) {
         }),
       {
         onProgress: options.onProgress,
+        signal: options.signal,
         onResponse(response, state) {
           if (response.reviewThreadId) {
             state.threadIds.add(response.reviewThreadId);
@@ -1084,10 +1119,11 @@ export async function runAppServerReview(cwd, options = {}) {
       reviewText: turnState.reviewText,
       reasoningSummary: turnState.reasoningSummary,
       turn: turnState.finalTurn,
+      turnEnded: Boolean(turnState.turnEndedObserved),
       error: turnState.error,
       stderr: cleanCodexStderr(client.stderr)
     };
-  }, { onServerRequestLog: summary => emitProgress(options.onProgress, `Server request ${JSON.stringify(summary)}`, null) });
+  }, { signal: options.signal, onServerRequestLog: summary => emitProgress(options.onProgress, `Server request ${JSON.stringify(summary)}`, null) });
 }
 
 export async function importExternalAgentSession(cwd, options = {}) {
@@ -1128,15 +1164,35 @@ export async function importExternalAgentSession(cwd, options = {}) {
 }
 
 export async function runAppServerTurn(cwd, options = {}) {
+  const began = Date.now(), startupTimings = { mcpReady: null };
+  let startupWarning = null;
+  const onTiming = (phase, durationMs) => {
+    const timing = { phase, elapsedMs: Date.now() - began, ...(durationMs === undefined ? {} : { durationMs }) };
+    startupTimings[phase] = timing;
+    emitProgress(options.onProgress, `Startup timing: ${phase} ${JSON.stringify(timing)}`, null, { timing });
+  };
+  const runtimeEvent = event => {
+    if (event.timing) onTiming(event.timing.phase, event.timing.durationMs);
+    if (event.startupTimings) for (const [phase, duration] of Object.entries(event.startupTimings)) {
+      if (typeof duration === "number") onTiming(phase, duration);
+    }
+    if (event.mcpReady && !startupTimings.mcpReady) onTiming("mcpReady");
+    if (event.startupWarning) {
+      startupWarning = event.startupWarning;
+      emitProgress(options.onProgress, startupWarning, null, { startupWarning });
+    }
+  };
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
     throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
   }
 
   return withAppServer(cwd, async (client) => {
+    if (options.signal?.aborted) throw new Error("Task interrupted during startup.");
     let threadId;
     let threadPolicy;
 
+    const threadBegan = Date.now();
     if (options.resumeThreadId) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
       const response = await resumeThread(client, options.resumeThreadId, cwd, {
@@ -1153,11 +1209,15 @@ export async function runAppServerTurn(cwd, options = {}) {
         sandbox: options.sandbox,
         ephemeral: options.persistThread ? false : true,
         threadName: options.persistThread ? options.threadName : options.threadName ?? null,
-        onProgress: options.onProgress
+        onProgress: options.onProgress,
+        parentQuestions: Boolean(options.onParentQuestion)
       });
       threadId = response.thread.id;
       threadPolicy = response.sandbox;
     }
+
+    onTiming(options.resumeThreadId ? "threadResume" : "threadStart", Date.now() - threadBegan);
+    if (options.signal?.aborted) throw new Error("Task interrupted before turn start.");
 
     emitProgress(options.onProgress, `Thread ready (${threadId}).`, "starting", {
       threadId
@@ -1190,7 +1250,7 @@ export async function runAppServerTurn(cwd, options = {}) {
           approvalPolicy: "never",
           ...(options.explicitSandbox ? { sandboxPolicy: threadPolicy } : {})
         }),
-      { onProgress: options.onProgress }
+      { onProgress: options.onProgress, safeProgress: true, onTiming, signal: options.signal }
     );
 
     return {
@@ -1208,10 +1268,14 @@ export async function runAppServerTurn(cwd, options = {}) {
       stderr: cleanCodexStderr(client.stderr),
       fileChanges: turnState.fileChanges,
       touchedFiles: collectTouchedFiles(turnState.fileChanges),
-      commandExecutions: turnState.commandExecutions
+      commandExecutions: turnState.commandExecutions,
+      startupTimings, startupWarning, turnEnded: Boolean(turnState.turnEndedObserved)
     };
   }, {
     approvedBrowserOrigins: options.approvedBrowserOrigins ?? [],
+    onParentQuestion: options.onParentQuestion,
+    signal: options.signal,
+    onRuntimeEvent: runtimeEvent,
     onServerRequestLog: summary => emitProgress(options.onProgress, `Server request ${JSON.stringify(summary)}`, null)
   });
 }

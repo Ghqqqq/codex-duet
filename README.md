@@ -1,449 +1,284 @@
 # Duet — Claude Code × Codex
 
-Duet lets Claude Code hand coding, research and review work to Codex workers that run in parallel in an isolated Codex home, then brings back short, recoverable reports instead of raw transcripts.
+Duet turns Codex into a native Claude Code subagent. Claude plans, splits the
+work and verifies the result; Codex workers do the investigation, implementation
+or review in parallel, in an isolated Codex home, and come back with short,
+recoverable reports instead of raw transcripts.
 
-Based on [OpenAI codex-plugin-cc](https://github.com/openai/codex-plugin-cc), upstream db52e28 / 1.0.6. This local fork uses `~/.claude/codex-isolated` for data and separate file credentials. It uses the same account after a separate login. Normal Codex history is not imported. Custom absolute `CODEX_COMPANION_HOME` is supported; overlaps with the normal home are rejected.
+From Claude's side a Codex worker is just another `Agent` call: it can run in the
+background, run alongside other workers, show live progress in the Agent panel,
+ask Claude a question mid-task, be resumed with `SendMessage`, and stop when the
+Agent is stopped.
 
-Tasks default to `gpt-6-astra` / `xhigh` / normal speed. `--effort max` is available when supported by the selected model. `--fast` explicitly requests the fast service tier; `--normal` or no speed flag resets to normal on each call, including resume. Same-account usage limits are shared.
+Duet is a fork of [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc)
+(upstream `db52e28` / 1.0.6). The review and rescue commands come from upstream;
+the native worker runtime, isolation and lifecycle work are Duet additions.
 
-Use Codex from inside Claude Code for code reviews or to delegate tasks to Codex.
+## Highlights
 
-This plugin is for Claude Code users who want an easy way to start using Codex from the workflow
-they already have.
-
-<video src="./docs/plugin-demo.webm" controls muted playsinline autoplay></video>
-
-## What You Get
-
-- `/codex:review` for a normal read-only Codex review
-- `/codex:adversarial-review` for a steerable challenge review
-- `/codex:rescue`, `/codex:transfer`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work, hand off sessions, and manage background jobs
+- **Native parallel workers.** `Agent(subagent_type: "codex:codex-worker")` starts
+  one Codex turn per assignment. Independent workers run concurrently; each keeps
+  its own Codex thread, so follow-ups continue the right conversation.
+- **Live progress.** Workers start the turn detached and loop `wait`. Each call's
+  description is a short headline such as `running tests · 4m12s`, so the Agent
+  panel shows what Codex is doing instead of a silent spinner.
+- **Mid-task questions.** Codex can call `ask_parent`. The worker forwards the
+  question to Claude, and the answer is fed back into the *same* Codex turn. An
+  unanswered question times out (15 minutes by default) and Codex proceeds on a
+  conservative assumption that it reports.
+- **Clean cancellation.** Every job has an owner lease (180 s by default). Stopping
+  the Agent lets the lease expire and interrupts the Codex turn; `cancel` reports
+  confirmed versus unconfirmed termination; ending the Claude session interrupts
+  that session's jobs. Idle brokers exit after 60 s.
+- **Isolated home.** Authentication, sessions, SQLite and logs live in
+  `~/.claude/codex-isolated`, separate from your everyday `~/.codex`. Credentials
+  are never copied.
+- **Honest reports.** Compact JSON reports separate captured facts from Codex's
+  claims, list touched files against a before/after snapshot (pre-existing dirt
+  reported separately), and keep handles for read-only recovery.
+- **Browser work.** Optional Chrome/computer-use tooling, fresh session-owned tabs,
+  and explicit, per-origin browser consent.
 
 ## Requirements
 
-- **ChatGPT subscription (incl. Free) or OpenAI API key.**
-  - Usage will contribute to your Codex usage limits. [Learn more](https://developers.openai.com/codex/pricing).
-- **Node.js 18.18 or later**
+- Claude Code with plugin support.
+- Node.js 18.18 or later.
+- A Codex CLI (`codex` on PATH, or a pinned binary, see [Runtime selection](#runtime-selection)).
+- A ChatGPT plan (including Free) or an OpenAI API key. Usage counts toward your
+  Codex limits; the isolated home shares limits with your normal Codex account.
 
 ## Install
 
-Add the marketplace in Claude Code:
+Add the marketplace and install the plugin:
 
 ```bash
-/plugin marketplace add /absolute/path/to/codex-plugin-isolated
-```
-
-Install the plugin:
-
-```bash
+/plugin marketplace add Ghqqqq/codex-duet        # or an absolute path to a local checkout
 /plugin install codex@codex-isolated-local
-```
-
-Reload plugins:
-
-```bash
 /reload-plugins
 ```
 
-Then run:
+The repository is private, so the GitHub form needs Git credentials that can read
+it. The plugin keeps the `codex` command namespace: commands are `/codex:*` and the
+agents are `codex:codex-worker` and `codex:codex-rescue`.
+
+Then check the runtime and sign in to the isolated home once:
 
 ```bash
 /codex:setup
-```
-
-`/codex:setup` will tell you whether Codex is ready. If Codex is missing and npm is available, it can offer to install Codex for you.
-
-If you prefer to install Codex yourself, use:
-
-```bash
-npm install -g @openai/codex
-```
-
-If Codex is installed but not logged in yet, run:
-
-```bash
 !node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-isolated.mjs" login
 ```
 
-After install, you should see:
+`/codex:setup` reports whether Codex is installed, reachable and logged in. It
+distinguishes an unreachable authentication probe (for example inside a sandbox)
+from a confirmed logout.
 
-- the slash commands listed below
-- the `codex:codex-rescue` subagent in `/agents`
+## Using Codex workers
 
-One simple first run is:
-
-```bash
-/codex:review --background
-/codex:status
-/codex:result
-```
-
-## Usage
-
-### `/codex:review`
-
-Runs a normal Codex review on your current work. It gives you the same quality of code review as running `/review` inside Codex directly.
-
-> [!NOTE]
-> Code review especially for multi-file changes might take a while. It's generally recommended to run it in the background.
-
-Use it when you want:
-
-- a review of your current uncommitted changes
-- a review of your branch compared to a base branch like `main`
-
-Use `--base <ref>` for branch review. It also supports `--wait` and `--background`. It is not steerable and does not take custom focus text. Use [`/codex:adversarial-review`](#codexadversarial-review) when you want to challenge a specific decision or risk area.
-
-Examples:
-
-```bash
-/codex:review
-/codex:review --base main
-/codex:review --background
-```
-
-This command is read-only and will not perform any changes. When run in the background you can use [`/codex:status`](#codexstatus) to check on the progress and [`/codex:cancel`](#codexcancel) to cancel the ongoing task.
-
-### `/codex:adversarial-review`
-
-Runs a **steerable** review that questions the chosen implementation and design.
-
-It can be used to pressure-test assumptions, tradeoffs, failure modes, and whether a different approach would have been safer or simpler.
-
-It uses the same review target selection as `/codex:review`, including `--base <ref>` for branch review.
-It also supports `--wait` and `--background`. Unlike `/codex:review`, it can take extra focus text after the flags.
-
-Use it when you want:
-
-- a review before shipping that challenges the direction, not just the code details
-- review focused on design choices, tradeoffs, hidden assumptions, and alternative approaches
-- pressure-testing around specific risk areas like auth, data loss, rollback, race conditions, or reliability
-
-Examples:
-
-```bash
-/codex:adversarial-review
-/codex:adversarial-review --base main challenge whether this was the right caching and retry design
-/codex:adversarial-review --background look for race conditions and question the chosen approach
-```
-
-This command is read-only. It does not fix code.
-
-### `/codex:rescue`
-
-Hands a task to Codex through the `codex:codex-rescue` subagent.
-
-Use it when you want Codex to:
-
-- investigate a bug
-- try a fix
-- continue a previous Codex task
-- take a faster or cheaper pass with a smaller model
-
-> [!NOTE]
-> Depending on the task and the model you choose these tasks might take a long time and it's generally recommended to force the task to be in the background or move the agent to the background.
-
-It supports `--background`, `--wait`, `--resume`, and `--fresh`. If you omit `--resume` and `--fresh`, the plugin can offer to continue the latest rescue thread for this repo.
-
-Examples:
-
-```bash
-/codex:rescue investigate why the tests started failing
-/codex:rescue fix the failing test with the smallest safe patch
-/codex:rescue --resume apply the top fix from the last run
-/codex:rescue --model gpt-5.4-mini --effort medium investigate the flaky integration test
-/codex:rescue --model spark fix the issue quickly
-/codex:rescue --background investigate the regression
-```
-
-You can also just ask for a task to be delegated to Codex:
+You normally do not call anything yourself: ask Claude to delegate, or let it
+decide that a task benefits from an independent worker.
 
 ```text
-Ask Codex to redesign the database connection to be more resilient.
+Have Codex investigate why the integration tests are flaky, and in parallel have
+another Codex worker review the retry logic in src/net/.
 ```
 
-**Notes:**
+What happens under the hood:
 
-- if you do not pass `--model` or `--effort`, delegated tasks use `gpt-6-astra` and `xhigh`.
-- if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
-- follow-up rescue requests can continue the latest Codex task in the repo
+1. Claude spawns `codex:codex-worker` with a bounded assignment (objective,
+   owned paths, constraints, acceptance criteria).
+2. The worker runs `task --fresh --detached --json --report …`, which returns the
+   job, thread and turn handles immediately.
+3. It loops `wait <job> --timeout-sec 45`, updating its headline from each
+   progress snapshot and renewing the owner lease.
+4. If Codex calls `ask_parent`, `wait` returns `needs_answer`; the worker sends
+   the question to Claude once, keeps short waits going, and passes the reply to
+   `answer <job> --question <id>`.
+5. On completion it returns a compact report (status, handles, touched files,
+   verification, assumptions, blockers, and paths to the full raw output).
 
-### `/codex:transfer`
+Follow-ups go to the same worker with `SendMessage`; it continues its own thread
+with `task --thread <threadId> …`. Never use "the latest thread" to pick one
+worker out of several.
 
-Creates a persistent Codex thread from the current Claude Code session and prints a isolated `codex-isolated.mjs --home <directory> resume <session-id>` command.
+### Defaults and runtime choices
 
-Use it when you started a debugging or implementation conversation in Claude Code and want to continue that same context directly in Codex.
+| Choice | Default | Override |
+| --- | --- | --- |
+| Model | `gpt-6-astra` | `--model <name>` (`spark` maps to `gpt-5.3-codex-spark`) |
+| Reasoning effort | `xhigh` | `--effort none…xhigh` or `--effort max` where the model supports it |
+| Speed | normal | `--fast` requests the fast tier for that call only; `--normal` resets |
+| Codex sandbox | `read-only` | `--write` → `workspace-write`; `--write --sandbox danger-full-access` only when deliberately requested |
+| Approval policy | `never` | — |
 
-Examples:
+Each follow-up resets to its own flags: write access, fast mode and browser
+grants are never inherited from an earlier turn, and workers never elevate after
+a denial. Companion Bash calls run with `dangerouslyDisableSandbox: true` because
+the runtime needs network access and local sockets; that is separate from Codex's
+own sandbox.
 
-```bash
-/codex:transfer
-/codex:transfer --source ~/.claude/projects/-Users-me-repo/<session-id>.jsonl
-```
+### Parallel work
 
-The plugin's existing `SessionStart` hook supplies the current transcript path automatically; `--source` is available as a manual override. The transfer uses Codex's external-agent session importer, so it follows the same conversion rules as importing Claude history in the Codex App and creates visible turns that can be continued in the App or TUI. The source must be under `~/.claude/projects`, and older Codex versions that do not expose session import must be upgraded before using this command.
+Read-only workers may share a checkout. Concurrent writers need disjoint owned
+paths or separate worktrees; shared files, lockfiles, indexes and generated
+output need serialization. Job state uses interprocess locks and atomic writes;
+all active jobs and the latest 50 finished jobs are kept.
 
-### `/codex:status`
+## Commands
 
-Shows running and recent Codex jobs for the current repository.
+| Command | Purpose |
+| --- | --- |
+| `/codex:review [--base <ref>] [--background]` | Read-only Codex review of the working tree or a branch. |
+| `/codex:adversarial-review [focus…]` | Steerable review that challenges design choices and assumptions. |
+| `/codex:rescue <task>` | Hand a one-off task to Codex through the `codex-rescue` agent (`--resume`, `--fresh`, `--background`). |
+| `/codex:transfer` | Turn the current Claude session into a Codex thread you can resume in Codex. |
+| `/codex:status [job]` / `/codex:result [job]` | Inspect running or finished jobs and their stored output. |
+| `/codex:cancel [job]` | Interrupt a job and report whether termination was confirmed. |
+| `/codex:setup` | Readiness check plus the configuration actions below. |
 
-Examples:
+Companion subcommands used by workers (`node scripts/codex-companion.mjs …`):
+`task`, `wait`, `answer`, `status`, `result`, `cancel`, `setup`. Run it without
+arguments for full usage.
 
-```bash
-/codex:status
-/codex:status task-abc123
-```
-
-Use it to:
-
-- check progress on background work
-- see the latest completed job
-- confirm whether a task is still running
-
-### `/codex:result`
-
-Shows the final stored Codex output for a finished job.
-When available, it also includes the Codex session ID so you can reopen that run directly in Codex with isolated `codex-isolated.mjs --home <directory> resume <session-id>`.
-
-Examples:
-
-```bash
-/codex:result
-/codex:result task-abc123
-```
-
-### `/codex:cancel`
-
-Cancels an active background Codex job.
-
-Examples:
-
-```bash
-/codex:cancel
-/codex:cancel task-abc123
-```
-
-### `/codex:setup`
-
-Checks whether Codex is installed and authenticated.
-If Codex is missing and npm is available, it can offer to install Codex for you.
-
-You can also use `/codex:setup` to manage the optional review gate.
-
-#### Enabling review gate
+### Review gate
 
 ```bash
 /codex:setup --enable-review-gate
 /codex:setup --disable-review-gate
 ```
 
-When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted Codex review based on Claude's response. If that review finds issues, the stop is blocked so Claude can address them first.
+When enabled, a `Stop` hook runs a targeted Codex review of Claude's last turn and
+blocks the stop if it finds issues. This can create long Claude/Codex loops and
+consume usage quickly; enable it only while you are watching the session.
 
-> [!WARNING]
-> The review gate can create a long-running Claude/Codex loop and may drain usage limits quickly. Only enable it when you plan to actively monitor the session.
+## Configuration
 
-## Typical Flows
+All configuration changes below are explicit, idempotent, and write a timestamped
+backup first. Unrelated configuration is preserved byte-for-byte.
 
-### Review Before Shipping
-
-```bash
-/codex:review
-```
-
-### Hand A Problem To Codex
+### Browser and computer-use tooling
 
 ```bash
-/codex:rescue investigate why the build is failing in CI
+node scripts/codex-companion.mjs setup --sync-tools --dry-run   # preview
+node scripts/codex-companion.mjs setup --sync-tools             # apply
 ```
 
-### Start Something Long-Running
+Copies only allowlisted browser/computer-use tool settings into the isolated home
+and builds a missing `mcp_servers.cua_repl` entry from the installed template
+(Chrome/browser only, paths rewritten to the isolated home). Credentials and
+provider settings are never copied. For relocated installs add
+`--cua-template <file>` and `--chatgpt-resources <dir>`.
+
+Browser assignments always open a fresh, session-owned tab and close it at the
+end, including on failure; they never claim an existing user tab.
+
+### Browser origin consent
 
 ```bash
-/codex:adversarial-review --background
-/codex:rescue --background investigate the flaky test
+node scripts/codex-companion.mjs setup --allow-browser-origin https://www.example.com
+node scripts/codex-companion.mjs setup --revoke-browser-origin https://www.example.com
+node scripts/codex-companion.mjs setup --list-browser-origins
 ```
 
-Then check in with:
+These write the browser runtime's own persisted approval file
+(`<isolated home>/browser/config.toml`, `[origins] allowed/denied`), so the bundled
+browser service auto-approves exactly that origin without a prompt. Allowing an
+origin also removes stale per-thread denies for it. Origins must be bare
+`scheme://host[:port]` values: no paths, trailing slash, wildcards or userinfo.
+Only add origins the user has explicitly approved; Duet never adds one after a
+denial.
+
+`task --approve-browser-origin <origin>` is narrower: it approves only the
+schema-defined, network-only command approval for the current turn. Unsupported
+browser elicitations are answered with `cancel`, which the browser runtime does
+not persist as a deny. Details: [browser approvals](docs/browser-approvals.md).
+
+### Model transport
 
 ```bash
-/codex:status
-/codex:result
+node scripts/codex-companion.mjs setup --transport status   # read-only
+node scripts/codex-companion.mjs setup --transport http
+node scripts/codex-companion.mjs setup --transport websocket
 ```
 
-## Codex Integration
+Switches the isolated home between the WebSocket and HTTP ChatGPT provider. Use
+`http` if startup timings show WebSocket retries (workers surface a
+`startupWarning` when they do). The default is unchanged.
 
-The Codex plugin wraps the [Codex app server](https://developers.openai.com/codex/app-server). This local variant selects a CLI through its private runtime pointer or `CODEX_COMPANION_BIN`, falling back to `codex` on PATH, and keeps authentication, sessions, SQLite, and logs in the isolated home.
+### Other Codex settings
 
-### Native parallel workers
-
-Claude can delegate ordinary independent tasks through `Agent(subagent_type="codex:codex-worker")`. The native worker inherits the parent Claude model, forwards one assignment to Codex, and waits for the actual result. Claude owns planning, file ownership, integration, and acceptance. Native Agent execution manages background work; the inner Codex task runs in the foreground.
-
-Each new worker uses `task --fresh --json`; a follow-up uses `task --thread <its-thread-id> --json` in the same workspace. Keep the native Agent/task-to-thread mapping instead of selecting the latest completed thread. A resumed task defaults to gpt-6-astra / xhigh / normal unless explicitly overridden. `--thread` cannot be combined with `--fresh` or `--resume-last`/`--resume`. The runtime refuses a second active turn on the same tracked thread within a workspace.
-
-Independent workers may run concurrently. Read-only workers can share a checkout; writes require disjoint owned paths or separate worktrees. Shared job state uses interprocess locking and atomic JSON publication. All active jobs are retained, along with the latest 50 finished jobs. This integration does not change Claude's effort or Ultracode setting; the model still chooses when and how many workers to dispatch.
-
-Workers run companion Bash calls with `dangerouslyDisableSandbox: true`, return
-compact `--report --json` reports with saved raw-output paths, and retain job/thread
-handles for read-only recovery after interruption. Progress and 15-second
-heartbeats go to stderr and the job log. They proceed on conservative assumptions;
-question-only or unfinished results are `needs_input`, never reported as completed.
-
-Task file reports compare content/mode/index snapshots before and after execution,
-including already-dirty files and shell writes. `preExistingChanges` is separate;
-concurrent writers cannot be distinguished by snapshots, and recovery without a
-final snapshot reports partial coverage. Full path lists remain in the saved result.
-
-The parent may deliberately opt in to `task --write --sandbox danger-full-access`
-for Git metadata writes or browser launches. Accepted policies are `read-only`,
-`workspace-write`, and `danger-full-access`; write-capable overrides require `--write`.
-Defaults remain read-only or workspace-write, each follow-up resets its policy,
-and approval policy stays `never`. The selected policy is reported in JSON.
-This controls Codex's sandbox and cannot bypass an enclosing managed/OS sandbox.
-Workers never elevate automatically. See [worker operations](docs/worker-operations.md)
-for protocol details and limitations. Empty inherited broker endpoint variables
-now fall back to the saved workspace broker when reporting session runtime.
-
-Browser assignments must open a fresh session-owned tab and close it at the end,
-including on failure. Never claim an existing user tab. A stale-claim error is
-reported as `stale_browser_tab_claim` with its full owning browser session ID.
-With the user's explicit consent for each origin, the parent can pass repeatable
-`task --approve-browser-origin https://example.com` flags. Workers forward only
-the supplied flags and never add them after a denial; follow-ups do not inherit
-them. Origins are normalized (scheme/host case and default ports); paths, trailing
-slashes, queries, fragments, userinfo and wildcards are rejected. Task/status/result
-reports show this invocation's grants.
-
-The flag currently approves only schema-defined network-only command-approval
-requests with an exact origin and current turn match. Other requests are logged
-safely and keep their unsupported reply. **The bundled CUA origin elicitation
-is still unsupported:** its schema leaves the approval metadata opaque, and a
-live shape probe could not run under this sandbox. See [browser approval evidence
-and the denied-probe command](docs/browser-approvals.md). Sandbox elevation does
-not resolve this protocol limitation.
-
-`setup --json` distinguishes unreachable authentication probes from confirmed
-logout and reports configuration-only tool availability. Optional
-`setup --sync-tools --dry-run` previews copying allowlisted browser/computer-use
-tool configuration; `setup --sync-tools` applies missing sections with a backup.
-It now builds missing `mcp_servers.cua_repl` and its env table from the installed
-unified-computer-use template and validated ChatGPT app resources, even when the
-ordinary config has no CUA entry. The new entry enables Chrome/browser only,
-rewrites its home/trust paths to the isolated home and loads the official dynamic
-tool instructions. Existing sections, including hand-written CUA, are preserved
-byte-for-byte. Dry-run `toolSync.append` is the exact text that would be appended;
-no config, backup, lock, runtime or home is created by a preview.
-
-For a relocated installation, use
-`setup --sync-tools --dry-run --cua-template /absolute/.mcp.json --chatgpt-resources /absolute/ChatGPT.app/Contents/Resources`.
-These optional selectors require `--sync-tools`. Missing templates or required
-assets fail before any write. Credentials and unrelated configuration are not
-copied. See [worker operations](docs/worker-operations.md) for discovery order, env
-allowlist, optional user-level sandbox/permission settings, unattended workflows,
-recovery commands, retention limits and manual browser timeout checks.
-
-### Delay before the first tool call
-
-The 2026-10-15 browser verification's 121.802-second pre-tool delay was dominated
-by inference transport timeouts: the isolated runtime logs show a WebSocket
-prewarm timeout, then six roughly 15-second connection attempts before HTTP
-fallback. CUA initialized in about 0.22 seconds; the eventual tool envelope was
-0.200 seconds. Three separate stdio initialize/tools-list measurements took
-28.5–31.9 ms without invoking any tools. This is not evidence of a 120-second MCP
-startup wait, tool discovery delay or prolonged model reasoning.
-
-For the measured ChatGPT-login runtime (`0.162.0-alpha.17.2`), the proposed
-user-level isolated config change selects a separate HTTP provider. Put
-`model_provider` at the top level, before any table headers:
-
-```toml
-model_provider = "openai-http"
-
-[model_providers.openai-http]
-name = "OpenAI HTTP"
-base_url = "https://chatgpt.com/backend-api/codex"
-wire_api = "responses"
-requires_openai_auth = true
-supports_websockets = false
-```
-
-Merge the table if it already exists and restart the shared runtime. The installed
-CLI accepted this configuration in an offline check; it rejects overriding the
-reserved `model_providers.openai` table and marks the old
-`features.responses_websockets*` flags removed. This example retains isolated
-ChatGPT authentication and the observed endpoint; API-key/custom-provider users
-must retain their own endpoint/auth settings and set `supports_websockets = false`
-on their selected custom provider. It selects HTTP instead of attempting the
-failing WebSocket transport; on a healthy network,
-HTTP gives up WebSocket continuation benefits. Provider transport behavior is
-documented in the [configuration reference](https://developers.openai.com/codex/config-reference)
-and [app-server transport guidance](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).
-No live config was changed and no authenticated end-to-end speedup was measured;
-the failed connection's underlying network cause remains unknown.
-
-Lowering `mcp_servers.cua_repl.startup_timeout_sec` from 120 to 10 only limits a
-future stalled MCP initialization, with a risk of excluding a slow server. It
-does not remove these WebSocket retries. Disabling unused `node_repl` removes its
-tools; changing deferred tool visibility is not a verified lazy-start solution.
-Sync preserves both the existing node_repl configuration and the template startup
-timeout. See [delay evidence](docs/cua-delay-investigation.md) for timestamps,
-source locations, measurements and limits.
-
-### Common Configurations
-
-Delegated tasks explicitly default to gpt-6-astra / xhigh; override them with --model / --effort. For other Codex operations, if you want to change the default reasoning effort or model, you can define that inside your user-level or project-level `config.toml`. For example to always use `gpt-5.4-mini` on `high` for a specific project you can add the following to a `.codex/config.toml` file at the root of the directory you started Claude in:
+Model and effort for non-worker operations can be set in
+`~/.claude/codex-isolated/config.toml` or a trusted project's `.codex/config.toml`,
+for example:
 
 ```toml
 model = "gpt-5.4-mini"
 model_reasoning_effort = "high"
 ```
 
-Your configuration will be picked up based on:
+See the [Codex configuration reference](https://developers.openai.com/codex/config-reference).
 
-- user-level config in `~/.claude/codex-isolated/config.toml`
-- project-level overrides in `.codex/config.toml`
-- project-level overrides only load when the [project is trusted](https://developers.openai.com/codex/config-advanced#project-config-files-codexconfigtoml)
+## Troubleshooting
 
-Check out the Codex docs for more [configuration options](https://developers.openai.com/codex/config-reference).
+**Slow first tool call.** Each job records startup timings: broker connect/spawn,
+app-server initialization, thread start/resume, turn start, first model event and
+first tool call. A 2026-10-15 measurement traced a ~120 s pre-tool delay to about
+six 15-second WebSocket attempts before HTTP fallback; after switching to the HTTP
+provider, a 2026-10-16 live run resumed its thread in about 5 s with no transport
+retries, and the remaining time between steps was model reasoning at `xhigh`. Use
+`--fast` or a lower effort for latency-sensitive browser steps. Brokers are
+prewarmed asynchronously at session start. Evidence:
+[delay investigation](docs/cua-delay-investigation.md).
 
-### Moving The Work Over To Codex
+**`auth.status: "unreachable"`, EPERM or socket errors.** The call ran inside a
+sandbox. Workers retry once with the sandbox disabled; if you call the companion
+yourself, do the same rather than logging in again.
 
-Delegated tasks and any [stop gate](#what-does-the-review-gate-do) run can also be directly resumed inside Codex by running the exact isolated resume command printed by the plugin, either with the specific session ID you received from running `/codex:result` or `/codex:status` or by selecting it from the list.
+**`stale_browser_tab_claim`.** Another browser session owns that tab. Start the
+assignment again with a fresh tab; do not steal the claim.
 
-This way you can review the Codex work or continue the work there.
+**Interrupted worker.** Recover with `status <job> --json` and
+`result <job> --report --json` in the original workspace. Do not resubmit the task;
+that starts a new turn.
 
-## FAQ
+More: [worker operations](docs/worker-operations.md) and
+[worker lifecycle](docs/worker-lifecycle.md).
 
-### Do I need a separate Codex account for this plugin?
+## Runtime selection
 
-Sign in separately to the isolated directory with the same ChatGPT account. Existing daily Codex credentials are not copied or linked. Authentication refresh and logout therefore operate on separate local credential files.
+The isolated home may contain `runtime.json` with an absolute `codexBinary` path;
+`CODEX_COMPANION_BIN` overrides it; otherwise `codex` on PATH is used. A broker
+records its executable at startup, so changing the binary requires a new Claude
+session. A custom absolute `CODEX_COMPANION_HOME` is supported; homes overlapping
+the normal Codex home are rejected. Failures never fall back to the normal
+session store.
 
-If you only use Claude Code today and have not used Codex yet, you will also need to sign in to Codex with either a ChatGPT account or an API key. [Codex is available with your ChatGPT subscription](https://developers.openai.com/codex/pricing/), and [`codex login`](https://developers.openai.com/codex/cli/reference/#codex-login) supports both ChatGPT and API key sign-in. Run `/codex:setup` to check whether Codex is ready, and use `!node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-isolated.mjs" login` if it is not.
+## Known limitations
 
-### Does the plugin use a separate Codex runtime?
+- `ask_parent`, detached `wait`, lease expiry and cancellation are covered by
+  fixture tests against a fake app-server; an authenticated end-to-end smoke of
+  the new lifecycle is still pending.
+- `ask_parent` relies on the app-server's experimental dynamic-tool API and is
+  registered only on new threads. Threads started before this version, or
+  runtimes that reject the registration, fall back to a final `needs_input` report.
+- The owner lease is lifecycle coordination between local processes, not an
+  authentication boundary.
+- Browser origin persistence follows the format used by the bundled browser
+  service; a future runtime may change it.
+- File tracking cannot attribute edits when several writers share a checkout, and
+  ignored files and submodule contents are not hashed.
 
-This plugin launches a separate [Codex app server](https://developers.openai.com/codex/app-server/) process using the selected local CLI executable.
+## Development
 
-That means:
+```bash
+npm test
+```
 
-- the private runtime pointer chooses its CLI executable
-- it uses a separate local authentication and data directory
-- it uses the same repository checkout and machine-local environment
+The suite (168 tests) uses temporary Codex homes and plugin data only, refuses to
+run against `~/.claude/codex-isolated` or `~/.codex`, and asserts that no spawned
+process survives. Local-socket tests are skipped inside a sandbox; run the suite
+outside it for full coverage.
 
-### Will it use the same Codex config I already have?
+## License
 
-The plugin reads its private home configuration plus trusted project configuration.
-Ordinary user configuration is not automatically copied. The optional
-`setup --sync-tools` copies only allowlisted tool settings, with a preview and backup;
-it never imports credentials or provider configuration. Runtime flags keep SQLite,
-logs and credential storage inside the private home. Delegated task model/effort
-defaults are explicit.
-
-### Can I keep using my current API key or base URL setup?
-
-An API key or provider endpoint can be configured separately in the private home. Existing ordinary Codex credentials and provider configuration are not automatically imported.
-
-If you need to point the built-in OpenAI provider at a different endpoint, set `openai_base_url` in your [Codex config](https://developers.openai.com/codex/config-advanced/#config-and-state-locations).
-
-### Runtime selection
-
-The private home may contain `runtime.json` with an absolute `codexBinary` path. `CODEX_COMPANION_BIN` overrides that pointer; otherwise the plugin uses `codex` on PATH. The installed copy pins the verified desktop runtime without changing the system CLI. If that executable is removed, update the pointer; failures never use the normal session store. The Fast service tier maps to API `priority`. A broker records its executable identity at startup; changing the selected executable requires restarting the Claude session.
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Based on
+[openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc).

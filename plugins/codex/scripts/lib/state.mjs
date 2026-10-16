@@ -118,7 +118,7 @@ function reclaimDeadLock(lockDir) {
   removeEmptyDirectory(lockDir);
 }
 
-function withStateLock(cwd, action) {
+function withStateLock(cwd, action, { lockTimeoutMs = LOCK_TIMEOUT_MS } = {}) {
   const stateDir = resolveStateDir(cwd);
   fs.mkdirSync(path.join(stateDir, JOBS_DIR_NAME), { recursive: true });
   const lockDir = path.join(stateDir, ".state-lock");
@@ -128,7 +128,7 @@ function withStateLock(cwd, action) {
   let acquired = false;
   try {
     fs.writeFileSync(path.join(candidate, owner), "", { flag: "wx", mode: 0o600 });
-    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    const deadline = Date.now() + lockTimeoutMs;
     while (!acquired) {
       try {
         // Rename publishes the directory with its owner already present. An
@@ -273,6 +273,22 @@ export function listJobs(cwd) {
   return loadState(cwd).jobs;
 }
 
+// SessionEnd can run from the parent checkout while workers use other worktrees.
+// Inspect only this plugin-data root, and verify each record's workspace mapping.
+export function listSessionJobs(cwd, sessionId) {
+  const root = path.dirname(resolveStateDir(cwd));
+  if (!fs.existsSync(root)) return [];
+  return fs.readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory()).flatMap(entry => {
+    const directory = path.join(root, entry.name);
+    return readState(path.join(directory, STATE_FILE_NAME)).jobs.map(job => ({
+      ...job, workspaceRoot: job.workspaceRoot ?? (directory === resolveStateDir(cwd) ? cwd : null)
+    })).filter(job => {
+      if (job.sessionId !== sessionId || typeof job.workspaceRoot !== "string") return false;
+      try { return resolveStateDir(job.workspaceRoot) === directory; } catch { return false; }
+    });
+  });
+}
+
 export function setConfig(cwd, key, value) {
   return updateState(cwd, (state) => {
     state.config = {
@@ -296,6 +312,25 @@ export function writeJobFile(cwd, jobId, payload) {
 
 export function readJobFile(jobFile) {
   return JSON.parse(fs.readFileSync(jobFile, "utf8"));
+}
+
+// One lock covers both the full record and index, including concurrent lease,
+// answer, cancellation and progress updates. A stale reader cannot erase them.
+export function updateJob(cwd, jobId, mutate, options = {}) {
+  return withStateLock(cwd, stateDir => {
+    const state = readState(path.join(stateDir, STATE_FILE_NAME));
+    const file = path.join(stateDir, JOBS_DIR_NAME, `${jobId}.json`);
+    const indexed = state.jobs.find(j => j.id === jobId);
+    const current = fs.existsSync(file) ? { ...indexed, ...readJobFile(file) } : indexed;
+    if (!current) throw new Error("Job record not found.");
+    const patch = mutate(structuredClone(current));
+    if (patch == null) return current;
+    const next = { ...current, ...patch, updatedAt: nowIso() };
+    writeJsonAtomically(file, next);
+    const jobs = state.jobs.filter(j => j.id !== jobId);
+    commitState(stateDir, state, { ...state, jobs: [next, ...jobs] });
+    return next;
+  }, options);
 }
 
 export function resolveJobLogFile(cwd, jobId) {

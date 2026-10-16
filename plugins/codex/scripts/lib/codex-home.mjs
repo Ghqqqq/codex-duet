@@ -24,6 +24,13 @@ export function resolveIsolatedCodexHome(env = process.env) {
   const requested = env.CODEX_COMPANION_HOME || path.join(userHome, ".claude", "codex-isolated");
   if (!path.isAbsolute(requested)) throw new Error("CODEX_COMPANION_HOME must be an absolute isolated directory.");
   const isolated = canonicalPath(requested);
+  if (env.CODEX_COMPANION_TEST_MODE === "1") {
+    const root = env.CODEX_COMPANION_TEST_ROOT;
+    if (!root || !contains(canonicalPath(root), isolated)) throw new Error("Test-home guard: isolated home must stay inside this test's temporary root; real Codex homes are forbidden.");
+    for (const value of [env.CODEX_HOME, env.CODEX_SQLITE_HOME, env.CLAUDE_PLUGIN_DATA]) {
+      if (value && !contains(canonicalPath(root), canonicalPath(value))) throw new Error("Test-home guard: Codex homes and plugin data must be temporary.");
+    }
+  }
   const normalHomes = [
     path.join(userHome, ".codex"),
     env.CODEX_COMPANION_NORMAL_HOME || env.CODEX_HOME,
@@ -44,6 +51,17 @@ export function resolveCodexBinary(env = process.env) {
   if (!selected) {
     const runtimeFile = path.join(resolveIsolatedCodexHome(env), "runtime.json");
     if (fs.existsSync(runtimeFile)) selected = JSON.parse(fs.readFileSync(runtimeFile, "utf8")).codexBinary;
+  }
+  if (env.CODEX_COMPANION_TEST_MODE === "1") {
+    const root = canonicalPath(env.CODEX_COMPANION_TEST_ROOT);
+    const explicit = Boolean(selected);
+    selected ||= (env.PATH || "").split(path.delimiter).map(dir => path.join(dir, "codex")).find(file => fs.existsSync(file));
+    if (!selected || !path.isAbsolute(selected) || !contains(root, canonicalPath(selected))) {
+      if (explicit) throw new Error("Test-home guard: refusing a non-fixture Codex executable.");
+      // An unavailable fixture is reported as unavailable, never resolved from
+      // the developer's PATH or installed application's executable.
+      return path.join(root, "missing-codex-fixture");
+    }
   }
   if (!selected) return "codex";
   if (typeof selected !== "string" || !path.isAbsolute(selected)) {

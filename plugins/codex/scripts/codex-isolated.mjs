@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { spawnOwned as spawn } from "./lib/process.mjs";
 import { isolatedCodexArgs, isolatedCodexEnv, resolveCodexBinary } from "./lib/codex-home.mjs";
 
 try {
