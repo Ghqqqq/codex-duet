@@ -1,3 +1,4 @@
+import { itemActivity, planActivity } from "./activity.mjs";
 /**
  * @typedef {import("./app-server-protocol").AppServerNotification} AppServerNotification
  * @typedef {import("./app-server-protocol").ReviewTarget} ReviewTarget
@@ -338,6 +339,7 @@ function createTurnCaptureState(threadId, options = {}) {
     messages: [],
     fileChanges: [],
     commandExecutions: [],
+    activityStarts: new Map(),
     onProgress: options.onProgress ?? null,
     safeProgress: Boolean(options.safeProgress)
   };
@@ -496,6 +498,12 @@ function recordItem(state, item, lifecycle, threadId = null) {
 }
 
 function applyTurnNotification(state, message) {
+  if (state.safeProgress && ["item/started", "item/completed"].includes(message.method)) {
+    const lifecycle = message.method === "item/started" ? "started" : "completed";
+    const item = message.params.item;
+    const activity = itemActivity(item, lifecycle, state.activityStarts, `${message.params.threadId}:${item?.id}`);
+    if (activity.length) emitProgress(state.onProgress, "Activity recorded.", null, { activity });
+  }
   switch (message.method) {
     case "thread/started":
       registerThread(state, message.params.thread.id, {
@@ -545,7 +553,7 @@ function applyTurnNotification(state, message) {
       }
       break;
     case "turn/plan/updated":
-      emitProgress(state.onProgress, "Plan updated.", "planning", { item: { type: "plan", summary: "plan updated", lifecycle: "completed", steps: (message.params.plan ?? []).length } });
+      emitProgress(state.onProgress, "Plan updated.", "planning", { item: { type: "plan", summary: "plan updated", lifecycle: "completed", steps: (message.params.plan ?? []).length }, activity: planActivity(message.params.plan) });
       break;
     case "error":
       state.error = message.params.error;

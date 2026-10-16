@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.6-isolated.9
+
+- Narrow env-style redaction to uppercase assignments (case-sensitive) so ordinary flags such as `--effort=xhigh` stay readable in the feed; keyword-named keys/tokens/passwords/secrets/credentials remain redacted case-insensitively.
+- Stream redacted activity into native worker Bash output: assistant snippets, command lines/exits/durations, file changes, tool names/status/durations and plan titles. Wait returns on activity after a default 10-second minimum, with a 30-second maximum, per-owner persistent cursors, and one final JSON line; `--json` stays pure JSON. Tool arguments, command outputs and page payloads are excluded.
+- Generate unique per-job owners and retain Claude session identity separately. Only explicit matching owners renew unexpired leases; parent status/result and ownerless waits never renew. Keep legacy session-ID-owned jobs readable and SessionEnd-scoped.
+- Restrict worker SendMessage to the exact companion-provided questionMessage for needs_answer. Final results use the agent return value; progress/completion claims and placeholder evidence are forbidden.
+- Adopt a stopped worker's running job from a replacement worker: atomically rotate ownership and renew the lease without starting another turn; retired owners report ownership_moved. Claude Code stopped agents cannot resume, so launching a replacement requires explicit user consent. Expired/ended jobs report an unexecuted task --thread continuation command. Status shows stale owners as orphaned with remaining lease seconds and the exact adopt instruction.
+- Add fake app-server coverage for streaming/early return, independent cursors, redaction and excluded payloads, per-job renewal, adoption/expiry and retired-owner rejection, legacy records and question formatting. Document parent live acceptance and the inferred orphan threshold.
+
 ## 1.0.6-isolated.8
 
 - Rename the marketplace to `duet`; the install ID becomes `codex@duet`. The plugin name, `/codex:*` commands and `codex:codex-worker` agent are unchanged. README documents the upgrade path and plugin-data migration.

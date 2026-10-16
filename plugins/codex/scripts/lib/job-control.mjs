@@ -1,3 +1,4 @@
+import { leaseSnapshot, leaseExpiryReport } from "./job-runtime.mjs";
 import fs from "node:fs";
 
 import { getSessionRuntimeStatus } from "./codex.mjs";
@@ -21,7 +22,7 @@ function filterJobsForCurrentSession(jobs, options = {}) {
   if (!sessionId) {
     return jobs;
   }
-  return jobs.filter((job) => job.sessionId === sessionId);
+  return jobs.filter((job) => (job.sessionId === undefined ? job.ownerId : job.sessionId) === sessionId);
 }
 
 function getJobTypeLabel(job) {
@@ -163,6 +164,7 @@ export function enrichJob(job, options = {}) {
   const enriched = {
     ...job,
     kindLabel: getJobTypeLabel(job),
+    ...leaseSnapshot(job), ...leaseExpiryReport(job),
     progressPreview:
       job.status === "queued" || job.status === "running" || job.status === "failed"
         ? readJobProgressPreview(job.logFile, maxProgressLines)

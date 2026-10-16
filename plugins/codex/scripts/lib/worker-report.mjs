@@ -1,7 +1,8 @@
+import { redactActivity } from "./activity.mjs";
 import fs from "node:fs";
 import { resolveJobFile } from "./state.mjs";
 
-const shorten = (text, max = 240) => String(text ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+const shorten = (text, max = 240) => redactActivity(text).replace(/\s+/g, " ").trim().slice(0, max);
 const lines = text => String(text ?? "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 
 export function classifyBrowserBlocker(text) {

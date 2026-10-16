@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+import { snippet, activityReader } from "./activity.mjs";
 import { randomUUID } from "node:crypto";
 import { updateJob, readJobFile, resolveJobFile } from "./state.mjs";
 
@@ -7,17 +9,74 @@ export function seconds(value, fallback, name, maximum = 86400) {
   if (!/^\d+$/.test(String(value)) || Number(value) < 1 || Number(value) > maximum) throw new Error(`${name} must be an integer from 1 to ${maximum}.`);
   return Number(value);
 }
-export const ownerId = (env = process.env) => env.CODEX_COMPANION_OWNER_ID || env.CODEX_COMPANION_SESSION_ID || "local";
-export function renewLease(cwd, id, owner = ownerId()) {
-  return updateJob(cwd, id, job => ACTIVE.has(job.status) && job.ownerId === owner
-    ? { leaseExpiresAt: Date.now() + (job.leaseSec ?? 180) * 1000 } : null);
+export const ownerId = jobId => `${jobId}-${randomUUID()}`;
+export function renewLease(cwd, id, owner) {
+  return updateJob(cwd, id, job => {
+    const now = Date.now(); // Check expiry after acquiring the state lock.
+    return owner && ACTIVE.has(job.status) && job.ownerId === owner && !job.cancelRequested && (!job.leaseExpiresAt || job.leaseExpiresAt > now)
+      ? { leaseRenewedAt: now, leaseExpiresAt: now + (job.leaseSec ?? 180) * 1000 } : null;
+  });
+}
+const quote = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
+const companionCommand = args => `node ${quote(fileURLToPath(new URL("../codex-companion.mjs", import.meta.url)))} ${args}`;
+export function continuationReport(job) {
+  const continuationCommand = job.threadId ? companionCommand(`task --thread ${quote(job.threadId)} --cwd ${quote(job.request?.cwd ?? job.workspaceRoot)} --detached --report --json`) : null;
+  return { continuationCommand,
+    continuationNote: continuationCommand ? "This command starts a new read-only turn; restore write/runtime/origin flags only with authorization. It has not been run. Wait for any pending interruption to finish first." : "No thread handle was recorded; no continuation command is available." };
+}
+export function ownershipNotice(job, owner) {
+  if (!owner || job.ownerId === owner || !job.retiredOwnerIds?.includes(owner)) return null;
+  return { status: "ownership_moved", jobStatus: job.status, jobId: job.id, ownerId: job.ownerId,
+    threadId: job.threadId ?? null, turnId: job.turnId ?? null,
+    message: "Ownership moved to a replacement worker. Stop polling; do not reuse its ownerId or adopt again." };
+}
+export function adoptJob(cwd, id, sessionId) {
+  let status;
+  const job = updateJob(cwd, id, current => {
+    const now = Date.now();
+    const expired = (current.result?.interruptionReason ?? current.report?.interruptionReason ?? current.interruptionReason) === "lease_expired";
+    if (!ACTIVE.has(current.status)) { status = expired ? "lease_expired" : "job_ended"; return null; }
+    if (current.leaseExpiresAt <= now || current.cancelRequested?.reason === "lease_expired") { status = "lease_expired"; return null; }
+    if (current.cancelRequested || current.phase === "interrupting") { status = "interrupting"; return null; }
+    if (current.jobClass !== "task" || !Number.isFinite(current.leaseExpiresAt)) { status = "not_adoptable"; return null; }
+    const nextOwner = ownerId(id);
+    status = "adopted";
+    return { ownerId: nextOwner, retiredOwnerIds: [...new Set([...(current.retiredOwnerIds ?? []), current.ownerId].filter(Boolean))],
+      // A replacement launched in another Claude session takes over cleanup.
+      // Without a caller session, preserve the original (including legacy) scope.
+      sessionId: sessionId || (current.sessionId === undefined ? current.ownerId : current.sessionId) || null,
+      leaseRenewedAt: now, leaseExpiresAt: now + (current.leaseSec ?? 180) * 1000,
+      activityCursors: { ...current.activityCursors, [activityReader(nextOwner)]: current.activityCursors?.[activityReader(current.ownerId)] ?? 0 }
+    };
+  });
+  return { ...progressSnapshot(job), status, jobStatus: job.status, adopted: status === "adopted", leaseExpiresAt: job.leaseExpiresAt ?? null,
+    ...(status === "adopted" ? { waitCommand: companionCommand(`wait ${quote(job.id)} --owner ${quote(job.ownerId)} --cwd ${quote(job.request?.cwd ?? cwd)} --report`) }
+      : { ...continuationReport(job), ...(status === "lease_expired" ? { interruptionReason: "lease_expired", interruptionConfirmed: job.result?.interruptionConfirmed ?? job.interruptionConfirmed ?? null } : {}) }) };
+}
+export function leaseSnapshot(job, now = Date.now()) {
+  if (!ACTIVE.has(job.status) || !job.leaseExpiresAt) return {};
+  const lastRenewal = job.leaseRenewedAt ?? job.leaseExpiresAt - (job.leaseSec ?? 180) * 1000;
+  // Native Agent stops have no companion callback. Infer staleness after the
+  // maximum 60-second wait plus handoff time, or half a short lease.
+  const staleAfterMs = Math.min(65000, (job.leaseSec ?? 180) * 500);
+  const orphaned = now - lastRenewal >= staleAfterMs;
+  return { orphaned, leaseRemainingSec: Math.max(0, Math.ceil((job.leaseExpiresAt - now) / 1000)), leaseRenewedAt: lastRenewal,
+    ...(orphaned && job.id ? { adoptCommand: companionCommand(`adopt ${quote(job.id)} --cwd ${quote(job.request?.cwd ?? job.workspaceRoot)} --json`) } : {}) };
+}
+export function leaseExpiryReport(job) {
+  if ((job.result?.interruptionReason ?? job.report?.interruptionReason ?? job.interruptionReason) !== "lease_expired") return {};
+  return { interruptionReason: "lease_expired", ...continuationReport(job) };
+}
+export function questionMessage(question) {
+  return `Question ${question.id}: ${snippet(question.text, 1000)} | Options: ${question.options?.length ? question.options.map(option => JSON.stringify(snippet(option, 160))).join("; ") : "(none)"}`;
 }
 export function requestCancel(cwd, id, reason = "cancelled_by_user", options = {}) {
   return updateJob(cwd, id, job => ACTIVE.has(job.status) ? { cancelRequested: { reason, at: new Date().toISOString() } } : null, options);
 }
-export function answerQuestion(cwd, id, questionId, answer) {
+export function answerQuestion(cwd, id, questionId, answer, owner) {
   if (typeof answer !== "string" || !answer.trim() || answer.length > 8000) throw new Error("Answer stdin must contain 1–8000 characters.");
   return updateJob(cwd, id, job => {
+    if (ownershipNotice(job, owner)) return null;
     if (!ACTIVE.has(job.status) || !job.pendingQuestion || job.pendingQuestion.id !== questionId || job.pendingQuestion.expiresAt <= Date.now() || job.pendingQuestion.answer !== undefined) throw new Error("Question is no longer pending; no answer was sent.");
     return { pendingQuestion: { ...job.pendingQuestion, answer: answer.trim() } };
   });
@@ -47,12 +106,13 @@ export class JobRuntime {
       const handler = () => this.stop(`signal_${signal.toLowerCase()}`);
       this.handlers.set(signal, handler); process.on(signal, handler);
     }
+    const foregroundOwner = foreground ? readJobFile(resolveJobFile(cwd, id)).ownerId : null;
     const tick = () => {
       try {
         const job = readJobFile(resolveJobFile(cwd, id));
         if (job.cancelRequested) this.stop(job.cancelRequested.reason);
-        else if (foreground && !this.reason) renewLease(cwd, id, job.ownerId);
         else if (job.leaseExpiresAt && Date.now() >= job.leaseExpiresAt) this.stop("lease_expired");
+        else if (foreground && !this.reason) renewLease(cwd, id, foregroundOwner);
       } catch { this.stop("owner_state_unavailable"); }
     };
     tick(); this.timer = setInterval(tick, 250);
@@ -104,8 +164,8 @@ export function safeItem(item, lifecycle) {
     const name = item.tool ?? item.name;
     summary = typeof name === "string" && /^[a-zA-Z_][\w./-]{0,80}$/.test(name) ? `tool ${name}` : "tool call";
   } else if (item.type === "plan") summary = "plan updated";
-  return { type: item.type, summary: summary.slice(0, 96), lifecycle,
-    ...(item.type === "fileChange" ? { paths: (item.changes ?? []).map(c => String(c.path ?? "").replace(/[\r\n\0]/g, "").slice(0, 180)).slice(0, 6) } : {}),
+  return { type: item.type, summary: snippet(summary, 96), lifecycle,
+    ...(item.type === "fileChange" ? { paths: (item.changes ?? []).map(c => snippet(c.path, 180)).slice(0, 6) } : {}),
     ...(Number.isInteger(item.exitCode) ? { exitCode: item.exitCode } : {}) };
 }
 export function progressSnapshot(job) {
@@ -114,8 +174,9 @@ export function progressSnapshot(job) {
   const seconds = Math.floor(elapsedMs / 1000), elapsed = `${Math.floor(seconds / 60)}m${seconds % 60}s`;
   const phase = pending ? "needs_answer" : job.phase === "needs_answer" ? "running" : job.phase ?? job.status;
   return { status: pending ? "needs_answer" : job.status, jobId: job.id, threadId: job.threadId ?? null, turnId: job.turnId ?? null,
+    ownerId: job.ownerId ?? null, sessionId: job.sessionId ?? null, ...leaseSnapshot(job),
     headline: `${pending ? "waiting for parent" : job.currentItem?.summary ?? phase} · ${elapsed}`.slice(0, 60), phase, elapsed, elapsedMs,
     startupTimings: { mcpReady: null, ...job.startupTimings }, startupWarning: job.startupWarning ?? null,
     currentItem: job.currentItem ?? null, completedItems: job.completedItems ?? [],
-    ...(pending ? { question: { id: pending.id, text: pending.text, options: pending.options, expiresAt: pending.expiresAt } } : {}) };
+    ...(pending ? { questionMessage: questionMessage(pending), question: { id: pending.id, text: snippet(pending.text, 1000), options: pending.options.map(option => snippet(option, 160)), expiresAt: pending.expiresAt } } : {}) };
 }

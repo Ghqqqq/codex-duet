@@ -191,10 +191,19 @@ test("native Codex worker preserves identity, native lifecycle, and parallel own
   assert.match(worker, /Never use `--resume-last`/);
   assert.match(worker, /exact `threadId` from that result or explicitly supplied by the parent/i);
   assert.match(worker, /native Agent stays alive as the owner/i);
-  assert.match(worker, /wait <jobId> --timeout-sec 45 --json --report/);
+  assert.match(worker, /wait <jobId> --owner <ownerId> --timeout-sec 30 --min-interval-sec 10 --report/);
   assert.match(worker, /description.*headline/i);
-  assert.match(worker, /send the question ID, text and options to `main` using `SendMessage`/i);
-  assert.match(worker, /answer <jobId> --question <id> --json.*stdin heredoc/i);
+  assert.match(worker, /exact companion-provided `questionMessage` field verbatim to `main`/i);
+  assert.match(worker, /answer <jobId> --owner <ownerId> --question <id> --json.*stdin heredoc/i);
+  assert.match(worker, /SendMessage is allowed ONLY/);
+  assert.match(worker, /FIRST action is `adopt <jobId> --json`/);
+  assert.match(worker, /Never submit a new task for an adoptable job/);
+  assert.match(worker, /ownership_moved/);
+  assert.match(worker, /user's explicit consent/);
+  assert.doesNotMatch(worker, /When resumed by the parent's SendMessage/);
+  assert.match(worker, /Do not paraphrase or re-print the feed/);
+  assert.match(worker, /Never send progress, status or completion claims/);
+  assert.match(worker, /Deliver the final result ONLY as this agent's return value/);
   assert.match(worker, /lease defaults to 180 seconds/i);
   assert.match(worker, /Start exactly one Codex turn/i);
   assert.match(worker, /read only that output file/i);
@@ -219,6 +228,23 @@ test("native Codex worker preserves identity, native lifecycle, and parallel own
   assert.match(worker, /Preserve captured stderr and the command's exit status on failure/i);
   assert.match(worker, /parent may summarize the result for the user/i);
   assert.match(worker, /do not require the final user response to reproduce all helper output/i);
+});
+
+test("stopped-worker docs require consent and replacement adoption", () => {
+  const readme = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  assert.match(readme, /### If a worker is stopped\n/);
+  assert.match(readme, /Esc or Ctrl\+C/);
+  assert.match(readme, /ALL background agents/);
+  assert.match(readme, /ctrl\+x ctrl\+k/);
+  assert.match(readme, /`x` in a subagent's detail view/);
+  assert.match(readme, /user's explicit consent/);
+  assert.match(readme, /FIRST action is `adopt <jobId> --json`/);
+  assert.match(readme, /Thread context\nand on-disk edits persist/);
+  assert.doesNotMatch(readme, /Resume the \*\*same native agent/);
+  const status = read("commands/status.md");
+  assert.match(status, /exact adopt instruction/);
+  assert.match(status, /do not supply `--owner`/);
+  assert.match(status, /stopped agent cannot resume/);
 });
 
 test("transfer, result, and cancel commands are exposed as deterministic runtime entrypoints", () => {

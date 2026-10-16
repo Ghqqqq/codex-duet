@@ -283,7 +283,7 @@ export function listSessionJobs(cwd, sessionId) {
     return readState(path.join(directory, STATE_FILE_NAME)).jobs.map(job => ({
       ...job, workspaceRoot: job.workspaceRoot ?? (directory === resolveStateDir(cwd) ? cwd : null)
     })).filter(job => {
-      if (job.sessionId !== sessionId || typeof job.workspaceRoot !== "string") return false;
+      if ((job.sessionId === undefined ? job.ownerId : job.sessionId) !== sessionId || typeof job.workspaceRoot !== "string") return false;
       try { return resolveStateDir(job.workspaceRoot) === directory; } catch { return false; }
     });
   });
@@ -328,7 +328,13 @@ export function updateJob(cwd, jobId, mutate, options = {}) {
     const next = { ...current, ...patch, updatedAt: nowIso() };
     writeJsonAtomically(file, next);
     const jobs = state.jobs.filter(j => j.id !== jobId);
-    commitState(stateDir, state, { ...state, jobs: [next, ...jobs] });
+    // Keep raw results/output and the activity journal in the private job file.
+    // Status reads the index: cursor updates after completion must not copy raw
+    // tool payloads into its output, or duplicate a growing journal there.
+    const { result, report, rendered, activity, ...indexedNext } = next;
+    const interruptionReason = result?.interruptionReason ?? report?.interruptionReason;
+    if (interruptionReason) Object.assign(indexedNext, { interruptionReason, interruptionConfirmed: result?.interruptionConfirmed ?? report?.interruptionConfirmed });
+    commitState(stateDir, state, { ...state, jobs: [indexedNext, ...jobs] });
     return next;
   }, options);
 }

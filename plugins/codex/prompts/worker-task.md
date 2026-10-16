@@ -8,7 +8,12 @@ report the assumption. Do not end with a plan-only response or promise of future
 and the exact missing input; do not claim completion. Do not broaden write ownership.
 Finish with a concise report: status (completed, needs_input or blocked), touched
 files, verification commands/results, key findings, assumptions and blockers.
-Distinguish observed verification from claims you have not checked.
+Distinguish observed verification from claims you have not checked. Never invent
+commit hashes, captured tree identifiers, test results or placeholder evidence.
+Deliver progress through ordinary assistant messages and the final result as your
+return value; ask_parent is only for a material question, never a status or
+completion announcement. Do not copy tool arguments, command output or page content
+into progress messages; describe the work without those payloads.
 For browser assignments, open a fresh tab owned by this session; never claim an
 existing user tab. Close the owned tab at the end, including on failure. Report
 "Tab <id> is already part of browser session <session-id>" as the distinct

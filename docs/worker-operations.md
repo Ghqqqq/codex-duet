@@ -80,37 +80,80 @@ owner fail closed and log to broker stderr, since no job log remains available.
 ## Detached execution, questions and cleanup
 
 Start `task --fresh --detached --report --json`; retain jobId, ownerId and any
-acknowledged thread/turn handles. Poll `wait <job> --timeout-sec 45 --json --report`.
-Timeout snapshots contain a ≤60-character headline, phase/elapsed, startup timings,
-current item and four recent completed items. Command summaries contain only a
-command family/classification and exit code, not arbitrary arguments. File paths,
-tool names and plan step counts are bounded. Set each native Bash description to
-the last headline. Thread/turn IDs can initially be null; wait publishes them.
+acknowledged thread/turn handles. Loop `wait <job> --owner <ownerId> --timeout-sec
+30 --min-interval-sec 10 --report` in feed mode (omit `--json`). It flushes activity
+lines as they arrive and ends with ONE final JSON line containing the existing
+snapshot/report plus `activity` and `cursor`. Scripts can use `--json` to suppress
+the feed. Activity can return a wait after 10 seconds; silence waits at most 30.
+Questions/completion return immediately. Both timing flags accept 1–60 seconds;
+the maximum timeout wins if shorter than the minimum. The native worker sets
+Bash.description to the last headline and does not paraphrase or re-print the feed.
+
+The feed selects assistant snippets (300 chars), command first lines (160 chars)
+with exits/durations, file path/kind, MCP/dynamic tool names/status/durations and
+plan titles (80 chars each). It never copies tool arguments, command outputs,
+diffs or page payloads. Redaction precedes truncation and covers assignments,
+authorization/bearer headers, URL userinfo/query credentials, key/JWT prefixes and
+long base64/hex blobs. It is heuristic; do not put secrets/page prose in progress
+messages. Events are retained in job state, with a separate cursor for each
+explicit owner and one shared ownerless observer cursor. Use one wait per owner
+at a time. A crash between line delivery and cursor persistence can replay a line.
 
 `ask_parent` is registered on new threads through experimental `dynamicTools`.
-On `needs_answer`, SendMessage the question to `main` once per question ID, keep waiting with
-`--after-question <id> --timeout-sec 5`, then pass the answer on stdin to
-`answer <job> --question <id> --json`. The callback stays pending, so the reply
-continues the same turn. Text/options are private job state, not progress logs;
-answers are removed after delivery. Default timeout is 900 seconds, configurable
-per task with `--question-timeout-sec`; on timeout Codex receives conservative
-assumption guidance. Old threads/runtimes without the tool keep final needs_input.
+On `needs_answer`, SendMessage ONLY the companion's `questionMessage` verbatim to
+`main` once per question ID. That one-line field includes ID, text and options.
+Never send progress, status, completion claims or placeholders; the final result
+is delivered only as the native agent's return value. Parent worker messages
+that are not verbatim questions are not evidence: verify with handles and artifacts.
+Keep waiting with `--owner <ownerId> --after-question <id> --timeout-sec 5`, then
+pass the answer on stdin to `answer <job> --owner <ownerId> --question <id> --json`.
+The callback stays pending, so the reply continues the same turn. Text/options are
+private job state, not progress logs; answers are removed after delivery. Default
+timeout is 900 seconds (`--question-timeout-sec`); on timeout Codex receives
+conservative-assumption guidance. Old threads/runtimes without the tool keep
+final needs_input.
 
 Leases default to 180 seconds (`--lease-sec`, or CODEX_COMPANION_LEASE_SEC).
-Owner identity defaults to CODEX_COMPANION_OWNER_ID, then the Claude session ID,
-then local; `task --owner <id>` overrides it. Pass the same `--owner` to wait/status.
-Only matching owner calls renew. Foreground tasks renew while their owning process
-runs; detached workers cannot renew their own lease. The lease is a lifecycle
-mechanism, not authentication against other local processes. Expiry, cancel,
-SessionEnd and SIGTERM/SIGHUP/SIGINT resolve pending questions, send interruption,
-and bound the wait for completion. `cancel` waits up to six seconds and reports
-`confirmed` only after a terminal turn/result, otherwise `unconfirmed` (exit 2).
-A legacy record without a live control-aware worker is not killed by stored PID.
-SessionEnd preserves history and requests only its session's jobs across worktrees
-under the same plugin-data root. Busy state locks are reported as unconfirmed
-without exceeding the hook budget; lease expiry remains the fallback. It avoids shutting
-down a broker shared by other sessions. Broker disconnects interrupt the lost
-owner's turn; a four-second failure deadline closes that owned server group.
+Every task generates a unique job-based ownerId unless `task --owner` is explicit;
+ambient owner/session variables never choose it. Session ID is stored separately
+for SessionEnd. The worker must pass `--owner <ownerId>` on every wait/status/answer.
+Only an explicit match renews an unexpired lease. Parent `/codex:status`, status,
+result and ownerless wait do not renew. Foreground tasks renew while their owning
+process runs; detached workers cannot renew themselves. Legacy records without
+sessionId remain readable and SessionEnd falls back to their session-ID ownerId.
+
+A stopped native agent cannot resume in Claude Code 2.1.301. With the user's
+explicit consent, launch a replacement worker carrying the old jobId. Its FIRST
+action is `adopt <jobId> --json`, which atomically rotates ownerId and renews the
+unexpired lease without starting a turn. It then loops
+`wait <jobId> --owner <newOwnerId> --report`. The replacement inherits thread/turn,
+pending question and delivered activity cursor. Old wait/status/answer calls
+return `ownership_moved` (exit 2) without renewing or answering; the old owner
+must stop polling. Adoption moves SessionEnd scope to the caller's Claude session
+when available, otherwise preserving the original scope.
+
+Adoption after expiry or completion returns `lease_expired` or `job_ended`
+(exit 2), with the exact `continuationCommand` (`task --thread <threadId>`), and
+never runs it. Cancellation in progress also refuses adoption. The continuation
+starts read-only; a new assignment must authorize other flags. Wait for pending
+interruption to finish before continuing. Thread context and on-disk edits persist;
+missing thread handles preclude a continuation command. `/codex:status` shows
+orphaned running jobs, remaining seconds and an exact adopt instruction after no
+renewal for min(65 seconds, half the lease). This is inferred staleness, since
+there is no native Agent-stop notification; adoption may happen sooner. An
+in-flight wait may renew until it exits. See [stop actions and recovery](../README.md#if-a-worker-is-stopped).
+
+The lease is lifecycle coordination, not authentication against local processes.
+Expiry, cancel, SessionEnd and SIGTERM/SIGHUP/SIGINT resolve pending questions,
+send interruption and bound the wait for completion. `cancel` waits up to six
+seconds and reports `confirmed` only after terminal turn/result evidence,
+otherwise `unconfirmed` (exit 2). A legacy record without a live control-aware
+worker is not killed by stored PID. SessionEnd requests only its session's jobs
+across worktrees under the same plugin-data root. Busy state locks are reported
+as unconfirmed without exceeding the hook budget; lease expiry is the fallback.
+It avoids shutting down a broker shared by other sessions. Broker disconnects
+interrupt the lost owner's turn; a four-second failure deadline closes that owned
+server group.
 
 SessionStart launches prewarm detached. A broker with no clients/active turns
 exits after 60 seconds (CODEX_COMPANION_BROKER_IDLE_SEC). Shutdown reaps its owned
@@ -375,8 +418,9 @@ thread and turn IDs are persisted as soon as the server returns them. Progress
 events and a 15-second heartbeat go to stderr and the job log even in JSON mode.
 Heartbeats show item/tool counts, elapsed time and last notification age. No
 notifications during a long tool call means silence, not proof of a hang. Stdout
-remains a single final JSON document; a native Bash output file may combine it
-with stderr, so use `result --report --json` for clean retrieval if needed.
+for task/result remains a single final JSON document; wait in feed mode streams
+lines before its final JSON line (`--json` suppresses them). A native Bash output
+file may combine stdout with stderr, so use `result --report --json` for clean retrieval if needed.
 
 After interruption, retrieve in the original workspace:
 

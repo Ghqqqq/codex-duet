@@ -6,15 +6,42 @@ state artifacts. It returns after at most 1.2 seconds of handle waiting, plus
 local validation/spawn work; unavailable thread/turn handles remain null until
 acknowledged. It does not wait for model output before returning the job ID.
 
-`wait <job> --timeout-sec N --json --report` accepts 1–60 seconds, default 45. It
-returns the same compact report as result on completion, `needs_answer` with a
-question, or a bounded progress snapshot on timeout. The native agent updates
-Bash.description from the last headline, not an inferred activity. Current/recent
-items omit command arguments, tool arguments, model text and outputs; command
-family/test classification is shown instead of potentially secret shell text.
-Paths/tool names are bounded and plan updates show counts, not free-text steps.
-After forwarding a question once, use `--after-question <id> --timeout-sec 5` to
-wait without immediately returning the same pending question on every poll.
+`wait <job> --owner <ownerId> --report` streams a human-readable activity feed
+into stdout, one flushed line per event, then ends with ONE compact JSON line.
+The final line preserves the progress/report fields and adds `activity` (the
+structured events in this call) and `cursor` (last consumed sequence number).
+`--json` suppresses feed lines and returns only that JSON line. The default
+maximum `--timeout-sec` is 30; `--min-interval-sec` defaults to 10. Both accept
+1–60 seconds. New significant activity returns the call after its minimum;
+timeout is always the upper bound, including when minimum exceeds timeout.
+Terminal results and new parent questions return immediately. Lines stream even
+before the minimum, so clients that expose live Bash output show the work now.
+
+Activity is captured at item start/completion (completed assistant messages),
+not token-by-token: assistant snippets ≤300 characters, command first lines
+≤160 with exit/duration, file path/kind, MCP/dynamic server/tool/status/duration,
+and plan step titles ≤80. Durations use protocol milliseconds or observed
+start/completion time; missing duration/exit is explicit, never invented.
+Tool arguments, command outputs, diffs, reasoning and page-content payloads are
+never selected. Text is redacted **before** truncation: assignments, authorization
+headers, bearer tokens, URL userinfo/query credentials, long hex/base64 blobs and
+known key/JWT prefixes. Redaction is conservative and heuristic, not semantic DLP;
+a model can still put sensitive prose in a message, so the prompt forbids copying
+payloads into progress. Raw result artifacts keep their existing private behavior.
+
+Redacted events and monotonically increasing sequence numbers live in job state;
+`activityCursors` uses a hashed reader/owner key. Each explicit owner has an
+independent cursor, and ownerless observers share a separate cursor. Reading as
+an observer cannot consume the worker's feed or renew its lease. Feed cursors
+advance after flushed lines; pure JSON advances after its final write. An abrupt
+stop between delivery and cursor persistence may replay lines; run one wait per
+owner at a time. The journal is retained with the job (no silent event dropping).
+Legacy jobs without a journal return empty activity and cursor 0.
+
+The native agent keeps Bash.description equal to the last headline and uses feed
+mode. It does not paraphrase or re-print the feed. After forwarding a question
+once, use `--after-question <id> --timeout-sec 5` with the same `--owner` to wait
+without immediately returning that question on every poll.
 
 ## Parent questions
 
@@ -43,6 +70,14 @@ Exact successful dynamic-tool result (original request ID retained):
 {"id":7,"result":{"success":true,"contentItems":[{"type":"inputText","text":"The parent's answer."}]}}
 ```
 
+`needs_answer` includes a one-line `questionMessage`:
+`Question <id>: <text> | Options: "First"; "Second"` (or `(none)`). Whitespace is
+normalized and display secrets are redacted; the native worker must send this
+field verbatim to `main` once per question. SendMessage is allowed ONLY for this
+purpose: no progress, completion claims or placeholders. The final result is
+only the agent's return value. Worker messages that are not verbatim questions
+are not evidence; verify job/thread/turn handles, artifacts and actual changes.
+
 Question text is bounded to 1000 characters and six options of 160 characters;
 answers to 8000 characters. Neither is copied into progress logs. The worker's
 contract forbids secrets/page content in questions. The default timeout is 900
@@ -60,9 +95,46 @@ real default-mode tool selection is reserved for the parent's smoke below.
 
 ## Ownership and cleanup
 
-The 180-second lease is renewed by matching-owner task/wait/status calls; detached
-task-workers do not renew it. Foreground owners renew while alive. Owner ID defaults
-to environment owner, Claude session ID, then local, or task --owner explicitly.
+Each task generates a unique ownerId by default (job ID plus random UUID),
+returned for detached/background and foreground tasks. `task --owner` remains an
+explicit override; ambient session/owner variables never select the owner.
+The Claude session ID is recorded separately as `sessionId`. Only calls with the
+explicit matching `--owner` renew an unexpired lease, including wait/status/answer;
+parent `/codex:status`, ownerless status/wait and all result reads never renew.
+Foreground owners renew while alive; detached task-workers never renew themselves.
+The default lease is 180 seconds. SessionEnd matches sessionId, falling back to
+the old session-ID ownerId only for legacy jobs without sessionId. Such jobs stay
+readable and can renew only with an explicit matching owner.
+
+Claude Code 2.1.301 cannot resume a native agent stopped by the user. With the
+user's explicit consent, the parent launches a replacement with the existing
+jobId. Its FIRST action is `adopt <jobId> --json`, not task submission. Under one
+job-state lock, adoption checks that the task is queued/running with an unexpired
+lease and no cancellation, rotates to a new ownerId and renews the lease. It does
+not call thread/resume or turn/start. It preserves the thread/turn, pending
+question and last delivered owner's cursor. The replacement loops
+`wait <jobId> --owner <newOwnerId> --report`. Retired owners get
+`ownership_moved` from wait/status/answer, including an already-running wait,
+and cannot renew or answer. They must stop polling and must not adopt again.
+The replacement's Claude session takes over SessionEnd scoping; absent a caller
+session, the original scope is preserved (including legacy session-ID owners).
+
+`adopt` returns `adopted` and `waitCommand` on success (exit 0). It returns
+`lease_expired`, `job_ended`, `interrupting` or `not_adoptable` on refusal (exit 2),
+without rotating ownership or starting a turn. Expiry is checked under the lock,
+even before the task-worker's next expiry tick; an expired lease cannot revive.
+Refusals include an exact `continuationCommand` using `task --thread <threadId>`
+in the original working directory. It intentionally starts read-only, without
+inheriting runtime/write/origin grants, and is never run automatically. Wait for
+pending interruption to finish before continuing. No thread handle means no
+continuation command. Thread context and on-disk edits survive interruption.
+
+Status marks running jobs orphaned after no renewal for min(65 seconds, half the
+lease), with `leaseRemainingSec` and an exact `adoptCommand`. This is a stale
+renewal heuristic, not proof that the native agent stopped; adoption need not
+wait for this threshold. An in-flight wait can renew until it exits (at most its
+configured timeout). See [stop actions and recovery](../README.md#if-a-worker-is-stopped).
+
 This is lifecycle coordination, not an authentication boundary for local users.
 Lease expiry, cancel, signals and SessionEnd trigger the worker's AbortSignal,
 resolve questions and request turn/interrupt. A four-second turn deadline closes
@@ -147,33 +219,135 @@ npm run check-version
 The suite uses its own fixture homes even outside the sandbox. Do not run archived
 baseline copies. No existing/live broker needs to be killed for the tests.
 
-Live question smoke (parent only; not executed in W5):
+## isolated.9 live acceptance (Claude only; not run by fixture verification)
 
-```sh
-node plugins/codex/scripts/codex-companion.mjs task --fresh --detached --report --json --owner w5-smoke --model gpt-6-astra --effort xhigh --normal <<'W5_SMOKE'
-Use ask_parent to ask which fixture approach to report, with options Small and
-Broad. Wait for the answer, then report it and complete. Do not edit files, open
-a browser, access private content, or run other tools.
-W5_SMOKE
-node plugins/codex/scripts/codex-companion.mjs wait '<jobId>' --owner w5-smoke --timeout-sec 45 --json --report
-node plugins/codex/scripts/codex-companion.mjs answer '<jobId>' --question '<questionId>' --json <<'W5_ANSWER'
-Use Small.
-W5_ANSWER
-node plugins/codex/scripts/codex-companion.mjs wait '<jobId>' --owner w5-smoke --timeout-sec 45 --json --report
+Use staging's native worker definition in Claude Code, with outer Bash sandbox
+disabled on its calls. Do not stop unrelated workers; use `x` on the smoke agent's
+detail view, since Esc/Ctrl+C with empty main input stops ALL background agents.
+Before launching any replacement, obtain the user's explicit consent.
+
+Give one `codex:codex-worker` this read-only assignment:
+
+```text
+Run three harmless node commands that print step numbers, separated by 3-second
+pauses. Send ordinary assistant progress messages and update your plan. Then use
+ask_parent to ask "Finish this smoke?" with options Yes and No, and wait. Do not
+edit files, use a browser, access secrets, or commit. After Yes, report completion.
 ```
 
-Substitute returned IDs exactly, repeating wait if startup is still running. The
-thread/turn must remain unchanged across the question. For cancellation, repeat
-the launch and cancel while the question is pending:
+Open the worker in the Agent view. Its Bash description must match the previous
+headline; actual redacted command lines, status/duration and assistant snippets
+must appear while each wait is still running, before the final JSON. Command
+output/tool arguments must be absent. The worker sends exactly the companion's
+questionMessage once, with no progress/completion SendMessage. Compare the text
+against an ownerless `wait <jobId> --json` response if needed.
+
+The direct command equivalent follows. Run from the staging repository; use a
+terminal/live Bash output, not a buffering command substitution. Replace each
+angle-bracket handle with the actual returned value. These are manual smoke
+instructions, not a script to run without inspecting each result.
 
 ```sh
-node plugins/codex/scripts/codex-companion.mjs cancel '<secondJobId>' --json
+node plugins/codex/scripts/codex-companion.mjs task --fresh --detached --report --json --lease-sec 180 --model gpt-6-astra --effort xhigh --normal <<'DUET_FEED_SMOKE'
+Run three harmless node commands that print step numbers, separated by 3-second
+pauses. Send ordinary assistant progress messages and update your plan. Then use
+ask_parent to ask "Finish this smoke?" with options Yes and No, and wait. Do not
+edit files, use a browser, access secrets, or commit. After Yes, report completion.
+DUET_FEED_SMOKE
+node plugins/codex/scripts/codex-companion.mjs wait '<jobId>' --owner '<ownerId>' --timeout-sec 30 --min-interval-sec 10 --report
 ```
 
-For lease acceptance, launch with `--lease-sec 30 --owner w5-lease`, wait for the
-question once, then stop owner polling for over 30 seconds and retrieve result.
-For browser acceptance, inspect `setup --list-browser-origins --json`, apply only
-explicitly consented origins if necessary, and let W6's separate browser acceptance
-use a fresh owned tab and cleanup. Never auto-grant after a denial. Compare the
-startup timings under the already selected HTTP provider; do not infer speedup
-from the earlier WebSocket trace alone.
+Repeat the owner wait until needs_answer. It must have one final JSON line with
+activity/cursor and `questionMessage` in the form
+`Question <questionId>: Finish this smoke? | Options: "Yes"; "No"`. Retain the
+threadId/turnId. While the question is pending and no owner wait is running,
+inspect ownership and lease timestamps:
+
+```sh
+node plugins/codex/scripts/codex-companion.mjs status '<jobId>' --json
+node plugins/codex/scripts/codex-companion.mjs status '<jobId>' --owner wrong-owner --json
+node plugins/codex/scripts/codex-companion.mjs wait '<jobId>' --timeout-sec 1 --json
+node plugins/codex/scripts/codex-companion.mjs result '<jobId>' --report --json
+node plugins/codex/scripts/codex-companion.mjs status '<jobId>' --json
+node plugins/codex/scripts/codex-companion.mjs wait '<jobId>' --owner '<ownerId>' --report
+node plugins/codex/scripts/codex-companion.mjs status '<jobId>' --json
+```
+
+Observer calls must leave leaseExpiresAt/leaseRenewedAt unchanged. Result on an
+active job reports still running (nonzero exit). The owner wait must advance both
+timestamps. Launch a second fresh smoke job in the same Claude session: ownerIds
+must differ; passing the first owner to the second job's status must not renew it.
+Cancel only that extra smoke job after recording the evidence.
+
+For native stop acceptance, stop the smoke agent with `x` in its detail view,
+wait for any in-flight wait to exit, then use `/codex:status`. After 65 seconds
+without renewal it should show orphaned, decreasing lease seconds and an exact
+adopt command. Before expiry, and with explicit user consent, launch a replacement
+`codex:codex-worker` with this assignment (substitute handles and workspace):
+
+```text
+Adopt existing job <jobId> in <workspace>. The user explicitly consented to this
+replacement worker. Run adopt first; do not submit a new task. Retain its NEW
+ownerId and wait on the existing turn. Forward only the exact questionMessage.
+```
+
+The replacement's FIRST call must be adopt. The direct equivalent, which also
+works before the orphan threshold, is:
+
+```sh
+node plugins/codex/scripts/codex-companion.mjs adopt '<jobId>' --json
+node plugins/codex/scripts/codex-companion.mjs status '<jobId>' --owner '<oldOwnerId>' --json
+node plugins/codex/scripts/codex-companion.mjs wait '<jobId>' --owner '<oldOwnerId>' --json
+node plugins/codex/scripts/codex-companion.mjs wait '<jobId>' --owner '<newOwnerId>' --report
+node plugins/codex/scripts/codex-companion.mjs status '<jobId>' --json
+```
+
+Expect `adopted`, a different ownerId, identical threadId/turnId and renewed lease.
+Old-owner calls return `ownership_moved` (exit 2) without renewing. The new owner
+continues the pending question and inherits the delivered feed cursor. For the
+native workflow, send Yes to the replacement. For the direct workflow:
+
+```sh
+node plugins/codex/scripts/codex-companion.mjs answer '<jobId>' --owner '<newOwnerId>' --question '<questionId>' --json <<'DUET_SMOKE_ANSWER'
+Yes
+DUET_SMOKE_ANSWER
+node plugins/codex/scripts/codex-companion.mjs wait '<jobId>' --owner '<newOwnerId>' --report
+node plugins/codex/scripts/codex-companion.mjs adopt '<jobId>' --json
+```
+
+Repeat wait until terminal. Adoption after completion must report `job_ended`,
+exit 2, with an exact continuationCommand and no new turn.
+
+For expiry, launch a separate smoke job with a short lease (increase it if local
+startup exceeds 30 seconds), wait for its question, then cease owner polling:
+
+```sh
+node plugins/codex/scripts/codex-companion.mjs task --fresh --detached --report --json --lease-sec 30 --model gpt-6-astra --effort xhigh --normal <<'DUET_EXPIRY_SMOKE'
+Use ask_parent to ask "Wait for expiry?" with options Yes and No. Wait for the
+answer. Do not edit files, use a browser, access secrets, or run other tools.
+DUET_EXPIRY_SMOKE
+node plugins/codex/scripts/codex-companion.mjs wait '<expiryJobId>' --owner '<expiryOwnerId>' --report
+```
+
+After its last renewal, use only ownerless status to observe the orphaned lease
+countdown. Once more than 30 seconds has passed, run:
+
+```sh
+node plugins/codex/scripts/codex-companion.mjs status '<expiryJobId>' --json
+node plugins/codex/scripts/codex-companion.mjs adopt '<expiryJobId>' --json
+node plugins/codex/scripts/codex-companion.mjs result '<expiryJobId>' --report --json
+```
+
+Expect `lease_expired`, no owner rotation or new turn, interruption confirmation
+when available, and the exact unexecuted `task --thread` continuation command.
+If interruption is still in progress, poll ownerless status/result until terminal.
+Do not execute the continuation as part of this smoke. Thread history and on-disk
+edits should remain available. Cleanup only a smoke job you launched that is still
+active and no longer needed:
+
+```sh
+node plugins/codex/scripts/codex-companion.mjs cancel '<jobId>' --json
+```
+
+No check requires stopping a live broker or unrelated worker. Socket-backed
+fixture acceptance must be rerun outside the managed sandbox when binds are denied.

@@ -116,8 +116,9 @@ function appendActiveJobsTable(lines, jobs) {
     if (job.status === "queued" || job.status === "running") {
       actions.push(`/codex:cancel ${job.id}`);
     }
+    if (job.adoptCommand) actions.push(job.adoptCommand);
     lines.push(
-      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
+      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.orphaned ? `${job.status} (orphaned; ${job.leaseRemainingSec}s lease)` : job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
     );
   }
 }
@@ -127,6 +128,9 @@ function pushJobDetails(lines, job, options = {}) {
   if (job.summary) {
     lines.push(`  Summary: ${job.summary}`);
   }
+  if (job.leaseRemainingSec != null) lines.push(`  Owner lease: ${job.orphaned ? "orphaned (owner not renewing)" : "recently renewed"}; ${job.leaseRemainingSec}s remaining.`);
+  if (job.adoptCommand) lines.push(`  With the user's explicit consent, a replacement worker can adopt: ${job.adoptCommand}`);
+  if (job.continuationCommand) lines.push(`  Lease expired; continuation (not started): ${job.continuationCommand}`);
   if (job.phase) {
     lines.push(`  Phase: ${job.phase}`);
   }

@@ -19,7 +19,7 @@ function normalizeProgressEvent(value) {
       stderrMessage: value.stderrMessage == null ? null : String(value.stderrMessage).trim(),
       logTitle: typeof value.logTitle === "string" && value.logTitle.trim() ? value.logTitle.trim() : null,
       logBody: value.logBody == null ? null : String(value.logBody).trimEnd(),
-      timing: value.timing, startupTimings: value.startupTimings, startupWarning: value.startupWarning, item: value.item
+      timing: value.timing, startupTimings: value.startupTimings, startupWarning: value.startupWarning, item: value.item, activity: value.activity
     };
   }
 
@@ -96,12 +96,16 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
       changed = true;
     }
 
-    if (normalized.timing || normalized.startupTimings || normalized.startupWarning || normalized.item) changed = true;
+    if (normalized.timing || normalized.startupTimings || normalized.startupWarning || normalized.item || normalized.activity?.length) changed = true;
     if (!changed) {
       return;
     }
 
     updateJob(workspaceRoot, jobId, stored => ({ ...patch,
+      ...(normalized.activity?.length ? {
+        activity: [...(stored.activity ?? []), ...normalized.activity.map((event, index) => ({ ...event, seq: (stored.activitySeq ?? 0) + index + 1, at: nowIso() }))],
+        activitySeq: (stored.activitySeq ?? 0) + normalized.activity.length
+      } : {}),
       startupTimings: { ...stored.startupTimings, ...normalized.startupTimings, ...(normalized.timing ? { [normalized.timing.phase]: normalized.timing } : {}) },
       ...(normalized.startupWarning ? { startupWarning: normalized.startupWarning } : {}),
       ...(normalized.item ? normalized.item.lifecycle === "completed" ? { currentItem: null, completedItems: [...(stored.completedItems ?? []), normalized.item].slice(-4) } : { currentItem: normalized.item } : {})
@@ -143,18 +147,21 @@ export async function runTrackedJob(job, runner, options = {}) {
     pid: process.pid,
     logFile: options.logFile ?? job.logFile ?? null
   };
-  writeJobFile(job.workspaceRoot, job.id, runningRecord);
-  upsertJob(job.workspaceRoot, runningRecord);
+  if (readStoredJobOrNull(job.workspaceRoot, job.id)) {
+    updateJob(job.workspaceRoot, job.id, () => ({ status: "running", startedAt: runningRecord.startedAt, phase: "starting", pid: process.pid, logFile: runningRecord.logFile }));
+  } else {
+    writeJobFile(job.workspaceRoot, job.id, runningRecord);
+    upsertJob(job.workspaceRoot, runningRecord);
+  }
   options.onStarted?.(runningRecord);
 
   try {
     const execution = await runner();
     const completionStatus = execution.jobStatus ?? (execution.exitStatus === 0 ? "completed" : "failed");
     const completedAt = nowIso();
-    writeJobFile(job.workspaceRoot, job.id, {
-      ...runningRecord,
-      ...readStoredJobOrNull(job.workspaceRoot, job.id),
+    updateJob(job.workspaceRoot, job.id, () => ({
       status: completionStatus,
+      summary: execution.summary,
       threadId: execution.threadId ?? null,
       turnId: execution.turnId ?? null,
       pid: null,
@@ -163,7 +170,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       result: execution.payload,
       report: execution.report ?? null,
       rendered: execution.rendered
-    });
+    }));
     upsertJob(job.workspaceRoot, {
       id: job.id,
       status: completionStatus,
@@ -183,15 +190,14 @@ export async function runTrackedJob(job, runner, options = {}) {
     if (job.rawOutputFile && !fs.existsSync(job.rawOutputFile)) fs.writeFileSync(job.rawOutputFile, `${errorMessage}\n`, { mode: 0o600 });
     if (job.resultFile && !fs.existsSync(job.resultFile)) fs.writeFileSync(job.resultFile, `${JSON.stringify({ status: 1, error: errorMessage, threadId: existing.threadId ?? null, turnId: existing.turnId ?? null, approvedBrowserOrigins: existing.approvedBrowserOrigins ?? [] })}\n`, { mode: 0o600 });
     const completedAt = nowIso();
-    writeJobFile(job.workspaceRoot, job.id, {
-      ...existing,
+    updateJob(job.workspaceRoot, job.id, () => ({
       status: "failed",
       phase: "failed",
       errorMessage,
       pid: null,
       completedAt,
       logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
-    });
+    }));
     upsertJob(job.workspaceRoot, {
       id: job.id,
       status: "failed",

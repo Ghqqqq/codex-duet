@@ -7,7 +7,8 @@ import { getToolAvailability, syncToolConfig } from "./lib/tool-config.mjs";
 import { buildWorkerReport, persistTaskArtifacts, taskArtifactPaths } from "./lib/worker-report.mjs";
 import { normalizeBrowserOrigins } from "./lib/server-requests.mjs";
 import { browserOriginSetup, transportSetup } from "./lib/setup-config.mjs";
-import { JobRuntime, ACTIVE, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot } from "./lib/job-runtime.mjs";
+import { activityReader, formatActivity, redactActivity, snippet } from "./lib/activity.mjs";
+import { JobRuntime, ACTIVE, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, adoptJob, ownershipNotice } from "./lib/job-runtime.mjs";
 import { updateJob } from "./lib/state.mjs";
 import { snapshotWorkspace, compareWorkspaceSnapshots } from "./lib/workspace-changes.mjs";
 import fs from "node:fs";
@@ -94,8 +95,9 @@ function printUsage() {
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id|--thread <id>] [--wait] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id|--thread <id>] [--report] [--json]",
-      "  node scripts/codex-companion.mjs wait <job-id> [--timeout-sec 45] [--owner <id>] [--after-question <id>] --json --report",
-      "  node scripts/codex-companion.mjs answer <job-id> --question <id> --json < answer.txt",
+      "  node scripts/codex-companion.mjs wait <job-id> [--timeout-sec 30] [--min-interval-sec 10] [--owner <id>] [--after-question <id>] [--json] --report",
+      "  node scripts/codex-companion.mjs adopt <job-id> [--cwd <path>] [--json]",
+      "  node scripts/codex-companion.mjs answer <job-id> --owner <ownerId> --question <id> --json < answer.txt",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]",
       "  task lifecycle: --detached [--lease-sec 180] [--question-timeout-sec 900] [--owner <id>]",
       "  setup: --transport http|websocket|status; --allow-browser-origin <origin>; --revoke-browser-origin <origin>; --list-browser-origins"
@@ -350,7 +352,7 @@ function filterJobsForCurrentClaudeSession(jobs) {
   if (!sessionId) {
     return jobs;
   }
-  return jobs.filter((job) => job.sessionId === sessionId);
+  return jobs.filter((job) => (job.sessionId === undefined ? job.ownerId : job.sessionId) === sessionId);
 }
 
 function findLatestResumableTaskJob(jobs) {
@@ -371,7 +373,7 @@ async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
   const deadline = Date.now() + timeoutMs;
   let snapshot = await refreshJobSnapshot(cwd, reference);
 
-  while (isActiveJobStatus(snapshot.job.status) && Date.now() < deadline) {
+  while (isActiveJobStatus(snapshot.job.status) && !ownershipNotice(snapshot.job, options.owner) && Date.now() < deadline) {
     await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
     snapshot = await refreshJobSnapshot(cwd, reference);
   }
@@ -555,10 +557,7 @@ async function executeTaskRun(request) {
 
   const before = snapshotWorkspace(workspaceRoot);
   const sandbox = request.sandbox ?? (request.write ? "workspace-write" : "read-only");
-  const stored = readStoredJob(workspaceRoot, request.jobId);
-  writeJobFile(workspaceRoot, request.jobId, {
-    ...stored, preExistingChanges: before.preExistingChanges, sandbox, approvalPolicy: "never"
-  });
+  updateJob(workspaceRoot, request.jobId, () => ({ preExistingChanges: before.preExistingChanges, sandbox, approvalPolicy: "never" }));
   request.onProgress?.(`Sandbox: ${sandbox}; approval policy: never. Captured workspace baseline (${before.status}).`);
 
   const runtime = new JobRuntime(workspaceRoot, request.jobId, { foreground: !request.detached, onProgress: request.onProgress });
@@ -625,8 +624,11 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
     turnEnded: Boolean(result.turnEnded),
     interruptionReason: result.interruptionReason ?? null, interruptionConfirmed: result.interruptionConfirmed ?? null
   };
+  const trackedJob = readStoredJob(resolveWorkspaceRoot(request.cwd), request.jobId);
+  Object.assign(payload, { ownerId: trackedJob?.ownerId ?? null, sessionId: trackedJob?.sessionId ?? null });
   const artifacts = persistTaskArtifacts(resolveWorkspaceRoot(request.cwd), request.jobId, payload);
   const report = buildWorkerReport(payload, { jobId: request.jobId, ...artifacts });
+  Object.assign(report, { ownerId: payload.ownerId, sessionId: payload.sessionId }, leaseExpiryReport({ ...trackedJob, threadId: payload.threadId, result: payload }));
   if (payload.interruptionReason) report.status = payload.interruptionReason === "cancelled_by_user" ? "cancelled" : "interrupted";
   Object.assign(payload, artifacts, { workerStatus: report.status });
 
@@ -638,7 +640,7 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
     payload,
     report,
     rendered,
-    summary: firstMeaningfulLine(rawOutput, firstMeaningfulLine(failureMessage, `${taskMetadata.title} finished.`)),
+    summary: snippet(firstMeaningfulLine(redactActivity(rawOutput), firstMeaningfulLine(redactActivity(failureMessage), `${taskMetadata.title} finished.`)), 300),
     jobTitle: taskMetadata.title,
     jobClass: "task",
     write: Boolean(request.write)
@@ -665,7 +667,7 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
   const fallbackSummary = resumeLast ? DEFAULT_CONTINUE_PROMPT : "Task";
   return {
     title,
-    summary: shorten(prompt || fallbackSummary)
+    summary: shorten(redactActivity(prompt || fallbackSummary))
   };
 }
 
@@ -715,7 +717,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
     summary: taskMetadata.summary,
     write
   });
-  return { ...job, ownerId: lifecycle.owner ?? ownerId(), leaseSec: lifecycle.leaseSec ?? 180, questionTimeoutSec: lifecycle.questionTimeoutSec ?? 900,
+  return { ...job, ownerId: lifecycle.owner ?? ownerId(job.id), sessionId: job.sessionId ?? null, leaseRenewedAt: Date.now(), leaseSec: lifecycle.leaseSec ?? 180, questionTimeoutSec: lifecycle.questionTimeoutSec ?? 900,
     leaseExpiresAt: Date.now() + (lifecycle.leaseSec ?? 180) * 1000,
     sandbox: sandbox ?? (write ? "workspace-write" : "read-only"), approvalPolicy: "never", approvedBrowserOrigins, ...taskArtifactPaths(workspaceRoot, job.id) };
 }
@@ -831,6 +833,8 @@ function enqueueBackgroundTask(cwd, job, request) {
   return {
     payload: {
       jobId: job.id,
+      ownerId: job.ownerId,
+      sessionId: job.sessionId ?? null,
       status: "queued",
       sandbox: job.sandbox,
       approvalPolicy: job.approvalPolicy,
@@ -918,7 +922,7 @@ async function handleTask(argv) {
 
   const cwd = resolveCommandCwd(options);
   const approvedBrowserOrigins = normalizeBrowserOrigins(options["approve-browser-origin"] ?? []);
-  const lifecycle = { owner: options.owner ?? ownerId(), leaseSec: seconds(options["lease-sec"] ?? process.env.CODEX_COMPANION_LEASE_SEC, 180, "--lease-sec"), questionTimeoutSec: seconds(options["question-timeout-sec"], 900, "--question-timeout-sec") };
+  const lifecycle = { owner: options.owner, leaseSec: seconds(options["lease-sec"] ?? process.env.CODEX_COMPANION_LEASE_SEC, 180, "--lease-sec"), questionTimeoutSec: seconds(options["question-timeout-sec"], 900, "--question-timeout-sec") };
   const workspaceRoot = resolveCommandWorkspace(options);
   const model = normalizeRequestedModel(options.model) ?? "gpt-6-astra";
   const effort = normalizeReasoningEffort(options.effort) ?? "xhigh";
@@ -1098,7 +1102,7 @@ async function refreshJobSnapshot(cwd, reference) {
     const execution = buildTaskExecution(result, { cwd, jobId: job.id, write: job.write });
     const completedAt = nowIso();
     const patch = { status: execution.jobStatus, phase: execution.jobStatus === "completed" ? "done" : execution.jobStatus, pid: null, completedAt, summary: execution.summary, recovered: true, rawOutputFile: execution.payload.rawOutputFile, resultFile: execution.payload.resultFile };
-    writeJobFile(workspaceRoot, job.id, { ...stored, ...patch, result: execution.payload, report: execution.report, rendered: execution.rendered });
+    updateJob(workspaceRoot, job.id, () => ({ ...patch, result: execution.payload, report: execution.report, rendered: execution.rendered }));
     upsertJob(workspaceRoot, { id: job.id, ...patch });
     appendLogLine(job.logFile, `Recovered recorded turn ${job.turnId}; status ${execution.jobStatus}. No new turn submitted.`);
     snapshot = buildSingleJobSnapshot(cwd, job.id);
@@ -1118,13 +1122,15 @@ async function handleStatus(argv) {
   const reference = options.thread ?? positionals[0] ?? "";
   if (reference) {
     const selected = buildSingleJobSnapshot(cwd, reference);
-    renewLease(selected.workspaceRoot, selected.job.id, options.owner ?? ownerId());
+    const renewed = renewLease(selected.workspaceRoot, selected.job.id, options.owner);
+    if (reportMovedOwner(renewed, options.owner, options.json)) return;
     const snapshot = options.wait
       ? await waitForSingleJobSnapshot(cwd, reference, {
           timeoutMs: options["timeout-ms"],
-          pollIntervalMs: options["poll-interval-ms"]
+          pollIntervalMs: options["poll-interval-ms"], owner: options.owner
         })
       : await refreshJobSnapshot(cwd, reference);
+    if (reportMovedOwner(snapshot.job, options.owner, options.json)) return;
     outputCommandResult(snapshot, `${renderJobStatusReport(snapshot.job)}${snapshot.recovery ? `Recovery: ${snapshot.recovery.detail}\n` : ""}`, options.json);
     return;
   }
@@ -1158,6 +1164,7 @@ async function handleResult(argv) {
   const storedJob = readStoredJob(workspaceRoot, job.id);
   if (options.report) {
     const report = storedJob?.report ?? buildWorkerReport({ approvedBrowserOrigins: storedJob?.approvedBrowserOrigins ?? [], ...(storedJob?.result ?? { status: 1, error: storedJob?.errorMessage ?? "No stored result." }) }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile });
+    Object.assign(report, leaseExpiryReport(storedJob ?? job));
     outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
     if (report.status !== "completed") process.exitCode = report.status === "needs_input" ? 2 : 1;
     return;
@@ -1225,29 +1232,80 @@ async function handleCancel(argv) {
   if (!confirmed) process.exitCode = 2;
 }
 
+function reportMovedOwner(job, owner, json) {
+  const notice = ownershipNotice(job, owner);
+  if (!notice) return false;
+  outputCommandResult(notice, `${JSON.stringify(notice, null, 2)}\n`, json);
+  process.exitCode = 2;
+  return true;
+}
+
+function handleAdopt(argv) {
+  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd"], booleanOptions: ["json"] });
+  if (!positionals[0]) throw new Error("adopt requires a job id.");
+  const cwd = resolveCommandCwd(options), { workspaceRoot, job } = buildSingleJobSnapshot(cwd, positionals[0]);
+  const result = adoptJob(workspaceRoot, job.id, getCurrentClaudeSessionId());
+  outputCommandResult(result, `${JSON.stringify(result, null, 2)}\n`, options.json);
+  if (!result.adopted) process.exitCode = 2;
+}
+
 async function handleWait(argv) {
-  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "timeout-sec", "owner", "after-question"], booleanOptions: ["json", "report"] });
+  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "timeout-sec", "min-interval-sec", "owner", "after-question"], booleanOptions: ["json", "report"] });
   if (!positionals[0]) throw new Error("wait requires a job id.");
-  const cwd = resolveCommandCwd(options), timeout = seconds(options["timeout-sec"], 45, "--timeout-sec", 60);
+  const cwd = resolveCommandCwd(options), timeout = seconds(options["timeout-sec"], 30, "--timeout-sec", 60);
+  const minimum = seconds(options["min-interval-sec"], 10, "--min-interval-sec", 60);
   const { workspaceRoot, job } = buildSingleJobSnapshot(cwd, positionals[0]);
-  for (const deadline = Date.now() + timeout * 1000;;) {
-    const current = renewLease(workspaceRoot, job.id, options.owner ?? ownerId());
-    if (!ACTIVE.has(current.status)) return handleResult([job.id, "--cwd", cwd, "--report", ...(options.json ? ["--json"] : [])]);
-    const pending = current.pendingQuestion;
-    if ((pending && pending.answer === undefined && pending.id !== options["after-question"]) || Date.now() >= deadline) {
-      const snapshot = progressSnapshot(current);
-      outputResult(options.json ? snapshot : `${JSON.stringify(snapshot, null, 2)}\n`, options.json);
+  const reader = activityReader(options.owner), started = Date.now(), activity = [];
+  let cursor = readStoredJob(workspaceRoot, job.id).activityCursors?.[reader] ?? 0;
+  let nextRenewal = 0;
+  // Await each write callback: feed lines reach the pipe during the wait, never
+  // buffered until the final report. JSON mode uses the same cursor semantics.
+  const writeLine = line => new Promise((resolve, reject) => process.stdout.write(`${line}\n`, error => error ? reject(error) : resolve()));
+  for (;;) {
+    const renew = options.owner && Date.now() >= nextRenewal;
+    const current = renew ? renewLease(workspaceRoot, job.id, options.owner) : readStoredJob(workspaceRoot, job.id);
+    if (renew) nextRenewal = Date.now() + Math.min(1000, (current.leaseSec ?? 180) * 250);
+    const moved = ownershipNotice(current, options.owner);
+    if (moved) {
+      await writeLine(JSON.stringify({ ...moved, activity, cursor }));
+      process.exitCode = 2;
       return;
     }
-    await sleep(250);
+    const next = (current.activity ?? []).filter(event => event.seq > cursor);
+    for (const event of next) {
+      if (!options.json) await writeLine(formatActivity(event));
+      activity.push(event); cursor = event.seq;
+    }
+    if (next.length && !options.json) updateJob(workspaceRoot, job.id, stored => ({ activityCursors: { ...stored.activityCursors, [reader]: Math.max(cursor, stored.activityCursors?.[reader] ?? 0) } }));
+    const pending = current.pendingQuestion;
+    const terminal = !ACTIVE.has(current.status);
+    if (terminal || (pending && pending.answer === undefined && pending.id !== options["after-question"]) || Date.now() - started >= timeout * 1000 || (activity.length && Date.now() - started >= minimum * 1000)) {
+      const report = terminal ? { ...(current.report ?? buildWorkerReport(current.result ?? { status: 1, error: current.errorMessage ?? "No stored result." }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile })), ...leaseExpiryReport(current) } : progressSnapshot(current);
+      // Compact reports may contain captured commands and assistant snippets too.
+      // Preserve handles/paths; redact only display text, never serialized JSON.
+      if (terminal) {
+        for (const key of ["verification", "keyFindings", "assumptions", "blockers"]) {
+          if (report[key]) report[key] = report[key].map(redactActivity);
+        }
+        if (typeof report.question === "string") report.question = redactActivity(report.question);
+      }
+      await writeLine(JSON.stringify({ ...report, activity, cursor }));
+      if (options.json && activity.length) updateJob(workspaceRoot, job.id, stored => ({ activityCursors: { ...stored.activityCursors, [reader]: Math.max(cursor, stored.activityCursors?.[reader] ?? 0) } }));
+      if (terminal && report.status !== "completed") process.exitCode = report.status === "needs_input" ? 2 : 1;
+      return;
+    }
+    await sleep(100);
   }
 }
 
 async function handleAnswer(argv) {
-  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "question"], booleanOptions: ["json"] });
+  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "question", "owner"], booleanOptions: ["json"] });
   if (!positionals[0] || !options.question) throw new Error("answer requires a job id and --question <id>; pass answer text on stdin.");
   const cwd = resolveCommandCwd(options), { workspaceRoot, job } = buildSingleJobSnapshot(cwd, positionals[0]);
-  answerQuestion(workspaceRoot, job.id, options.question, readStdinIfPiped());
+  const answered = answerQuestion(workspaceRoot, job.id, options.question, readStdinIfPiped(), options.owner);
+  if (reportMovedOwner(answered, options.owner, options.json)) return;
+  const renewed = renewLease(workspaceRoot, job.id, options.owner);
+  if (reportMovedOwner(renewed, options.owner, options.json)) return;
   const payload = { jobId: job.id, questionId: options.question, status: "answer_submitted" };
   outputResult(options.json ? payload : `${JSON.stringify(payload)}\n`, options.json);
 }
@@ -1282,6 +1340,9 @@ async function main() {
       break;
     case "wait":
       await handleWait(argv);
+      break;
+    case "adopt":
+      handleAdopt(argv);
       break;
     case "answer":
       await handleAnswer(argv);

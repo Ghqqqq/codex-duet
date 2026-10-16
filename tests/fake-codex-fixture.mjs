@@ -509,13 +509,36 @@ rl.on("line", (line) => {
 	        saveState(state);
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
 
+        if (BEHAVIOR === "w9-feed") {
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          const event = (method, item) => send({ method, params: { threadId: thread.id, turnId, item } });
+          const command = { id: "feed-command", type: "commandExecution", command: "npm test TOKEN=PRIVATE_FIXTURE_TOKEN https://user:PRIVATE_FIXTURE_PASSWORD@example.com?token=PRIVATE_FIXTURE_QUERY", status: "inProgress" };
+          setTimeout(() => event("item/started", command), 250);
+          setTimeout(() => {
+            event("item/completed", { ...command, status: "completed", exitCode: 0, durationMs: 425, aggregatedOutput: "PRIVATE_FIXTURE_OUTPUT" });
+            event("item/completed", { id: "feed-message", type: "agentMessage", text: "Inspecting the fixture. PASSWORD=PRIVATE_FIXTURE_MESSAGE " + "x".repeat(350), phase: "commentary" });
+            event("item/completed", { id: "feed-file", type: "fileChange", changes: [{ path: "src/example.mjs", kind: { type: "update" }, diff: "PRIVATE_FIXTURE_DIFF" }] });
+          }, 700);
+          setTimeout(() => {
+            for (const type of ["mcpToolCall", "dynamicToolCall"]) {
+              const tool = { id: type, type, server: "fixture", tool: "inspect", status: "inProgress", arguments: { page: "PRIVATE_FIXTURE_ARGUMENTS" } };
+              event("item/started", tool);
+              event("item/completed", { ...tool, status: "completed", durationMs: 10, result: { text: "PRIVATE_FIXTURE_PAGE" }, contentItems: [{ text: "PRIVATE_FIXTURE_CONTENT" }] });
+            }
+            send({ method: "turn/plan/updated", params: { threadId: thread.id, turnId, plan: [{ step: "Inspect fixture", status: "completed" }, { step: "Verify " + "long title ".repeat(20), status: "pending" }] } });
+          }, 1000);
+          const timer = setTimeout(() => emitTurnCompleted(thread.id, turnId, { completed: { type: "agentMessage", id: "fixture-done", text: "Completed fixture work.", phase: "final_answer" } }), 30000);
+          interruptibleTurns.set(turnId, { threadId: thread.id, timer });
+          break;
+        }
+
         if (BEHAVIOR === "w5-parent" || BEHAVIOR === "w5-working") {
           send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
           send({ method: "mcpServer/startupStatus/updated", params: { name: "fixture", status: "ready", threadId: thread.id } });
           process.stderr.write("WebSocket timeout; retrying; falling back to HTTP\\n");
-          send({ method: "item/started", params: { threadId: thread.id, turnId, item: { id: "fixture-command", type: "commandExecution", command: "npm test PRIVATE_FIXTURE_ARGUMENT", status: "inProgress" } } });
-          send({ method: "item/completed", params: { threadId: thread.id, turnId, item: { id: "fixture-command", type: "commandExecution", command: "npm test PRIVATE_FIXTURE_ARGUMENT", exitCode: 0, status: "completed", aggregatedOutput: "PRIVATE_FIXTURE_OUTPUT" } } });
-          send({ method: "turn/plan/updated", params: { threadId: thread.id, turnId, plan: [{ step: "PRIVATE_FIXTURE_PLAN", status: "completed" }] } });
+          send({ method: "item/started", params: { threadId: thread.id, turnId, item: { id: "fixture-command", type: "commandExecution", command: "npm test TOKEN=PRIVATE_FIXTURE_ARGUMENT", status: "inProgress" } } });
+          send({ method: "item/completed", params: { threadId: thread.id, turnId, item: { id: "fixture-command", type: "commandExecution", command: "npm test TOKEN=PRIVATE_FIXTURE_ARGUMENT", exitCode: 0, status: "completed", aggregatedOutput: "PRIVATE_FIXTURE_OUTPUT" } } });
+          send({ method: "turn/plan/updated", params: { threadId: thread.id, turnId, plan: [{ step: "Inspect fixture", status: "completed" }] } });
           if (BEHAVIOR === "w5-parent") {
             const id = "fixture-parent-request";
             serverRequests.set(id, { threadId: thread.id, turnId });
