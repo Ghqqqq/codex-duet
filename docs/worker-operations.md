@@ -80,15 +80,16 @@ owner fail closed and log to broker stderr, since no job log remains available.
 
 ## Detached execution, questions and cleanup
 
-Start `task --fresh --detached --report --json`; retain jobId, ownerId and any
-acknowledged thread/turn handles. Loop `wait <job> --owner <ownerId> --timeout-sec
-30 --min-interval-sec 10 --report` in feed mode (omit `--json`). It flushes activity
-lines as they arrive and ends with ONE final JSON line containing the existing
-snapshot/report plus `activity` and `cursor`. Scripts can use `--json` to suppress
-the feed. Activity can return a wait after 10 seconds; silence waits at most 30.
-Questions/completion return immediately. Both timing flags accept 1–60 seconds;
-the maximum timeout wins if shorter than the minimum. The native worker sets
-Bash.description to the last headline and does not paraphrase or re-print the feed.
+The native worker runs ONE `task --fresh --follow --json --report` (Bash
+`timeout: 600000`): it enqueues the detached task-worker and stays attached as
+owner until the job ends, a question is pending, or the 570 s wait budget ends
+(`status: running`; then `wait <job> --owner <ownerId> --json --report` once per
+further 9.5 minutes). Scripts may still use `task --detached` plus `wait`. Feed
+mode (`wait` without `--json`) flushes activity lines as they arrive and ends with
+ONE final JSON line containing the snapshot/report plus `activity` (12 newest),
+`activityCount`/`activityOmitted` and `cursor`. `--timeout-sec` accepts 1–3600;
+early return on activity requires an explicit `--min-interval-sec`. Questions and
+completion return immediately. The worker never paraphrases or re-prints the feed.
 
 The feed selects assistant snippets (300 chars), command first lines (160 chars)
 with exits/durations, file path/kind, MCP/dynamic tool names/status/durations and
@@ -100,18 +101,20 @@ messages. Events are retained in job state, with a separate cursor for each
 explicit owner and one shared ownerless observer cursor. Use one wait per owner
 at a time. A crash between line delivery and cursor persistence can replay a line.
 
-`ask_parent` is registered on new threads through experimental `dynamicTools`.
+`ask_parent` is registered on new threads through experimental `dynamicTools` and
+on resumed threads (`--thread`, `--continue`) through a per-thread `duet_parent`
+MCP bridge (`scripts/parent-bridge-mcp.mjs`) that blocks on the same job file.
 On `needs_answer`, SendMessage ONLY the companion's `questionMessage` verbatim to
 `main` once per question ID. That one-line field includes ID, text and options.
 Never send progress, status, completion claims or placeholders; the final result
 is delivered only as the native agent's return value. Parent worker messages
 that are not verbatim questions are not evidence: verify with handles and artifacts.
-Keep waiting with `--owner <ownerId> --after-question <id> --timeout-sec 5`, then
+Keep waiting with `--owner <ownerId> --after-question <id> --timeout-sec 20`, then
 pass the answer on stdin to `answer <job> --owner <ownerId> --question <id> --json`.
 The callback stays pending, so the reply continues the same turn. Text/options are
 private job state, not progress logs; answers are removed after delivery. Default
 timeout is 900 seconds (`--question-timeout-sec`); on timeout Codex receives
-conservative-assumption guidance. Old threads/runtimes without the tool keep
+conservative-assumption guidance. Runtimes that reject both registrations keep
 final needs_input.
 
 Leases default to 180 seconds (`--lease-sec`, or CODEX_COMPANION_LEASE_SEC).
@@ -123,26 +126,34 @@ result and ownerless wait do not renew. Foreground tasks renew while their ownin
 process runs; detached workers cannot renew themselves. Legacy records without
 sessionId remain readable and SessionEnd falls back to their session-ID ownerId.
 
-A stopped native agent cannot resume in Claude Code 2.1.301. With the user's
-explicit consent, launch a replacement worker carrying the old jobId. Its FIRST
-action is `adopt <jobId> --json`, which atomically rotates ownerId and renews the
-unexpired lease without starting a turn. It then loops
-`wait <jobId> --owner <newOwnerId> --report`. The replacement inherits thread/turn,
-pending question and delivered activity cursor. Old wait/status/answer calls
-return `ownership_moved` (exit 2) without renewing or answering; the old owner
-must stop polling. Adoption moves SessionEnd scope to the caller's Claude session
-when available, otherwise preserving the original scope.
+An attached owner wait heartbeats once a second (`ownerAttached`, lease renewal)
+and marks itself detached on SIGINT/SIGTERM/SIGHUP, parent-PID change or closed
+stdout. When the user stops the native agent, the task-worker sees the lost owner
+and interrupts the turn after the grace period (15 s, `CODEX_COMPANION_OWNER_GRACE_SEC`)
+with `interruptionReason: owner_lost`, confirmed like any other interruption. A
+normal return followed by silence still falls back to lease expiry.
+
+A stopped native agent cannot resume in Claude Code 2.1.301. Every interrupted or
+failed report carries `continuationCommand`:
+`task --continue <jobId> --cwd <cwd> --follow --report --json`, which starts ONE
+new turn on the same thread with the job's recorded sandbox/write, model, effort,
+speed and approved origins (it rejects flags it inherits and refuses active jobs).
+With the user's explicit consent the parent runs it through a new worker; it is
+never run automatically. For a job that is still running, a replacement worker's
+FIRST action is `adopt <jobId> --json`, which atomically rotates ownerId and
+renews the unexpired lease without starting a turn; it then runs
+`wait <jobId> --owner <newOwnerId> --json --report`. The replacement inherits
+thread/turn, pending question and delivered activity cursor. Old wait/status/answer
+calls return `ownership_moved` (exit 2) without renewing or answering. Adoption
+moves SessionEnd scope to the caller's Claude session when available.
 
 Adoption after expiry or completion returns `lease_expired` or `job_ended`
-(exit 2), with the exact `continuationCommand` (`task --thread <threadId>`), and
-never runs it. Cancellation in progress also refuses adoption. The continuation
-uses the configured default sandbox; a new assignment must authorize per-call flags. Wait for pending
-interruption to finish before continuing. Thread context and on-disk edits persist;
-missing thread handles preclude a continuation command. `/codex:status` shows
-orphaned running jobs, remaining seconds and an exact adopt instruction after no
-renewal for min(65 seconds, half the lease). This is inferred staleness, since
-there is no native Agent-stop notification; adoption may happen sooner. An
-in-flight wait may renew until it exits. See [stop actions and recovery](../README.md#if-a-worker-is-stopped).
+(exit 2) with the same `continuationCommand`, and never runs it. Cancellation in
+progress also refuses adoption. Wait for pending interruption to finish before
+continuing. Thread context and on-disk edits persist; missing thread handles
+preclude a continuation command. `/codex:status` shows orphaned running jobs,
+remaining seconds and an exact adopt instruction after no renewal for min(65
+seconds, half the lease). See [stop actions and recovery](../README.md#if-a-worker-is-stopped).
 
 The lease is lifecycle coordination, not authentication against local processes.
 Expiry, cancel, SessionEnd and SIGTERM/SIGHUP/SIGINT resolve pending questions,
@@ -196,16 +207,18 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --default-sandbox
 ```
 
 The accepted values are `read-only`, `workspace-write`, and `danger-full-access`.
-The setting is `default_sandbox` in `CLAUDE_PLUGIN_DATA/config.toml`, with a
-persistent `<isolated-home>/duet/config.toml` fallback when plugin data is unset.
-Use the same plugin data directory in setup and worker invocations. Writes merge
-with a private backup; dry-run is offline. `setup --json` reports `defaultSandbox`.
-An unset default is read-only. With no per-call flags, write-capable defaults imply
-write and reach both thread and turn policies, including detached tasks/resumes.
-Explicit `--sandbox` takes precedence and still requires explicit `--write` for a
-write-capable value. `--write` alone selects workspace-write; `--write=false`
-selects read-only. Use `setup --default-sandbox read-only` to reset the default.
-Review commands keep their separate read-only behavior.
+The setting is `default_sandbox` in `<isolated-home>/duet/config.toml`
+(`~/.claude/codex-isolated/duet/config.toml` by default), so a terminal and a
+Claude session always read the same value. Writes merge with a private backup;
+dry-run is offline. `setup --json` reports `defaultSandbox`. An unset default is
+read-only. With no per-call flags, write-capable defaults imply write and reach
+both thread and turn policies, including detached tasks/resumes. Explicit
+`--sandbox` takes precedence and still requires explicit `--write` for a
+write-capable value. `--write` alone is a floor: it selects workspace-write
+unless the configured default is danger-full-access, which it keeps;
+`--write=false` selects read-only. Workers pass `--write` for assignments that
+edit files. Use `setup --default-sandbox read-only` to reset the default. Review
+commands keep their separate read-only behavior.
 
 For an assignment that needs Git metadata writes (such as `.git/index.lock`) or
 launching a browser harness, the parent can explicitly request:

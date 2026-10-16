@@ -58,7 +58,7 @@ does not grant OS permissions or run a live tool probe.
 
 `--default-sandbox read-only|workspace-write|danger-full-access` is an independent,
 offline setup operation with `--dry-run` and backups. It stores `default_sandbox`
-in CLAUDE_PLUGIN_DATA/config.toml (fallback: isolated-home/duet/config.toml).
+in `<isolated-home>/duet/config.toml`, shared by terminal and Claude sessions.
 Use the same plugin data directory for setup and workers. With no task flags,
 the saved policy applies and write-capable defaults imply write. Explicit
 per-call flags win; `--write` alone selects workspace-write, and explicit

@@ -33,9 +33,13 @@ test("configured sandbox persists across workspaces, implies write, and explicit
   const other = path.join(f.dir, "other-workspace"); fs.mkdirSync(other); initGitRepo(other);
   assert.equal(json(run(process.execPath, [f.script, "task", "--json", "investigate"], { cwd: other, env: f.env })).sandbox, "danger-full-access");
   assert.equal(json(f.call("task", "--sandbox", "read-only", "--json", "investigate")).sandbox, "read-only");
-  assert.equal(json(f.call("task", "--write", "--json", "investigate")).sandbox, "workspace-write");
+  // --write is a floor: it never narrows a configured danger-full-access default.
+  assert.equal(json(f.call("task", "--write", "--json", "investigate")).sandbox, "danger-full-access");
   assert.equal(json(f.call("task", "--write=false", "--json", "investigate")).sandbox, "read-only");
   assert.equal(json(f.call("task", "--write", "--sandbox", "workspace-write", "--json", "investigate")).sandbox, "workspace-write");
+  json(f.call("setup", "--default-sandbox", "workspace-write", "--json"));
+  assert.equal(json(f.call("task", "--write", "--json", "investigate")).sandbox, "workspace-write");
+  json(f.call("setup", "--default-sandbox", "danger-full-access", "--json"));
   assert.notEqual(f.call("task", "--sandbox", "danger-full-access", "investigate").status, 0, "explicit sandbox still needs explicit --write");
   assert.equal(json(f.call("setup", "--browser-approval", "never-ask", "--json")).browserOrigins.approval, "never-ask");
   assert.equal(json(f.call("setup", "--json")).browserOrigins.approval, "never-ask");

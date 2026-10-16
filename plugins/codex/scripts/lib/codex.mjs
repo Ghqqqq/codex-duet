@@ -37,11 +37,13 @@ import { itemActivity, planActivity } from "./activity.mjs";
  *   onProgress: ProgressReporter | null
  * }} TurnCaptureState
  */
-import { ASK_PARENT, safeItem } from "./job-runtime.mjs";
+import { ASK_PARENT, PARENT_BRIDGE_ENV, PARENT_BRIDGE_SERVER, safeItem } from "./job-runtime.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { resolveIsolatedCodexHome, resolveCodexBinary, isolatedCodexEnv } from "./codex-home.mjs";
 import path from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { readJsonFile } from "./fs.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
@@ -77,6 +79,26 @@ function buildThreadParams(cwd, options = {}) {
   };
 }
 
+// thread/resume accepts no dynamicTools, so a resumed thread gets ask_parent from
+// a per-thread MCP server override instead: Codex spawns this plugin's stdio bridge,
+// which blocks on the same job-file question flow the in-process tool uses. Only
+// the thread handle and state-location variables are passed; nothing else leaks.
+// `omit_tools_from` keeps the tool out of Codex's deferred/code-mode tool sets:
+// verified live that without it the server starts and `mcpServerStatus/list`
+// shows the tool, yet the model never sees `mcp__duet_parent.ask_parent`.
+export function parentBridgeConfig(bridge) {
+  const env = { [PARENT_BRIDGE_ENV.cwd]: bridge.cwd, [PARENT_BRIDGE_ENV.threadId]: bridge.threadId };
+  for (const key of ["CLAUDE_PLUGIN_DATA", "TMPDIR"]) if (process.env[key]) env[key] = process.env[key];
+  return { mcp_servers: { [PARENT_BRIDGE_SERVER]: {
+    command: process.execPath, args: [fileURLToPath(new URL("../parent-bridge-mcp.mjs", import.meta.url))], env,
+    enabled: true, enabled_tools: ["ask_parent"], omit_tools_from: ["code_mode", "deferred"],
+    // Workers run with approvalPolicy "never"; without this (and the tool's
+    // readOnlyHint) Codex rejects the call as "requires approval".
+    tools: { ask_parent: { approval_mode: "approve" } },
+    startup_timeout_sec: 30, tool_timeout_sec: Math.min(86400, (bridge.questionTimeoutSec ?? 900) + 120)
+  } } };
+}
+
 /** @returns {ThreadResumeParams} */
 function buildResumeParams(threadId, cwd, options = {}) {
   return {
@@ -84,7 +106,8 @@ function buildResumeParams(threadId, cwd, options = {}) {
     cwd,
     model: options.model ?? null,
     approvalPolicy: options.approvalPolicy ?? "never",
-    sandbox: options.sandbox ?? "read-only"
+    sandbox: options.sandbox ?? "read-only",
+    ...(options.parentBridge ? { config: parentBridgeConfig({ ...options.parentBridge, threadId }) } : {})
   };
 }
 
@@ -818,7 +841,12 @@ async function startThread(client, cwd, options = {}) {
 }
 
 async function resumeThread(client, threadId, cwd, options = {}) {
-  return client.request("thread/resume", buildResumeParams(threadId, cwd, options));
+  try { return await client.request("thread/resume", buildResumeParams(threadId, cwd, options)); }
+  catch (error) {
+    if (!options.parentBridge || !/config|mcp_servers|unknown field|experimental/i.test(error.message) || ![-32600, -32601, -32602].includes(error.rpcCode)) throw error;
+    emitProgress(options.onProgress, "Parent questions unavailable on this resumed thread; final needs_input fallback remains enabled.", "starting");
+    return client.request("thread/resume", buildResumeParams(threadId, cwd, { ...options, parentBridge: null }));
+  }
 }
 
 function buildResultStatus(turnState) {
@@ -1206,7 +1234,9 @@ export async function runAppServerTurn(cwd, options = {}) {
       const response = await resumeThread(client, options.resumeThreadId, cwd, {
         model: options.model,
         sandbox: options.sandbox,
-        ephemeral: false
+        ephemeral: false,
+        onProgress: options.onProgress,
+        parentBridge: options.onParentQuestion && options.parentBridge ? options.parentBridge : null
       });
       threadId = response.thread.id;
       threadPolicy = response.sandbox;

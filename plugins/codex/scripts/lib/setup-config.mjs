@@ -118,10 +118,10 @@ export function browserOriginSetup({ allow = [], revoke = [], approval, env = pr
 export const SANDBOX_MODES = ["read-only", "workspace-write", "danger-full-access"];
 export function defaultSandboxSetup({ mode, env = process.env, dryRun = false } = {}) {
   if (mode !== undefined && !SANDBOX_MODES.includes(mode)) throw new Error("--default-sandbox must be read-only, workspace-write, or danger-full-access.");
-  // Resolve even with plugin data set: retain isolation and the test-home guard.
-  const isolated = resolveIsolatedCodexHome(env);
-  const root = env.CLAUDE_PLUGIN_DATA || path.join(isolated, "duet");
-  if (!path.isAbsolute(root)) throw new Error("CLAUDE_PLUGIN_DATA must be an absolute path for plugin configuration.");
+  // One location for every caller: the isolated home is known both inside a
+  // Claude session (CLAUDE_PLUGIN_DATA set) and from a plain terminal (unset), so
+  // the default a user configures is the default every worker actually applies.
+  const root = path.join(resolveIsolatedCodexHome(env), "duet");
   const file = path.join(root, "config.toml"), before = read(root, file);
   const after = mode === undefined ? before : setTomlField(before, ["default_sandbox"], mode);
   const defaultSandbox = readTomlField(after, ["default_sandbox"]) ?? "read-only";

@@ -8,7 +8,7 @@ import { buildWorkerReport, persistTaskArtifacts, taskArtifactPaths } from "./li
 import { normalizeBrowserOrigins } from "./lib/server-requests.mjs";
 import { browserOriginSetup, transportSetup, defaultSandboxSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
 import { activityReader, formatActivity, redactActivity, snippet } from "./lib/activity.mjs";
-import { JobRuntime, ACTIVE, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, adoptJob, ownershipNotice } from "./lib/job-runtime.mjs";
+import { JobRuntime, ACTIVE, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, continuationReport, adoptJob, ownershipNotice, markOwnerAttachment } from "./lib/job-runtime.mjs";
 import { updateJob } from "./lib/state.mjs";
 import { snapshotWorkspace, compareWorkspaceSnapshots } from "./lib/workspace-changes.mjs";
 import fs from "node:fs";
@@ -91,15 +91,15 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--sync-tools [--profile chrome|codex-app] [--replace-cua] [--cua-template <file>] [--chatgpt-resources <dir>]] [--default-sandbox read-only|workspace-write|danger-full-access] [--browser-approval never-ask|ask] [--dry-run] [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--report] [--background] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--approve-browser-origin <origin>]... [--thread <id>|--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--fast|--normal] [prompt]",
+      "  node scripts/codex-companion.mjs task [--report] [--background|--detached|--follow] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--approve-browser-origin <origin>]... [--thread <id>|--continue <job-id>|--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--fast|--normal] [prompt]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id|--thread <id>] [--wait] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id|--thread <id>] [--report] [--json]",
-      "  node scripts/codex-companion.mjs wait <job-id> [--timeout-sec 30] [--min-interval-sec 10] [--owner <id>] [--after-question <id>] [--json] --report",
+      "  node scripts/codex-companion.mjs wait <job-id> [--timeout-sec 570] [--min-interval-sec <s>] [--owner <id>] [--after-question <id>] [--json] --report",
       "  node scripts/codex-companion.mjs adopt <job-id> [--cwd <path>] [--json]",
       "  node scripts/codex-companion.mjs answer <job-id> --owner <ownerId> --question <id> --json < answer.txt",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]",
-      "  task lifecycle: --detached [--lease-sec 180] [--question-timeout-sec 900] [--owner <id>]",
+      "  task lifecycle: --detached [--lease-sec 180] [--question-timeout-sec 900] [--owner <id>]; --follow = --detached + wait in one call [--timeout-sec 570]",
       "  setup: --transport http|websocket|status; --allow-browser-origin <origin>; --revoke-browser-origin <origin>; --list-browser-origins"
     ].join("\n")
   );
@@ -587,6 +587,7 @@ async function executeTaskRun(request) {
     onProgress: request.onProgress,
     signal: runtime.abort.signal,
     onParentQuestion: message => runtime.question(message),
+    parentBridge: { cwd: workspaceRoot, questionTimeoutSec: readStoredJob(workspaceRoot, request.jobId)?.questionTimeoutSec ?? 900 },
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
   }); } catch (error) {
@@ -641,7 +642,12 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
   const artifacts = persistTaskArtifacts(resolveWorkspaceRoot(request.cwd), request.jobId, payload);
   const report = buildWorkerReport(payload, { jobId: request.jobId, ...artifacts });
   Object.assign(report, { ownerId: payload.ownerId, sessionId: payload.sessionId }, leaseExpiryReport({ ...trackedJob, threadId: payload.threadId, result: payload }));
-  if (payload.interruptionReason) report.status = payload.interruptionReason === "cancelled_by_user" ? "cancelled" : "interrupted";
+  if (payload.interruptionReason) {
+    report.status = payload.interruptionReason === "cancelled_by_user" ? "cancelled" : "interrupted";
+    // Any interruption leaves a resumable thread; publish the continuation so a
+    // replacement worker can pick the task up without reconstructing flags.
+    Object.assign(report, continuationReport({ ...trackedJob, id: request.jobId, threadId: payload.threadId, workspaceRoot: resolveWorkspaceRoot(request.cwd) }));
+  }
   Object.assign(payload, artifacts, { workerStatus: report.status });
 
   return {
@@ -924,27 +930,40 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "thread", "sandbox", "lease-sec", "question-timeout-sec", "owner"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "thread", "continue", "sandbox", "lease-sec", "question-timeout-sec", "owner", "timeout-sec"],
     repeatableOptions: ["approve-browser-origin"],
-    booleanOptions: ["json", "report", "write", "resume-last", "resume", "fresh", "background", "detached", "fast", "normal"],
+    booleanOptions: ["json", "report", "write", "resume-last", "resume", "fresh", "background", "detached", "follow", "fast", "normal"],
     aliasMap: {
       m: "model"
     }
   });
 
   const cwd = resolveCommandCwd(options);
-  const approvedBrowserOrigins = normalizeBrowserOrigins(options["approve-browser-origin"] ?? []);
-  const lifecycle = { owner: options.owner, leaseSec: seconds(options["lease-sec"] ?? process.env.CODEX_COMPANION_LEASE_SEC, 180, "--lease-sec"), questionTimeoutSec: seconds(options["question-timeout-sec"], 900, "--question-timeout-sec") };
   const workspaceRoot = resolveCommandWorkspace(options);
-  const model = normalizeRequestedModel(options.model) ?? "gpt-6-astra";
-  const effort = normalizeReasoningEffort(options.effort) ?? "xhigh";
+  // --continue <job-id>: one more turn on a stopped/finished job's own thread,
+  // inheriting that job's recorded authorization and runtime choices so a
+  // replacement worker does not have to reconstruct them.
+  const continued = options.continue === undefined ? null : readStoredJob(workspaceRoot, String(options.continue).trim());
+  if (options.continue !== undefined) {
+    if (!continued) throw new Error(`No stored job found for --continue ${options.continue}.`);
+    if (continued.jobClass !== "task" || !continued.threadId) throw new Error(`Job ${continued.id} has no resumable Codex thread; nothing to continue.`);
+    if (ACTIVE.has(continued.status)) throw new Error(`Job ${continued.id} is still ${continued.status}; wait for it to end (or cancel it) before continuing its thread.`);
+    for (const flag of ["thread", "fresh", "resume", "resume-last", "write", "sandbox", "model", "effort", "fast", "normal"]) {
+      if (options[flag] !== undefined) throw new Error(`--continue inherits the original job's ${flag} setting; do not pass --${flag}.`);
+    }
+    if (options["approve-browser-origin"]?.length) throw new Error("--continue inherits the original job's approved browser origins; do not pass --approve-browser-origin.");
+  }
+  const approvedBrowserOrigins = continued ? continued.approvedBrowserOrigins ?? [] : normalizeBrowserOrigins(options["approve-browser-origin"] ?? []);
+  const lifecycle = { owner: options.owner, leaseSec: seconds(options["lease-sec"] ?? process.env.CODEX_COMPANION_LEASE_SEC, 180, "--lease-sec"), questionTimeoutSec: seconds(options["question-timeout-sec"], 900, "--question-timeout-sec") };
+  const model = continued ? continued.request?.model ?? "gpt-6-astra" : normalizeRequestedModel(options.model) ?? "gpt-6-astra";
+  const effort = continued ? continued.request?.effort ?? "xhigh" : normalizeReasoningEffort(options.effort) ?? "xhigh";
   if (options.fast && options.normal) throw new Error("Choose either --fast or --normal.");
-  const serviceTier = options.fast ? "priority" : null;
+  const serviceTier = continued ? continued.request?.serviceTier ?? null : options.fast ? "priority" : null;
   const prompt = readTaskPrompt(cwd, options, positionals);
 
   const resumeLast = Boolean(options["resume-last"] || options.resume);
   const fresh = Boolean(options.fresh);
-  const threadId = options.thread?.trim() ?? null;
+  const threadId = continued ? continued.threadId : options.thread?.trim() ?? null;
   if (options.thread !== undefined && (!threadId || threadId.startsWith("--"))) {
     throw new Error("Provide a non-empty thread ID for --thread.");
   }
@@ -954,8 +973,8 @@ async function handleTask(argv) {
   if (resumeLast && fresh) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
   }
-  let write = Boolean(options.write);
-  let sandbox = options.sandbox;
+  let write = continued ? Boolean(continued.write) : Boolean(options.write);
+  let sandbox = continued ? continued.sandbox ?? (continued.write ? "workspace-write" : "read-only") : options.sandbox;
   if (sandbox !== undefined && !SANDBOX_MODES.includes(sandbox)) {
     throw new Error("--sandbox must be read-only, workspace-write, or danger-full-access.");
   }
@@ -963,18 +982,24 @@ async function handleTask(argv) {
     throw new Error("--sandbox workspace-write or danger-full-access requires explicit --write authorization.");
   }
   if (sandbox === "read-only" && write) throw new Error("--sandbox read-only cannot be combined with --write.");
-  if (sandbox === undefined && options.write === undefined) {
+  if (!continued && sandbox === undefined) {
     const configured = defaultSandboxSetup().defaultSandbox;
-    // Preserve legacy default turn behavior when no setting exists/read-only.
-    // Write-capable defaults explicitly reach both thread and turn policies.
-    if (configured !== "read-only") { sandbox = configured; write = true; }
+    if (options.write === undefined) {
+      // Preserve legacy default turn behavior when no setting exists/read-only.
+      // Write-capable defaults explicitly reach both thread and turn policies.
+      if (configured !== "read-only") { sandbox = configured; write = true; }
+    } else if (write && configured === "danger-full-access") {
+      // --write is a floor, not a ceiling: it guarantees at least workspace-write
+      // and never downgrades a configured danger-full-access default.
+      sandbox = configured;
+    }
   }
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast: Boolean(resumeLast || threadId)
   });
 
-  if (options.background || options.detached) {
+  if (options.background || options.detached || options.follow) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast, threadId);
 
@@ -991,9 +1016,16 @@ async function handleTask(argv) {
       resumeLast,
       threadId,
       jobId: job.id,
-      report: Boolean(options.report || options.detached), detached: true
+      report: Boolean(options.report || options.detached || options.follow), detached: true
     });
+    if (continued) request.continuedFrom = continued.id;
     const { payload } = enqueueBackgroundTask(cwd, job, request);
+    if (options.follow) {
+      // Native-like single call: submit, then stay attached as the owner until the
+      // job ends, needs an answer, or the wait budget runs out.
+      await waitForJob(workspaceRoot, job, { owner: job.ownerId, timeoutSec: options["timeout-sec"], json: options.json });
+      return;
+    }
     if (options.detached) {
       // Return quickly even if a model/provider is slow. Missing handles remain
       // null and are published by wait as soon as the runtime acknowledges them.
@@ -1267,53 +1299,88 @@ function handleAdopt(argv) {
   if (!result.adopted) process.exitCode = 2;
 }
 
-async function handleWait(argv) {
-  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "timeout-sec", "min-interval-sec", "owner", "after-question"], booleanOptions: ["json", "report"] });
-  if (!positionals[0]) throw new Error("wait requires a job id.");
-  const cwd = resolveCommandCwd(options), timeout = seconds(options["timeout-sec"], 30, "--timeout-sec", 60);
-  const minimum = seconds(options["min-interval-sec"], 10, "--min-interval-sec", 60);
-  const { workspaceRoot, job } = buildSingleJobSnapshot(cwd, positionals[0]);
-  const reader = activityReader(options.owner), started = Date.now(), activity = [];
+// Claude's Bash tool returns output only when the command ends, so the default
+// wait budget is one call just under the 10-minute Bash maximum: a worker makes
+// one call per ~9.5 minutes instead of one every 10-30 seconds. Early return on
+// activity is opt-in (--min-interval-sec) for human-facing feed consumers.
+const WAIT_DEFAULT_SEC = 570, WAIT_MAX_SEC = 3600, REPORTED_ACTIVITY_LIMIT = 12;
+
+async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSec, afterQuestion, json }) {
+  const timeout = seconds(timeoutSec, WAIT_DEFAULT_SEC, "--timeout-sec", WAIT_MAX_SEC);
+  const minimum = minIntervalSec === undefined ? null : seconds(minIntervalSec, 10, "--min-interval-sec", WAIT_MAX_SEC);
+  const reader = activityReader(owner), started = Date.now(), activity = [];
   let cursor = readStoredJob(workspaceRoot, job.id).activityCursors?.[reader] ?? 0;
-  let nextRenewal = 0;
+  let nextRenewal = 0, detachReason = null;
+  const startPpid = process.ppid;
+  // An owner that leaves abnormally cannot tell the worker; mark the detach so the
+  // worker interrupts after the grace period unless a replacement wait re-attaches.
+  const detach = reason => { if (owner && !detachReason) { detachReason = reason; try { markOwnerAttachment(workspaceRoot, job.id, owner, reason); } catch { /* best effort */ } } };
+  const signalHandlers = new Map();
+  if (owner) {
+    markOwnerAttachment(workspaceRoot, job.id, owner);
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+      const handler = () => { detach("signal"); process.exit(130); };
+      signalHandlers.set(signal, handler); process.on(signal, handler);
+    }
+  }
   // Await each write callback: feed lines reach the pipe during the wait, never
   // buffered until the final report. JSON mode uses the same cursor semantics.
   const writeLine = line => new Promise((resolve, reject) => process.stdout.write(`${line}\n`, error => error ? reject(error) : resolve()));
-  for (;;) {
-    const renew = options.owner && Date.now() >= nextRenewal;
-    const current = renew ? renewLease(workspaceRoot, job.id, options.owner) : readStoredJob(workspaceRoot, job.id);
-    if (renew) nextRenewal = Date.now() + Math.min(1000, (current.leaseSec ?? 180) * 250);
-    const moved = ownershipNotice(current, options.owner);
-    if (moved) {
-      await writeLine(JSON.stringify({ ...moved, activity, cursor }));
-      process.exitCode = 2;
-      return;
-    }
-    const next = (current.activity ?? []).filter(event => event.seq > cursor);
-    for (const event of next) {
-      if (!options.json) await writeLine(formatActivity(event));
-      activity.push(event); cursor = event.seq;
-    }
-    if (next.length && !options.json) updateJob(workspaceRoot, job.id, stored => ({ activityCursors: { ...stored.activityCursors, [reader]: Math.max(cursor, stored.activityCursors?.[reader] ?? 0) } }));
-    const pending = current.pendingQuestion;
-    const terminal = !ACTIVE.has(current.status);
-    if (terminal || (pending && pending.answer === undefined && pending.id !== options["after-question"]) || Date.now() - started >= timeout * 1000 || (activity.length && Date.now() - started >= minimum * 1000)) {
-      const report = terminal ? { ...(current.report ?? buildWorkerReport(current.result ?? { status: 1, error: current.errorMessage ?? "No stored result." }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile })), ...leaseExpiryReport(current) } : progressSnapshot(current);
-      // Compact reports may contain captured commands and assistant snippets too.
-      // Preserve handles/paths; redact only display text, never serialized JSON.
-      if (terminal) {
-        for (const key of ["verification", "keyFindings", "assumptions", "blockers"]) {
-          if (report[key]) report[key] = report[key].map(redactActivity);
+  const finish = async (payload, exitCode = 0) => {
+    detach("returned");
+    try { await writeLine(JSON.stringify(payload)); } catch (error) { if (error.code !== "EPIPE") throw error; }
+    if (exitCode) process.exitCode = exitCode;
+  };
+  const reported = () => activity.length > REPORTED_ACTIVITY_LIMIT
+    ? { activity: activity.slice(-REPORTED_ACTIVITY_LIMIT), activityCount: activity.length, activityOmitted: activity.length - REPORTED_ACTIVITY_LIMIT }
+    : { activity, activityCount: activity.length };
+  try {
+    for (;;) {
+      if (owner && process.ppid !== startPpid) { detach("parent_exit"); process.exitCode = 130; return; }
+      const renew = owner && Date.now() >= nextRenewal;
+      const current = renew ? renewLease(workspaceRoot, job.id, owner) : readStoredJob(workspaceRoot, job.id);
+      if (renew) nextRenewal = Date.now() + Math.min(1000, (current.leaseSec ?? 180) * 250);
+      const moved = ownershipNotice(current, owner);
+      if (moved) { detachReason = "moved"; await finish({ ...moved, ...reported(), cursor }, 2); return; }
+      const next = (current.activity ?? []).filter(event => event.seq > cursor);
+      for (const event of next) {
+        if (!json) {
+          try { await writeLine(formatActivity(event)); }
+          catch (error) { if (error.code !== "EPIPE") throw error; detach("stdout_closed"); process.exitCode = 130; return; }
         }
-        if (typeof report.question === "string") report.question = redactActivity(report.question);
+        activity.push(event); cursor = event.seq;
       }
-      await writeLine(JSON.stringify({ ...report, activity, cursor }));
-      if (options.json && activity.length) updateJob(workspaceRoot, job.id, stored => ({ activityCursors: { ...stored.activityCursors, [reader]: Math.max(cursor, stored.activityCursors?.[reader] ?? 0) } }));
-      if (terminal && report.status !== "completed") process.exitCode = report.status === "needs_input" ? 2 : 1;
-      return;
+      if (next.length && !json) updateJob(workspaceRoot, job.id, stored => ({ activityCursors: { ...stored.activityCursors, [reader]: Math.max(cursor, stored.activityCursors?.[reader] ?? 0) } }));
+      const pending = current.pendingQuestion;
+      const terminal = !ACTIVE.has(current.status);
+      if (terminal || (pending && pending.answer === undefined && pending.id !== afterQuestion) || Date.now() - started >= timeout * 1000 || (minimum !== null && activity.length && Date.now() - started >= minimum * 1000)) {
+        const report = terminal ? { ...(current.report ?? buildWorkerReport(current.result ?? { status: 1, error: current.errorMessage ?? "No stored result." }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile })), ...leaseExpiryReport(current) } : progressSnapshot(current);
+        // Compact reports may contain captured commands and assistant snippets too.
+        // Preserve handles/paths; redact only display text, never serialized JSON.
+        if (terminal) {
+          for (const key of ["verification", "keyFindings", "assumptions", "blockers"]) {
+            if (report[key]) report[key] = report[key].map(redactActivity);
+          }
+          if (typeof report.question === "string") report.question = redactActivity(report.question);
+          if (report.status !== "completed" && current.threadId && !report.continuationCommand) Object.assign(report, continuationReport(current));
+        }
+        if (json && activity.length) updateJob(workspaceRoot, job.id, stored => ({ activityCursors: { ...stored.activityCursors, [reader]: Math.max(cursor, stored.activityCursors?.[reader] ?? 0) } }));
+        await finish({ ...report, ...reported(), cursor }, terminal && report.status !== "completed" ? (report.status === "needs_input" ? 2 : 1) : 0);
+        return;
+      }
+      await sleep(100);
     }
-    await sleep(100);
+  } finally {
+    for (const [signal, handler] of signalHandlers) process.off(signal, handler);
   }
+}
+
+async function handleWait(argv) {
+  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "timeout-sec", "min-interval-sec", "owner", "after-question"], booleanOptions: ["json", "report"] });
+  if (!positionals[0]) throw new Error("wait requires a job id.");
+  const cwd = resolveCommandCwd(options);
+  const { workspaceRoot, job } = buildSingleJobSnapshot(cwd, positionals[0]);
+  await waitForJob(workspaceRoot, job, { owner: options.owner, timeoutSec: options["timeout-sec"], minIntervalSec: options["min-interval-sec"], afterQuestion: options["after-question"], json: options.json });
 }
 
 async function handleAnswer(argv) {

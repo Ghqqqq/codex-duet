@@ -169,20 +169,23 @@ test("browser approval dry-run and ask do not create a missing home; mixed chang
   assert.equal(fs.existsSync(f.env.CODEX_COMPANION_HOME), false);
 });
 
-test("default sandbox persists plugin-wide, merges with backup and uses isolated fallback", () => {
-  const f = fixture(), file = path.join(f.env.CLAUDE_PLUGIN_DATA, "config.toml");
+test("default sandbox persists plugin-wide in the isolated home regardless of CLAUDE_PLUGIN_DATA", () => {
+  const f = fixture(), root = path.join(f.env.CODEX_COMPANION_HOME, "duet"), file = path.join(root, "config.toml");
   const setup = options => defaultSandboxSetup({ env: f.env, ...options });
   assert.equal(setup().defaultSandbox, "read-only");
   assert.equal(setup({ mode: "danger-full-access", dryRun: true }).defaultSandbox, "danger-full-access");
-  assert.equal(fs.existsSync(f.env.CLAUDE_PLUGIN_DATA), false);
-  fs.mkdirSync(f.env.CLAUDE_PLUGIN_DATA); fs.writeFileSync(file, 'keep = "value"\n');
+  assert.equal(fs.existsSync(root), false);
+  fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(file, 'keep = "value"\n');
   const result = setup({ mode: "danger-full-access" });
+  assert.equal(result.file, file);
   assert.equal(fs.readFileSync(result.backups[0], "utf8"), 'keep = "value"\n');
   assert.equal(setup().defaultSandbox, "danger-full-access");
   assert.deepEqual(setup({ mode: "danger-full-access" }).changedFiles, []);
   assert.equal(setup({ mode: "read-only" }).defaultSandbox, "read-only");
   assert.throws(() => setup({ mode: "full" }), /--default-sandbox/);
-  const fallback = defaultSandboxSetup({ env: { ...f.env, CLAUDE_PLUGIN_DATA: "" }, mode: "workspace-write" });
-  assert.equal(fallback.file, path.join(f.env.CODEX_COMPANION_HOME, "duet/config.toml"));
-  assert.equal(defaultSandboxSetup({ env: { ...f.env, CLAUDE_PLUGIN_DATA: "" } }).defaultSandbox, "workspace-write");
+  // A terminal (no plugin data) and a Claude session (plugin data set) read the same file.
+  const terminal = defaultSandboxSetup({ env: { ...f.env, CLAUDE_PLUGIN_DATA: "" }, mode: "workspace-write" });
+  assert.equal(terminal.file, file);
+  assert.equal(setup().defaultSandbox, "workspace-write");
+  assert.equal(fs.existsSync(path.join(f.env.CLAUDE_PLUGIN_DATA, "config.toml")), false);
 });

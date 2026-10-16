@@ -1,21 +1,23 @@
 # Native worker lifecycle and protocol evidence
 
-Duet's native Claude Agent starts one `task --detached --fresh --report --json`,
-retains its handles and loops `wait`. This reuses the existing task-worker and
-state artifacts. It returns after at most 1.2 seconds of handle waiting, plus
-local validation/spawn work; unavailable thread/turn handles remain null until
-acknowledged. It does not wait for model output before returning the job ID.
+Duet's native Claude Agent (a Haiku relay) makes ONE blocking call per
+assignment: `task --fresh --follow --json --report`. `--follow` enqueues the same
+detached task-worker that `--detached` uses, then runs the owner `wait` loop in
+the same process, so the Claude side spends no tokens while Codex works. The call
+returns a single JSON line when the job ends, a parent question is pending, or the
+wait budget runs out; `task --detached` (return after ≤1.2 s of handle waiting)
+remains available for scripts that want the job ID first.
 
 `wait <job> --owner <ownerId> --report` streams a human-readable activity feed
 into stdout, one flushed line per event, then ends with ONE compact JSON line.
-The final line preserves the progress/report fields and adds `activity` (the
-structured events in this call) and `cursor` (last consumed sequence number).
-`--json` suppresses feed lines and returns only that JSON line. The default
-maximum `--timeout-sec` is 30; `--min-interval-sec` defaults to 10. Both accept
-1–60 seconds. New significant activity returns the call after its minimum;
-timeout is always the upper bound, including when minimum exceeds timeout.
-Terminal results and new parent questions return immediately. Lines stream even
-before the minimum, so clients that expose live Bash output show the work now.
+The final line preserves the progress/report fields and adds `activity` (at most
+the 12 newest structured events in this call), `activityCount`/`activityOmitted`
+and `cursor` (last consumed sequence number). `--json` suppresses feed lines and
+returns only that JSON line. `--timeout-sec` defaults to 570 (just under Claude's
+10-minute Bash maximum; the worker passes Bash `timeout: 600000`) and accepts
+1–3600. Early return on new activity is opt-in: pass `--min-interval-sec <s>` to
+return after that many seconds once activity arrived (feed consumers for humans).
+Terminal results and new parent questions always return immediately.
 
 Activity is captured at item start/completion (completed assistant messages),
 not token-by-token: assistant snippets ≤300 characters, command first lines
@@ -38,10 +40,11 @@ stop between delivery and cursor persistence may replay lines; run one wait per
 owner at a time. The journal is retained with the job (no silent event dropping).
 Legacy jobs without a journal return empty activity and cursor 0.
 
-The native agent keeps Bash.description equal to the last headline and uses feed
-mode. It does not paraphrase or re-print the feed. After forwarding a question
-once, use `--after-question <id> --timeout-sec 5` with the same `--owner` to wait
-without immediately returning that question on every poll.
+The native agent uses JSON mode and never re-prints the feed. After forwarding a
+question once, it uses `--after-question <id> --timeout-sec 20` with the same
+`--owner` to wait without immediately returning that question on every call; the
+short budget exists only so the parent's SendMessage reply can be picked up
+between tool calls.
 
 ## Parent questions
 
@@ -86,12 +89,31 @@ instructs conservative assumptions and final needs_input for essential missing
 input. Interrupt resolves the question with stop guidance. Late/duplicate answers
 fail rather than continuing a different question.
 
-Old threads may not have the registered tool: thread/resume has no dynamicTools
-field. A new-thread runtime explicitly rejecting the experimental registration
-gets one registration-free thread/start fallback before any model turn; auth,
-model and transport errors are preserved. Unavailable mechanisms retain the
-existing final needs_input classification. Schema/fake-server behavior is verified;
-real default-mode tool selection is reserved for the parent's smoke below.
+thread/resume has no dynamicTools field, so resumed threads (`task --thread`,
+`task --continue`) get `ask_parent` from a per-thread MCP server override instead:
+`thread/resume.config.mcp_servers.duet_parent` points Codex at
+`scripts/parent-bridge-mcp.mjs` (stdio MCP) with only the thread handle
+(`CODEX_COMPANION_BRIDGE_CWD`/`CODEX_COMPANION_BRIDGE_THREAD`) and the state-location
+variables in its environment. The bridge is bound to the thread, not to a job: the
+shared broker keeps a resumed thread and its MCP servers loaded for the idle window,
+so one bridge process serves consecutive jobs on that thread. Each `tools/call`
+resolves the newest active job for the thread (`activeJobForThread`) and blocks on
+the same job-file question flow (`askParentQuestion`) the in-process dynamic tool
+uses, so `wait`/`answer` behave identically; with no active job the tool returns an
+error text instead of hanging. The bridge's `tool_timeout_sec` is the question
+timeout plus 120 s.
+
+Two details were only found against the real app-server
+(`codex-cli 0.162.0-alpha.17.2`) and are both required: the override sets
+`omit_tools_from = ["code_mode", "deferred"]`, because otherwise the server starts
+and `mcpServerStatus/list` shows the tool but the model's tool list never contains
+`mcp__duet_parent.ask_parent`; and the call must be approval-free under the
+worker's `approvalPolicy: never`, which the tool's `readOnlyHint` annotation plus
+`tools.ask_parent.approval_mode = "approve"` guarantee (without them Codex fails
+the call with "requires approval"). A runtime rejecting the registration gets one
+registration-free thread/start or thread/resume fallback before any model turn;
+auth, model and transport errors are preserved. Unavailable mechanisms retain the
+existing final needs_input classification.
 
 ## Ownership and cleanup
 
@@ -106,9 +128,31 @@ The default lease is 180 seconds. SessionEnd matches sessionId, falling back to
 the old session-ID ownerId only for legacy jobs without sessionId. Such jobs stay
 readable and can renew only with an explicit matching owner.
 
-Claude Code 2.1.301 cannot resume a native agent stopped by the user. With the
-user's explicit consent, the parent launches a replacement with the existing
-jobId. Its FIRST action is `adopt <jobId> --json`, not task submission. Under one
+An attached owner `wait` (`--owner`, including `task --follow`) records
+`ownerAttached: true` and renews the lease about once per second, which doubles as
+its heartbeat. On SIGINT/SIGTERM/SIGHUP, a changed parent PID or a closed stdout
+pipe it marks `ownerDetachReason: signal|parent_exit|stdout_closed` and exits 130;
+a normal return (timeout, terminal, question) marks `returned`. The detached
+task-worker's 250 ms tick stops the turn with `owner_lost` when an attached
+owner's heartbeat is older than the grace period, or an abnormally detached owner
+has not re-attached within it (15 s, `CODEX_COMPANION_OWNER_GRACE_SEC`, 1–600).
+The grace absorbs a Claude Bash timeout kill followed by an immediate `wait`
+re-run; a user stop never re-attaches, so the turn is interrupted and confirmed
+within roughly the grace period instead of the 180 s lease. A `returned` owner
+that never comes back still falls back to lease expiry.
+
+Claude Code 2.1.301 cannot resume a native agent stopped by the user. Every
+interrupted or failed report (and `result --report --json`) carries
+`continuationCommand`: `task --continue <jobId> --cwd <cwd> --follow --report --json`.
+`--continue` refuses active jobs and any flag it inherits (`--thread`, `--fresh`,
+`--resume*`, `--write`, `--sandbox`, `--model`, `--effort`, `--fast`, `--normal`,
+`--approve-browser-origin`); it reuses the job's threadId, sandbox/write, model,
+effort, speed and approved origins, records `request.continuedFrom`, and appends
+any prompt text to the default continue prompt. It is never run automatically.
+
+For a job that is still running, with the user's explicit consent, the parent
+launches a replacement with the existing jobId. Its FIRST action is `adopt
+<jobId> --json`, not task submission. Under one
 job-state lock, adoption checks that the task is queued/running with an unexpired
 lease and no cancellation, rotates to a new ownerId and renews the lease. It does
 not call thread/resume or turn/start. It preserves the thread/turn, pending
@@ -123,9 +167,8 @@ session, the original scope is preserved (including legacy session-ID owners).
 `lease_expired`, `job_ended`, `interrupting` or `not_adoptable` on refusal (exit 2),
 without rotating ownership or starting a turn. Expiry is checked under the lock,
 even before the task-worker's next expiry tick; an expired lease cannot revive.
-Refusals include an exact `continuationCommand` using `task --thread <threadId>`
-in the original working directory. It intentionally starts read-only, without
-inheriting runtime/write/origin grants, and is never run automatically. Wait for
+Refusals include the same exact `continuationCommand` (`task --continue <jobId>`)
+in the original working directory; it is never run automatically. Wait for
 pending interruption to finish before continuing. No thread handle means no
 continuation command. Thread context and on-disk edits survive interruption.
 
@@ -254,10 +297,11 @@ pauses. Send ordinary assistant progress messages and update your plan. Then use
 ask_parent to ask "Finish this smoke?" with options Yes and No, and wait. Do not
 edit files, use a browser, access secrets, or commit. After Yes, report completion.
 DUET_FEED_SMOKE
-node plugins/codex/scripts/codex-companion.mjs wait '<jobId>' --owner '<ownerId>' --timeout-sec 30 --min-interval-sec 10 --report
+node plugins/codex/scripts/codex-companion.mjs wait '<jobId>' --owner '<ownerId>' --report
 ```
 
-Repeat the owner wait until needs_answer. It must have one final JSON line with
+(Or replace `--detached` with `--follow` to do both in one call, as the native
+worker does.) The owner wait returns at needs_answer. It must have one final JSON line with
 activity/cursor and `questionMessage` in the form
 `Question <questionId>: Finish this smoke? | Options: "Yes"; "No"`. Retain the
 threadId/turnId. While the question is pending and no owner wait is running,
@@ -339,7 +383,15 @@ node plugins/codex/scripts/codex-companion.mjs result '<expiryJobId>' --report -
 ```
 
 Expect `lease_expired`, no owner rotation or new turn, interruption confirmation
-when available, and the exact unexecuted `task --thread` continuation command.
+when available, and the exact unexecuted `task --continue` continuation command.
+
+For owner-loss acceptance, start a `--follow` smoke in a terminal and kill that
+process with SIGKILL while Codex is still working. Within about 15 s an ownerless
+`status '<jobId>' --json` must show the job interrupted with
+`interruptionReason: owner_lost`, `interruptionConfirmed: true` and the same
+continuation command. Running that continuation (one new turn on the same thread)
+must show `duet_parent` in the thread's MCP servers and let `ask_parent` reach a
+new owner `wait`.
 If interruption is still in progress, poll ownerless status/result until terminal.
 Do not execute the continuation as part of this smoke. Thread history and on-disk
 edits should remain available. Cleanup only a smoke job you launched that is still

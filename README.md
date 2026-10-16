@@ -6,9 +6,11 @@ or review in parallel, in an isolated Codex home, and come back with short,
 recoverable reports instead of raw transcripts.
 
 From Claude's side a Codex worker is just another `Agent` call: it can run in the
-background, run alongside other workers, show live progress in the Agent panel,
-ask Claude a question mid-task, and preserve its Codex turn for adoption by a
-replacement worker if the native Agent is stopped (within the lease window).
+background, run alongside other workers, ask Claude a question mid-task, stops
+within seconds when you stop the agent, and leaves a one-line continuation command
+so a new worker can pick the same Codex thread up again. The worker itself is a
+thin relay (Haiku by default) that makes one blocking helper call per ~9.5 minutes
+of Codex work, so delegation does not spend your Claude quota on polling.
 
 Duet is a fork of [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc)
 (upstream `db52e28` / 1.0.6). The review and rescue commands come from upstream;
@@ -19,23 +21,33 @@ the native worker runtime, isolation and lifecycle work are Duet additions.
 - **Native parallel workers.** `Agent(subagent_type: "codex:codex-worker")` starts
   one Codex turn per assignment. Independent workers run concurrently; each keeps
   its own Codex thread, so follow-ups continue the right conversation.
-- **Live activity.** Workers stream redacted assistant snippets, command lines
-  with exits/durations, file changes, tool names/status and plan titles into Bash
-  output in the Agent view. Wait returns on new activity after 10 s, or at 30 s;
-  each call's description remains the latest short headline. Tool arguments,
-  command output and page content are excluded from the feed.
-- **Mid-task questions.** Codex can call `ask_parent`. The worker forwards the
-  exact `questionMessage` to Claude (its only permitted SendMessage), and the
-  answer is fed back into the *same* Codex turn. An
-  unanswered question times out (15 minutes by default) and Codex proceeds on a
-  conservative assumption that it reports.
-- **Clean cancellation.** Every job has a unique owner and lease (180 s by default).
-  Parent status/result checks do not renew a worker's lease. Stopping
-  the Agent lets the lease expire and interrupts the Codex turn; `cancel` reports
+- **Quota-light relay.** The worker agent runs on Haiku and makes one blocking
+  `task --follow` call that returns only when Codex finishes, asks a question, or
+  the 570 s wait budget ends (then one `wait` call per further 9.5 minutes). No
+  10–30 s polling loop, no transcription of the feed by an Opus-class model.
+- **Live activity for humans.** `wait` in feed mode (no `--json`) streams redacted
+  assistant snippets, command lines with exits/durations, file changes, tool
+  names/status and plan titles; `/codex:status` shows the current item and
+  phase. Tool arguments, command output and page content are excluded. JSON mode
+  reports at most the 12 newest events plus counts.
+- **Mid-task questions.** Codex can call `ask_parent`, on new threads (dynamic
+  tool) and on resumed threads (per-thread `duet_parent` MCP bridge). The worker
+  forwards the exact `questionMessage` to Claude (its only permitted SendMessage),
+  and the answer is fed back into the *same* Codex turn. An unanswered question
+  times out (15 minutes by default) and Codex proceeds on a conservative
+  assumption that it reports.
+- **Stops that stop.** Every job has a unique owner. While an owner `wait` is
+  attached it heartbeats once a second; if the owner dies (user stops the agent,
+  Bash kill, closed pipe) and nothing re-attaches within 15 s, the worker
+  interrupts the Codex turn (`owner_lost`). The 180 s lease remains the fallback
+  for an owner that returned normally and never came back. `cancel` reports
   confirmed versus unconfirmed termination; ending the Claude session interrupts
-  that session's jobs. With explicit user consent, a replacement worker can adopt
-  a stopped worker's still-running job without starting another turn. Idle brokers
-  exit after 60 s.
+  that session's jobs. Idle brokers exit after 60 s.
+- **Resume after a stop.** Every interrupted/failed report carries
+  `task --continue <jobId> --follow --report --json`, which starts one new turn on
+  the same Codex thread with the job's recorded sandbox, write, model and
+  browser-origin settings. Still-running jobs can also be adopted by a replacement
+  worker without a new turn.
 - **Isolated home.** Authentication, sessions, SQLite and logs live in
   `~/.claude/codex-isolated`, separate from your everyday `~/.codex`. Credentials
   are never copied.
@@ -96,28 +108,31 @@ another Codex worker review the retry logic in src/net/.
 
 What happens under the hood:
 
-1. Claude spawns `codex:codex-worker` with a bounded assignment (objective,
-   owned paths, constraints, acceptance criteria).
-2. The worker runs `task --fresh --detached --json --report …`, which returns the
-   jobId/ownerId immediately, with thread/turn handles as soon as acknowledged.
-3. It loops `wait <job> --owner <ownerId> --timeout-sec 30 --min-interval-sec 10
-   --report` in feed mode (no `--json`), updating Bash.description from each
-   headline and renewing only its own lease. It does not paraphrase or re-print
-   the streamed feed. Each wait ends with one JSON line containing `activity`
-   and `cursor`; scripts can use `--json` for pure JSON. Cursors are per owner.
-4. If Codex calls `ask_parent`, `wait` returns `needs_answer`; the worker sends
-   `questionMessage` verbatim to Claude once, keeps short owner-bearing waits
-   going, and passes the reply to `answer <job> --owner <ownerId> --question <id>`.
-5. On completion it returns a compact report (status, handles, touched files,
+1. Claude spawns `codex:codex-worker` (Haiku) with a bounded assignment
+   (objective, owned paths, constraints, acceptance criteria).
+2. The worker runs ONE `task --fresh --follow --json --report …` call with Bash
+   `timeout: 600000`. The helper submits the job, stays attached as its owner and
+   returns a single JSON line when Codex finishes, asks a question, or the 570 s
+   wait budget ends (`status: running`, then one `wait <job> --owner <ownerId>
+   --json --report` per further 9.5 minutes). Feed mode (`wait` without `--json`)
+   remains available for humans and scripts; cursors are per owner.
+3. If Codex calls `ask_parent`, the call returns `needs_answer`; the worker sends
+   `questionMessage` verbatim to Claude once, waits with `--after-question`, and
+   passes the reply to `answer <job> --owner <ownerId> --question <id>`.
+4. On completion it returns a compact report (status, handles, touched files,
    verification, assumptions, blockers, and paths to the full raw output).
 
 Follow-ups after normal completion can go to the same worker with `SendMessage`;
-it continues its own thread with `task --thread <threadId> …`. A worker stopped
-by the user cannot be resumed; use the replacement workflow below. Never use "the latest thread" to
-pick one worker out of several. Worker messages that are not verbatim questions
-are not evidence: verify with the job/thread/turn handles, `result --report --json`,
-and the actual diff and checks. Workers may not send progress, completion claims
-or placeholders with SendMessage; final results arrive only as agent return values.
+it continues its own thread with `task --thread <threadId> --follow …`. A worker
+stopped by the user cannot be resumed; use the continuation workflow below. Never
+use "the latest thread" to pick one worker out of several. Worker messages that
+are not verbatim questions are not evidence: verify with the job/thread/turn
+handles, `result --report --json`, and the actual diff and checks. Workers may not
+send progress, completion claims or placeholders with SendMessage; final results
+arrive only as agent return values.
+
+The worker model is set in `plugins/codex/agents/codex-worker.md` (`model: haiku`);
+change it to `sonnet` or `inherit` if you prefer a stronger relay.
 
 ### If a worker is stopped
 
@@ -127,31 +142,39 @@ Claude Code 2.1.301 can stop background agents through these UI actions:
 - `ctrl+x ctrl+k` pressed twice.
 - `x` in a subagent's detail view.
 
-A stopped native agent cannot be resumed with SendMessage. Its Codex job keeps
-running for the lease window (default 180 s from the last renewal, configurable
-with `task --lease-sec`). With the user's explicit consent, Claude launches a
-**replacement worker** with the existing jobId and workspace. The replacement's
-FIRST action is `adopt <jobId> --json`. Successful adoption atomically assigns a
-new ownerId and renews the lease, preserving the thread, turn, pending question
-and delivered feed cursor. It then loops `wait <jobId> --owner <newOwnerId>
---report`; it never submits a new task for an adoptable job. The old owner's
-later wait/status/answer calls return `ownership_moved` and cannot renew.
+A stopped native agent cannot be resumed with SendMessage. Stopping it kills the
+worker's blocking helper call; the attached owner `wait` either marks itself
+detached (signal, parent shell gone, closed stdout) or simply stops heartbeating.
+If no owner re-attaches within the grace period (15 s, `CODEX_COMPANION_OWNER_GRACE_SEC`),
+the detached task worker interrupts the Codex turn with `interruptionReason:
+owner_lost` and confirms the interruption. Thread context and on-disk edits
+persist. The grace period exists so a Bash timeout kill followed by an immediate
+`wait` re-run does not interrupt anything.
 
-Without adoption, the job is interrupted when the lease expires. Thread context
-and on-disk edits persist either way. Adoption after expiry or completion reports
-`lease_expired` or `job_ended` and an exact `continuationCommand` using
-`task --thread <threadId>`; it never starts that turn automatically. The suggested
-continuation uses the configured default sandbox and requires a new assignment/authorization for
-per-call write, runtime or browser flags. Wait for pending interruption to finish before
-continuing. If no thread handle was recorded, no continuation command is available.
-Parent `/codex:status`, `status`, `result`, and ownerless `wait` calls never renew
-the lease, even from the same Claude session.
+The interrupted report (and `result --report --json`, `/codex:status <jobId>`)
+carries an exact `continuationCommand`:
+`task --continue <jobId> --cwd <cwd> --follow --report --json`. It starts ONE new
+turn on the same Codex thread with the original job's recorded sandbox, write,
+model, effort, speed and browser-origin settings; any extra prompt text is
+appended. With the user's explicit consent, Claude runs it through a new
+`codex:codex-worker`; nothing starts it automatically. If no thread handle was
+recorded, no continuation command is available.
+
+A job that is still running (for example the owner returned normally and the
+agent was then stopped between calls) stays alive for the lease window (default
+180 s from the last renewal, `task --lease-sec`). With the user's explicit
+consent, a **replacement worker** whose FIRST action is `adopt <jobId> --json`
+takes over that live turn: adoption atomically assigns a new ownerId and renews
+the lease, preserving the thread, turn, pending question and delivered feed
+cursor, and it never submits a new task for an adoptable job. The old owner's
+later wait/status/answer calls return `ownership_moved`. Without adoption the
+job is interrupted at lease expiry (`lease_expired`) with the same continuation
+command. Parent `/codex:status`, `status`, `result`, and ownerless `wait` calls
+never renew the lease, even from the same Claude session.
 
 `/codex:status` marks stale running jobs **orphaned**, with remaining lease seconds
-and an exact adopt instruction. This is inferred after 65 s without owner renewal
-(or half the lease for shorter leases), not a direct signal from the Agent UI.
-Adoption can happen before that threshold. A wait already running when the agent
-is stopped may renew until that call exits, bounded by its timeout.
+and an exact adopt instruction, inferred after 65 s without owner renewal (or
+half the lease for shorter leases).
 
 ### Defaults and runtime choices
 
@@ -160,14 +183,16 @@ is stopped may renew until that call exits, bounded by its timeout.
 | Model | `gpt-6-astra` | `--model <name>` (`spark` maps to `gpt-5.3-codex-spark`) |
 | Reasoning effort | `xhigh` | `--effort none…xhigh` or `--effort max` where the model supports it |
 | Speed | normal | `--fast` requests the fast tier for that call only; `--normal` resets |
-| Codex sandbox | Configured default, initially `read-only` | `setup --default-sandbox <mode>`; per-call `--write` → `workspace-write`, or `--write --sandbox danger-full-access` |
+| Codex sandbox | Configured default, initially `read-only` | `setup --default-sandbox <mode>` (stored in `~/.claude/codex-isolated/duet/config.toml`); per-call `--write` guarantees at least `workspace-write` without narrowing a broader default; `--write --sandbox danger-full-access` for full access |
 | Approval policy | `never` | — |
 
-Each follow-up uses its own flags and the current configured sandbox default.
-Per-call write access, fast mode and browser grants are never inherited from an earlier turn, and workers never elevate after
-a denial. Companion Bash calls run with `dangerouslyDisableSandbox: true` because
-the runtime needs network access and local sockets; that is separate from Codex's
-own sandbox.
+Workers pass `--write` for assignments that edit files. Each follow-up uses its
+own flags and the current configured sandbox default; only `task --continue`
+deliberately inherits the original job's settings. Per-call write access, fast
+mode and browser grants are otherwise never inherited from an earlier turn, and
+workers never elevate after a denial. Companion Bash calls run with
+`dangerouslyDisableSandbox: true` because the runtime needs network access and
+local sockets; that is separate from Codex's own sandbox.
 
 ### Parallel work
 
@@ -421,12 +446,19 @@ session store.
 
 ## Known limitations
 
-- `ask_parent`, detached `wait`, lease expiry and cancellation are covered by
-  fixture tests against a fake app-server; an authenticated end-to-end smoke of
-  the new lifecycle is still pending.
-- `ask_parent` relies on the app-server's experimental dynamic-tool API and is
-  registered only on new threads. Threads started before this version, or
-  runtimes that reject the registration, fall back to a final `needs_input` report.
+- `ask_parent`, `--follow`, owner loss, `--continue`, lease expiry and
+  cancellation are covered by fixture tests against a fake app-server. The
+  per-thread MCP bridge, owner loss (`owner_lost` after the grace period) and
+  `--continue` were also exercised live against the real app-server
+  (`codex-cli 0.162.0-alpha.17.2`), including back-to-back `ask_parent` round
+  trips on one resumed thread; that live smoke is still a manual step, not CI.
+- `ask_parent` uses the app-server's experimental dynamic-tool API on new threads
+  and a per-thread MCP server override on resumed threads. Runtimes that reject
+  either registration fall back to a final `needs_input` report.
+- Codex edits bypass Claude Code's own permission prompts and edit tracking; the
+  report's `touchedFiles`/`preExistingChanges` and the Codex sandbox are the
+  controls. Owner loss is detected by heartbeat with a 15 s grace, so a stop is
+  near-immediate rather than instantaneous.
 - The owner lease is lifecycle coordination between local processes, not an
   authentication boundary.
 - Browser origin persistence follows the format used by the bundled browser
@@ -440,7 +472,7 @@ session store.
 npm test
 ```
 
-The suite (168 tests) uses temporary Codex homes and plugin data only, refuses to
+The suite (195 tests) uses temporary Codex homes and plugin data only, refuses to
 run against `~/.claude/codex-isolated` or `~/.codex`, and asserts that no spawned
 process survives. Local-socket tests are skipped inside a sandbox; run the suite
 outside it for full coverage.

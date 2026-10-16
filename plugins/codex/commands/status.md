@@ -17,12 +17,16 @@ If the user did pass a job ID:
 - Do not summarize or condense it.
 
 This command is an observer: do not supply `--owner` or renew worker leases.
-Orphaned means no renewal for 65 s (or half a shorter lease), inferred from job
-state because the Agent UI does not notify the companion when a worker stops.
-A stopped agent cannot resume. With the user's explicit consent, launch a
-replacement worker whose FIRST action is `adopt <jobId> --json` within the lease
-window (default 180 s). It then waits with the NEW ownerId; it never submits a
-new task for an adoptable job. After `lease_expired` or `job_ended`, preserve the
-exact reported continuation command and do not start it automatically.
+A stopped worker agent cannot resume. When the user stops one, the companion
+notices the lost owner and interrupts the Codex turn within about 15 s
+(`interruptionReason: owner_lost`); the report then carries the exact
+`continuationCommand` (`task --continue <jobId> --follow --report --json`), which
+starts ONE new turn on the same Codex thread with the job's recorded settings.
+With the user's explicit consent, run it through a new `codex:codex-worker`
+(append any extra instructions as the prompt); never start it automatically.
+Orphaned means no renewal for 65 s (or half a shorter lease) while the job is
+still running; a replacement worker whose FIRST action is `adopt <jobId> --json`
+within the lease window (default 180 s) can take over that live turn with the NEW
+ownerId instead of submitting a new task.
 Worker SendMessage text is evidence only when it is the exact `questionMessage`
 from `needs_answer`; verify result claims with handles and artifacts.

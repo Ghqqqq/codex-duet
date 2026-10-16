@@ -7,8 +7,9 @@ import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { browserOriginSetup, transportSetup } from "../plugins/codex/scripts/lib/setup-config.mjs";
 import { resolveIsolatedCodexHome } from "../plugins/codex/scripts/lib/codex-home.mjs";
 import { redactActivity, itemActivity, planActivity, activityReader } from "../plugins/codex/scripts/lib/activity.mjs";
-import { writeJobFile, upsertJob } from "../plugins/codex/scripts/lib/state.mjs";
-import { JobRuntime, renewLease, leaseSnapshot, questionMessage, adoptJob, ownershipNotice } from "../plugins/codex/scripts/lib/job-runtime.mjs";
+import { writeJobFile, upsertJob, updateJob, readJobFile, resolveJobFile } from "../plugins/codex/scripts/lib/state.mjs";
+import { JobRuntime, renewLease, leaseSnapshot, questionMessage, adoptJob, ownershipNotice, answerQuestion, ownerLost, PARENT_BRIDGE_ENV } from "../plugins/codex/scripts/lib/job-runtime.mjs";
+const bridgeScript = new URL("../plugins/codex/scripts/parent-bridge-mcp.mjs", import.meta.url).pathname;
 import { spawnOwned } from "../plugins/codex/scripts/lib/process.mjs";
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
 const hook = new URL("../plugins/codex/scripts/session-lifecycle-hook.mjs", import.meta.url).pathname;
@@ -54,7 +55,7 @@ test("parent question and stdin answer continue the same turn; reports do not lo
   assert.equal(done.status, "completed"); assert.equal(done.turnId, pending.turnId);
   const ended = json(f.call("adopt", launch.jobId, "--json"), 2);
   assert.equal(ended.status, "job_ended"); assert.equal(ended.jobStatus, "completed");
-  assert.ok(ended.continuationCommand.includes(`task --thread '${done.threadId}'`));
+  assert.ok(ended.continuationCommand.includes(`task --continue '${launch.jobId}'`));
   assert.equal(ended.ownerId, launch.ownerId);
   assert.equal(f.state().nextTurnId, 2); assert.equal(f.state().capabilities.experimentalApi, true);
   assert.deepEqual(f.state().serverRequestReplies[0].result, { success: true, contentItems: [{ type: "inputText", text: "Small PRIVATE_FIXTURE_ANSWER" }] });
@@ -74,7 +75,7 @@ test("owner lease expiry interrupts a running worker; a foreign owner cannot ren
   await delay(4000);
   const result = json(f.call("wait", launch.jobId, "--timeout-sec", "6", "--json", "--report"), 1);
   assert.equal(result.status, "interrupted"); assert.equal(result.interruptionReason, "lease_expired"); assert.equal(result.interruptionConfirmed, true);
-  assert.ok(result.continuationCommand.includes(`task --thread '${result.threadId}' --cwd '${f.repo}' --detached --report --json`));
+  assert.ok(result.continuationCommand.includes(`task --continue '${launch.jobId}' --cwd '${f.repo}' --follow --report --json`));
   assert.match(result.continuationNote, /not been run/);
   const late = json(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--json"), 1);
   assert.equal(late.interruptionReason, "lease_expired");
@@ -344,7 +345,7 @@ test("expired leases cannot be revived before the worker observes expiry", () =>
   assert.equal(renewLease(cwd, record.id).leaseExpiresAt, record.leaseExpiresAt);
   const adopted = adoptJob(cwd, record.id, "new-session");
   assert.equal(adopted.status, "lease_expired"); assert.equal(adopted.ownerId, record.ownerId);
-  assert.ok(adopted.continuationCommand.includes("task --thread 'expired-thread'"));
+  assert.ok(adopted.continuationCommand.includes("task --continue 'expired-owner-test'"));
   const runtime = new JobRuntime(cwd, record.id, { foreground: true });
   try { assert.equal(runtime.reason, "lease_expired"); } finally { runtime.close(); }
 });
@@ -367,4 +368,147 @@ test("adoption preserves legacy session scope, rotates every time and rejects ca
   assert.equal(stopping.continuationCommand, null);
   writeJobFile(cwd, record.id, { ...stored, sessionId: null });
   assert.equal(adoptJob(cwd, record.id).sessionId, null, "Known absence of a session is not a legacy session-ID owner");
+});
+
+test("default wait blocks through activity and caps the reported activity list", async () => {
+  const f = fixture("w9-feed"), launch = json(f.call("task", "--detached", "--report", "--json", "fixture"));
+  const began = Date.now(), feed = f.call("wait", launch.jobId, "--owner", launch.ownerId, "--timeout-sec", "3", "--report");
+  assert.equal(feed.status, 0, feed.stderr);
+  assert.ok(Date.now() - began >= 2900, "no early return on activity without --min-interval-sec");
+  const lines = feed.stdout.trim().split("\n"), final = JSON.parse(lines.at(-1));
+  assert.equal(final.status, "running"); assert.ok(lines.length > 3, "feed lines still stream in feed mode");
+  assert.equal(final.activityCount, final.activity.length); assert.equal(final.activityOmitted, undefined);
+  assert.equal(job(f, launch.jobId).ownerDetachReason, "returned", "a clean return never starts the owner-lost clock");
+  const stateModule = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
+  const padded = run(process.execPath, ["--input-type=module", "-e", `import { updateJob } from ${JSON.stringify(stateModule)}; updateJob(process.cwd(), ${JSON.stringify(launch.jobId)}, stored => ({ activity: [...stored.activity, ...Array.from({ length: 20 }, (_, i) => ({ type: "message", text: "extra " + i, seq: stored.activitySeq + i + 1, at: new Date().toISOString() }))], activitySeq: stored.activitySeq + 20 }));`], { cwd: f.repo, env: f.env });
+  assert.equal(padded.status, 0, padded.stderr);
+  const capped = json(f.call("wait", launch.jobId, "--owner", "capped-reader", "--timeout-sec", "1", "--json"));
+  assert.equal(capped.activity.length, 12); assert.equal(capped.activityOmitted, capped.activityCount - 12); assert.ok(capped.activityCount >= 20);
+  assert.equal(capped.activity.at(-1).seq, capped.cursor, "the newest events are the ones kept");
+  json(f.call("cancel", launch.jobId, "--json"));
+});
+
+test("an owner wait that dies abruptly interrupts the worker after the grace period", async () => {
+  const f = fixture(); f.env.CODEX_COMPANION_OWNER_GRACE_SEC = "2";
+  const launch = json(f.call("task", "--detached", "--json", "fixture"));
+  const owner = spawnOwned(process.execPath, [script, "wait", launch.jobId, "--owner", launch.ownerId, "--timeout-sec", "60", "--json"], { cwd: f.repo, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
+  await waitUntil(() => job(f, launch.jobId).ownerAttached && job(f, launch.jobId).turnId);
+  owner.kill("SIGKILL"); // Simulates Claude Code killing the Bash command when the user stops the agent.
+  const killedAt = Date.now();
+  const result = json(f.call("wait", launch.jobId, "--timeout-sec", "15", "--json", "--report"), 1);
+  assert.equal(result.status, "interrupted"); assert.equal(result.interruptionReason, "owner_lost"); assert.equal(result.interruptionConfirmed, true);
+  assert.ok(Date.now() - killedAt < 12000, "interruption follows the grace period, not the 180 s lease");
+  assert.ok(result.continuationCommand.includes(`task --continue '${launch.jobId}'`));
+  assert.equal(f.state().lastInterrupt.turnId, result.turnId);
+});
+
+test("a signalled owner wait detaches, and a re-attach within the grace period keeps the turn alive", async () => {
+  const f = fixture(); f.env.CODEX_COMPANION_OWNER_GRACE_SEC = "3";
+  const launch = json(f.call("task", "--detached", "--json", "fixture"));
+  const owner = spawnOwned(process.execPath, [script, "wait", launch.jobId, "--owner", launch.ownerId, "--timeout-sec", "60", "--json"], { cwd: f.repo, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
+  await waitUntil(() => job(f, launch.jobId).ownerAttached);
+  owner.kill("SIGTERM");
+  const code = await new Promise(resolve => owner.on("close", resolve));
+  assert.equal(code, 130);
+  const detached = job(f, launch.jobId);
+  assert.equal(detached.ownerAttached, false); assert.equal(detached.ownerDetachReason, "signal"); assert.ok(detached.ownerDetachedAt);
+  // This test process uses the default 15 s grace; the worker child uses the 3 s override above.
+  assert.equal(ownerLost(detached, detached.ownerDetachedAt + 14999), false); assert.equal(ownerLost(detached, detached.ownerDetachedAt + 15000), true);
+  assert.equal(ownerLost({ ...detached, ownerAttached: true, leaseRenewedAt: detached.ownerDetachedAt }, detached.ownerDetachedAt + 15000), true, "a stale heartbeat while attached also counts");
+  assert.equal(ownerLost({ ...detached, ownerDetachReason: "returned" }, detached.ownerDetachedAt + 60000), false);
+  const again = json(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--timeout-sec", "1", "--json"));
+  assert.equal(again.status, "running"); assert.equal(job(f, launch.jobId).ownerDetachReason, "returned");
+  await delay(3600);
+  assert.equal(job(f, launch.jobId).status, "running", "a clean return followed by silence falls back to the lease, not the grace clock");
+  json(f.call("wait", launch.jobId, "--owner", "not-the-owner", "--timeout-sec", "1", "--json"));
+  assert.equal(job(f, launch.jobId).ownerDetachReason, "returned", "a non-owner reader neither attaches nor detaches");
+  assert.equal(json(f.call("cancel", launch.jobId, "--json")).confirmation, "confirmed");
+});
+
+test("task --follow submits and waits in one call as the owner", () => {
+  const f = fixture("w9-feed");
+  const began = Date.now(), followed = json(f.call("task", "--follow", "--json", "--timeout-sec", "2", "fixture"));
+  assert.ok(Date.now() - began >= 1900);
+  assert.equal(followed.status, "running"); assert.ok(followed.jobId); assert.ok(followed.ownerId); assert.ok(followed.turnId);
+  assert.ok(followed.activityCount > 0, "activity observed during the follow is reported");
+  const stored = job(f, followed.jobId);
+  assert.equal(stored.ownerId, followed.ownerId); assert.equal(stored.ownerDetachReason, "returned");
+  assert.doesNotMatch(JSON.stringify(followed), /PRIVATE_FIXTURE/);
+  json(f.call("cancel", followed.jobId, "--json"));
+});
+
+test("task --continue resumes the job's thread with its recorded authorization and a parent bridge", async () => {
+  const f = fixture("slow-task");
+  const first = json(f.call("task", "--detached", "--json", "--write", "first assignment"));
+  const done = json(f.call("wait", first.jobId, "--json", "--report"));
+  assert.equal(done.status, "completed"); assert.equal(done.sandbox, "workspace-write");
+  for (const extra of [["--write"], ["--sandbox", "read-only"], ["--thread", done.threadId], ["--model", "other"], ["--approve-browser-origin", "https://example.com"]]) {
+    const rejected = f.call("task", "--continue", first.jobId, ...extra, "--json");
+    assert.notEqual(rejected.status, 0); assert.match(rejected.stderr, /--continue/);
+  }
+  assert.match(f.call("task", "--continue", "missing-job", "--json").stderr, /No stored job/);
+  const second = json(f.call("task", "--continue", first.jobId, "--follow", "--report", "--json", "continue with the next step"));
+  assert.equal(second.status, "completed"); assert.notEqual(second.jobId, first.jobId); assert.equal(second.threadId, done.threadId);
+  assert.equal(second.sandbox, "workspace-write", "write authorization is inherited from the original job");
+  const resume = f.state().lastThreadResume;
+  assert.equal(resume.threadId, done.threadId); assert.equal(resume.sandbox, "workspace-write");
+  const bridge = resume.config.mcp_servers.duet_parent;
+  assert.equal(bridge.command, process.execPath); assert.match(bridge.args[0], /parent-bridge-mcp\.mjs$/);
+  assert.equal(bridge.env[PARENT_BRIDGE_ENV.threadId], done.threadId, "the bridge is bound to the thread, not the job"); assert.equal(bridge.env[PARENT_BRIDGE_ENV.cwd], f.repo);
+  assert.equal(bridge.env.CLAUDE_PLUGIN_DATA, f.env.CLAUDE_PLUGIN_DATA); assert.equal(bridge.tool_timeout_sec, 900 + 120);
+  assert.equal(Object.keys(bridge.env).filter(k => !["CLAUDE_PLUGIN_DATA", "TMPDIR", PARENT_BRIDGE_ENV.threadId, PARENT_BRIDGE_ENV.cwd].includes(k)).length, 0, "no other environment leaks into the bridge");
+  assert.deepEqual(bridge.omit_tools_from, ["code_mode", "deferred"], "the tool must stay out of the deferred set or the model never sees it");
+  assert.equal(bridge.tools.ask_parent.approval_mode, "approve", "approvalPolicy never would otherwise reject the call");
+  assert.match(f.state().lastTurnStart.prompt, /continue with the next step/);
+  assert.equal(job(f, second.jobId).request.continuedFrom, first.jobId);
+  assert.equal(f.state().lastThreadStart.config, undefined, "new threads keep the in-process dynamic tool");
+  const running = json(f.call("task", "--detached", "--json", "third"));
+  assert.match(f.call("task", "--continue", running.jobId, "--json").stderr, /still (queued|running)/);
+  json(f.call("cancel", running.jobId, "--json"));
+});
+
+test("the parent bridge answers ask_parent through the job file and reports cancellation", async () => {
+  const cwd = makeTempDir(), id = "bridge-job", threadId = "thread-bridge";
+  writeJobFile(cwd, id, { id, status: "running", jobClass: "task", workspaceRoot: cwd, ownerId: "owner", questionTimeoutSec: 5, threadId });
+  upsertJob(cwd, { id, status: "running", jobClass: "task", workspaceRoot: cwd, threadId, createdAt: "2026-01-01T00:00:00.000Z" });
+  const env = { ...process.env, [PARENT_BRIDGE_ENV.cwd]: cwd, [PARENT_BRIDGE_ENV.threadId]: threadId };
+  const bridge = spawnOwned(process.execPath, [bridgeScript], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+  const replies = []; let buffer = "";
+  bridge.stdout.on("data", chunk => { buffer += chunk; let i; while ((i = buffer.indexOf("\n")) >= 0) { replies.push(JSON.parse(buffer.slice(0, i))); buffer = buffer.slice(i + 1); } });
+  const send = message => bridge.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
+  const reply = id => waitUntil(() => replies.find(r => r.id === id));
+  send({ id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" } } });
+  assert.equal((await reply(1)).result.serverInfo.name, "duet-parent-bridge");
+  send({ method: "notifications/initialized" });
+  send({ id: 2, method: "tools/list" });
+  assert.deepEqual((await reply(2)).result.tools.map(t => t.name), ["ask_parent"]);
+  send({ id: 3, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Which way?", options: ["A", "B"] } } });
+  const pending = await waitUntil(() => readJobFile(resolveJobFile(cwd, id)).pendingQuestion);
+  assert.equal(pending.text, "Which way?"); assert.deepEqual(pending.options, ["A", "B"]);
+  answerQuestion(cwd, id, pending.id, "Go with A", "owner");
+  const answered = await reply(3);
+  assert.equal(answered.result.isError, false); assert.equal(answered.result.content[0].text, "Go with A");
+  send({ id: 4, method: "tools/call", params: { name: "ask_parent", arguments: { question: "x".repeat(1001) } } });
+  assert.equal((await reply(4)).result.isError, true);
+  updateJob(cwd, id, () => ({ cancelRequested: { reason: "cancelled_by_user", at: new Date().toISOString() } }));
+  send({ id: 5, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Still there?" } } });
+  assert.match((await reply(5)).result.content[0].text, /owner cancelled this task/);
+  // The broker keeps a thread loaded across runs, so one bridge process outlives
+  // the job that spawned it: once that job is over, calls bind to the thread's
+  // newest active job, and with none active the tool reports it instead of hanging.
+  updateJob(cwd, id, () => ({ status: "completed", cancelRequested: null }));
+  upsertJob(cwd, { id, status: "completed" });
+  send({ id: 6, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Anyone?" } } });
+  const nobody = await reply(6);
+  assert.equal(nobody.result.isError, true); assert.match(nobody.result.content[0].text, /No Duet task is listening/);
+  const next = "bridge-job-2";
+  writeJobFile(cwd, next, { id: next, status: "running", jobClass: "task", workspaceRoot: cwd, ownerId: "owner-2", questionTimeoutSec: 5, threadId });
+  upsertJob(cwd, { id: next, status: "running", jobClass: "task", workspaceRoot: cwd, threadId, createdAt: "2026-01-02T00:00:00.000Z" });
+  send({ id: 7, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Next job?" } } });
+  const nextPending = await waitUntil(() => readJobFile(resolveJobFile(cwd, next)).pendingQuestion);
+  assert.equal(nextPending.text, "Next job?"); assert.equal(readJobFile(resolveJobFile(cwd, id)).pendingQuestion, null, "the finished job is left alone");
+  answerQuestion(cwd, next, nextPending.id, "Yes", "owner-2");
+  assert.equal((await reply(7)).result.content[0].text, "Yes");
+  bridge.stdin.end();
+  await waitUntil(() => !alive(bridge.pid));
 });

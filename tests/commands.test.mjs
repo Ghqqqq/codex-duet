@@ -182,34 +182,41 @@ test("native Codex worker preserves identity, native lifecycle, and parallel own
   const worker = read("agents/codex-worker.md");
 
   assert.match(worker, /^name: codex-worker$/m);
-  assert.match(worker, /^model: inherit$/m);
+  // The worker is a relay; the cheapest model keeps delegation from spending
+  // the parent's Claude quota on polling and transcription.
+  assert.match(worker, /^model: haiku$/m);
   assert.match(worker, /^tools: Bash, Read, SendMessage$/m);
   assert.doesNotMatch(worker, /^skills:/m);
   assert.match(worker, /multiple independent parallel workers/i);
-  assert.match(worker, /task --fresh --detached --json --report/);
-  assert.match(worker, /task --thread <threadId> --detached --json --report/);
+  assert.match(worker, /task --fresh --follow --json --report/);
+  assert.match(worker, /task --thread <threadId> --follow --json --report/);
+  assert.match(worker, /task --continue <jobId> --follow --json --report/);
   assert.match(worker, /Never use `--resume-last`/);
   assert.match(worker, /exact `threadId` from that result or explicitly supplied by the parent/i);
-  assert.match(worker, /native Agent stays alive as the owner/i);
-  assert.match(worker, /wait <jobId> --owner <ownerId> --timeout-sec 30 --min-interval-sec 10 --report/);
-  assert.match(worker, /description.*headline/i);
-  assert.match(worker, /exact companion-provided `questionMessage` field verbatim to `main`/i);
-  assert.match(worker, /answer <jobId> --owner <ownerId> --question <id> --json.*stdin heredoc/i);
+  assert.match(worker, /ONE long-blocking helper call/);
+  assert.match(worker, /timeout: 600000/);
+  assert.doesNotMatch(worker, /--min-interval-sec/, "no early-return polling loop");
+  assert.doesNotMatch(worker, /--timeout-sec 30/);
+  assert.match(worker, /wait <jobId> --owner <ownerId> --json --report/);
+  assert.match(worker, /exact `questionMessage` field verbatim to `main`/i);
+  assert.match(worker, /answer <jobId> --owner <ownerId> --question <questionId> --json.*stdin heredoc/i);
   assert.match(worker, /SendMessage is allowed ONLY/);
-  assert.match(worker, /FIRST action is `adopt <jobId> --json`/);
+  assert.match(worker, /FIRST action/);
+  assert.match(worker, /adopt <jobId> --json/);
   assert.match(worker, /Never submit a new task for an adoptable job/);
   assert.match(worker, /ownership_moved/);
-  assert.match(worker, /user's explicit consent/);
+  assert.match(worker, /user's consent/);
   assert.doesNotMatch(worker, /When resumed by the parent's SendMessage/);
-  assert.match(worker, /Do not paraphrase or re-print the feed/);
-  assert.match(worker, /Never send progress, status or completion claims/);
+  assert.match(worker, /interrupts the Codex turn within about 15 s/);
+  assert.match(worker, /continuationCommand/);
+  assert.match(worker, /Never send progress, status, completion claims/);
   assert.match(worker, /Deliver the final result ONLY as this agent's return value/);
-  assert.match(worker, /lease defaults to 180 seconds/i);
-  assert.match(worker, /Start exactly one Codex turn/i);
-  assert.match(worker, /read only that output file/i);
-  assert.match(worker, /Never submit another task to poll or answer a question/i);
-  assert.match(worker, /Do not finish with only a queued\/running acknowledgement/i);
+  assert.match(worker, /Read` only that output file/i);
+  assert.match(worker, /Do not start another turn to answer a question/i);
+  assert.match(worker, /never return a queued\/running acknowledgement as completion/i);
   assert.match(worker, /--model gpt-6-astra --effort xhigh --normal/);
+  assert.match(worker, /Add `--write` whenever the assignment edits files/);
+  assert.match(worker, /`--write` is a floor/);
   assert.match(worker, /parent may select `--effort max`/i);
   assert.match(worker, /`--fast` for latency-sensitive work/i);
   assert.match(worker, /never inherit fast from a previous turn/i);
@@ -225,6 +232,7 @@ test("native Codex worker preserves identity, native lifecycle, and parallel own
   assert.match(worker, /needs_input/);
   assert.match(worker, /Never call AskUserQuestion/);
   assert.match(worker, /result '<job-id>' --report --json/);
+  assert.ok(worker.split("\n").length <= 70, "the worker contract stays short enough for a small model to follow");
   assert.match(worker, /Preserve captured stderr and the command's exit status on failure/i);
   assert.match(worker, /parent may summarize the result for the user/i);
   assert.match(worker, /do not require the final user response to reproduce all helper output/i);
@@ -239,12 +247,16 @@ test("stopped-worker docs require consent and replacement adoption", () => {
   assert.match(readme, /`x` in a subagent's detail view/);
   assert.match(readme, /user's explicit consent/);
   assert.match(readme, /FIRST action is `adopt <jobId> --json`/);
-  assert.match(readme, /Thread context\nand on-disk edits persist/);
+  assert.match(readme, /Thread context and on-disk edits\npersist/);
+  assert.match(readme, /owner_lost/);
+  assert.match(readme, /task --continue <jobId> --cwd <cwd> --follow --report --json/);
   assert.doesNotMatch(readme, /Resume the \*\*same native agent/);
   const status = read("commands/status.md");
   assert.match(status, /exact adopt instruction/);
   assert.match(status, /do not supply `--owner`/);
-  assert.match(status, /stopped agent cannot resume/);
+  assert.match(status, /stopped worker agent cannot resume/);
+  assert.match(status, /owner_lost/);
+  assert.match(status, /task --continue <jobId> --follow --report --json/);
 });
 
 test("transfer, result, and cancel commands are exposed as deterministic runtime entrypoints", () => {

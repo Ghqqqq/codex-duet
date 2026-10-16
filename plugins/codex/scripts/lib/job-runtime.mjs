@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { snippet, activityReader } from "./activity.mjs";
 import { randomUUID } from "node:crypto";
-import { updateJob, readJobFile, resolveJobFile } from "./state.mjs";
+import { listJobs, updateJob, readJobFile, resolveJobFile } from "./state.mjs";
 
 export const ACTIVE = new Set(["queued", "running"]);
 export function seconds(value, fallback, name, maximum = 86400) {
@@ -10,6 +10,15 @@ export function seconds(value, fallback, name, maximum = 86400) {
   return Number(value);
 }
 export const ownerId = jobId => `${jobId}-${randomUUID()}`;
+// An attached owner `wait` renews about once per second, so leaseRenewedAt doubles
+// as its heartbeat. After the owner detaches abnormally (signal, parent shell
+// gone, closed stdout) or its heartbeat stops, the worker interrupts the turn once
+// this grace period passes without a re-attach. The grace covers a Claude Bash
+// timeout kill followed by an immediate re-run of wait; a user stop never re-attaches.
+export const OWNER_GRACE_MS = (() => {
+  const raw = process.env.CODEX_COMPANION_OWNER_GRACE_SEC;
+  return /^\d+$/.test(raw ?? "") && Number(raw) >= 1 && Number(raw) <= 600 ? Number(raw) * 1000 : 15000;
+})();
 export function renewLease(cwd, id, owner) {
   return updateJob(cwd, id, job => {
     const now = Date.now(); // Check expiry after acquiring the state lock.
@@ -17,12 +26,28 @@ export function renewLease(cwd, id, owner) {
       ? { leaseRenewedAt: now, leaseExpiresAt: now + (job.leaseSec ?? 180) * 1000 } : null;
   });
 }
+// reason: null (attach) | "returned" (clean exit: timeout/terminal/question) |
+// "signal" | "parent_exit" | "stdout_closed" (abnormal exits start the grace clock).
+export function markOwnerAttachment(cwd, id, owner, reason = null) {
+  return updateJob(cwd, id, job => {
+    if (!owner || job.ownerId !== owner) return null;
+    const now = Date.now();
+    if (reason !== null) return job.ownerAttached || ACTIVE.has(job.status) ? { ownerAttached: false, ownerDetachedAt: now, ownerDetachReason: reason } : null;
+    if (!ACTIVE.has(job.status)) return null;
+    return { ownerAttached: true, ownerAttachedAt: now, ownerDetachedAt: null, ownerDetachReason: null, leaseRenewedAt: now, leaseExpiresAt: now + (job.leaseSec ?? 180) * 1000 };
+  });
+}
+export function ownerLost(job, now = Date.now()) {
+  if (!ACTIVE.has(job.status)) return false;
+  if (job.ownerAttached) return Boolean(job.leaseRenewedAt) && now - job.leaseRenewedAt >= OWNER_GRACE_MS;
+  return Boolean(job.ownerDetachedAt) && job.ownerDetachReason !== "returned" && now - job.ownerDetachedAt >= OWNER_GRACE_MS;
+}
 const quote = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 const companionCommand = args => `node ${quote(fileURLToPath(new URL("../codex-companion.mjs", import.meta.url)))} ${args}`;
 export function continuationReport(job) {
-  const continuationCommand = job.threadId ? companionCommand(`task --thread ${quote(job.threadId)} --cwd ${quote(job.request?.cwd ?? job.workspaceRoot)} --detached --report --json`) : null;
+  const continuationCommand = job.threadId && job.id ? companionCommand(`task --continue ${quote(job.id)} --cwd ${quote(job.request?.cwd ?? job.workspaceRoot)} --follow --report --json`) : null;
   return { continuationCommand,
-    continuationNote: continuationCommand ? "This command starts a new turn using the configured default sandbox; restore per-call write/runtime/origin flags only with authorization. It has not been run. Wait for any pending interruption to finish first." : "No thread handle was recorded; no continuation command is available." };
+    continuationNote: continuationCommand ? "Starts one new turn on the same Codex thread with this job's recorded sandbox, write, model and browser-origin settings; append extra instructions as the prompt. It has not been run. Wait for any pending interruption to finish first." : "No thread handle was recorded; no continuation command is available." };
 }
 export function ownershipNotice(job, owner) {
   if (!owner || job.ownerId === owner || !job.retiredOwnerIds?.includes(owner)) return null;
@@ -46,6 +71,7 @@ export function adoptJob(cwd, id, sessionId) {
       // Without a caller session, preserve the original (including legacy) scope.
       sessionId: sessionId || (current.sessionId === undefined ? current.ownerId : current.sessionId) || null,
       leaseRenewedAt: now, leaseExpiresAt: now + (current.leaseSec ?? 180) * 1000,
+      ownerAttached: false, ownerDetachedAt: null, ownerDetachReason: null,
       activityCursors: { ...current.activityCursors, [activityReader(nextOwner)]: current.activityCursors?.[activityReader(current.ownerId)] ?? 0 }
     };
   });
@@ -87,6 +113,51 @@ export const ASK_PARENT = {
   inputSchema: { type: "object", properties: { question: { type: "string", maxLength: 1000 }, options: { type: "array", maxItems: 6, items: { type: "string", maxLength: 160 } } }, required: ["question"], additionalProperties: false }
 };
 const textReply = text => ({ success: true, contentItems: [{ type: "inputText", text }] });
+export const PARENT_BRIDGE_SERVER = "duet_parent";
+// The bridge is bound to a *thread*, not a job: the shared broker keeps a resumed
+// thread (and its MCP servers) loaded across runs, so the same bridge process can
+// serve several consecutive jobs. Each call resolves the job active on the thread.
+export const PARENT_BRIDGE_ENV = { cwd: "CODEX_COMPANION_BRIDGE_CWD", threadId: "CODEX_COMPANION_BRIDGE_THREAD" };
+export function activeJobForThread(cwd, threadId) {
+  if (!threadId) return null;
+  const candidates = listJobs(cwd).filter(job => job.threadId === threadId && ACTIVE.has(job.status));
+  candidates.sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")));
+  return candidates[0]?.id ?? null;
+}
+/**
+ * Block one Codex question on the job file until the owner answers, the
+ * question times out, or the job is stopped. Shared by the in-process dynamic
+ * tool (new threads) and the stdio MCP bridge process (resumed threads), so the
+ * owner-facing wait/answer flow is identical for both.
+ */
+export async function askParentQuestion(cwd, id, { question, options = [] }, { signal = null, onProgress = null, stopped = () => false } = {}) {
+  const questionId = `question-${randomUUID()}`;
+  const job = readJobFile(resolveJobFile(cwd, id));
+  if (!ACTIVE.has(job.status) || job.cancelRequested) return { text: "The owner cancelled this task. Stop work and report interrupted.", resolution: "interrupted" };
+  if (job.pendingQuestion) return { text: "Another parent question is pending. Proceed on a conservative assumption and report it.", resolution: "busy" };
+  const pending = { id: questionId, text: question, options, expiresAt: Date.now() + (job.questionTimeoutSec ?? 900) * 1000 };
+  updateJob(cwd, id, () => ({ pendingQuestion: pending, phase: "needs_answer" }));
+  onProgress?.({ message: `Parent question pending: ${questionId}.`, phase: "needs_answer" });
+  let text = "No answer arrived before the timeout. Proceed on a conservative assumption within the authorized scope and report the assumption. If essential input is missing, finish with needs_input.";
+  let resolution = "timeout";
+  const aborted = () => signal?.aborted || stopped();
+  try {
+    while (!aborted() && Date.now() < pending.expiresAt) {
+      const current = readJobFile(resolveJobFile(cwd, id));
+      if (!ACTIVE.has(current.status) || current.cancelRequested) break;
+      if (current.pendingQuestion?.id !== questionId) break;
+      if (current.pendingQuestion.answer !== undefined) { text = current.pendingQuestion.answer; resolution = "answered"; break; }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    const current = readJobFile(resolveJobFile(cwd, id));
+    if (aborted() || !ACTIVE.has(current.status) || current.cancelRequested) { resolution = "interrupted"; text = "The owner cancelled this task. Stop work and report interrupted."; }
+    return { text, resolution };
+  } finally {
+    updateJob(cwd, id, current => current.pendingQuestion?.id === questionId || current.phase === "needs_answer"
+      ? { pendingQuestion: null, lastQuestion: { id: questionId, resolution }, phase: resolution === "interrupted" || current.cancelRequested ? "interrupting" : "running" } : { lastQuestion: { id: questionId, resolution } });
+    onProgress?.(`Parent question ${resolution}: ${questionId}.`);
+  }
+}
 export function isParentQuestion(message, policy) {
   const p = message.params;
   return message.method === "item/tool/call" && p?.tool === "ask_parent" && (p.namespace == null || p.namespace === "") &&
@@ -112,6 +183,7 @@ export class JobRuntime {
         const job = readJobFile(resolveJobFile(cwd, id));
         if (job.cancelRequested) this.stop(job.cancelRequested.reason);
         else if (job.leaseExpiresAt && Date.now() >= job.leaseExpiresAt) this.stop("lease_expired");
+        else if (!foreground && ownerLost(job)) this.stop("owner_lost");
         else if (foreground && !this.reason) renewLease(cwd, id, foregroundOwner);
       } catch { this.stop("owner_state_unavailable"); }
     };
@@ -124,27 +196,8 @@ export class JobRuntime {
     this.abort.abort(reason);
   }
   async question(message) {
-    const id = `question-${randomUUID()}`;
-    const job = readJobFile(resolveJobFile(this.cwd, this.id));
-    if (job.pendingQuestion) return textReply("Another parent question is pending. Proceed on a conservative assumption and report it.");
-    const pending = { id, text: message.params.arguments.question, options: message.params.arguments.options ?? [], expiresAt: Date.now() + (job.questionTimeoutSec ?? 900) * 1000 };
-    updateJob(this.cwd, this.id, () => ({ pendingQuestion: pending, phase: "needs_answer" }));
-    this.onProgress?.({ message: `Parent question pending: ${id}.`, phase: "needs_answer" });
-    let answer = "No answer arrived before the timeout. Proceed on a conservative assumption within the authorized scope and report the assumption. If essential input is missing, finish with needs_input.";
-    let resolution = "timeout";
-    try {
-      while (!this.abort.signal.aborted && Date.now() < pending.expiresAt) {
-        const current = readJobFile(resolveJobFile(this.cwd, this.id)).pendingQuestion;
-        if (current?.id !== id) break;
-        if (current.answer !== undefined) { answer = current.answer; resolution = "answered"; break; }
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      if (this.abort.signal.aborted) { resolution = "interrupted"; answer = "The owner cancelled this task. Stop work and report interrupted."; }
-      return textReply(answer);
-    } finally {
-      updateJob(this.cwd, this.id, () => ({ pendingQuestion: null, lastQuestion: { id, resolution }, phase: this.reason ? "interrupting" : "running" }));
-      this.onProgress?.(`Parent question ${resolution}: ${id}.`);
-    }
+    const { text } = await askParentQuestion(this.cwd, this.id, message.params.arguments, { signal: this.abort.signal, onProgress: this.onProgress });
+    return textReply(text);
   }
   close() { clearInterval(this.timer); for (const [signal, handler] of this.handlers) process.off(signal, handler); }
 }
@@ -174,7 +227,7 @@ export function progressSnapshot(job) {
   const seconds = Math.floor(elapsedMs / 1000), elapsed = `${Math.floor(seconds / 60)}m${seconds % 60}s`;
   const phase = pending ? "needs_answer" : job.phase === "needs_answer" ? "running" : job.phase ?? job.status;
   return { status: pending ? "needs_answer" : job.status, jobId: job.id, threadId: job.threadId ?? null, turnId: job.turnId ?? null,
-    ownerId: job.ownerId ?? null, sessionId: job.sessionId ?? null, ...leaseSnapshot(job),
+    ownerId: job.ownerId ?? null, sessionId: job.sessionId ?? null, ownerAttached: Boolean(job.ownerAttached), ...leaseSnapshot(job),
     headline: `${pending ? "waiting for parent" : job.currentItem?.summary ?? phase} · ${elapsed}`.slice(0, 60), phase, elapsed, elapsedMs,
     startupTimings: { mcpReady: null, ...job.startupTimings }, startupWarning: job.startupWarning ?? null,
     currentItem: job.currentItem ?? null, completedItems: job.completedItems ?? [],
