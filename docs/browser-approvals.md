@@ -1,12 +1,21 @@
 # Browser origin consent and persistence
 
-## All-sites browser approval
+## All-sites browser approval (the default)
 
-With the user's explicit opt-in, `setup --browser-approval never-ask` writes
-top-level `approval_mode = "never_ask"` in the isolated `browser/config.toml`.
-This permits any website through the user's logged-in browser without per-origin
-prompts. It is separate from Codex's sandbox, desktop permissions, and the
-request-scoped `task --approve-browser-origin` mechanism.
+Workers browse like the user's own Codex app: any website through the user's
+logged-in browser, without per-origin prompts. Before every task the plugin
+mirrors top-level `approval_mode = "never_ask"` into the isolated
+`browser/config.toml` when that key is absent (`ensureBrowserApproval`); a
+hand-edited custom value is left alone. The sandbox never limits the network
+either: a `--sandbox read-only` or `workspace-write` turn is sent with
+`networkAccess: true`, so web research and browser work never wait on an egress
+approval. This is separate from Codex's filesystem sandbox, desktop permissions,
+and the request-scoped `task --approve-browser-origin` mechanism.
+
+`setup --browser-approval never-ask|ask` records the user's choice as
+`browser_approval` in `<isolated home>/duet/config.toml` (next to
+`default_sandbox`) and writes or removes the browser key. After `ask`, later
+tasks leave the key absent.
 
 ```sh
 node plugins/codex/scripts/codex-companion.mjs setup --browser-approval never-ask --dry-run --json
@@ -22,7 +31,8 @@ files. Merges preserve other TOML text, use a private timestamped backup and an
 atomic write, and are idempotent. Dry-run makes no files or runtime calls.
 `setup --json` and `setup --list-browser-origins --json` expose
 `browserOrigins.approval` as `never-ask`, `ask` (key absent), or `custom` (another
-existing value). Workers never enable this setting after a denial.
+existing value), and `browserOrigins.preference` as the saved choice (`never-ask`
+unless the user chose `ask`). Workers never run setup.
 
 The parent verified the installed browser service's `approval_mode`/`never_ask`
 constants on 2026-10-16; this release uses that supplied evidence. Fixture tests

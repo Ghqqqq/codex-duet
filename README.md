@@ -189,6 +189,7 @@ half the lease for shorter leases).
 | Speed | normal | `--fast` requests the fast tier for that call only; `--normal` resets |
 | Codex sandbox | `danger-full-access` (full access, like the Codex app's own full-access mode) | Lower the default with `setup --default-sandbox read-only\|workspace-write` (stored in `~/.claude/codex-isolated/duet/config.toml`); narrow or widen one call with `task --sandbox <mode>`; `--write` is a floor (at least `workspace-write`), `--write=false` an explicit read-only call |
 | Approval policy | `never` | — |
+| Browser | unrestricted: any website, no per-origin prompt (`approval_mode = "never_ask"` is mirrored into the isolated browser runtime before every task); network access stays on in every sandbox mode | `setup --browser-approval ask` restores the runtime's ordinary origin checks (saved in `duet/config.toml`); `setup --browser-approval never-ask` returns to the default |
 
 The parent chooses a sandbox per call the way it would choose a permission mode
 for a native subagent; without a flag the configured default applies. Each
@@ -300,19 +301,20 @@ backup first. Unrelated configuration is preserved byte-for-byte.
 
 ### Match your Codex App
 
-Opt into the Codex App's installed browser/desktop tools, a full-access task
-default, and browser access to all sites. From the repository root, preview
-each of these three independent changes first:
+Workers already default to full access and an unrestricted browser, like the
+Codex app's own full-access mode. What remains to opt into is the Codex App's
+installed browser/desktop tools; preview the change first from the repository
+root:
 
 ```bash
 node plugins/codex/scripts/codex-companion.mjs setup --sync-tools --profile codex-app --replace-cua --dry-run --json
-node plugins/codex/scripts/codex-companion.mjs setup --default-sandbox danger-full-access --dry-run --json
-node plugins/codex/scripts/codex-companion.mjs setup --browser-approval never-ask --dry-run --json
 ```
 
-After reviewing the previews, rerun each command without `--dry-run` to apply.
-These options are independent; select only the capabilities you want.
-**Security:** together they grant full disk write access, desktop control, and
+After reviewing the preview, rerun without `--dry-run` to apply. The defaults
+can be lowered independently: `setup --default-sandbox read-only|workspace-write`
+and `setup --browser-approval ask` (undo with `--default-sandbox
+danger-full-access` and `--browser-approval never-ask`).
+**Security:** together these grant full disk write access, desktop control, and
 access to any website with the user's logged-in browser. An isolated Codex home
 keeps runtime data separate; it does not confine these capabilities. Workers
 still follow the assignment's scope and never elevate after a denial.
@@ -343,12 +345,18 @@ guarantees at least workspace-write and `--write=false` requests read-only.
 Lower the default with `setup --default-sandbox read-only` or `workspace-write`;
 use `task --sandbox read-only` for one call. Review commands remain read-only.
 
-`setup --browser-approval ask` removes only top-level `approval_mode` from the
-isolated `browser/config.toml`; existing per-origin grants and download/upload/
-history settings remain unchanged. `setup --json` reports `defaultSandbox` and
-`browserOrigins.approval`; `setup --list-browser-origins --json` includes the
-browser mode. See [worker operations](docs/worker-operations.md#codex-app-profile)
-and [browser approvals](docs/browser-approvals.md#all-sites-browser-approval).
+The browser is unrestricted by default. Before every task the plugin mirrors
+top-level `approval_mode = "never_ask"` into the isolated `browser/config.toml`
+when the key is absent, so any website opens without a per-origin prompt, and
+every sandbox mode (even `--sandbox read-only`) keeps network access on.
+`setup --browser-approval ask` removes that key and records the choice in
+`duet/config.toml` so later tasks leave it absent; existing per-origin grants
+and download/upload/history settings remain unchanged, and a hand-edited custom
+value is never overwritten. `setup --json` reports `defaultSandbox`,
+`browserOrigins.approval` (the file) and `browserOrigins.preference` (the saved
+choice); `setup --list-browser-origins --json` includes the same. See
+[worker operations](docs/worker-operations.md#codex-app-profile) and
+[browser approvals](docs/browser-approvals.md#all-sites-browser-approval-the-default).
 
 ### Browser and computer-use tooling
 
@@ -383,9 +391,11 @@ Only add origins the user has explicitly approved; Duet never adds one after a
 denial.
 
 `task --approve-browser-origin <origin>` is narrower: it approves only the
-schema-defined, network-only command approval for the current turn. Unsupported
-browser elicitations are answered with `cancel`, which the browser runtime does
-not persist as a deny. Details: [browser approvals](docs/browser-approvals.md).
+schema-defined, network-only command approval for the current turn. With the
+unrestricted default and network access on in every sandbox mode it is normally
+unnecessary. Unsupported browser elicitations are answered with `cancel`, which
+the browser runtime does not persist as a deny. Details:
+[browser approvals](docs/browser-approvals.md).
 
 ### Model transport
 

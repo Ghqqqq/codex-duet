@@ -6,7 +6,7 @@ import { UNREACHABLE_GUIDANCE } from "./lib/runtime-errors.mjs";
 import { getToolAvailability, syncToolConfig } from "./lib/tool-config.mjs";
 import { buildWorkerReport, persistTaskArtifacts, taskArtifactPaths } from "./lib/worker-report.mjs";
 import { normalizeBrowserOrigins } from "./lib/server-requests.mjs";
-import { browserOriginSetup, transportSetup, defaultSandboxSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
+import { browserOriginSetup, transportSetup, defaultSandboxSetup, ensureBrowserApproval, SANDBOX_MODES } from "./lib/setup-config.mjs";
 import { activityReader, formatActivity, redactActivity, snippet } from "./lib/activity.mjs";
 import { JobRuntime, ACTIVE, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, continuationReport, adoptJob, ownershipNotice, markOwnerAttachment } from "./lib/job-runtime.mjs";
 import { updateJob } from "./lib/state.mjs";
@@ -991,6 +991,9 @@ async function handleTask(argv) {
     else sandbox = configured;
   }
   write = sandbox !== "read-only";
+  // The browser is unrestricted by default: mirror the saved preference into
+  // the browser runtime's own file before Codex starts (a no-op once written).
+  try { ensureBrowserApproval(); } catch (error) { process.stderr.write(`Browser approval preference not applied: ${error.message}\n`); }
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast: Boolean(resumeLast || threadId)

@@ -1274,6 +1274,10 @@ export async function runAppServerTurn(cwd, options = {}) {
     if (sandbox !== (options.sandbox ?? "read-only")) {
       throw new Error("Codex did not acknowledge the requested sandbox policy; refusing to start the turn.");
     }
+    // The sandbox limits what Codex may write, never where it may connect: a
+    // narrowed read-only/workspace-write call keeps full network access, so web
+    // research, package installs and browser work never hit an egress approval.
+    const turnPolicy = threadPolicy.type === "dangerFullAccess" ? threadPolicy : { ...threadPolicy, networkAccess: true };
     const turnState = await captureTurn(
       client,
       threadId,
@@ -1286,7 +1290,7 @@ export async function runAppServerTurn(cwd, options = {}) {
           serviceTier: options.serviceTier ?? null,
           outputSchema: options.outputSchema ?? null,
           approvalPolicy: "never",
-          ...(options.explicitSandbox ? { sandboxPolicy: threadPolicy } : {})
+          ...(options.explicitSandbox ? { sandboxPolicy: turnPolicy } : {})
         }),
       { onProgress: options.onProgress, safeProgress: true, onTiming, signal: options.signal }
     );
@@ -1294,7 +1298,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     return {
       status: buildResultStatus(turnState),
       sandbox,
-      sandboxPolicy: threadPolicy,
+      sandboxPolicy: options.explicitSandbox ? turnPolicy : threadPolicy,
       approvalPolicy: "never",
       approvedBrowserOrigins: options.approvedBrowserOrigins ?? [],
       threadId,

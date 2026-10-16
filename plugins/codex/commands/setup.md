@@ -65,15 +65,20 @@ win: `task --sandbox <mode>` narrows or widens one call on its own, `--write`
 alone guarantees at least workspace-write, `--write=false` requests read-only.
 `setup --json` reports `defaultSandbox`. Workers never modify this setting.
 
-`--browser-approval never-ask|ask` writes or removes only top-level approval_mode
-in the isolated browser/config.toml. `never-ask` stores `"never_ask"` and permits
-all sites without per-origin prompts. `ask` removes the key; persistent origin
-grants still apply. Download/upload/history settings and session files are
-unchanged. Both setup JSON and `--list-browser-origins` report browserOrigins.approval.
-Support `--dry-run`, show backups, and require explicit user opt-in for this setup
-action. Combined with the Codex App profile and danger-full-access default, these
-options grant full disk write, desktop control and any website through the user's
-logged-in browser. Never enable them automatically after a denial.
+Browser access is unrestricted by default, like the user's own Codex app: before
+every task the plugin mirrors top-level `approval_mode = "never_ask"` into the
+isolated browser/config.toml when that key is absent, so workers reach any site
+without per-origin prompts. `--browser-approval never-ask|ask` records the user's
+choice in `<isolated home>/duet/config.toml` (`browser_approval`) and writes or
+removes the browser key: `ask` removes it and later tasks leave it absent, so the
+runtime's ordinary origin checks and persistent grants apply again. A hand-edited
+custom value is never overwritten. Download/upload/history settings and session
+files are unchanged. Setup JSON and `--list-browser-origins` report
+browserOrigins.approval (the file) and browserOrigins.preference (the saved
+choice). Support `--dry-run` and show backups. Combined with the Codex App
+profile and the full-access sandbox default, workers have full disk write,
+desktop control and any website through the user's logged-in browser; the user
+lowers any of these explicitly with setup.
 
 Transport/browser setup is offline. `--transport status` only reads selected
 transport; explicit `--transport http|websocket` merges a named ChatGPT provider
@@ -92,6 +97,7 @@ validation. Preserve other content, show changed files and backups, and support
 operations. Never run these commands automatically after a denial or from a worker.
 Unsupported MCP elicitations now return nonpersistent cancel. The task-only
 `--approve-browser-origin` flag remains a separate per-invocation network-egress
-grant. See [persistence evidence](../../../docs/browser-approvals.md).
+grant; it is normally unnecessary because every sandbox mode keeps network access
+on. See [persistence evidence](../../../docs/browser-approvals.md).
 Browser assignments use fresh owned tabs, close them in cleanup, and report stale
 claims with the full session ID. Setup never opens or controls a browser.

@@ -41,9 +41,12 @@ full UUID form and includes `browserBlocker` with kind, tab ID and session ID.
 It conservatively marks an otherwise successful turn as `needs_input`; it does
 not infer that the old session is dead or release its claim.
 
-With the user's explicit consent per origin, the parent may supply repeated
-`task --approve-browser-origin https://example.com` flags. The worker forwards
-them exactly as supplied. The CLI normalizes scheme/host case and default ports,
+The browser is unrestricted by default (`approval_mode = "never_ask"` mirrored
+into the isolated browser runtime before every task) and every sandbox mode keeps
+`networkAccess: true`, so browser assignments normally need no origin flag. For
+the rare case where the user chose `setup --browser-approval ask`, the parent may
+supply repeated `task --approve-browser-origin https://example.com` flags. The
+worker forwards them exactly as supplied. The CLI normalizes scheme/host case and default ports,
 deduplicates, and rejects paths (even `/`), queries, fragments, userinfo,
 wildcards and malformed values before starting the runtime. There is no implicit
 subdomain or redirect grant. Each invocation, including `--thread`, starts with
@@ -388,10 +391,11 @@ Replacements share the existing exclusive lock, atomic write and private backup.
 The usual result is browser + computer, with chrome/iab/mcpapps and the Sky
 service. Desktop permissions belong to Codex Computer Use.app. Availability is
 configuration evidence only: setup does not grant Accessibility/Screen Recording
-or open a desktop/browser session. Combined with a full-access default and
-`setup --browser-approval never-ask`, this permits full disk write, desktop control,
-and any website through the user's logged-in browser. Opt in deliberately; see
-[browser approval settings](browser-approvals.md#all-sites-browser-approval).
+or open a desktop/browser session. Combined with the full-access sandbox default
+and the unrestricted browser default, this permits full disk write, desktop
+control, and any website through the user's logged-in browser. Lower either
+default with `setup --default-sandbox` / `setup --browser-approval ask`; see
+[browser approval settings](browser-approvals.md#all-sites-browser-approval-the-default).
 
 ### Modern CUA registration (default Chrome profile)
 

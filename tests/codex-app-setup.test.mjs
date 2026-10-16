@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { makeTempDir, run } from "./helpers.mjs";
 import { installCuaFixture } from "./cua-config-fixture.mjs";
 import { syncToolConfig, readToolConfig } from "../plugins/codex/scripts/lib/tool-config.mjs";
-import { browserOriginSetup, defaultSandboxSetup } from "../plugins/codex/scripts/lib/setup-config.mjs";
+import { browserOriginSetup, defaultSandboxSetup, ensureBrowserApproval } from "../plugins/codex/scripts/lib/setup-config.mjs";
 
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
 function fixture() {
@@ -143,16 +143,19 @@ test("browser approval merges only the top-level key, backs up, removes and repo
   assert.equal(setup({ approval: "never-ask", dryRun: true }).approval, "never-ask");
   assert.equal(fs.readFileSync(file, "utf8"), before);
   assert.deepEqual(fs.readdirSync(dir).sort(), ["config.toml", "sessions"]);
+  const preferenceFile = path.join(f.env.CODEX_COMPANION_HOME, "duet", "config.toml");
   const result = setup({ approval: "never-ask" });
-  assert.deepEqual(result.changedFiles, [file]);
+  assert.deepEqual(result.changedFiles, [file, preferenceFile], "the choice is remembered plugin-wide next to default_sandbox");
   assert.equal(fs.readFileSync(result.backups[0], "utf8"), before);
   assert.equal(fs.statSync(result.backups[0]).mode & 0o777, 0o600);
   assert.equal(fs.readFileSync(file, "utf8"), '"approval_mode" = "never_ask"\n' + before);
+  assert.equal(fs.readFileSync(preferenceFile, "utf8"), '"browser_approval" = "never-ask"\n');
   assert.deepEqual(setup({ approval: "never-ask" }).changedFiles, []);
   assert.equal(JSON.parse(f.call("--list-browser-origins", "--json").stdout).browserOrigins.approval, "never-ask");
   const removed = setup({ approval: "ask" });
-  assert.equal(removed.approval, "ask"); assert.equal(removed.backups.length, 1);
+  assert.equal(removed.approval, "ask"); assert.equal(removed.preference, "ask"); assert.equal(removed.backups.length, 2);
   assert.equal(fs.readFileSync(file, "utf8"), before);
+  assert.equal(fs.readFileSync(preferenceFile, "utf8"), '"browser_approval" = "ask"\n');
   assert.equal(fs.readFileSync(session, "utf8"), '[origins]\ndenied = ["https://example.com"]\n');
   assert.deepEqual(setup({ approval: "ask" }).changedFiles, []);
   fs.writeFileSync(file, 'approval_mode = "ask" # local choice\n' + before);
@@ -161,12 +164,37 @@ test("browser approval merges only the top-level key, backs up, removes and repo
   assert.equal(f.call("--browser-approval", "invalid").status, 1);
 });
 
-test("browser approval dry-run and ask do not create a missing home; mixed changes reject", () => {
+test("browser approval dry-run does not create a missing home; ask records only the preference; mixed changes reject", () => {
   const f = fixture();
-  for (const args of [["--browser-approval", "never-ask", "--dry-run"], ["--browser-approval", "ask"]]) assert.equal(f.call(...args, "--json").status, 0);
+  assert.equal(f.call("--browser-approval", "never-ask", "--dry-run", "--json").status, 0);
   assert.equal(fs.existsSync(f.env.CODEX_COMPANION_HOME), false);
   for (const args of [["--default-sandbox", "danger-full-access", "--browser-approval", "never-ask"], ["--sync-tools", "--browser-approval", "never-ask"], ["--transport", "http", "--browser-approval", "never-ask"]]) assert.notEqual(f.call(...args).status, 0);
   assert.equal(fs.existsSync(f.env.CODEX_COMPANION_HOME), false);
+  const ask = JSON.parse(f.call("--browser-approval", "ask", "--json").stdout).browserOrigins;
+  assert.equal(ask.preference, "ask");
+  assert.deepEqual(fs.readdirSync(f.env.CODEX_COMPANION_HOME), ["duet"], "no browser file is written just to say ask");
+});
+
+test("browser access is unrestricted by default: tasks mirror never_ask into the browser runtime file unless the user chose ask", () => {
+  const f = fixture(), browserFile = path.join(f.env.CODEX_COMPANION_HOME, "browser", "config.toml");
+  const setup = options => browserOriginSetup({ env: f.env, ...options });
+  assert.equal(setup().preference, "never-ask", "built-in default: any website, like the user's own Codex app");
+  assert.equal(setup().approval, "ask", "nothing is written until a task starts");
+  let applied = ensureBrowserApproval({ env: f.env });
+  assert.deepEqual([applied.browserApproval, applied.approval, applied.changedFiles], ["never-ask", "never-ask", [browserFile]]);
+  assert.equal(fs.readFileSync(browserFile, "utf8"), '"approval_mode" = "never_ask"\n');
+  assert.deepEqual(ensureBrowserApproval({ env: f.env }).changedFiles, [], "idempotent once written");
+  // The user's explicit ask wins over the built-in default on later tasks.
+  setup({ approval: "ask" });
+  applied = ensureBrowserApproval({ env: f.env });
+  assert.deepEqual([applied.browserApproval, applied.approval, applied.changedFiles], ["ask", "ask", []]);
+  assert.equal(fs.readFileSync(browserFile, "utf8"), "");
+  // A hand-written custom value is never overwritten either.
+  setup({ approval: "never-ask" }); fs.writeFileSync(browserFile, 'approval_mode = "custom_mode"\n');
+  assert.deepEqual(ensureBrowserApproval({ env: f.env }).changedFiles, []);
+  assert.equal(fs.readFileSync(browserFile, "utf8"), 'approval_mode = "custom_mode"\n');
+  fs.writeFileSync(path.join(f.env.CODEX_COMPANION_HOME, "duet", "config.toml"), 'browser_approval = "sometimes"\n');
+  assert.throws(() => ensureBrowserApproval({ env: f.env }), /browser_approval/);
 });
 
 test("default sandbox persists plugin-wide in the isolated home regardless of CLAUDE_PLUGIN_DATA", () => {

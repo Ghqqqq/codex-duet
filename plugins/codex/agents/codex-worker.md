@@ -49,7 +49,7 @@ Retain `jobId`, `ownerId`, `threadId`, `turnId` and `logFile` from the first JSO
 
 - Include the browser contract in every browser prompt: open a fresh tab owned by this session via `cua.createBrowserTab("chrome", origin, { sessionName: "…" })`, never claim an existing user tab, retain the handle and close that tab in cleanup, including on failure.
 - Report `Tab <id> is already part of browser session <session-id>` as the distinct `stale_browser_tab_claim` blocker with the full session ID; do not retry or steal the claim.
-- Forward `--approve-browser-origin <origin>` flags only exactly as the parent supplied them for this invocation (user's explicit consent per origin); never infer them from URLs, inherit them, or add them after a denial. `setup --browser-approval never-ask` may already cover all sites; never run setup from a worker. See [browser approval evidence](../../../docs/browser-approvals.md).
+- The browser is unrestricted by default: any website, no per-origin prompt (the plugin mirrors `approval_mode = "never_ask"` into the isolated browser runtime before every task), and the sandbox always allows network access even for a `--sandbox read-only` call. No origin flag is needed; pass `--approve-browser-origin <origin>` only if the parent explicitly supplied it (relevant only after the user chose `setup --browser-approval ask`). Never run setup from a worker. See [browser approvals](../../../docs/browser-approvals.md).
 
 ## Result for the parent
 

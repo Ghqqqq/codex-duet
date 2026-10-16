@@ -45,8 +45,12 @@ test("full access is the built-in default; setup --default-sandbox lowers it and
   assert.equal(json(f.call("task", "--write", "--json", "investigate")).sandbox, "danger-full-access");
   assert.equal(json(f.call("task", "--write=false", "--json", "investigate")).sandbox, "read-only");
   assert.equal(json(f.call("task", "--write", "--sandbox", "workspace-write", "--json", "investigate")).sandbox, "workspace-write");
-  assert.equal(json(f.call("setup", "--browser-approval", "never-ask", "--json")).browserOrigins.approval, "never-ask");
+  // Every task mirrored the unrestricted browser default into the runtime's file.
   assert.equal(json(f.call("setup", "--json")).browserOrigins.approval, "never-ask");
+  assert.equal(fs.readFileSync(path.join(f.env.HOME, ".claude", "codex-isolated", "browser", "config.toml"), "utf8"), '"approval_mode" = "never_ask"\n');
+  assert.equal(json(f.call("setup", "--browser-approval", "ask", "--json")).browserOrigins.approval, "ask");
+  assert.equal(json(f.call("task", "--json", "investigate")).sandbox, "danger-full-access");
+  assert.equal(json(f.call("setup", "--json")).browserOrigins.approval, "ask", "an explicit ask survives later tasks");
 });
 
 test("task sandbox reaches thread and turn APIs and resets to the default on an ordinary follow-up", () => {
@@ -67,6 +71,7 @@ test("task sandbox reaches thread and turn APIs and resets to the default on an 
   assert.equal(narrowed.approvalPolicy, "never");
   assert.equal(f.state().lastThreadStart.sandbox, "read-only");
   assert.equal(f.state().lastTurnStart.sandboxPolicy.type, "readOnly");
+  assert.equal(f.state().lastTurnStart.sandboxPolicy.networkAccess, true, "a narrowed sandbox limits writes, never where Codex may connect");
   assert.equal(f.state().lastTurnStart.approvalPolicy, "never");
   const normal = task("--thread", narrowed.threadId);
   assert.equal(normal.sandbox, "danger-full-access", "a follow-up without flags returns to the default, not the previous call");

@@ -86,13 +86,46 @@ function origins(text, key) {
   if (!Array.isArray(values) || values.some(v => typeof v !== "string")) throw new Error("Browser origins must be string arrays; no configuration changed.");
   return values;
 }
-export function browserOriginSetup({ allow = [], revoke = [], approval, env = process.env, dryRun = false } = {}) {
-  if (approval !== undefined && !["never-ask", "ask"].includes(approval)) throw new Error("--browser-approval must be never-ask or ask.");
+// Plugin-wide preferences live in <isolated home>/duet/config.toml: one location
+// whether the caller runs inside a Claude session (CLAUDE_PLUGIN_DATA set) or
+// from a plain terminal, so the default a user configures is the default every
+// worker actually applies.
+const duetConfig = env => { const root = path.join(resolveIsolatedCodexHome(env), "duet"); return { root, file: path.join(root, "config.toml") }; };
+
+export const BROWSER_APPROVAL_MODES = ["never-ask", "ask"];
+// Workers browse like the user's own Codex app: any website, no per-origin
+// prompt, unless the user lowers this with setup --browser-approval ask.
+export const BUILTIN_BROWSER_APPROVAL = "never-ask";
+export function browserApprovalPreference(env = process.env) {
+  const { root, file } = duetConfig(env);
+  const value = readTomlField(read(root, file), ["browser_approval"]) ?? BUILTIN_BROWSER_APPROVAL;
+  if (!BROWSER_APPROVAL_MODES.includes(value)) throw new Error("Invalid saved browser_approval; repair it with setup --browser-approval.");
+  return value;
+}
+// The browser runtime reads only browser/config.toml, so the preference is
+// mirrored there before each task. A missing key means "ask"; the built-in
+// never-ask default fills it in. An explicit "ask" preference or a custom value
+// written by hand is left alone.
+export function ensureBrowserApproval({ env = process.env } = {}) {
+  const preference = browserApprovalPreference(env), current = browserOriginSetup({ env });
+  if (preference !== "never-ask" || current.approval !== "ask") return { browserApproval: preference, approval: current.approval, changedFiles: [], backups: [] };
+  const result = browserOriginSetup({ env, approval: "never-ask", remember: false });
+  return { browserApproval: preference, approval: result.approval, changedFiles: result.changedFiles, backups: result.backups };
+}
+export function browserOriginSetup({ allow = [], revoke = [], approval, env = process.env, dryRun = false, remember = true } = {}) {
+  if (approval !== undefined && !BROWSER_APPROVAL_MODES.includes(approval)) throw new Error("--browser-approval must be never-ask or ask.");
   allow = normalizeBrowserOrigins(allow); revoke = normalizeBrowserOrigins(revoke);
   if (allow.some(o => revoke.includes(o))) throw new Error("Do not allow and revoke the same browser origin together.");
   const home = resolveIsolatedCodexHome(env), file = path.join(home, "browser", "config.toml");
   const before = read(home, file); let after = before;
-  if (approval !== undefined) after = setTomlField(after, ["approval_mode"], approval === "never-ask" ? "never_ask" : undefined);
+  const preference = duetConfig(env), preferenceBefore = read(home, preference.file);
+  let preferenceAfter = preferenceBefore;
+  if (approval !== undefined) {
+    after = setTomlField(after, ["approval_mode"], approval === "never-ask" ? "never_ask" : undefined);
+    // Remember an explicit choice so the next task does not reapply the built-in
+    // default; applying that default itself leaves the preference file alone.
+    if (remember) preferenceAfter = setTomlField(preferenceBefore, ["browser_approval"], approval);
+  }
   let allowed = origins(before, "allowed"), denied = origins(before, "denied");
   for (const origin of allow) { if (!allowed.some(v => matches(v, origin))) allowed.push(origin); denied = denied.filter(v => !matches(v, origin)); }
   for (const origin of revoke) { allowed = allowed.filter(v => !matches(v, origin)); if (!denied.some(v => matches(v, origin))) denied.push(origin); }
@@ -100,7 +133,7 @@ export function browserOriginSetup({ allow = [], revoke = [], approval, env = pr
     after = setTomlField(after, ["origins", "allowed"], allowed);
     after = setTomlField(after, ["origins", "denied"], denied);
   }
-  const edits = [{ file, before, after }], sessionDir = path.join(home, "browser", "sessions");
+  const edits = [{ file, before, after }, { file: preference.file, before: preferenceBefore, after: preferenceAfter }], sessionDir = path.join(home, "browser", "sessions");
   if (allow.length && fs.existsSync(sessionDir)) {
     safeFile(home, sessionDir);
     for (const name of fs.readdirSync(sessionDir).sort()) {
@@ -112,7 +145,8 @@ export function browserOriginSetup({ allow = [], revoke = [], approval, env = pr
   }
   const safeList = values => values.flatMap(v => { try { return [normalizeBrowserOrigin(v)]; } catch { return []; } });
   const approvalMode = readTomlField(after, ["approval_mode"]);
-  return { file, approval: approvalMode === "never_ask" ? "never-ask" : approvalMode === undefined ? "ask" : "custom", allowed: safeList(allowed), denied: safeList(denied), unsupportedEntries: allowed.length + denied.length - safeList(allowed).length - safeList(denied).length, ...apply(home, edits, dryRun) };
+  const saved = readTomlField(preferenceAfter, ["browser_approval"]);
+  return { file, approval: approvalMode === "never_ask" ? "never-ask" : approvalMode === undefined ? "ask" : "custom", preference: BROWSER_APPROVAL_MODES.includes(saved) ? saved : BUILTIN_BROWSER_APPROVAL, allowed: safeList(allowed), denied: safeList(denied), unsupportedEntries: allowed.length + denied.length - safeList(allowed).length - safeList(denied).length, ...apply(home, edits, dryRun) };
 }
 
 export const SANDBOX_MODES = ["read-only", "workspace-write", "danger-full-access"];
@@ -121,11 +155,7 @@ export const SANDBOX_MODES = ["read-only", "workspace-write", "danger-full-acces
 export const BUILTIN_DEFAULT_SANDBOX = "danger-full-access";
 export function defaultSandboxSetup({ mode, env = process.env, dryRun = false } = {}) {
   if (mode !== undefined && !SANDBOX_MODES.includes(mode)) throw new Error("--default-sandbox must be read-only, workspace-write, or danger-full-access.");
-  // One location for every caller: the isolated home is known both inside a
-  // Claude session (CLAUDE_PLUGIN_DATA set) and from a plain terminal (unset), so
-  // the default a user configures is the default every worker actually applies.
-  const root = path.join(resolveIsolatedCodexHome(env), "duet");
-  const file = path.join(root, "config.toml"), before = read(root, file);
+  const { root, file } = duetConfig(env), before = read(root, file);
   const after = mode === undefined ? before : setTomlField(before, ["default_sandbox"], mode);
   const defaultSandbox = readTomlField(after, ["default_sandbox"]) ?? BUILTIN_DEFAULT_SANDBOX;
   if (!SANDBOX_MODES.includes(defaultSandbox)) throw new Error("Invalid saved default_sandbox; repair it with setup --default-sandbox.");

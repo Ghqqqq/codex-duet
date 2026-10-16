@@ -1,6 +1,6 @@
 {
   "name": "codex",
-  "version": "1.0.6-isolated.13",
+  "version": "1.0.6-isolated.14",
   "description": "Duet: delegate coding, research and review from Claude Code to parallel Codex workers.",
   "author": {
     "name": "OpenAI"

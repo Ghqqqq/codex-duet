@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.6-isolated.14
+
+- Browser unrestricted by default, like the user's own Codex app: before every task the plugin mirrors top-level `approval_mode = "never_ask"` into the isolated `browser/config.toml` when the key is absent (`ensureBrowserApproval`), so workers open any website without per-origin prompts and no `--approve-browser-origin` flag is needed. `setup --browser-approval never-ask|ask` now also records the choice as `browser_approval` in `<isolated home>/duet/config.toml`; after `ask`, later tasks leave the key absent. A hand-edited custom value is never overwritten. Setup JSON adds `browserOrigins.preference`.
+- The sandbox limits writes, never the network: a narrowed `--sandbox read-only` or `workspace-write` turn is sent with `networkAccess: true`, so web research, package installs and browser work never wait on an egress approval (verified live: `curl` succeeds under `--sandbox read-only`).
+- Worker contract, `/codex:setup`, README and docs updated; fixture coverage for the default mirroring, the saved `ask` preference, custom values and network access on narrowed turns.
+
 ## 1.0.6-isolated.13
 
 - Permissions like a native subagent's: the built-in sandbox default is now `danger-full-access` (the same level as the user's own Codex app in full-access mode, approval policy `never`). `setup --default-sandbox read-only|workspace-write` lowers it; the parent narrows or widens one call with `task --sandbox <mode>` alone. `--write` remains a floor (at least workspace-write) and `--write=false` an explicit read-only request; the "write-capable `--sandbox` requires `--write`" rule is gone. The sandbox now always reaches the turn policy too.
