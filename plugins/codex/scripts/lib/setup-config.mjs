@@ -26,6 +26,7 @@ export function readTomlField(text, keys) {
 export function setTomlField(text, keys, value) {
   if (same(readTomlField(text, keys), value)) return text;
   const entries = scan(text), found = entries.find(e => same(e.keys, keys));
+  if (value === undefined) return found ? text.slice(0, found.start) + text.slice(found.end) : text;
   if (found) {
     // Preserve an inline comment without interpreting quoted '#' characters.
     let quote = null, escaped = false, comment = "";
@@ -47,6 +48,7 @@ export function setTomlField(text, keys, value) {
   return `${text}${text.endsWith("\n") || !text ? "" : "\n"}\n[${section.map(k => JSON.stringify(k)).join(".")}]\n${line}`;
 }
 function safeFile(home, file) {
+  if (fs.existsSync(home) && fs.lstatSync(home).isSymbolicLink()) throw new Error("Configuration editing refuses symlinked paths.");
   const relative = path.relative(home, file);
   if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Configuration path escaped isolated home.");
   let current = home;
@@ -84,11 +86,13 @@ function origins(text, key) {
   if (!Array.isArray(values) || values.some(v => typeof v !== "string")) throw new Error("Browser origins must be string arrays; no configuration changed.");
   return values;
 }
-export function browserOriginSetup({ allow = [], revoke = [], env = process.env, dryRun = false } = {}) {
+export function browserOriginSetup({ allow = [], revoke = [], approval, env = process.env, dryRun = false } = {}) {
+  if (approval !== undefined && !["never-ask", "ask"].includes(approval)) throw new Error("--browser-approval must be never-ask or ask.");
   allow = normalizeBrowserOrigins(allow); revoke = normalizeBrowserOrigins(revoke);
   if (allow.some(o => revoke.includes(o))) throw new Error("Do not allow and revoke the same browser origin together.");
   const home = resolveIsolatedCodexHome(env), file = path.join(home, "browser", "config.toml");
   const before = read(home, file); let after = before;
+  if (approval !== undefined) after = setTomlField(after, ["approval_mode"], approval === "never-ask" ? "never_ask" : undefined);
   let allowed = origins(before, "allowed"), denied = origins(before, "denied");
   for (const origin of allow) { if (!allowed.some(v => matches(v, origin))) allowed.push(origin); denied = denied.filter(v => !matches(v, origin)); }
   for (const origin of revoke) { allowed = allowed.filter(v => !matches(v, origin)); if (!denied.some(v => matches(v, origin))) denied.push(origin); }
@@ -107,7 +111,22 @@ export function browserOriginSetup({ allow = [], revoke = [], env = process.env,
     }
   }
   const safeList = values => values.flatMap(v => { try { return [normalizeBrowserOrigin(v)]; } catch { return []; } });
-  return { file, allowed: safeList(allowed), denied: safeList(denied), unsupportedEntries: allowed.length + denied.length - safeList(allowed).length - safeList(denied).length, ...apply(home, edits, dryRun) };
+  const approvalMode = readTomlField(after, ["approval_mode"]);
+  return { file, approval: approvalMode === "never_ask" ? "never-ask" : approvalMode === undefined ? "ask" : "custom", allowed: safeList(allowed), denied: safeList(denied), unsupportedEntries: allowed.length + denied.length - safeList(allowed).length - safeList(denied).length, ...apply(home, edits, dryRun) };
+}
+
+export const SANDBOX_MODES = ["read-only", "workspace-write", "danger-full-access"];
+export function defaultSandboxSetup({ mode, env = process.env, dryRun = false } = {}) {
+  if (mode !== undefined && !SANDBOX_MODES.includes(mode)) throw new Error("--default-sandbox must be read-only, workspace-write, or danger-full-access.");
+  // Resolve even with plugin data set: retain isolation and the test-home guard.
+  const isolated = resolveIsolatedCodexHome(env);
+  const root = env.CLAUDE_PLUGIN_DATA || path.join(isolated, "duet");
+  if (!path.isAbsolute(root)) throw new Error("CLAUDE_PLUGIN_DATA must be an absolute path for plugin configuration.");
+  const file = path.join(root, "config.toml"), before = read(root, file);
+  const after = mode === undefined ? before : setTomlField(before, ["default_sandbox"], mode);
+  const defaultSandbox = readTomlField(after, ["default_sandbox"]) ?? "read-only";
+  if (!SANDBOX_MODES.includes(defaultSandbox)) throw new Error("Invalid saved default_sandbox; repair it with setup --default-sandbox.");
+  return { file, defaultSandbox, ...apply(root, [{ file, before, after }], dryRun) };
 }
 export function transportSetup({ mode = "status", env = process.env, dryRun = false } = {}) {
   if (!["http", "websocket", "status"].includes(mode)) throw new Error("--transport must be http, websocket or status.");

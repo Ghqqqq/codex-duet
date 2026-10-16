@@ -11,8 +11,37 @@ function fixture() {
   const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
   const env = { ...buildEnv(dir), CLAUDE_PLUGIN_DATA: path.join(dir, "data") };
   const call = (...args) => run(process.execPath, [script, ...args], { cwd: repo, env });
-  return { call, state: () => JSON.parse(fs.readFileSync(path.join(dir, "fake-codex-state.json"))) };
+  return { call, dir, env, script, state: () => JSON.parse(fs.readFileSync(path.join(dir, "fake-codex-state.json"))) };
 }
+
+test("configured sandbox persists across workspaces, implies write, and explicit task flags win", () => {
+  const f = fixture();
+  const json = result => { assert.equal(result.status, 0, result.stderr); return JSON.parse(result.stdout); };
+  assert.equal(json(f.call("setup", "--default-sandbox", "danger-full-access", "--dry-run", "--json")).defaultSandbox, "danger-full-access");
+  assert.throws(f.state, /ENOENT/, "offline setup cannot start a runtime");
+  const first = json(f.call("task", "--json", "investigate"));
+  assert.equal(first.sandbox, "read-only");
+  for (const mode of ["workspace-write", "danger-full-access"]) {
+    assert.equal(json(f.call("setup", "--default-sandbox", mode, "--json")).defaultSandbox, mode);
+    const result = json(f.call("task", "--thread", first.threadId, "--json", "--report", "investigate"));
+    assert.equal(result.sandbox, mode);
+    assert.equal(f.state().lastThreadResume.sandbox, mode);
+    assert.equal(f.state().lastTurnStart.sandboxPolicy.type, mode === "workspace-write" ? "workspaceWrite" : "dangerFullAccess");
+    assert.equal(f.state().lastTurnStart.approvalPolicy, "never");
+  }
+  assert.equal(json(f.call("setup", "--json")).defaultSandbox, "danger-full-access");
+  const other = path.join(f.dir, "other-workspace"); fs.mkdirSync(other); initGitRepo(other);
+  assert.equal(json(run(process.execPath, [f.script, "task", "--json", "investigate"], { cwd: other, env: f.env })).sandbox, "danger-full-access");
+  assert.equal(json(f.call("task", "--sandbox", "read-only", "--json", "investigate")).sandbox, "read-only");
+  assert.equal(json(f.call("task", "--write", "--json", "investigate")).sandbox, "workspace-write");
+  assert.equal(json(f.call("task", "--write=false", "--json", "investigate")).sandbox, "read-only");
+  assert.equal(json(f.call("task", "--write", "--sandbox", "workspace-write", "--json", "investigate")).sandbox, "workspace-write");
+  assert.notEqual(f.call("task", "--sandbox", "danger-full-access", "investigate").status, 0, "explicit sandbox still needs explicit --write");
+  assert.equal(json(f.call("setup", "--browser-approval", "never-ask", "--json")).browserOrigins.approval, "never-ask");
+  assert.equal(json(f.call("setup", "--json")).browserOrigins.approval, "never-ask");
+  json(f.call("setup", "--default-sandbox", "read-only", "--json"));
+  assert.equal(json(f.call("task", "--json", "investigate")).sandbox, "read-only");
+});
 
 test("task sandbox opt-in reaches thread and turn APIs, then resets on an ordinary follow-up", () => {
   const f = fixture();
@@ -59,7 +88,8 @@ test("task rejects unknown, missing and conflicting sandbox flags before startin
 
 test("background task persists and reports the deliberately requested sandbox", async () => {
   const f = fixture();
-  const launched = f.call("task", "--background", "--write", "--sandbox", "danger-full-access", "--json", "investigate");
+  assert.equal(f.call("setup", "--default-sandbox", "danger-full-access", "--json").status, 0);
+  const launched = f.call("task", "--background", "--json", "investigate");
   assert.equal(launched.status, 0, launched.stderr);
   const queued = JSON.parse(launched.stdout);
   assert.equal(queued.sandbox, "danger-full-access");

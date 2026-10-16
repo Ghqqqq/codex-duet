@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
-// No arbitrary template fields, env forwarding, instruction overrides, IPC,
-// identities, credentials, or launch arguments cross this boundary.
+// The Chrome-only profile rebuilds this allowlist; no instruction overrides,
+// IPC, identities, credentials, env forwarding or arbitrary arguments cross it.
 export const CUA_SETTING_KEYS = ["command", "args", "enabled", "enabled_tools", "omit_tools_from", "startup_timeout_sec", "tool_timeout_sec"];
 export const CUA_ENV_KEYS = [
   "CODEX_HOME", "CUA_REPL_NODE_REPL_PATH", "CUA_REPL_ENABLED_SURFACES",
@@ -14,6 +14,54 @@ const toolNames = ["js", "js_reset", "turn_ended"];
 const visibility = ["code_mode", "deferred"];
 const templateSuffix = "plugins/openai-bundled/plugins/unified-computer-use/.mcp.json";
 const nodeSuffix = "cua_node/bin/node";
+
+// The opt-in app profile mirrors the resolved cache entry, including its tool
+// instructions. Reject schema additions instead of accidentally importing auth.
+const APP_SETTING_KEYS = [...CUA_SETTING_KEYS, "tools", "env_vars", "env"];
+const APP_ENV_KEYS = [...CUA_ENV_KEYS, "SKY_CUA_SERVICE_PATH",
+  "NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER", "NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME",
+  "NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE"];
+
+export function buildCodexAppCuaConfig({ normal, isolated, cuaTemplate, chatgptResources }) {
+  if (chatgptResources) throw new Error("--chatgpt-resources is only supported by the chrome profile; codex-app preserves template paths.");
+  let templateFile = cuaTemplate && absolute(cuaTemplate, "CUA template");
+  if (!templateFile) {
+    const cache = path.join(normal, "plugins/cache/openai-bundled/unified-computer-use");
+    const versions = exists(cache) ? fs.readdirSync(cache).sort((a, b) => b.localeCompare(a, "en", { numeric: true })) : [];
+    templateFile = versions.map(v => path.join(cache, v, ".mcp.json")).find(exists);
+  }
+  if (!templateFile) throw new Error("Codex App CUA cache template not found; provide --cua-template /absolute/.mcp.json. No configuration was written.");
+  const template = readTemplate(templateFile);
+  const reject = () => { throw new Error("Unsupported Codex App CUA template schema; credentials, env forwarding and unknown fields are never imported. No configuration was written."); };
+  if (Object.keys(template).some(k => !APP_SETTING_KEYS.includes(k))) reject();
+  absolute(template.command, "node executable");
+  if (!template.command.endsWith(`/${nodeSuffix}`) || !Array.isArray(template.args) || template.args.length !== 1) reject();
+  absolute(template.args[0], "CUA launcher");
+  if (!template.args[0].endsWith("/@oai/cua-repl/bin/cua-repl.mjs")) reject();
+  if (template.enabled !== undefined && typeof template.enabled !== "boolean") reject();
+  exactList(template.enabled_tools, toolNames, "enabled_tools");
+  exactList(template.omit_tools_from, visibility, "omit_tools_from");
+  for (const key of ["startup_timeout_sec", "tool_timeout_sec"]) numberSetting(template[key], undefined, key, 600);
+  if (template.env_vars !== undefined && (!Array.isArray(template.env_vars) || template.env_vars.length)) reject();
+  if (template.tools !== undefined) {
+    if (!template.tools || Object.keys(template.tools).some(k => k !== "js") || !template.tools.js ||
+        Object.keys(template.tools.js).some(k => k !== "output_token_limit") ||
+        !Number.isInteger(template.tools.js.output_token_limit) || template.tools.js.output_token_limit < 1) reject();
+  }
+  if (!template.env || Array.isArray(template.env) || typeof template.env !== "object" ||
+      Object.entries(template.env).some(([k, v]) => !APP_ENV_KEYS.includes(k) || typeof v !== "string")) reject();
+  const originalHome = absolute(template.env.CODEX_HOME, "template CODEX_HOME");
+  const trust = template.env.NODE_REPL_TRUSTED_CODE_PATHS;
+  if (typeof trust !== "string" || !trust) reject();
+  const trustedPaths = trust.split(path.delimiter).map(p => {
+    if (p === "~/.codex" || p === originalHome || p === normal) return isolated;
+    absolute(p, "trusted code");
+    return p;
+  });
+  if (!trustedPaths.includes(isolated)) reject();
+  const { env: templateEnv, ...settings } = template;
+  return { settings, env: { ...templateEnv, CODEX_HOME: isolated, NODE_REPL_TRUSTED_CODE_PATHS: trustedPaths.join(path.delimiter) }, template: templateFile, resources: resourcesFromCommand(template.command) };
+}
 
 function exists(file) { return fs.existsSync(file); }
 function absolute(value, label) {

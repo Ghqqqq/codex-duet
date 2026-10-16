@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.6-isolated.10
+
+- Add opt-in `setup --sync-tools --profile codex-app`: mirror the newest resolved unified-computer-use cache template (or `--cua-template`), rewriting only home/trust-home fields. Preserve desktop/Sky, Chrome/IAB/MCP Apps, instructions, tool visibility/output limits and template timeouts without injecting a short tool timeout. Keep Chrome-only sync as the default profile; reject unknown/credential-bearing template fields.
+- Preview changed CUA fields safely and refuse replacement without `--replace-cua`. Replace the whole server and subtables with the existing backup/atomic-write protections; report resulting surfaces/backends.
+- Persist plugin-wide `setup --default-sandbox read-only|workspace-write|danger-full-access`. Tasks without per-call flags use the setting; write-capable defaults imply write. Explicit flags win, reviews stay read-only, and workers rely on the configured default without self-elevating after a denial.
+- Add `setup --browser-approval never-ask|ask` to merge/remove only top-level browser approval_mode, with offline dry-run and private backups. Preserve download/upload/history settings, origin lists and session files. Expose browser approval and sandbox defaults in setup JSON.
+- Document the independent opt-ins, full disk/desktop/logged-in-browser security implications, rollback and restart requirements. Add fake-template and fake-runtime coverage for mirroring, discovery, replacement/refusal, default persistence/precedence and browser merge/removal; no live home or desktop/browser changes are required by tests.
+
 ## 1.0.6-isolated.9
 
 - Narrow env-style redaction to uppercase assignments (case-sensitive) so ordinary flags such as `--effort=xhigh` stay readable in the feed; keyword-named keys/tokens/passwords/secrets/credentials remain redacted case-insensitively.

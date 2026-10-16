@@ -3,7 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
-import { buildCuaConfig } from "./cua-config.mjs";
+import { buildCuaConfig, buildCodexAppCuaConfig, CUA_SETTING_KEYS } from "./cua-config.mjs";
 
 export const TOOL_PLUGINS = ["browser", "chrome", "computer-use", "unified-computer-use"];
 export const NODE_REPL_ENV_KEYS = [
@@ -179,12 +179,40 @@ function toml(value) {
   return JSON.stringify(value);
 }
 
-export function syncToolConfig({ env = process.env, dryRun = false, cuaTemplate, chatgptResources } = {}) {
+const canonical = value => JSON.stringify(value, (_, v) => v && typeof v === "object" && !Array.isArray(v)
+  ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v);
+const isCua = keys => keys[0] === "mcp_servers" && keys[1] === "cua_repl";
+function removeCua(text) {
+  let section = [];
+  return statements(text).filter(raw => {
+    const line = raw.trim(), header = /^\[([^\n]+)\]\s*(?:#.*)?$/.exec(line);
+    if (header && !line.startsWith("[[")) { section = keyPath(header[1]); return !isCua(section); }
+    if (line.startsWith("[")) section = ["ignored-array-table"];
+    if (isCua(section)) return false;
+    const match = /^((?:"(?:\\.|[^"\\])*"|'[^']*'|[^=])+)=([\s\S]*)$/.exec(line);
+    return !match || !isCua([...section, ...keyPath(match[1].trim())]);
+  }).join("\n");
+}
+function cuaDiff(before, after) {
+  // Existing destination values may contain secrets. Show changed field names
+  // and exact validated replacement values, never echo the old server contents.
+  return [...new Set([...Object.keys(before ?? {}), ...Object.keys(after)])].flatMap(key => {
+    if (canonical(before?.[key]) === canonical(after[key])) return [];
+    return [{ field: [...CUA_SETTING_KEYS, "env", "tools", "env_vars"].includes(key) ? key : "[unrecognized field]",
+      operation: !(key in after) ? "remove" : before?.[key] === undefined ? "add" : "replace",
+      before: before?.[key] === undefined ? null : "[existing value redacted]", after: after[key] ?? null }];
+  });
+}
+
+export function syncToolConfig({ env = process.env, dryRun = false, cuaTemplate, chatgptResources, profile = "chrome", replaceCua = false } = {}) {
+  if (!["chrome", "codex-app"].includes(profile)) throw new Error("--profile must be chrome or codex-app.");
+  if (profile === "codex-app" && chatgptResources) throw new Error("--chatgpt-resources is only supported by the chrome profile.");
   const paths = configPaths(env);
   // Refuse aliases of config files as well as overlapping home directories.
   for (const file of [paths.source, paths.destination]) {
     if (fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) throw new Error("Tool sync refuses symlinked config.toml files.");
   }
+  if (fs.existsSync(paths.destination) && fs.statSync(paths.destination).nlink > 1) throw new Error("Tool sync refuses hard-linked destination config.toml files.");
   if (fs.existsSync(paths.source) && fs.existsSync(paths.destination)) {
     const a = fs.statSync(paths.source), b = fs.statSync(paths.destination);
     if (a.dev === b.dev && a.ino === b.ino) throw new Error("Tool sync refuses overlapping config files.");
@@ -251,20 +279,42 @@ export function syncToolConfig({ env = process.env, dryRun = false, cuaTemplate,
     if (!safe.command || (repl.args !== undefined && !safe.args)) skipped.push("mcp_servers.node_repl: incomplete safe launch configuration; not copied");
     else add(["mcp_servers", "node_repl"], safe);
   }
-  let cuaSource = null;
-  // Presence is checked before discovery: an existing hand-written (even
-  // disabled/partial) server and its env remain byte-exact, without an app lookup.
-  if (destination.mcp_servers?.cua_repl !== undefined) present.push("mcp_servers.cua_repl");
+  let cuaSource = null, base = before, diff = [], requiresReplace = false;
+  const replaced = [];
+  let resultingCua = destination.mcp_servers?.cua_repl;
+  // Default Chrome sync preserves an existing hand-written (even disabled or
+  // partial) server without discovery. An explicit profile/replace opts in below.
+  if (resultingCua !== undefined && profile === "chrome" && !replaceCua) present.push("mcp_servers.cua_repl");
   else {
-    const cua = buildCuaConfig({ ...paths, env, source, cuaTemplate, chatgptResources });
-    add(["mcp_servers", "cua_repl"], cua.settings);
-    add(["mcp_servers", "cua_repl", "env"], cua.env);
+    const builder = profile === "codex-app" ? buildCodexAppCuaConfig : buildCuaConfig;
+    const cua = builder({ ...paths, env, source, cuaTemplate, chatgptResources });
+    const desired = { ...cua.settings, env: cua.env };
+    diff = cuaDiff(resultingCua, desired);
+    const existing = resultingCua !== undefined;
+    requiresReplace = existing && diff.length > 0 && !replaceCua;
+    if (requiresReplace && !dryRun) throw new Error("Existing cua_repl differs; refusing to clobber. Review setup --sync-tools --profile " + profile + " --dry-run --json, then pass --replace-cua to replace it.");
+    if (diff.length) {
+      if (existing && inlineTables.some(keys => keys.length < 2 && keys[0] === "mcp_servers")) throw new Error("Cannot replace CUA inside an inline tool table; convert it to ordinary TOML tables first.");
+      if (existing) {
+        base = removeCua(before);
+        delete destination.mcp_servers.cua_repl;
+        // A whole inline cua_repl value is safe to remove, but not to extend.
+        for (let i = inlineTables.length - 1; i >= 0; i--) if (isCua(inlineTables[i])) inlineTables.splice(i, 1);
+        replaced.push("mcp_servers.cua_repl");
+      }
+      add(["mcp_servers", "cua_repl"], cua.settings);
+      add(["mcp_servers", "cua_repl", "env"], cua.env);
+    } else present.push("mcp_servers.cua_repl");
+    resultingCua = desired;
     cuaSource = { template: cua.template, resources: cua.resources };
   }
-  // Exact append-only preview; never echo existing destination text, which may
-  // contain credentials. Dry runs do not create a home, lock, backup or runtime.
-  const append = sections.length ? `${before.endsWith("\n") ? "" : "\n"}\n${sections.join("\n")}` : "";
-  const report = { dryRun, source: paths.source, destination: paths.destination, sourceFound: Boolean(sourceText), cuaSource, added, present, skipped, append, backup: null, changed: added.length > 0 };
+  // Exact appended text (after CUA removal when replacing). Never echo existing
+  // destination values. Dry runs create no home, lock, backup or runtime.
+  const append = sections.length ? `${base.endsWith("\n") ? "" : "\n"}\n${sections.join("\n")}` : "";
+  const split = value => typeof value === "string" ? value.split(",").map(s => s.trim()).filter(Boolean) : [];
+  const report = { dryRun, profile, source: paths.source, destination: paths.destination, sourceFound: Boolean(sourceText), cuaSource, added, replaced, present, skipped, diff, requiresReplace,
+    surfaces: split(resultingCua?.env?.CUA_REPL_ENABLED_SURFACES), backends: split(resultingCua?.env?.BROWSER_USE_AVAILABLE_BACKENDS),
+    append, backup: null, changed: added.length > 0 };
   if (dryRun || !report.changed) return report;
   fs.mkdirSync(paths.isolated, { recursive: true, mode: 0o700 });
   // Serialize writers and refuse a config modified since the read.
@@ -277,7 +327,7 @@ export function syncToolConfig({ env = process.env, dryRun = false, cuaTemplate,
       report.backup = `${paths.destination}.backup-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}`;
       fs.writeFileSync(report.backup, before, { flag: "wx", mode: 0o600 });
     }
-    fs.writeFileSync(temporary, `${before}${append}`, { flag: "wx", mode: 0o600 });
+    fs.writeFileSync(temporary, `${base}${append}`, { flag: "wx", mode: 0o600 });
     if (readOptional(paths.destination) !== before) throw new Error("Config changed during tool sync; retry.");
     fs.renameSync(temporary, paths.destination);
   } finally {

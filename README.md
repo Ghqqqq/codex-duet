@@ -43,7 +43,7 @@ the native worker runtime, isolation and lifecycle work are Duet additions.
   claims, list touched files against a before/after snapshot (pre-existing dirt
   reported separately), and keep handles for read-only recovery.
 - **Browser work.** Optional Chrome/computer-use tooling, fresh session-owned tabs,
-  and explicit, per-origin browser consent.
+  and explicit per-origin consent or an opt-in all-sites setting.
 
 ## Requirements
 
@@ -141,8 +141,8 @@ Without adoption, the job is interrupted when the lease expires. Thread context
 and on-disk edits persist either way. Adoption after expiry or completion reports
 `lease_expired` or `job_ended` and an exact `continuationCommand` using
 `task --thread <threadId>`; it never starts that turn automatically. The suggested
-continuation starts read-only and requires a new assignment/authorization for
-write, runtime or browser flags. Wait for pending interruption to finish before
+continuation uses the configured default sandbox and requires a new assignment/authorization for
+per-call write, runtime or browser flags. Wait for pending interruption to finish before
 continuing. If no thread handle was recorded, no continuation command is available.
 Parent `/codex:status`, `status`, `result`, and ownerless `wait` calls never renew
 the lease, even from the same Claude session.
@@ -160,11 +160,11 @@ is stopped may renew until that call exits, bounded by its timeout.
 | Model | `gpt-6-astra` | `--model <name>` (`spark` maps to `gpt-5.3-codex-spark`) |
 | Reasoning effort | `xhigh` | `--effort none…xhigh` or `--effort max` where the model supports it |
 | Speed | normal | `--fast` requests the fast tier for that call only; `--normal` resets |
-| Codex sandbox | `read-only` | `--write` → `workspace-write`; `--write --sandbox danger-full-access` only when deliberately requested |
+| Codex sandbox | Configured default, initially `read-only` | `setup --default-sandbox <mode>`; per-call `--write` → `workspace-write`, or `--write --sandbox danger-full-access` |
 | Approval policy | `never` | — |
 
-Each follow-up resets to its own flags: write access, fast mode and browser
-grants are never inherited from an earlier turn, and workers never elevate after
+Each follow-up uses its own flags and the current configured sandbox default.
+Per-call write access, fast mode and browser grants are never inherited from an earlier turn, and workers never elevate after
 a denial. Companion Bash calls run with `dangerouslyDisableSandbox: true` because
 the runtime needs network access and local sockets; that is separate from Codex's
 own sandbox.
@@ -267,6 +267,60 @@ Workers call `node scripts/codex-companion.mjs` directly: `task`, `wait`, `answe
 
 All configuration changes below are explicit, idempotent, and write a timestamped
 backup first. Unrelated configuration is preserved byte-for-byte.
+
+### Match your Codex App
+
+Opt into the Codex App's installed browser/desktop tools, a full-access task
+default, and browser access to all sites. From the repository root, preview
+each of these three independent changes first:
+
+```bash
+node plugins/codex/scripts/codex-companion.mjs setup --sync-tools --profile codex-app --replace-cua --dry-run --json
+node plugins/codex/scripts/codex-companion.mjs setup --default-sandbox danger-full-access --dry-run --json
+node plugins/codex/scripts/codex-companion.mjs setup --browser-approval never-ask --dry-run --json
+```
+
+After reviewing the previews, rerun each command without `--dry-run` to apply.
+These options are independent; select only the capabilities you want.
+**Security:** together they grant full disk write access, desktop control, and
+access to any website with the user's logged-in browser. An isolated Codex home
+keeps runtime data separate; it does not confine these capabilities. Workers
+still follow the assignment's scope and never elevate after a denial.
+
+The `codex-app` profile selects the newest cached unified-computer-use `.mcp.json`
+under the normal Codex home, or an explicit `--cua-template /absolute/.mcp.json`.
+It mirrors the resolved `cua_repl` server, rewriting only `CODEX_HOME` and the home
+entry in `NODE_REPL_TRUSTED_CODE_PATHS`. It retains Sky, instruction strings,
+tool visibility/output limits and the template's timeout settings; it does not
+add `tool_timeout_sec`. It reports the resulting surfaces and backends (normally
+`browser,computer` and `chrome,iab,mcpapps`). Unknown/credential-bearing template
+fields are rejected, and credentials are never copied. A different existing CUA
+block requires `--replace-cua`; a dry-run without that flag shows the proposed
+diff with old values redacted. The default `chrome` profile stays Chrome-only.
+To restore that tool profile, preview and apply
+`setup --sync-tools --profile chrome --replace-cua`; sandbox and browser approval
+remain separate settings.
+
+Desktop Accessibility and Screen Recording permissions must already be granted
+to **Codex Computer Use.app**. Setup does not grant OS permissions or probe tools.
+After changing tool/browser configuration, restart the Claude session/shared
+Codex runtime when other workers have finished.
+
+The sandbox default is stored in `CLAUDE_PLUGIN_DATA/config.toml`, or in
+`<isolated-home>/duet/config.toml` when plugin data is unset. Use the same plugin
+data directory when applying setup and launching workers. With neither task
+flag, a write-capable default implies `--write`; an explicit `--sandbox` wins
+and retains the existing explicit `--write` requirement for write-capable modes.
+`--write` alone selects workspace-write. Restore a conservative default with
+`setup --default-sandbox read-only`; use `task --sandbox read-only` for one call.
+Review commands remain read-only.
+
+`setup --browser-approval ask` removes only top-level `approval_mode` from the
+isolated `browser/config.toml`; existing per-origin grants and download/upload/
+history settings remain unchanged. `setup --json` reports `defaultSandbox` and
+`browserOrigins.approval`; `setup --list-browser-origins --json` includes the
+browser mode. See [worker operations](docs/worker-operations.md#codex-app-profile)
+and [browser approvals](docs/browser-approvals.md#all-sites-browser-approval).
 
 ### Browser and computer-use tooling
 

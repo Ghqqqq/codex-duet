@@ -1,5 +1,37 @@
 # Browser origin consent and persistence
 
+## All-sites browser approval
+
+With the user's explicit opt-in, `setup --browser-approval never-ask` writes
+top-level `approval_mode = "never_ask"` in the isolated `browser/config.toml`.
+This permits any website through the user's logged-in browser without per-origin
+prompts. It is separate from Codex's sandbox, desktop permissions, and the
+request-scoped `task --approve-browser-origin` mechanism.
+
+```sh
+node plugins/codex/scripts/codex-companion.mjs setup --browser-approval never-ask --dry-run --json
+node plugins/codex/scripts/codex-companion.mjs setup --browser-approval never-ask --json
+node plugins/codex/scripts/codex-companion.mjs setup --browser-approval ask --dry-run --json
+node plugins/codex/scripts/codex-companion.mjs setup --browser-approval ask --json
+```
+
+`ask` removes only that top-level key. It restores the runtime's ordinary origin
+checks; existing persistent origin grants/denials still apply. Neither option
+changes download, upload or history approval settings, origin lists, or session
+files. Merges preserve other TOML text, use a private timestamped backup and an
+atomic write, and are idempotent. Dry-run makes no files or runtime calls.
+`setup --json` and `setup --list-browser-origins --json` expose
+`browserOrigins.approval` as `never-ask`, `ask` (key absent), or `custom` (another
+existing value). Workers never enable this setting after a denial.
+
+The parent verified the installed browser service's `approval_mode`/`never_ask`
+constants on 2026-10-16; this release uses that supplied evidence. Fixture tests
+verify serialization, backups and removal. They do not establish live browser
+behavior, bypass managed policies, or grant OS permissions. Reconnect/restart
+the runtime after changing browser preferences when other live work has ended.
+
+## Per-origin persistence
+
 Item 15 uses the browser runtime's official persistence format. With explicit
 user consent per origin, the parent can run:
 

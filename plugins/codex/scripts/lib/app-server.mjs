@@ -57,6 +57,10 @@ function createProtocolError(message, data) {
   return error;
 }
 
+function brokerClosedError() {
+  return Object.assign(new Error("Codex broker connection closed during startup."), { code: "BROKER_CONNECTION_CLOSED" });
+}
+
 class AppServerClientBase {
   constructor(cwd, options = {}) {
     this.cwd = cwd;
@@ -91,8 +95,8 @@ class AppServerClientBase {
    * @returns {Promise<import("./app-server-protocol").AppServerResponse<M>>}
    */
   request(method, params) {
-    if (this.closed) {
-      throw new Error("codex app-server client is closed.");
+    if (this.closed || this.exitResolved) {
+      throw this.exitError ?? new Error("codex app-server client is closed.");
     }
 
     const id = this.nextId;
@@ -107,7 +111,7 @@ class AppServerClientBase {
   }
 
   notify(method, params = {}) {
-    if (this.closed) {
+    if (this.closed || this.exitResolved) {
       return;
     }
     this.sendMessage({ method, params });
@@ -309,7 +313,10 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
         this.handleExit(error);
       });
       this.socket.on("close", () => {
-        this.handleExit(this.exitError);
+        const error = this.exitError ?? (this.closed ? null : brokerClosedError());
+        // Also settle a connection that closes before emitting connect.
+        reject(error ?? brokerClosedError());
+        this.handleExit(error);
       });
     });
 
@@ -379,7 +386,17 @@ export class CodexAppServerClient {
     options.onClient?.(client);
     options.onRuntimeEvent?.({ timing: { phase: "brokerConnectSpawn", durationMs: Date.now() - began } });
     const initializeAt = Date.now();
-    try { await client.initialize(); } catch (error) { await client.close().catch(() => {}); throw error; }
+    try { await client.initialize(); } catch (error) {
+      await client.close().catch(() => {});
+      if (client.transport === "broker" && !options.signal?.aborted &&
+          ["BROKER_CONNECTION_CLOSED", "ECONNRESET", "EPIPE", "ENOENT", "ECONNREFUSED"].includes(error.code)) {
+        // initialize is the only RPC sent here. Retry a private spawn once,
+        // without killing/replacing another session's broker or replaying work.
+        options.onRuntimeEvent?.({ brokerStartupRetry: true });
+        return CodexAppServerClient.connect(cwd, { ...options, disableBroker: true });
+      }
+      throw error;
+    }
     client.startupTimings = { appServerInitialize: Date.now() - initializeAt };
     options.onRuntimeEvent?.({ timing: { phase: client.transport === "broker" ? "brokerHandshake" : "appServerInitialize", durationMs: Date.now() - initializeAt } });
     return client;

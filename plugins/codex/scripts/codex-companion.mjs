@@ -6,7 +6,7 @@ import { UNREACHABLE_GUIDANCE } from "./lib/runtime-errors.mjs";
 import { getToolAvailability, syncToolConfig } from "./lib/tool-config.mjs";
 import { buildWorkerReport, persistTaskArtifacts, taskArtifactPaths } from "./lib/worker-report.mjs";
 import { normalizeBrowserOrigins } from "./lib/server-requests.mjs";
-import { browserOriginSetup, transportSetup } from "./lib/setup-config.mjs";
+import { browserOriginSetup, transportSetup, defaultSandboxSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
 import { activityReader, formatActivity, redactActivity, snippet } from "./lib/activity.mjs";
 import { JobRuntime, ACTIVE, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, adoptJob, ownershipNotice } from "./lib/job-runtime.mjs";
 import { updateJob } from "./lib/state.mjs";
@@ -88,7 +88,7 @@ function printUsage() {
   console.log(
     [
       "Usage:",
-      "  node scripts/codex-companion.mjs setup [--sync-tools [--dry-run] [--cua-template <file>] [--chatgpt-resources <dir>]] [--enable-review-gate|--disable-review-gate] [--json]",
+      "  node scripts/codex-companion.mjs setup [--sync-tools [--profile chrome|codex-app] [--replace-cua] [--cua-template <file>] [--chatgpt-resources <dir>]] [--default-sandbox read-only|workspace-write|danger-full-access] [--browser-approval never-ask|ask] [--dry-run] [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       "  node scripts/codex-companion.mjs task [--report] [--background] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--approve-browser-origin <origin>]... [--thread <id>|--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--fast|--normal] [prompt]",
@@ -229,6 +229,8 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     tools: getToolAvailability(),
     sessionRuntime: getSessionRuntimeStatus(process.env, workspaceRoot),
     reviewGateEnabled: Boolean(config.stopReviewGate),
+    defaultSandbox: defaultSandboxSetup().defaultSandbox,
+    browserOrigins: browserOriginSetup(),
     actionsTaken,
     nextSteps
   };
@@ -236,9 +238,9 @@ async function buildSetupReport(cwd, actionsTaken = []) {
 
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "cua-template", "chatgpt-resources", "transport"],
+    valueOptions: ["cwd", "cua-template", "chatgpt-resources", "transport", "profile", "default-sandbox", "browser-approval"],
     repeatableOptions: ["allow-browser-origin", "revoke-browser-origin"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "sync-tools", "dry-run", "list-browser-origins"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "sync-tools", "dry-run", "list-browser-origins", "replace-cua"]
   });
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
@@ -248,13 +250,22 @@ async function handleSetup(argv) {
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const actionsTaken = [];
-  if (options.transport !== undefined || options["allow-browser-origin"] || options["revoke-browser-origin"] || options["list-browser-origins"]) {
+  for (const key of ["cua-template", "chatgpt-resources", "profile", "replace-cua"]) {
+    if (options[key] !== undefined && !options["sync-tools"]) throw new Error(`--${key} requires --sync-tools.`);
+  }
+  if (options["default-sandbox"] !== undefined) {
+    if (options["sync-tools"] || options.transport !== undefined || options["browser-approval"] !== undefined || options["allow-browser-origin"] || options["revoke-browser-origin"] || options["list-browser-origins"] || options["enable-review-gate"] || options["disable-review-gate"]) throw new Error("Run --default-sandbox separately from other setup changes.");
+    const report = defaultSandboxSetup({ mode: options["default-sandbox"], dryRun: Boolean(options["dry-run"]) });
+    outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
+    return;
+  }
+  if (options.transport !== undefined || options["browser-approval"] !== undefined || options["allow-browser-origin"] || options["revoke-browser-origin"] || options["list-browser-origins"]) {
     if (options["sync-tools"] || options["enable-review-gate"] || options["disable-review-gate"]) throw new Error("Run transport/browser setup separately from tool sync and review-gate changes.");
     // Validate every supplied origin before any file write.
     const allow = normalizeBrowserOrigins(options["allow-browser-origin"] ?? []), revoke = normalizeBrowserOrigins(options["revoke-browser-origin"] ?? []);
-    if (options.transport !== undefined && (allow.length || revoke.length || options["list-browser-origins"])) throw new Error("Run transport and browser-origin setup separately.");
+    if (options.transport !== undefined && (allow.length || revoke.length || options["list-browser-origins"] || options["browser-approval"] !== undefined)) throw new Error("Run transport and browser-origin setup separately.");
     const report = options.transport !== undefined ? { transport: transportSetup({ mode: options.transport, dryRun: Boolean(options["dry-run"]) }) }
-      : { browserOrigins: browserOriginSetup({ allow, revoke, dryRun: Boolean(options["dry-run"]) }) };
+      : { browserOrigins: browserOriginSetup({ allow, revoke, approval: options["browser-approval"], dryRun: Boolean(options["dry-run"]) }) };
     outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
     return;
   }
@@ -266,7 +277,7 @@ async function handleSetup(argv) {
     }
   }
   if (options["dry-run"] && (options["enable-review-gate"] || options["disable-review-gate"])) throw new Error("Do not combine --dry-run with review-gate changes.");
-  const toolSync = options["sync-tools"] ? syncToolConfig({ dryRun: Boolean(options["dry-run"]), cuaTemplate: options["cua-template"], chatgptResources: options["chatgpt-resources"] }) : null;
+  const toolSync = options["sync-tools"] ? syncToolConfig({ dryRun: Boolean(options["dry-run"]), cuaTemplate: options["cua-template"], chatgptResources: options["chatgpt-resources"], profile: options.profile, replaceCua: Boolean(options["replace-cua"]) }) : null;
   // An offline dry run must not start Codex, create its home or refresh auth.
   if (options["dry-run"]) {
     outputResult(options.json ? { toolSync } : `${JSON.stringify(toolSync, null, 2)}\n`, options.json);
@@ -285,6 +296,7 @@ async function handleSetup(argv) {
   if (toolSync) {
     finalReport.toolSync = toolSync;
     finalReport.actionsTaken.push(`Tool sync: ${toolSync.added.length} added, ${toolSync.present.length} already present, ${toolSync.skipped.length} skipped.${toolSync.backup ? ` Backup: ${toolSync.backup}` : ""}`);
+    finalReport.actionsTaken.push(`CUA surfaces: ${toolSync.surfaces.join(", ") || "none"}; backends: ${toolSync.backends.join(", ") || "none"}.`);
     if (toolSync.changed) finalReport.nextSteps.push("Restart the Claude session/shared Codex runtime to load synced tools.");
   }
   outputResult(options.json ? finalReport : renderSetupReport(finalReport), options.json);
@@ -942,15 +954,21 @@ async function handleTask(argv) {
   if (resumeLast && fresh) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
   }
-  const write = Boolean(options.write);
-  const sandbox = options.sandbox;
-  if (sandbox !== undefined && !["read-only", "workspace-write", "danger-full-access"].includes(sandbox)) {
+  let write = Boolean(options.write);
+  let sandbox = options.sandbox;
+  if (sandbox !== undefined && !SANDBOX_MODES.includes(sandbox)) {
     throw new Error("--sandbox must be read-only, workspace-write, or danger-full-access.");
   }
   if (sandbox && sandbox !== "read-only" && !write) {
     throw new Error("--sandbox workspace-write or danger-full-access requires explicit --write authorization.");
   }
   if (sandbox === "read-only" && write) throw new Error("--sandbox read-only cannot be combined with --write.");
+  if (sandbox === undefined && options.write === undefined) {
+    const configured = defaultSandboxSetup().defaultSandbox;
+    // Preserve legacy default turn behavior when no setting exists/read-only.
+    // Write-capable defaults explicitly reach both thread and turn policies.
+    if (configured !== "read-only") { sandbox = configured; write = true; }
+  }
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast: Boolean(resumeLast || threadId)

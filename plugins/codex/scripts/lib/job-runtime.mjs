@@ -22,7 +22,7 @@ const companionCommand = args => `node ${quote(fileURLToPath(new URL("../codex-c
 export function continuationReport(job) {
   const continuationCommand = job.threadId ? companionCommand(`task --thread ${quote(job.threadId)} --cwd ${quote(job.request?.cwd ?? job.workspaceRoot)} --detached --report --json`) : null;
   return { continuationCommand,
-    continuationNote: continuationCommand ? "This command starts a new read-only turn; restore write/runtime/origin flags only with authorization. It has not been run. Wait for any pending interruption to finish first." : "No thread handle was recorded; no continuation command is available." };
+    continuationNote: continuationCommand ? "This command starts a new turn using the configured default sandbox; restore per-call write/runtime/origin flags only with authorization. It has not been run. Wait for any pending interruption to finish first." : "No thread handle was recorded; no continuation command is available." };
 }
 export function ownershipNotice(job, owner) {
   if (!owner || job.ownerId === owner || !job.retiredOwnerIds?.includes(owner)) return null;

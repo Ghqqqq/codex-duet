@@ -5,8 +5,9 @@ parent's foreground/background choice. Supply the objective, owned paths and
 acceptance criteria. For follow-ups, supply that worker's exact thread ID. No
 hand-written environment or sandbox instructions are needed in each assignment.
 The worker sets Bash `dangerouslyDisableSandbox: true` on every companion call.
-This affects the outer Claude Bash sandbox. Codex defaults to `read-only` or
-`workspace-write` with `--write`, and always receives `approvalPolicy: "never"`.
+This affects the outer Claude Bash sandbox. Codex tasks use the plugin's configured
+sandbox default (initially `read-only`) and always receive `approvalPolicy: "never"`.
+Workers normally omit sandbox/write flags so that this configured choice applies.
 
 Parallel workers need disjoint write ownership or separate worktrees. A worker
 starts one detached Codex turn and loops `wait` for progress, questions and completion.
@@ -135,7 +136,7 @@ when available, otherwise preserving the original scope.
 Adoption after expiry or completion returns `lease_expired` or `job_ended`
 (exit 2), with the exact `continuationCommand` (`task --thread <threadId>`), and
 never runs it. Cancellation in progress also refuses adoption. The continuation
-starts read-only; a new assignment must authorize other flags. Wait for pending
+uses the configured default sandbox; a new assignment must authorize per-call flags. Wait for pending
 interruption to finish before continuing. Thread context and on-disk edits persist;
 missing thread handles preclude a continuation command. `/codex:status` shows
 orphaned running jobs, remaining seconds and an exact adopt instruction after no
@@ -187,6 +188,25 @@ If policy forbids that parameter, the worker returns the permission blocker.
 
 ### Deliberate Codex sandbox opt-in
 
+Persist a default for all workspaces sharing this plugin data directory:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --default-sandbox danger-full-access --dry-run --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --default-sandbox danger-full-access --json
+```
+
+The accepted values are `read-only`, `workspace-write`, and `danger-full-access`.
+The setting is `default_sandbox` in `CLAUDE_PLUGIN_DATA/config.toml`, with a
+persistent `<isolated-home>/duet/config.toml` fallback when plugin data is unset.
+Use the same plugin data directory in setup and worker invocations. Writes merge
+with a private backup; dry-run is offline. `setup --json` reports `defaultSandbox`.
+An unset default is read-only. With no per-call flags, write-capable defaults imply
+write and reach both thread and turn policies, including detached tasks/resumes.
+Explicit `--sandbox` takes precedence and still requires explicit `--write` for a
+write-capable value. `--write` alone selects workspace-write; `--write=false`
+selects read-only. Use `setup --default-sandbox read-only` to reset the default.
+Review commands keep their separate read-only behavior.
+
 For an assignment that needs Git metadata writes (such as `.git/index.lock`) or
 launching a browser harness, the parent can explicitly request:
 
@@ -198,7 +218,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --fresh --write --
 Write-capable policies require `--write`; `--write --sandbox read-only` is rejected.
 This conservative guard also applies to a browser-only assignment requiring full
 access. Never choose elevation automatically on an EPERM or browser failure.
-Without the flag, existing defaults are unchanged. Every thread resume explicitly
+Without per-call flags, the configured default applies. Every thread resume explicitly
 sets this invocation's sandbox, preventing inheritance from a prior elevated task.
 Background jobs persist the requested policy before starting. Completed JSON/report
 output includes `sandbox` and `approvalPolicy`; full results include `sandboxPolicy`.
@@ -264,7 +284,7 @@ rejected before writing. The source is read-only; credentials, provider/auth
 configuration, remote marketplace URLs, arbitrary MCP servers and unrelated
 plugins are never imported.
 
-Sync adds missing sections only and leaves existing sections byte-for-byte,
+The default `chrome` profile adds missing sections only and leaves existing sections byte-for-byte,
 including existing node_repl/CUA servers and their separate env tables. Presence
 preserves even disabled/incomplete CUA definitions; sync does not repair them.
 `toolSync.append` contains the exact added text, including separating newlines,
@@ -314,7 +334,49 @@ available/missing/unknown **based on configuration only**. It does not verify
 installed assets, extension connectivity or tool execution. Restart the Claude
 session/shared Codex runtime after a sync to load the configuration.
 
-### Modern CUA registration
+### Codex App profile
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --sync-tools --profile codex-app --dry-run --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --sync-tools --profile codex-app --replace-cua --json
+```
+
+This explicit profile reads the newest numeric version with a `.mcp.json` under
+the normal Codex home's `plugins/cache/openai-bundled/unified-computer-use`.
+`--cua-template /absolute/.mcp.json` overrides discovery. There is no fallback to
+the app's disabled placeholder template, and `--chatgpt-resources` is rejected:
+the cache entry must already contain resolved executable/launcher paths.
+
+The server is mirrored semantically, preserving launch paths, enabled state,
+tool order/visibility, nested `tools.js.output_token_limit`, empty `env_vars`,
+startup/tool timeouts if present, every supported env entry and instruction
+string. Only `CODEX_HOME` and home entries in `NODE_REPL_TRUSTED_CODE_PATHS` change
+to the isolated home. Installed module/cache paths and `SKY_CUA_SERVICE_PATH`
+remain shared code/service paths; no assets or credentials are copied. The
+current template has no `tool_timeout_sec`, so replacement removes a stale 30 s
+timeout. Unknown fields, nonempty env forwarding and credential fields fail
+closed instead of being silently imported. Future template schema additions may
+require a Duet update. Sync never executes the template.
+
+An identical existing server is a no-op. A different server is refused before
+any write unless `--replace-cua` is present. Dry-run works without replacement
+authorization: `toolSync.diff` shows changed top-level fields and exact proposed
+values, with existing values redacted; `requiresReplace` signals the refusal on
+apply. `append` is the proposed appended text; during replacement the old CUA
+block is removed first, including its env/tool subtables. Unrelated text stays
+byte-exact. Closed inline parents require conversion to ordinary TOML tables.
+Replacements share the existing exclusive lock, atomic write and private backup.
+`surfaces` and `backends` report the proposed/resulting configuration.
+
+The usual result is browser + computer, with chrome/iab/mcpapps and the Sky
+service. Desktop permissions belong to Codex Computer Use.app. Availability is
+configuration evidence only: setup does not grant Accessibility/Screen Recording
+or open a desktop/browser session. Combined with a full-access default and
+`setup --browser-approval never-ask`, this permits full disk write, desktop control,
+and any website through the user's logged-in browser. Opt in deliberately; see
+[browser approval settings](browser-approvals.md#all-sites-browser-approval).
+
+### Modern CUA registration (default Chrome profile)
 
 Missing `mcp_servers.cua_repl` is rebuilt from the bundled
 `unified-computer-use/.mcp.json`. The app's disabled `command = "node"` placeholder
@@ -342,7 +404,7 @@ Optional selectors, both requiring `--sync-tools`:
 
 An explicit template is authoritative. An explicit resource directory disables
 fallback to other apps/caches, including when its template or assets are missing.
-Existing CUA is detected before any template/resource lookup, so re-running sync
+Without `--replace-cua`, existing CUA is detected before any template/resource lookup, so re-running sync
 needs no app discovery for that server. Resource failure aborts the whole sync
 before even planned node_repl additions are written.
 

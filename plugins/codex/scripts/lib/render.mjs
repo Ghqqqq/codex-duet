@@ -194,6 +194,8 @@ export function renderSetupReport(report) {
     ...(report.tools ? [`- tools (configuration only): browser ${report.tools.browser}, computer-use ${report.tools.computerUse}, node_repl ${report.tools.nodeRepl}`] : []),
     `- session runtime: ${report.sessionRuntime.label}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
+    ...(report.defaultSandbox ? [`- default sandbox: ${report.defaultSandbox}`] : []),
+    ...(report.browserOrigins ? [`- browser approval: ${report.browserOrigins.approval}`] : []),
     ""
   ];
 

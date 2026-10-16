@@ -137,16 +137,20 @@ async function main() {
   }
 
   let closing = false;
+  let lastBusy = Date.now();
   async function shutdown(server) {
     if (closing) return;
     closing = true;
     clearInterval(idleTimer);
+    // Stop admission synchronously. Awaiting appClient.close() first leaves a
+    // window where initialize succeeds against an already closed app-server.
+    const listenerClosed = server.listening ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
     for (const [threadId, turn] of activeTurns) void appClient.request("turn/interrupt", { threadId, turnId: turn.id }).catch(() => {});
     for (const socket of sockets) {
       requests.disconnect(socket); socket.destroy();
     }
     await appClient.close().catch(() => {});
-    if (server.listening) await new Promise((resolve) => server.close(resolve));
+    await listenerClosed;
     if (listenTarget.kind === "unix" && fs.existsSync(listenTarget.path)) {
       fs.unlinkSync(listenTarget.path);
     }
@@ -160,11 +164,15 @@ async function main() {
   appClient.setNotificationHandler(message => queueMicrotask(() => routeNotification(message)));
 
   const server = net.createServer((socket) => {
+    // An accept already queued when shutdown started must not handshake.
+    if (closing) { socket.destroy(); return; }
     sockets.add(socket);
+    lastBusy = Date.now();
     socket.setEncoding("utf8");
     let buffer = "";
 
     socket.on("data", async (chunk) => {
+      if (closing) { socket.destroy(); return; }
       buffer += chunk;
       let newlineIndex = buffer.indexOf("\n");
       while (newlineIndex !== -1) {
@@ -278,19 +286,20 @@ async function main() {
 
     socket.on("close", () => {
       sockets.delete(socket);
+      lastBusy = Date.now();
       clearSocketOwnership(socket);
     });
 
     socket.on("error", () => {
       sockets.delete(socket);
+      lastBusy = Date.now();
       clearSocketOwnership(socket);
     });
   });
 
-  let lastBusy = Date.now();
   const idleMs = Math.max(1000, (Number(process.env.CODEX_COMPANION_BROKER_IDLE_SEC) || 60) * 1000);
   const idleTimer = setInterval(() => {
-    if (sockets.size || activeTurns.size || activeRequestSocket) lastBusy = Date.now();
+    if (sockets.size || activeTurns.size || activeRequestSocket || appClient.pending.size) lastBusy = Date.now();
     else if (Date.now() - lastBusy >= idleMs) void shutdown(server);
   }, 250);
   for (const signal of signals) process.on(signal, () => { void shutdown(server); });

@@ -1,6 +1,6 @@
 ---
-description: Check whether the local Codex CLI is ready and optionally toggle the stop-time review gate
-argument-hint: '[--sync-tools [--dry-run]] [--enable-review-gate|--disable-review-gate] [--transport http|websocket|status] [--allow-browser-origin <origin>|--revoke-browser-origin <origin>|--list-browser-origins]'
+description: Check Codex readiness and explicitly configure isolated tools, sandbox and browser access
+argument-hint: '[--sync-tools [--profile chrome|codex-app] [--replace-cua] [--cua-template <file>] [--dry-run]] [--enable-review-gate|--disable-review-gate] [--default-sandbox read-only|workspace-write|danger-full-access] [--browser-approval never-ask|ask] [--transport http|websocket|status] [--allow-browser-origin <origin>|--revoke-browser-origin <origin>|--list-browser-origins]'
 allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
 ---
 
@@ -39,7 +39,41 @@ If `auth.status` is `unreachable` (including workspace routing discovery timeout
 - Never present a login command for this branch. `loggedIn: false` is not evidence of logout when status is unreachable or unknown.
 - For `auth.status: unknown`, report the runtime error without suggesting login.
 
-`--sync-tools --dry-run` is an offline preview and returns toolSync without auth checks. Present its exact `append` text and source paths directly. `--sync-tools` copies only allowlisted tool settings and builds missing Chrome-only `cua_repl` and env tables from the installed bundled template and validated ChatGPT resources. Existing destination sections (including hand-written CUA) are preserved; present added/present/skipped names and backup path. Optional `--cua-template <absolute-file>` and `--chatgpt-resources <absolute-dir>` select a relocated installation; both require `--sync-tools`. Missing resources fail before any config write. Do not automatically invoke tool sync from a worker.
+`--sync-tools --dry-run` is an offline preview and returns toolSync without auth checks. Present its exact `append` text and source paths directly. The default `--profile chrome` copies only allowlisted tool settings and builds missing Chrome-only `cua_repl` and env tables from the installed bundled template and validated ChatGPT resources. Existing destination sections (including hand-written CUA) are preserved unless replacement is explicitly requested; present added/replaced/present/skipped names, surfaces/backends and backup path. Optional `--cua-template <absolute-file>` and `--chatgpt-resources <absolute-dir>` select a relocated installation; both require `--sync-tools`. Missing resources fail before any config write. Do not automatically invoke tool sync from a worker.
+
+`--sync-tools --profile codex-app` selects the newest unified-computer-use cache
+template under the normal Codex home, with `--cua-template` as an override. It
+mirrors the resolved server, changing only CODEX_HOME and the home entries in
+NODE_REPL_TRUSTED_CODE_PATHS. This retains desktop/Sky, browser backends,
+instructions, tool visibility/output limits and exactly the template's timeouts.
+It never adds a tool timeout. Unknown fields/credentials/env forwarding are
+rejected. `--chatgpt-resources` is incompatible with this profile.
+
+For a different existing CUA server, dry-run shows `toolSync.diff` with old values
+redacted and `requiresReplace: true`. Applying refuses to clobber it without
+`--replace-cua`. That flag replaces the entire CUA block and subtables after a
+private backup, preserving unrelated configuration; an identical server is a
+no-op. Desktop permissions must already belong to Codex Computer Use.app. Setup
+does not grant OS permissions or run a live tool probe.
+
+`--default-sandbox read-only|workspace-write|danger-full-access` is an independent,
+offline setup operation with `--dry-run` and backups. It stores `default_sandbox`
+in CLAUDE_PLUGIN_DATA/config.toml (fallback: isolated-home/duet/config.toml).
+Use the same plugin data directory for setup and workers. With no task flags,
+the saved policy applies and write-capable defaults imply write. Explicit
+per-call flags win; `--write` alone selects workspace-write, and explicit
+write-capable `--sandbox` values still require `--write`. `setup --json` reports
+`defaultSandbox`. Workers never modify or elevate this setting after a denial.
+
+`--browser-approval never-ask|ask` writes or removes only top-level approval_mode
+in the isolated browser/config.toml. `never-ask` stores `"never_ask"` and permits
+all sites without per-origin prompts. `ask` removes the key; persistent origin
+grants still apply. Download/upload/history settings and session files are
+unchanged. Both setup JSON and `--list-browser-origins` report browserOrigins.approval.
+Support `--dry-run`, show backups, and require explicit user opt-in for this setup
+action. Combined with the Codex App profile and danger-full-access default, these
+options grant full disk write, desktop control and any website through the user's
+logged-in browser. Never enable them automatically after a denial.
 
 Transport/browser setup is offline. `--transport status` only reads selected
 transport; explicit `--transport http|websocket` merges a named ChatGPT provider
