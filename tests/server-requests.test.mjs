@@ -3,7 +3,7 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseArgs } from "../plugins/codex/scripts/lib/args.mjs";
-import { normalizeBrowserOrigin, normalizeBrowserOrigins, decideServerRequest, ServerRequestRelay } from "../plugins/codex/scripts/lib/server-requests.mjs";
+import { normalizeBrowserOrigin, normalizeBrowserOrigins, normalizeBundleId, normalizeBundleIds, decideServerRequest, ServerRequestRelay } from "../plugins/codex/scripts/lib/server-requests.mjs";
 import { makeTempDir, initGitRepo, run, requireLocalSockets } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 
@@ -91,6 +91,60 @@ test("opaque browser elicitations cancel without persistence; other requests sta
   const unknown = decideServerRequest({ id: "DO_NOT_LOG_FIXTURE", method: "DO_NOT_LOG_FIXTURE", params: {} }, policy);
   assert.doesNotMatch(JSON.stringify(unknown.summary), /DO_NOT_LOG_FIXTURE/);
   for (const params of [null, [], {}, { networkApprovalContext: null }]) assert.equal(decideServerRequest({ ...request(), params }, policy).reply.error.code, -32601);
+});
+
+const computerUseRequest = (patch = {}, meta = {}) => ({ id: 9, method: "mcpServer/elicitation/request", params: {
+  serverName: "node_repl", threadId: "thread-1", turnId: "turn-1", mode: "form", message: "DO_NOT_LOG_FIXTURE", requestedSchema: { type: "object", properties: {} },
+  _meta: { codex_approval_kind: "mcp_tool_call", connector_id: "computer-use", connector_name: "Computer Use", persist: ["session", "always"], riskLevel: "medium", tool_name: "get_app_state", tool_params: { app: "com.google.Chrome" }, tool_params_display: "DO_NOT_LOG_FIXTURE", ...meta }, ...patch
+} });
+
+test("Computer Use elicitations accept only a listed bundle id for the current turn and never persist", () => {
+  const apps = { ...policy, approvedComputerApps: ["com.google.Chrome"] };
+  const matched = decideServerRequest(computerUseRequest(), apps);
+  assert.deepEqual(matched.reply, { id: 9, result: { action: "accept" } }, "no _meta.persist: the grant lasts one request");
+  assert.equal(matched.summary.kind, "computer-use-app");
+  assert.equal(matched.summary.app, "com.google.Chrome");
+  assert.equal(matched.summary.reason, "app-match");
+  for (const [patch, meta, override, reason] of [
+    [{}, {}, { approvedComputerApps: [] }, "no-flag"],
+    [{}, { tool_params: { app: "com.apple.finder" } }, {}, "app-mismatch"],
+    [{ threadId: "other-thread" }, {}, {}, "turn-mismatch"],
+    [{ turnId: "old-turn" }, {}, {}, "turn-mismatch"],
+    [{}, {}, { turnId: null }, "turn-mismatch"]
+  ]) {
+    const result = decideServerRequest(computerUseRequest(patch, meta), { ...apps, ...override });
+    assert.deepEqual(result.reply.result, { action: "cancel" });
+    assert.equal(result.summary.reason, reason);
+    assert.equal(result.summary.kind, "computer-use-app");
+    assert.doesNotMatch(JSON.stringify(result.summary), /DO_NOT_LOG_FIXTURE/);
+  }
+  // Not a Computer Use app request: the generic browser/opaque path applies.
+  for (const meta of [{ connector_id: "other" }, { codex_approval_kind: "other" }, { tool_params: { app: "Google Chrome" } }, { tool_params: null }]) {
+    const result = decideServerRequest(computerUseRequest({}, meta), apps);
+    assert.notEqual(result.summary.kind, "computer-use-app");
+    assert.deepEqual(result.reply.result, { action: "cancel" });
+  }
+  // The relay passes an exact accept through for a Computer Use elicitation only.
+  const sent = [], replies = [], owner = {};
+  const relay = new ServerRequestRelay({ send: (socket, message) => sent.push(message), respond: message => replies.push(message), log: () => {} });
+  relay.request(computerUseRequest(), owner);
+  relay.response({ id: sent[0].id, result: { action: "accept", _meta: { persist: "always" } } }, owner);
+  assert.deepEqual(replies[0], { id: 9, result: { action: "cancel" } }, "a persisting accept is refused");
+  relay.request(computerUseRequest(), owner);
+  relay.response({ id: sent[1].id, result: { action: "accept" } }, owner);
+  assert.deepEqual(replies[1], { id: 9, result: { action: "accept" } });
+  relay.request(computerUseRequest({}, { connector_id: "other" }), owner);
+  relay.response({ id: sent[2].id, result: { action: "accept" } }, owner);
+  assert.deepEqual(replies[2], { id: 9, result: { action: "cancel" } }, "accepting other elicitations stays unsupported");
+});
+
+test("bundle ids are validated without echoing input and de-duplicated", () => {
+  assert.deepEqual(normalizeBundleIds(["com.google.Chrome", " com.google.Chrome ", "com.apple.finder"]), ["com.google.Chrome", "com.apple.finder"]);
+  assert.equal(normalizeBundleId("org.mozilla.firefox"), "org.mozilla.firefox");
+  for (const value of ["", "Google Chrome", "chrome", "com.", ".com", "com..google", "com.google.*", "*", "com/google", `com.${"x".repeat(260)}`, 7, null, "com.goo gle.Chrome\n"]) {
+    assert.throws(() => normalizeBundleId(value), error => /bundle identifier/.test(error.message) && !error.message.includes("Google Chrome"));
+  }
+  assert.throws(() => normalizeBundleIds("com.google.Chrome"), /list/);
 });
 
 test("broker relay returns a schema-correct parent answer only from its owning client", () => {

@@ -10,7 +10,7 @@ allowed-tools: Bash(node:*)
 If the user did not pass a job ID:
 - Render the command output as a single Markdown table for the current and past runs in this session.
 - Keep it compact. Do not include progress blocks or extra prose outside the table.
-- Preserve the actionable fields from the command output, including job ID, kind, status, phase, elapsed or duration, summary, and follow-up commands. Preserve `orphaned` labels, remaining lease seconds and the exact adopt instruction for running jobs whose owners are not renewing.
+- Preserve the actionable fields from the command output, including job ID, kind, status, phase, elapsed or duration, summary, and follow-up commands. Preserve `orphaned` labels, remaining lease seconds and the exact adopt instruction for running jobs whose owners are not renewing. A `blocked` status means a known runtime refusal (for example a Computer Use app the isolated runtime has not approved); keep it distinct from `completed` and `needs_input`, and preserve the approved browser origins / Computer Use apps lines when a job shows them.
 
 If the user did pass a job ID:
 - Present the full command output to the user.

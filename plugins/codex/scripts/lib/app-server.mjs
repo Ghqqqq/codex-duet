@@ -17,7 +17,7 @@ import { ensureBrokerSession, loadBrokerSession } from "./broker-lifecycle.mjs";
 import { isolatedCodexArgs, isolatedCodexEnv, resolveCodexBinary, resolveCodexRuntimeIdentity, resolveIsolatedCodexHome } from "./codex-home.mjs";
 import { stopOwnedProcessGroup } from "./process.mjs";
 import { isParentQuestion } from "./job-runtime.mjs";
-import { decideServerRequest, logServerRequest, normalizeBrowserOrigins } from "./server-requests.mjs";
+import { decideServerRequest, logServerRequest, normalizeBrowserOrigins, normalizeBundleIds } from "./server-requests.mjs";
 
 const PLUGIN_MANIFEST_URL = new URL("../../.claude-plugin/plugin.json", import.meta.url);
 const PLUGIN_MANIFEST = JSON.parse(fs.readFileSync(PLUGIN_MANIFEST_URL, "utf8"));
@@ -75,7 +75,7 @@ class AppServerClientBase {
     this.lineBuffer = "";
     this.transport = "unknown";
     this.serverRequestHandler = null;
-    this.serverRequestPolicy = { approvedBrowserOrigins: normalizeBrowserOrigins(options.approvedBrowserOrigins ?? []), threadId: null, turnId: null };
+    this.serverRequestPolicy = { approvedBrowserOrigins: normalizeBrowserOrigins(options.approvedBrowserOrigins ?? []), approvedComputerApps: normalizeBundleIds(options.approvedComputerApps ?? []), threadId: null, turnId: null };
     this.abortHandler = () => { this.abortTimer ??= setTimeout(() => { void this.close(); }, 4500); };
     options.signal?.addEventListener("abort", this.abortHandler);
 

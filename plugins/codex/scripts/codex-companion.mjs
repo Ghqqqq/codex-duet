@@ -5,8 +5,8 @@ import { isolatedCodexCommand } from "./lib/codex-home.mjs";
 import { UNREACHABLE_GUIDANCE } from "./lib/runtime-errors.mjs";
 import { getToolAvailability, syncToolConfig } from "./lib/tool-config.mjs";
 import { buildWorkerReport, persistTaskArtifacts, taskArtifactPaths } from "./lib/worker-report.mjs";
-import { normalizeBrowserOrigins } from "./lib/server-requests.mjs";
-import { browserOriginSetup, transportSetup, defaultSandboxSetup, ensureBrowserApproval, SANDBOX_MODES } from "./lib/setup-config.mjs";
+import { normalizeBrowserOrigins, normalizeBundleIds } from "./lib/server-requests.mjs";
+import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, ensureBrowserApproval, ensureComputerUseApproval, SANDBOX_MODES } from "./lib/setup-config.mjs";
 import { activityReader, formatActivity, redactActivity, snippet } from "./lib/activity.mjs";
 import { JobRuntime, ACTIVE, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, continuationReport, adoptJob, ownershipNotice, markOwnerAttachment } from "./lib/job-runtime.mjs";
 import { updateJob } from "./lib/state.mjs";
@@ -91,7 +91,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--sync-tools [--profile chrome|codex-app] [--replace-cua] [--cua-template <file>] [--chatgpt-resources <dir>]] [--default-sandbox read-only|workspace-write|danger-full-access] [--browser-approval never-ask|ask] [--dry-run] [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--report] [--background|--detached|--follow] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--approve-browser-origin <origin>]... [--thread <id>|--continue <job-id>|--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--fast|--normal] [prompt]",
+      "  node scripts/codex-companion.mjs task [--report] [--background|--detached|--follow] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--approve-browser-origin <origin>]... [--approve-computer-app <bundle-id>]... [--thread <id>|--continue <job-id>|--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--fast|--normal] [prompt]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id|--thread <id>] [--wait] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id|--thread <id>] [--report] [--json]",
@@ -231,17 +231,25 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     reviewGateEnabled: Boolean(config.stopReviewGate),
     defaultSandbox: defaultSandboxSetup().defaultSandbox,
     browserOrigins: browserOriginSetup(),
+    computerUse: computerUseSummary(),
     actionsTaken,
     nextSteps
   };
 }
 
+// Setup's summary must stay read-only: report the state without running the mirror.
+function computerUseSummary() {
+  try { return computerUseSetup({ dryRun: true }); }
+  catch (error) { return { error: error.message }; }
+}
+
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "cua-template", "chatgpt-resources", "transport", "profile", "default-sandbox", "browser-approval"],
-    repeatableOptions: ["allow-browser-origin", "revoke-browser-origin"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "sync-tools", "dry-run", "list-browser-origins", "replace-cua"]
+    valueOptions: ["cwd", "cua-template", "chatgpt-resources", "transport", "profile", "default-sandbox", "browser-approval", "computer-use-approval"],
+    repeatableOptions: ["allow-browser-origin", "revoke-browser-origin", "allow-computer-app", "revoke-computer-app"],
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "sync-tools", "dry-run", "list-browser-origins", "list-computer-apps", "replace-cua"]
   });
+  const computerUseFlags = options["computer-use-approval"] !== undefined || options["allow-computer-app"] || options["revoke-computer-app"] || options["list-computer-apps"];
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw new Error("Choose either --enable-review-gate or --disable-review-gate.");
@@ -254,8 +262,17 @@ async function handleSetup(argv) {
     if (options[key] !== undefined && !options["sync-tools"]) throw new Error(`--${key} requires --sync-tools.`);
   }
   if (options["default-sandbox"] !== undefined) {
-    if (options["sync-tools"] || options.transport !== undefined || options["browser-approval"] !== undefined || options["allow-browser-origin"] || options["revoke-browser-origin"] || options["list-browser-origins"] || options["enable-review-gate"] || options["disable-review-gate"]) throw new Error("Run --default-sandbox separately from other setup changes.");
+    if (options["sync-tools"] || options.transport !== undefined || options["browser-approval"] !== undefined || options["allow-browser-origin"] || options["revoke-browser-origin"] || options["list-browser-origins"] || computerUseFlags || options["enable-review-gate"] || options["disable-review-gate"]) throw new Error("Run --default-sandbox separately from other setup changes.");
     const report = defaultSandboxSetup({ mode: options["default-sandbox"], dryRun: Boolean(options["dry-run"]) });
+    outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
+    return;
+  }
+  if (computerUseFlags) {
+    if (options["sync-tools"] || options["enable-review-gate"] || options["disable-review-gate"] || options.transport !== undefined || options["browser-approval"] !== undefined || options["allow-browser-origin"] || options["revoke-browser-origin"] || options["list-browser-origins"]) throw new Error("Run Computer Use app setup separately from other setup changes.");
+    // Validate every bundle id before any file write; --list-computer-apps alone is a dry run.
+    const allow = normalizeBundleIds(options["allow-computer-app"] ?? []), revoke = normalizeBundleIds(options["revoke-computer-app"] ?? []);
+    const listOnly = options["list-computer-apps"] && !allow.length && !revoke.length && options["computer-use-approval"] === undefined;
+    const report = { computerUse: computerUseSetup({ allow, revoke, approval: options["computer-use-approval"], dryRun: Boolean(options["dry-run"]) || listOnly }) };
     outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
     return;
   }
@@ -584,6 +601,7 @@ async function executeTaskRun(request) {
     sandbox,
     explicitSandbox: Boolean(request.sandbox),
     approvedBrowserOrigins: request.approvedBrowserOrigins ?? [],
+    approvedComputerApps: request.approvedComputerApps ?? [],
     onProgress: request.onProgress,
     signal: runtime.abort.signal,
     onParentQuestion: message => runtime.question(message),
@@ -614,7 +632,8 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
       title: taskMetadata.title,
       jobId: request.jobId ?? null,
       write: Boolean(request.write),
-      approvedBrowserOrigins: result.approvedBrowserOrigins ?? request.approvedBrowserOrigins ?? []
+      approvedBrowserOrigins: result.approvedBrowserOrigins ?? request.approvedBrowserOrigins ?? [],
+      approvedComputerApps: result.approvedComputerApps ?? request.approvedComputerApps ?? []
     }
   );
   const payload = {
@@ -634,6 +653,8 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
     effort: result.effort ?? request.effort ?? null,
     serviceTier: result.serviceTier ?? request.serviceTier ?? null,
     approvedBrowserOrigins: result.approvedBrowserOrigins ?? request.approvedBrowserOrigins ?? [],
+    approvedComputerApps: result.approvedComputerApps ?? request.approvedComputerApps ?? [],
+    blockers: result.blockers ?? [],
     commandExecutions: result.commandExecutions ?? [],
     reasoningSummary: result.reasoningSummary,
     startupTimings: result.startupTimings ?? {}, startupWarning: result.startupWarning ?? null,
@@ -654,7 +675,7 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
   Object.assign(payload, artifacts, { workerStatus: report.status });
 
   return {
-    exitStatus: report.status === "needs_input" ? 2 : result.status,
+    exitStatus: result.status !== 0 ? result.status : exitCodeForReport(report.status),
     jobStatus: report.status,
     threadId: result.threadId,
     turnId: result.turnId,
@@ -666,6 +687,12 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
     jobClass: "task",
     write: Boolean(request.write)
   };
+}
+
+// Worker exit codes: 0 completed; 2 the parent must act (blocked, needs_input,
+// moved owner); 1 failed/interrupted/cancelled.
+function exitCodeForReport(status) {
+  return status === "completed" ? 0 : status === "blocked" || status === "needs_input" ? 2 : 1;
 }
 
 function buildReviewJobMetadata(reviewName, target) {
@@ -693,7 +720,7 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
 }
 
 function renderQueuedTaskLaunch(payload) {
-  return `${payload.title} started in the background as ${payload.jobId}. Check /codex:status ${payload.jobId} for progress.\nApproved browser origins (this job): ${(payload.approvedBrowserOrigins ?? []).join(", ") || "none"}\n`;
+  return `${payload.title} started in the background as ${payload.jobId}. Check /codex:status ${payload.jobId} for progress.\nApproved browser origins (this job): ${(payload.approvedBrowserOrigins ?? []).join(", ") || "none"}\nApproved Computer Use apps (this job): ${(payload.approvedComputerApps ?? []).join(", ") || "none"}\n`;
 }
 
 function getJobKindLabel(kind, jobClass) {
@@ -728,7 +755,7 @@ function createTrackedProgress(job, options = {}) {
   };
 }
 
-function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins = [], lifecycle = {}) {
+function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins = [], lifecycle = {}, approvedComputerApps = []) {
   const job = createCompanionJob({
     prefix: "task",
     kind: "task",
@@ -740,10 +767,10 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
   });
   return { ...job, ownerId: lifecycle.owner ?? ownerId(job.id), sessionId: job.sessionId ?? null, leaseRenewedAt: Date.now(), leaseSec: lifecycle.leaseSec ?? 180, questionTimeoutSec: lifecycle.questionTimeoutSec ?? 900,
     leaseExpiresAt: Date.now() + (lifecycle.leaseSec ?? 180) * 1000,
-    sandbox: sandbox ?? (write ? "workspace-write" : "read-only"), approvalPolicy: "never", approvedBrowserOrigins, ...taskArtifactPaths(workspaceRoot, job.id) };
+    sandbox: sandbox ?? (write ? "workspace-write" : "read-only"), approvalPolicy: "never", approvedBrowserOrigins, approvedComputerApps, ...taskArtifactPaths(workspaceRoot, job.id) };
 }
 
-function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins = [], resumeLast, threadId, jobId, report, detached = false }) {
+function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins = [], approvedComputerApps = [], resumeLast, threadId, jobId, report, detached = false }) {
   return {
     cwd,
     model,
@@ -753,6 +780,7 @@ function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sand
     write,
     sandbox,
     approvedBrowserOrigins,
+    approvedComputerApps,
     resumeLast,
     threadId,
     jobId,
@@ -860,6 +888,7 @@ function enqueueBackgroundTask(cwd, job, request) {
       sandbox: job.sandbox,
       approvalPolicy: job.approvalPolicy,
       approvedBrowserOrigins: job.approvedBrowserOrigins ?? [],
+      approvedComputerApps: job.approvedComputerApps ?? [],
       title: job.title,
       summary: job.summary,
       logFile
@@ -934,7 +963,7 @@ async function handleReview(argv) {
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["model", "effort", "cwd", "prompt-file", "thread", "continue", "sandbox", "lease-sec", "question-timeout-sec", "owner", "timeout-sec", "feed-limit"],
-    repeatableOptions: ["approve-browser-origin"],
+    repeatableOptions: ["approve-browser-origin", "approve-computer-app"],
     booleanOptions: ["json", "report", "write", "resume-last", "resume", "fresh", "background", "detached", "follow", "fast", "normal"],
     aliasMap: {
       m: "model"
@@ -955,8 +984,12 @@ async function handleTask(argv) {
       if (options[flag] !== undefined) throw new Error(`--continue inherits the original job's ${flag} setting; do not pass --${flag}.`);
     }
     if (options["approve-browser-origin"]?.length) throw new Error("--continue inherits the original job's approved browser origins; do not pass --approve-browser-origin.");
+    if (options["approve-computer-app"]?.length) throw new Error("--continue inherits the original job's approved Computer Use apps; do not pass --approve-computer-app.");
   }
   const approvedBrowserOrigins = continued ? continued.approvedBrowserOrigins ?? [] : normalizeBrowserOrigins(options["approve-browser-origin"] ?? []);
+  // Per-call Computer Use approval, like --approve-browser-origin: only the
+  // listed bundle ids, only for this job's turn.
+  const approvedComputerApps = continued ? continued.approvedComputerApps ?? [] : normalizeBundleIds(options["approve-computer-app"] ?? []);
   const lifecycle = { owner: options.owner, leaseSec: seconds(options["lease-sec"] ?? process.env.CODEX_COMPANION_LEASE_SEC, 180, "--lease-sec"), questionTimeoutSec: seconds(options["question-timeout-sec"], 900, "--question-timeout-sec") };
   const model = continued ? continued.request?.model ?? "gpt-6-astra" : normalizeRequestedModel(options.model) ?? "gpt-6-astra";
   const effort = continued ? continued.request?.effort ?? "xhigh" : normalizeReasoningEffort(options.effort) ?? "xhigh";
@@ -997,6 +1030,10 @@ async function handleTask(argv) {
   // The browser is unrestricted by default: mirror the saved preference into
   // the browser runtime's own file before Codex starts (a no-op once written).
   try { ensureBrowserApproval(); } catch (error) { process.stderr.write(`Browser approval preference not applied: ${error.message}\n`); }
+  // Computer Use: in mirror mode (the default) the apps the user marked "always
+  // allow" in their Codex app are copied into the isolated runtime's own
+  // approval file (read-only on ~/.codex; a no-op once in step).
+  try { ensureComputerUseApproval(); } catch (error) { process.stderr.write(`Computer Use approval preference not applied: ${error.message}\n`); }
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast: Boolean(resumeLast || threadId)
@@ -1006,7 +1043,7 @@ async function handleTask(argv) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast, threadId);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle);
+    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps);
     const request = buildTaskRequest({
       cwd,
       model,
@@ -1016,6 +1053,7 @@ async function handleTask(argv) {
       write,
       sandbox,
       approvedBrowserOrigins,
+      approvedComputerApps,
       resumeLast,
       threadId,
       jobId: job.id,
@@ -1044,7 +1082,7 @@ async function handleTask(argv) {
     return;
   }
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle);
+  const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps);
   await runForegroundCommand(
     job,
     (progress) =>
@@ -1057,6 +1095,7 @@ async function handleTask(argv) {
         write,
         sandbox,
         approvedBrowserOrigins,
+        approvedComputerApps,
         resumeLast,
         threadId,
         jobId: job.id,
@@ -1157,7 +1196,7 @@ async function refreshJobSnapshot(cwd, reference) {
       preExistingChanges: stored.preExistingChanges ?? [],
       fileTracking: { status: "partial", basis: "Recovered exact-turn file-change events only; no end-of-turn workspace snapshot survived." },
       sandbox: stored.sandbox ?? "unknown", approvalPolicy: stored.approvalPolicy ?? "unknown",
-      approvedBrowserOrigins: stored.approvedBrowserOrigins ?? []
+      approvedBrowserOrigins: stored.approvedBrowserOrigins ?? [], approvedComputerApps: stored.approvedComputerApps ?? []
     });
     const execution = buildTaskExecution(result, { cwd, jobId: job.id, write: job.write, model: stored.request?.model, effort: stored.request?.effort, serviceTier: stored.request?.serviceTier });
     const completedAt = nowIso();
@@ -1214,7 +1253,7 @@ async function handleResult(argv) {
   if (reference) {
     const snapshot = await refreshJobSnapshot(cwd, reference);
     if (snapshot.recovery && snapshot.recovery.status !== "recovered") {
-      const pending = { status: snapshot.recovery.status, jobId: snapshot.job.id, threadId: snapshot.job.threadId, turnId: snapshot.job.turnId, logFile: snapshot.job.logFile, rawOutputFile: snapshot.job.rawOutputFile, resultFile: snapshot.job.resultFile, approvedBrowserOrigins: snapshot.job.approvedBrowserOrigins ?? [], error: snapshot.job.errorMessage ?? null, recovery: snapshot.recovery };
+      const pending = { status: snapshot.recovery.status, jobId: snapshot.job.id, threadId: snapshot.job.threadId, turnId: snapshot.job.turnId, logFile: snapshot.job.logFile, rawOutputFile: snapshot.job.rawOutputFile, resultFile: snapshot.job.resultFile, approvedBrowserOrigins: snapshot.job.approvedBrowserOrigins ?? [], approvedComputerApps: snapshot.job.approvedComputerApps ?? [], error: snapshot.job.errorMessage ?? null, recovery: snapshot.recovery };
       outputCommandResult(pending, `${snapshot.recovery.detail}\n`, options.json);
       process.exitCode = 2;
       return;
@@ -1223,10 +1262,10 @@ async function handleResult(argv) {
   const { workspaceRoot, job } = resolveResultJob(cwd, reference);
   const storedJob = readStoredJob(workspaceRoot, job.id);
   if (options.report) {
-    const report = storedJob?.report ?? buildWorkerReport({ approvedBrowserOrigins: storedJob?.approvedBrowserOrigins ?? [], ...(storedJob?.result ?? { status: 1, error: storedJob?.errorMessage ?? "No stored result." }) }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile });
+    const report = storedJob?.report ?? buildWorkerReport({ approvedBrowserOrigins: storedJob?.approvedBrowserOrigins ?? [], approvedComputerApps: storedJob?.approvedComputerApps ?? [], ...(storedJob?.result ?? { status: 1, error: storedJob?.errorMessage ?? "No stored result." }) }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile });
     Object.assign(withRunSettings(report, storedJob?.request), leaseExpiryReport(storedJob ?? job));
     outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
-    if (report.status !== "completed") process.exitCode = report.status === "needs_input" ? 2 : 1;
+    process.exitCode = exitCodeForReport(report.status);
     return;
   }
   const payload = {
@@ -1378,14 +1417,15 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
         // Preserve handles/paths; redact only display text, never serialized JSON.
         if (terminal) {
           withRunSettings(report, current.request);
-          for (const key of ["verification", "keyFindings", "assumptions", "blockers"]) {
+          for (const key of ["verification", "keyFindings", "assumptions"]) {
             if (report[key]) report[key] = report[key].map(redactActivity);
           }
+          if (report.blockers) report.blockers = report.blockers.map(blocker => typeof blocker === "string" ? redactActivity(blocker) : typeof blocker?.message === "string" ? { ...blocker, message: redactActivity(blocker.message) } : blocker);
           if (typeof report.question === "string") report.question = redactActivity(report.question);
           if (report.status !== "completed" && current.threadId && !report.continuationCommand) Object.assign(report, continuationReport(current));
         }
         if (json && activity.length) updateJob(workspaceRoot, job.id, stored => ({ activityCursors: { ...stored.activityCursors, [reader]: Math.max(cursor, stored.activityCursors?.[reader] ?? 0) } }));
-        await finish({ ...report, ...reported(), cursor }, terminal && report.status !== "completed" ? (report.status === "needs_input" ? 2 : 1) : 0);
+        await finish({ ...report, ...reported(), cursor }, terminal ? exitCodeForReport(report.status) : 0);
         return;
       }
       await sleep(100);

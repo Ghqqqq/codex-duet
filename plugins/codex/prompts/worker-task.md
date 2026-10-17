@@ -23,3 +23,11 @@ Origin approval flags require the user's explicit consent for each origin and
 are supplied by the parent for this invocation only. Never add them after a
 denial or inherit them from a prior task. Report unsupported approvals and failed
 tab cleanup as blockers, without raw page content or secret material.
+If a tab you opened reports "Debugger unattached", discard that binding, re-obtain
+the tab by id through your session and close it; if that fails too, report the tab
+id, the session name and that it could not be closed.
+For Computer Use (desktop) assignments, an error "Computer Use was not approved to
+use <App>", "blocked ... by your organization's policy" or "not allowed ... for
+safety reasons" is a blocker: do not retry around it or ask for approval yourself.
+Stop the desktop part, keep any other delivered work, and report status blocked
+with the exact app name in blockers; never report such a run as completed.

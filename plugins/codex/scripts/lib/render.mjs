@@ -135,6 +135,7 @@ function pushJobDetails(lines, job, options = {}) {
     lines.push(`  Phase: ${job.phase}`);
   }
   if (job.approvedBrowserOrigins) lines.push(`  Approved browser origins (this job): ${job.approvedBrowserOrigins.join(", ") || "none"}`);
+  if (job.approvedComputerApps?.length) lines.push(`  Approved Computer Use apps (this job): ${job.approvedComputerApps.join(", ")}`);
   if (options.showElapsed && job.elapsed) {
     lines.push(`  Elapsed: ${job.elapsed}`);
   }
@@ -323,7 +324,7 @@ export function renderNativeReviewResult(result, meta) {
 
 export function renderTaskResult(parsedResult, meta) {
   const rawOutput = typeof parsedResult?.rawOutput === "string" ? parsedResult.rawOutput : "";
-  const origins = meta?.approvedBrowserOrigins?.length ? `Approved browser origins (this job): ${meta.approvedBrowserOrigins.join(", ")}\n\n` : "";
+  const origins = `${meta?.approvedBrowserOrigins?.length ? `Approved browser origins (this job): ${meta.approvedBrowserOrigins.join(", ")}\n` : ""}${meta?.approvedComputerApps?.length ? `Approved Computer Use apps (this job): ${meta.approvedComputerApps.join(", ")}\n` : ""}`.replace(/\n$/, "\n\n");
   if (rawOutput) {
     return origins + (rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`);
   }
@@ -414,7 +415,9 @@ export function renderStoredJobResult(job, storedJob) {
     "";
   if (rawOutput) {
     const origins = storedJob?.result?.approvedBrowserOrigins ?? job.approvedBrowserOrigins ?? [];
-    const output = `${origins.length ? `Approved browser origins (this job): ${origins.join(", ")}\n\n` : ""}${rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`}`;
+    const apps = storedJob?.result?.approvedComputerApps ?? job.approvedComputerApps ?? [];
+    const header = `${origins.length ? `Approved browser origins (this job): ${origins.join(", ")}\n` : ""}${apps.length ? `Approved Computer Use apps (this job): ${apps.join(", ")}\n` : ""}`.replace(/\n$/, "\n\n");
+    const output = `${header}${rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`}`;
     if (!threadId) {
       return output;
     }

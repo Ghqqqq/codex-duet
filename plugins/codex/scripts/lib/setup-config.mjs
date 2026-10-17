@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 import { keyPath, statements, valueOf } from "./tool-config.mjs";
-import { normalizeBrowserOrigin, normalizeBrowserOrigins } from "./server-requests.mjs";
+import { normalizeBrowserOrigin, normalizeBrowserOrigins, normalizeBundleId, normalizeBundleIds } from "./server-requests.mjs";
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -59,7 +60,7 @@ function safeFile(home, file) {
   if (fs.existsSync(file) && fs.statSync(file).isFile() && fs.statSync(file).nlink > 1) throw new Error("Configuration editing refuses hard-linked files.");
 }
 function read(home, file) { safeFile(home, file); try { return fs.readFileSync(file, "utf8"); } catch (e) { if (e.code === "ENOENT") return ""; throw e; } }
-function apply(home, edits, dryRun) {
+function apply(home, edits, dryRun, { backup = true } = {}) {
   const changed = edits.filter(e => e.before !== e.after), backups = [];
   if (dryRun) return { changedFiles: changed.map(e => e.file), backups, dryRun };
   for (const edit of changed) {
@@ -69,7 +70,7 @@ function apply(home, edits, dryRun) {
     const fd = fs.openSync(lock, "wx", 0o600);
     try {
       if (read(home, edit.file) !== edit.before) throw new Error("Configuration changed concurrently; retry setup.");
-      if (fs.existsSync(edit.file)) {
+      if (backup && fs.existsSync(edit.file)) {
         const backup = `${edit.file}.backup-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}`;
         fs.writeFileSync(backup, edit.before, { flag: "wx", mode: 0o600 }); backups.push(backup);
       }
@@ -147,6 +148,107 @@ export function browserOriginSetup({ allow = [], revoke = [], approval, env = pr
   const approvalMode = readTomlField(after, ["approval_mode"]);
   const saved = readTomlField(preferenceAfter, ["browser_approval"]);
   return { file, approval: approvalMode === "never_ask" ? "never-ask" : approvalMode === undefined ? "ask" : "custom", preference: BROWSER_APPROVAL_MODES.includes(saved) ? saved : BUILTIN_BROWSER_APPROVAL, allowed: safeList(allowed), denied: safeList(denied), unsupportedEntries: allowed.length + denied.length - safeList(allowed).length - safeList(denied).length, ...apply(home, edits, dryRun) };
+}
+
+// Computer Use app approvals. node_repl (the MCP server hosting Codex's
+// Computer Use JS) persists them under $CODEX_HOME/computer-use/: "always" in
+// config.toml `[apps] allowed`, "this session" in sessions/<thread-id>.toml.
+// An app listed there passes node_repl's elicitation through its persisted-state
+// path, so no host prompt is needed. The isolated runtime reads the isolated
+// home's copy; this module keeps it in step with the user's own Codex app.
+export const COMPUTER_USE_APPROVAL_MODES = ["mirror", "ask"];
+export const BUILTIN_COMPUTER_USE_APPROVAL = "mirror";
+const CU_PREFERENCE = "computer_use_approval", CU_MIRRORED = "computer_use_mirrored_apps", CU_REVOKED = "computer_use_revoked_apps";
+const computerUseFile = home => path.join(home, "computer-use", "config.toml");
+export function computerUseSessionFile(home, threadId) {
+  if (typeof threadId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(threadId)) throw new Error("A thread id is required for a per-call Computer Use approval.");
+  return path.join(home, "computer-use", "sessions", `${threadId}.toml`);
+}
+// The user's own Codex home, read-only. Inside a worker CODEX_HOME already
+// points at the isolated home, so that value is never taken as the source.
+export function normalCodexHome(env = process.env) {
+  const isolated = resolveIsolatedCodexHome(env);
+  const candidates = [env.CODEX_COMPANION_NORMAL_HOME, env.CODEX_HOME, path.join(env.HOME || env.USERPROFILE || os.homedir(), ".codex")].filter(Boolean);
+  return candidates.find(c => path.resolve(c) !== isolated) ?? path.join(env.HOME || os.homedir(), ".codex");
+}
+function appList(text, keys, label) {
+  const values = readTomlField(text, keys);
+  if (values === undefined) return [];
+  if (!Array.isArray(values) || values.some(v => typeof v !== "string")) throw new Error(`${label} must be a string array; no configuration changed.`);
+  return values;
+}
+const validApps = values => values.flatMap(v => { try { return [normalizeBundleId(v)]; } catch { return []; } });
+// Only `[apps] allowed` of the user's global file counts as "always allowed".
+// Session files, the denied list and anything unreadable are ignored; the
+// user's home is never written.
+export function readCodexAppComputerUseApprovals(env = process.env) {
+  const file = computerUseFile(normalCodexHome(env));
+  try {
+    if (!fs.existsSync(file)) return { file, allowed: [], readable: false };
+    return { file, allowed: validApps(appList(fs.readFileSync(file, "utf8"), ["apps", "allowed"], "Codex app Computer Use approvals")), readable: true };
+  } catch { return { file, allowed: [], readable: false }; }
+}
+export function computerUseApprovalPreference(env = process.env) {
+  const { root, file } = duetConfig(env);
+  const value = readTomlField(read(root, file), [CU_PREFERENCE]) ?? BUILTIN_COMPUTER_USE_APPROVAL;
+  if (!COMPUTER_USE_APPROVAL_MODES.includes(value)) throw new Error("Invalid saved computer_use_approval; repair it with setup --computer-use-approval.");
+  return value;
+}
+// One idempotent pass: the isolated `[apps] allowed` list becomes
+// (current − previously mirrored − revoked) ∪ (mirror ? user's always-allowed − revoked : ∅) ∪ allow.
+// Explicit and hand-written entries persist; mirrored ones follow the source;
+// everything else in the file (denied list, other tables) is left alone.
+export function computerUseSetup({ allow = [], revoke = [], approval, env = process.env, dryRun = false } = {}) {
+  if (approval !== undefined && !COMPUTER_USE_APPROVAL_MODES.includes(approval)) throw new Error("--computer-use-approval must be mirror or ask.");
+  allow = normalizeBundleIds(allow); revoke = normalizeBundleIds(revoke);
+  if (allow.some(a => revoke.includes(a))) throw new Error("Do not allow and revoke the same Computer Use app together.");
+  const home = resolveIsolatedCodexHome(env), file = computerUseFile(home), before = read(home, file);
+  const preference = duetConfig(env), preferenceBefore = read(home, preference.file);
+  let preferenceAfter = approval === undefined ? preferenceBefore : setTomlField(preferenceBefore, [CU_PREFERENCE], approval);
+  const mode = readTomlField(preferenceAfter, [CU_PREFERENCE]) ?? BUILTIN_COMPUTER_USE_APPROVAL;
+  if (!COMPUTER_USE_APPROVAL_MODES.includes(mode)) throw new Error("Invalid saved computer_use_approval; repair it with setup --computer-use-approval.");
+  const previouslyMirrored = validApps(appList(preferenceBefore, [CU_MIRRORED], "computer_use_mirrored_apps"));
+  let revoked = validApps(appList(preferenceBefore, [CU_REVOKED], "computer_use_revoked_apps"));
+  revoked = [...new Set([...revoked.filter(a => !allow.includes(a)), ...revoke])];
+  const source = readCodexAppComputerUseApprovals(env);
+  const mirrored = mode === "mirror" ? source.allowed.filter(a => !revoked.includes(a)) : [];
+  const current = appList(before, ["apps", "allowed"], "Isolated Computer Use approvals");
+  const kept = current.filter(a => !previouslyMirrored.includes(a) && !revoked.includes(a) && !revoke.includes(a));
+  const allowed = [...new Set([...kept, ...mirrored, ...allow])];
+  const after = same(allowed, current) ? before : setTomlField(before, ["apps", "allowed"], allowed);
+  // An app the user allowed explicitly (or wrote by hand) stays explicit even
+  // while the Codex app also lists it, so it survives a later switch to ask.
+  const mirroredRecord = mirrored.filter(a => !kept.includes(a) && !allow.includes(a));
+  if (!same(mirroredRecord, previouslyMirrored)) preferenceAfter = setTomlField(preferenceAfter, [CU_MIRRORED], mirroredRecord.length ? mirroredRecord : undefined);
+  if (!same(revoked, validApps(appList(preferenceBefore, [CU_REVOKED], "computer_use_revoked_apps")))) preferenceAfter = setTomlField(preferenceAfter, [CU_REVOKED], revoked.length ? revoked : undefined);
+  const result = apply(home, [{ file, before, after }, { file: preference.file, before: preferenceBefore, after: preferenceAfter }], dryRun);
+  return {
+    file, preference: mode,
+    allowed: validApps(allowed).map(app => ({ app, source: mirroredRecord.includes(app) ? "mirrored" : "explicit" })),
+    revoked, codexApp: source, unsupportedEntries: allowed.length - validApps(allowed).length,
+    ...result
+  };
+}
+// Before every task; never raises into the task flow.
+export function ensureComputerUseApproval({ env = process.env } = {}) {
+  const result = computerUseSetup({ env });
+  return { computerUseApproval: result.preference, allowed: result.allowed.map(a => a.app), changedFiles: result.changedFiles, backups: result.backups };
+}
+// A per-call approval: the listed apps are allowed for exactly this thread while
+// the turn runs, via node_repl's session-scoped persisted state. The caller
+// restores the file when the turn ends.
+export function grantComputerAppsForThread(threadId, apps, env = process.env) {
+  const home = resolveIsolatedCodexHome(env), file = computerUseSessionFile(home, threadId);
+  const before = read(home, file), current = appList(before, ["apps", "allowed"], "Session Computer Use approvals");
+  const allowed = [...new Set([...current, ...normalizeBundleIds(apps)])];
+  if (same(allowed, current)) return () => {};
+  apply(home, [{ file, before, after: setTomlField(before, ["apps", "allowed"], allowed) }], false, { backup: false });
+  return () => {
+    try {
+      if (!before) { safeFile(home, file); fs.rmSync(file, { force: true }); return; }
+      apply(home, [{ file, before: read(home, file), after: before }], false, { backup: false });
+    } catch { /* a stale per-thread grant is reported by the next task's cleanup */ }
+  };
 }
 
 export const SANDBOX_MODES = ["read-only", "workspace-write", "danger-full-access"];

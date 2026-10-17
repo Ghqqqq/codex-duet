@@ -57,8 +57,11 @@ the native worker runtime, isolation and lifecycle work are Duet additions.
 - **Honest reports.** Compact JSON reports separate captured facts from Codex's
   claims, list touched files against a before/after snapshot (pre-existing dirt
   reported separately), and keep handles for read-only recovery.
-- **Browser work.** Optional Chrome/computer-use tooling, fresh session-owned tabs,
-  and explicit per-origin consent or an opt-in all-sites setting.
+- **Browser and desktop work.** Optional Chrome/computer-use tooling, fresh
+  session-owned tabs, an unrestricted browser by default, and Computer Use app
+  approvals mirrored from the user's own Codex app (read-only on `~/.codex`),
+  with per-app and per-call overrides. Denied approvals are reported as
+  structured blockers, never as success.
 
 ## Requirements
 
@@ -191,6 +194,7 @@ half the lease for shorter leases).
 | Codex sandbox | `danger-full-access` (full access, like the Codex app's own full-access mode) | Lower the default with `setup --default-sandbox read-only\|workspace-write` (stored in `~/.claude/codex-isolated/duet/config.toml`); narrow or widen one call with `task --sandbox <mode>`; `--write` is a floor (at least `workspace-write`), `--write=false` an explicit read-only call |
 | Approval policy | `never` | — |
 | Browser | unrestricted: any website, no per-origin prompt (`approval_mode = "never_ask"` is mirrored into the isolated browser runtime before every task); network access stays on in every sandbox mode | `setup --browser-approval ask` restores the runtime's ordinary origin checks (saved in `duet/config.toml`); `setup --browser-approval never-ask` returns to the default |
+| Computer Use apps | `mirror`: apps the user marked "always allow" in their Codex app (`~/.codex/computer-use/config.toml`, read-only) are copied into the isolated runtime's approval file before every task | `setup --computer-use-approval ask` stops the sync (unapproved apps are denied and reported as blockers); `setup --allow-computer-app`/`--revoke-computer-app <bundle id>` adjust individual apps; `task --approve-computer-app <bundle id>` approves one app for one call |
 
 The parent chooses a sandbox per call the way it would choose a permission mode
 for a native subagent; without a flag the configured default applies. Each
@@ -359,6 +363,44 @@ choice); `setup --list-browser-origins --json` includes the same. See
 [worker operations](docs/worker-operations.md#codex-app-profile) and
 [browser approvals](docs/browser-approvals.md#all-sites-browser-approval-the-default).
 
+### Computer Use app approvals
+
+Codex's Computer Use tooling asks before it drives a macOS app. The user's own
+Codex app records a "This session" choice in
+`~/.codex/computer-use/sessions/<thread>.toml` and an "Always" choice in
+`~/.codex/computer-use/config.toml` (`[apps] allowed`). The isolated runtime reads
+its own copy, `~/.claude/codex-isolated/computer-use/`, and a worker runs with
+approval policy `never`, so an app that is not listed there fails with
+`Computer Use was not approved to use <App>`.
+
+By default (`computer_use_approval = "mirror"`) every task first copies the apps
+from the user's global `[apps] allowed` list into the isolated file. Only
+"always allowed" apps cross over: session-level choices, the `denied` list and
+anything an organization policy blocks are never copied, and `~/.codex` is
+only read. The isolated file is validated, backed up privately and written
+atomically; a second pass changes nothing.
+
+```bash
+node scripts/codex-companion.mjs setup --list-computer-apps --json          # read-only preview
+node scripts/codex-companion.mjs setup --computer-use-approval ask          # stop syncing
+node scripts/codex-companion.mjs setup --computer-use-approval mirror       # default
+node scripts/codex-companion.mjs setup --allow-computer-app com.google.Chrome
+node scripts/codex-companion.mjs setup --revoke-computer-app com.apple.finder
+node scripts/codex-companion.mjs task --approve-computer-app com.google.Chrome "…"
+```
+
+`--allow-computer-app` adds an app to the isolated runtime even in `ask` mode;
+`--revoke-computer-app` removes it and keeps it out of later mirrors until it is
+allowed again. Both take bundle identifiers (`com.google.Chrome`), support
+`--dry-run` and `--json`, and never run from a worker. `task
+--approve-computer-app` approves only the listed apps, only for that call: the
+grant is written as a session-scoped approval for the job's own thread while the
+turn runs and withdrawn afterwards; a follow-up on the same thread does not
+inherit it, `task --continue` does. If the user has only ever chosen "This
+session" in the Codex app, mirror finds nothing to copy; choose "Always" there
+or use `--allow-computer-app`. Details:
+[Computer Use approvals](docs/computer-use-approvals.md).
+
 ### Browser and computer-use tooling
 
 ```bash
@@ -429,7 +471,8 @@ Job records, logs and result artifacts live in the isolated home, next to the
 plugin's settings file:
 
 ```text
-~/.claude/codex-isolated/duet/config.toml                  # default sandbox, browser approval
+~/.claude/codex-isolated/duet/config.toml                  # default sandbox, browser and Computer Use approval
+~/.claude/codex-isolated/computer-use/config.toml           # isolated Computer Use app approvals (mirrored + explicit)
 ~/.claude/codex-isolated/duet/state/<workspace>/state.json # per-workspace job index
 ~/.claude/codex-isolated/duet/state/<workspace>/jobs/      # <id>.json, .log, .output.txt, .result.json
 ~/.claude/codex-isolated/duet/state/<workspace>/broker.json
@@ -485,6 +528,17 @@ yourself, do the same rather than logging in again.
 **`stale_browser_tab_claim`.** Another browser session owns that tab. Start the
 assignment again with a fresh tab; do not steal the claim.
 
+**`status: blocked` with `computer_use_app_not_approved`.** The worker tried to
+drive an app (`blockers[].app`) that the isolated runtime has not approved. Check
+`setup --list-computer-apps --json`: in `mirror` mode the app must be "Always"
+allowed in the user's Codex app (or added with `setup --allow-computer-app`); in
+`ask` mode the parent must pass `task --approve-computer-app <bundle id>` for that
+call. `computer_use_app_blocked_by_policy`/`computer_use_app_forbidden` come from
+Codex's own policy and cannot be overridden here. `browser_tab_debugger_unattached`
+names a tab (`tabId`, `sessionId`, `closed`) the worker could not inspect or
+close; close it manually if `closed` is `false`. `reported_blocked` means Codex's
+own final answer declared itself blocked. Blocked tasks exit 2, like `needs_input`.
+
 **Interrupted worker.** Recover with `status <job> --json` and
 `result <job> --report --json` in the original workspace. Do not resubmit the task;
 that starts a new turn.
@@ -520,8 +574,16 @@ session store.
   immediate.
 - The owner lease is lifecycle coordination between local processes, not an
   authentication boundary.
-- Browser origin persistence follows the format used by the bundled browser
-  service; a future runtime may change it.
+- Browser origin persistence and Computer Use app approvals follow the file
+  formats used by the bundled browser service and `node_repl`
+  (`computer-use/config.toml`, `computer-use/sessions/<thread>.toml`); a future
+  runtime may change them. Session-level ("This session") approvals in the
+  user's Codex app are deliberately not mirrored.
+- Blocker detection matches fixed runtime signatures (`Computer Use was not
+  approved to use …`, `Debugger unattached`, `Tab … is already part of browser
+  session …`) and a final answer that starts with "Blocked" or states
+  `status: blocked`; a refusal phrased differently is reported through
+  `keyFindings` and the raw output only.
 - File tracking cannot attribute edits when several writers share a checkout, and
   ignored files and submodule contents are not hashed.
 - Legacy state directories are merged, never removed. A job whose worker from an

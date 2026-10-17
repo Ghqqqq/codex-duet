@@ -297,6 +297,11 @@ if (args[0] !== "app-server") {
 const bootState = loadState();
 bootState.appServerStarts = (bootState.appServerStarts || 0) + 1;
 bootState.launches = [...(bootState.launches || []), { pid: process.pid, home: process.env.CODEX_HOME, sqlite: process.env.CODEX_SQLITE_HOME, args }];
+
+function readComputerUse(home, threadId) {
+  const readFile = file => { try { return fs.readFileSync(file, "utf8"); } catch { return null; } };
+  return home ? { session: readFile(path.join(home, "computer-use", "sessions", threadId + ".toml")), global: readFile(path.join(home, "computer-use", "config.toml")) } : null;
+}
 saveState(bootState);
 
 const rl = readline.createInterface({ input: process.stdin });
@@ -504,10 +509,32 @@ rl.on("line", (line) => {
           serviceTier: message.params.serviceTier,
           sandboxPolicy: message.params.sandboxPolicy,
           approvalPolicy: message.params.approvalPolicy,
-	          prompt
+	          prompt,
+          // What node_repl would see at this moment: the isolated home's
+          // Computer Use approval files for this thread and globally.
+          computerUse: readComputerUse(process.env.CODEX_HOME, thread.id)
 	        };
 	        saveState(state);
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
+
+        if (BEHAVIOR === "computer-use-requests") {
+          // node_repl's elicitation for an app that has no persisted approval.
+          const id = "fixture-cua-request";
+          serverRequests.set(id, { threadId: thread.id, turnId });
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          send({ id, method: "mcpServer/elicitation/request", params: { serverName: "node_repl", threadId: thread.id, turnId, mode: "form", message: "DO_NOT_LOG_FIXTURE", requestedSchema: { type: "object", properties: {} }, _meta: { codex_approval_kind: "mcp_tool_call", connector_id: "computer-use", connector_name: "Computer Use", persist: ["session", "always"], riskLevel: "medium", tool_name: "get_app_state", tool_params: { app: "com.google.Chrome" }, tool_params_display: "DO_NOT_LOG_FIXTURE" } } });
+          break;
+        }
+
+        if (BEHAVIOR === "computer-use-denied") {
+          // Codex resolved the elicitation itself; the tool call failed.
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          const tool = { id: "cua-call", type: "mcpToolCall", server: "node_repl", tool: "js", status: "inProgress", arguments: { code: "PRIVATE_FIXTURE_ARGUMENTS" } };
+          send({ method: "item/started", params: { threadId: thread.id, turnId, item: tool } });
+          send({ method: "item/completed", params: { threadId: thread.id, turnId, item: { ...tool, status: "failed", error: { message: "Error: Computer Use was not approved to use Google Chrome\\n    at PRIVATE_FIXTURE_STACK" } } } });
+          emitTurnCompleted(thread.id, turnId, { completed: { type: "agentMessage", id: "cua-final", text: "Blocked before capture: Chrome could not be used.\\nPRIVATE_FIXTURE_DETAIL", phase: "final_answer" } });
+          break;
+        }
 
         if (BEHAVIOR === "w9-feed") {
           send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });

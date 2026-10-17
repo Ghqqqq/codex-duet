@@ -32,15 +32,39 @@ export function normalizeBrowserOrigins(values = []) {
   return [...new Set(values.map(normalizeBrowserOrigin))];
 }
 
+// Computer Use identifies macOS apps by bundle identifier (reverse-DNS, as in
+// `com.google.Chrome`). Case is significant to the runtime, so it is preserved.
+export function normalizeBundleId(value) {
+  const invalid = () => new Error("A Computer Use app must be a bundle identifier such as com.google.Chrome (reverse-DNS labels, no spaces or wildcards).");
+  if (typeof value !== "string") throw invalid();
+  const id = value.trim();
+  if (id.length > 255 || !/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/.test(id)) throw invalid();
+  return id;
+}
+export function normalizeBundleIds(values = []) {
+  if (!Array.isArray(values)) throw new Error("Computer Use app approvals must be a list.");
+  return [...new Set(values.map(normalizeBundleId))];
+}
+
+// node_repl's Computer Use policy (computer-use-policy.js) asks for an app with
+// exactly this metadata before every tool call. The host normally resolves it
+// from persisted state; when it reaches this client instead, a per-call flag may
+// accept it for the listed app in the current thread, and nothing else.
+function computerUseElicitation(params) {
+  const meta = params?._meta;
+  if (!object(meta) || meta.connector_id !== "computer-use" || meta.codex_approval_kind !== "mcp_tool_call" || !object(meta.tool_params)) return null;
+  try { return normalizeBundleId(meta.tool_params.app); } catch { return null; }
+}
+
 export function unsupportedServerRequest(message) {
   // browser-service oee persists accept/decline only; cancel avoids a stale deny.
   if (message.method === "mcpServer/elicitation/request") return { id: message.id, result: { action: "cancel" } };
   return { id: message.id, error: { code: -32601, message: methods.has(message.method) ? `Unsupported server request: ${message.method}` : "Unsupported server request" } };
 }
 
-export function decideServerRequest(message, { approvedBrowserOrigins = [], threadId = null, turnId = null } = {}) {
+export function decideServerRequest(message, { approvedBrowserOrigins = [], approvedComputerApps = [], threadId = null, turnId = null } = {}) {
   const method = methods.has(message.method) ? message.method : `unrecognized:${hash(message.method)}`;
-  /** @type {{ method: string, requestId: string | number, kind: string, decision: string, reason: string, origin?: string, fields?: string[] }} */
+  /** @type {{ method: string, requestId: string | number, kind: string, decision: string, reason: string, origin?: string, app?: string, fields?: string[] }} */
   const summary = {
     method,
     requestId: Number.isSafeInteger(message.id) ? message.id : `sha256:${hash(message.id)}`,
@@ -52,6 +76,25 @@ export function decideServerRequest(message, { approvedBrowserOrigins = [], thre
     summary.decision = "cancelled";
     summary.reason = "unsupported-elicitation-nonpersistent";
     if (["form", "openai/form", "openaiForm", "url"].includes(p?.mode)) summary.kind = `elicitation-${p.mode}`;
+    const app = computerUseElicitation(p);
+    if (app) {
+      // The bundle id is the runtime's own identifier, safe to log and report.
+      summary.kind = "computer-use-app";
+      summary.app = app;
+      const apps = normalizeBundleIds(approvedComputerApps);
+      // Elicitation params may omit turnId; when present it must match the active turn.
+      if (!threadId || !turnId || p.threadId !== threadId || (p.turnId != null && p.turnId !== turnId)) summary.reason = "turn-mismatch";
+      else if (!apps.length) summary.reason = "no-flag";
+      else if (!apps.includes(app)) summary.reason = "app-mismatch";
+      else {
+        summary.decision = "approved";
+        summary.reason = "app-match";
+        // McpServerElicitationRequestResponse: accept without persistence metadata,
+        // so the runtime records nothing beyond this request.
+        return { reply: { id: message.id, result: { action: "accept" } }, summary };
+      }
+      return { reply, summary };
+    }
     // Fixed field-name allowlist for a future denied probe. Never traverse a
     // page's requestedSchema, print arbitrary keys, or retain metadata values.
     const observed = ["threadId", "turnId", "serverName", "mode", "message", "requestedSchema", "url", "elicitationId", "_meta"];
@@ -142,6 +185,8 @@ export class ServerRequestRelay {
     this.pending.delete(message.id);
     if (pending.message.method === "item/commandExecution/requestApproval" && object(message.result) && Object.keys(message.result).length === 1 && message.result.decision === "accept") {
       this.respond({ id: pending.message.id, result: { decision: "accept" } });
+    } else if (pending.message.method === "mcpServer/elicitation/request" && object(message.result) && Object.keys(message.result).length === 1 && message.result.action === "accept" && computerUseElicitation(pending.message.params)) {
+      this.respond({ id: pending.message.id, result: { action: "accept" } });
     } else if (pending.message.method === "item/tool/call" && pending.message.params?.tool === "ask_parent" &&
         object(message.result) && typeof message.result.success === "boolean" && Array.isArray(message.result.contentItems) &&
         message.result.contentItems.length === 1 && message.result.contentItems[0]?.type === "inputText" &&

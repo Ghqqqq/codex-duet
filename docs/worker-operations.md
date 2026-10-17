@@ -17,7 +17,11 @@ It forwards mid-task questions to the parent with SendMessage, and does not inst
 software, log in, or modify settings. The `--report` prompt contract tells Codex
 to proceed on conservative assumptions and report them. A question-only or
 unfinished response becomes `needs_input` with its question, exit code 2, and a
-saved result. Detection is heuristic; the parent still checks task acceptance.
+saved result. A turn that hit a known runtime refusal (a Computer Use app the
+runtime has not approved, a browser tab left with `Debugger unattached`, a stale
+tab claim) or whose final answer declares itself blocked becomes `blocked`, also
+exit code 2, with structured `blockers` (`{ code, app | tabId, sessionId, closed,
+message }`). Detection is heuristic; the parent still checks task acceptance.
 
 Prerequisites must be handled before unattended execution: an installed runtime,
 isolated authentication (or an independently configured provider), and Claude
@@ -38,8 +42,10 @@ tab or close an unrelated tab. An error `Tab <id> is already part of browser
 session <session-id>` is a distinct `stale_browser_tab_claim` blocker; report the
 full session ID and any cleanup failure. The report classifier recognizes the
 full UUID form and includes `browserBlocker` with kind, tab ID and session ID.
-It conservatively marks an otherwise successful turn as `needs_input`; it does
-not infer that the old session is dead or release its claim.
+It conservatively marks an otherwise successful turn as `blocked`; it does
+not infer that the old session is dead or release its claim. A tab the worker
+could not inspect or close because of `Debugger unattached` is reported as
+`browser_tab_debugger_unattached` with `tabId`, `sessionId` and `closed`.
 
 The browser is unrestricted by default (`approval_mode = "never_ask"` mirrored
 into the isolated browser runtime before every task) and every sandbox mode keeps
@@ -57,6 +63,25 @@ task/status/result JSON and text reports, and interrupted-result recovery.
 Compact reports show up to three origins with an omitted count; job metadata and
 the full result retain every origin. The option does not change sandbox policy
 or `approvalPolicy: never`, and never grants session-wide authority.
+
+## Computer Use app approvals
+
+Computer Use (driving a macOS app) is approved per app by node_repl's persisted
+state under `<isolated home>/computer-use/`, which a worker cannot answer
+interactively (`approvalPolicy: never`). By default every task mirrors the apps
+the user marked "Always" in their own Codex app (`~/.codex/computer-use/config.toml`
+`[apps] allowed`, read-only; session-level and denied apps are never copied) into
+the isolated file before Codex starts. The user switches with
+`setup --computer-use-approval ask|mirror`, adjusts individual apps with
+`setup --allow-computer-app|--revoke-computer-app <bundle id>` and inspects with
+`setup --list-computer-apps --json`; workers never run setup. The parent may pass
+repeated `task --approve-computer-app <bundle id>` flags for one call: the apps are
+granted to the job's own thread only while the turn runs, and a forwarded
+elicitation is accepted only for an exact bundle-id match on the current turn
+without persistence. `--thread` follow-ups start with no grant; `--continue`
+inherits. An unapproved app is reported as `status: blocked` with
+`computer_use_app_not_approved` and the app name, never as `completed`. Details:
+[Computer Use approvals](computer-use-approvals.md).
 
 Only schema-defined **network-only** `item/commandExecution/requestApproval`
 requests for the current thread/turn can receive `{ "decision": "accept" }`.

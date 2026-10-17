@@ -1,6 +1,6 @@
 ---
 description: Check Codex readiness and explicitly configure isolated tools, sandbox and browser access
-argument-hint: '[--sync-tools [--profile chrome|codex-app] [--replace-cua] [--cua-template <file>] [--dry-run]] [--enable-review-gate|--disable-review-gate] [--default-sandbox read-only|workspace-write|danger-full-access] [--browser-approval never-ask|ask] [--transport http|websocket|status] [--allow-browser-origin <origin>|--revoke-browser-origin <origin>|--list-browser-origins]'
+argument-hint: '[--sync-tools [--profile chrome|codex-app] [--replace-cua] [--cua-template <file>] [--dry-run]] [--enable-review-gate|--disable-review-gate] [--default-sandbox read-only|workspace-write|danger-full-access] [--browser-approval never-ask|ask] [--transport http|websocket|status] [--allow-browser-origin <origin>|--revoke-browser-origin <origin>|--list-browser-origins] [--computer-use-approval mirror|ask] [--allow-computer-app <bundle-id>|--revoke-computer-app <bundle-id>|--list-computer-apps]'
 allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
 ---
 
@@ -79,6 +79,26 @@ choice). Support `--dry-run` and show backups. Combined with the Codex App
 profile and the full-access sandbox default, workers have full disk write,
 desktop control and any website through the user's logged-in browser; the user
 lowers any of these explicitly with setup.
+
+Computer Use app approvals follow the user's own Codex app by default:
+`--computer-use-approval mirror` (the default, saved as `computer_use_approval` in
+`<isolated home>/duet/config.toml`) makes every task copy the apps listed as
+"Always" allowed in `~/.codex/computer-use/config.toml` (`[apps] allowed`, read
+only; never session-level choices, the denied list or anything an organization
+policy blocks) into `<isolated home>/computer-use/config.toml`, where node_repl
+reads them. `ask` stops the sync and removes the mirrored entries; unapproved
+apps are then denied by the runtime and reported as `blocked` with
+`computer_use_app_not_approved`. `--allow-computer-app <bundle-id>` adds one app
+(also in ask mode), `--revoke-computer-app <bundle-id>` removes it and keeps it
+out of later mirrors, `--list-computer-apps` is read-only. Bundle identifiers
+such as `com.google.Chrome` are validated before any write; invalid input is not
+echoed. Support `--dry-run` and `--json`; the JSON `computerUse` object lists
+`preference`, `allowed` (with `source: mirrored|explicit`), `revoked`, the
+`codexApp` source file, `changedFiles` and `backups`. Run these flags separately
+from other setup changes. For one call the parent may instead pass
+`task --approve-computer-app <bundle-id>`. If the user has only chosen "This
+session" in the Codex app, mirror has nothing to copy; tell them to choose
+"Always" there or use `--allow-computer-app`.
 
 Transport/browser setup is offline. `--transport status` only reads selected
 transport; explicit `--transport http|websocket` merges a named ChatGPT provider

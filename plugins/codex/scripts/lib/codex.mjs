@@ -50,6 +50,8 @@ import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from 
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable } from "./process.mjs";
 import { classifyRuntimeError } from "./runtime-errors.mjs";
+import { grantComputerAppsForThread } from "./setup-config.mjs";
+import { dedupeBlockers, toolCallBlockers } from "./blockers.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
@@ -365,6 +367,7 @@ function createTurnCaptureState(threadId, options = {}) {
     messages: [],
     fileChanges: [],
     commandExecutions: [],
+    blockers: [],
     activityStarts: new Map(),
     onProgress: options.onProgress ?? null,
     safeProgress: Boolean(options.safeProgress)
@@ -520,6 +523,13 @@ function recordItem(state, item, lifecycle, threadId = null) {
 
   if (item.type === "commandExecution" && lifecycle === "completed") {
     state.commandExecutions.push(item);
+  }
+
+  // Known runtime refusals (Computer Use app approval, browser tab state) are
+  // recorded as structured blockers; the tool payload itself is not retained.
+  if (item.type === "mcpToolCall" && lifecycle === "completed") {
+    const found = toolCallBlockers(item);
+    if (found.length) state.blockers = dedupeBlockers([...state.blockers, ...found]);
   }
 }
 
@@ -1226,6 +1236,14 @@ export async function runAppServerTurn(cwd, options = {}) {
     throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
   }
 
+  let releaseComputerApps = () => {};
+  const serverRequestBlockers = [];
+  const onServerRequestLog = summary => {
+    emitProgress(options.onProgress, `Server request ${JSON.stringify(summary)}`, null);
+    if (summary.kind === "computer-use-app" && summary.decision !== "approved" && summary.app) {
+      serverRequestBlockers.push({ code: "computer_use_app_not_approved", app: summary.app, message: `Computer Use elicitation for ${summary.app} ${summary.decision} (${summary.reason})` });
+    }
+  };
   return withAppServer(cwd, async (client) => {
     if (options.signal?.aborted) throw new Error("Task interrupted during startup.");
     let threadId;
@@ -1284,22 +1302,33 @@ export async function runAppServerTurn(cwd, options = {}) {
     // narrowed read-only/workspace-write call keeps full network access, so web
     // research, package installs and browser work never hit an egress approval.
     const turnPolicy = threadPolicy.type === "dangerFullAccess" ? threadPolicy : { ...threadPolicy, networkAccess: true };
-    const turnState = await captureTurn(
-      client,
-      threadId,
-      () =>
-        client.request("turn/start", {
-          threadId,
-          input: buildTurnInput(prompt),
-          model: options.model ?? null,
-          effort: options.effort ?? null,
-          serviceTier: options.serviceTier ?? null,
-          outputSchema: options.outputSchema ?? null,
-          approvalPolicy: "never",
-          ...(options.explicitSandbox ? { sandboxPolicy: turnPolicy } : {})
-        }),
-      { onProgress: options.onProgress, safeProgress: true, onTiming, signal: options.signal }
-    );
+    // Per-call Computer Use approval: node_repl consults the isolated home's
+    // sessions/<thread>.toml on every app request, so the listed apps are
+    // allowed for this thread while the turn runs and withdrawn afterwards.
+    const approvedComputerApps = options.approvedComputerApps ?? [];
+    let turnState;
+    try {
+      if (approvedComputerApps.length) {
+        releaseComputerApps = grantComputerAppsForThread(threadId, approvedComputerApps);
+        emitProgress(options.onProgress, `Computer Use apps approved for this call: ${approvedComputerApps.join(", ")}.`, "starting");
+      }
+      turnState = await captureTurn(
+        client,
+        threadId,
+        () =>
+          client.request("turn/start", {
+            threadId,
+            input: buildTurnInput(prompt),
+            model: options.model ?? null,
+            effort: options.effort ?? null,
+            serviceTier: options.serviceTier ?? null,
+            outputSchema: options.outputSchema ?? null,
+            approvalPolicy: "never",
+            ...(options.explicitSandbox ? { sandboxPolicy: turnPolicy } : {})
+          }),
+        { onProgress: options.onProgress, safeProgress: true, onTiming, signal: options.signal }
+      );
+    } finally { releaseComputerApps(); }
 
     return {
       status: buildResultStatus(turnState),
@@ -1311,6 +1340,8 @@ export async function runAppServerTurn(cwd, options = {}) {
       effort: options.effort ?? threadSettings.reasoningEffort ?? null,
       serviceTier: options.serviceTier ?? threadSettings.serviceTier ?? null,
       approvedBrowserOrigins: options.approvedBrowserOrigins ?? [],
+      approvedComputerApps,
+      blockers: dedupeBlockers([...turnState.blockers, ...serverRequestBlockers]),
       threadId,
       turnId: turnState.turnId,
       finalMessage: turnState.lastAgentMessage,
@@ -1325,10 +1356,11 @@ export async function runAppServerTurn(cwd, options = {}) {
     };
   }, {
     approvedBrowserOrigins: options.approvedBrowserOrigins ?? [],
+    approvedComputerApps: options.approvedComputerApps ?? [],
     onParentQuestion: options.onParentQuestion,
     signal: options.signal,
     onRuntimeEvent: runtimeEvent,
-    onServerRequestLog: summary => emitProgress(options.onProgress, `Server request ${JSON.stringify(summary)}`, null)
+    onServerRequestLog
   });
 }
 

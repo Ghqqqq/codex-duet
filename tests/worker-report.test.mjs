@@ -12,9 +12,11 @@ const stateModule = new URL("../plugins/codex/scripts/lib/state.mjs", import.met
 test("stale browser claims have a distinct blocker with the owning session ID", () => {
   const text = "Tab 123 is already part of browser session 00000000-0000-0000-0000-000000000001";
   const report = buildWorkerReport({ status: 0, rawOutput: text });
-  assert.equal(report.status, "needs_input");
+  assert.equal(report.status, "blocked");
   assert.deepEqual(report.browserBlocker, { kind: "stale_browser_tab_claim", tabId: "123", sessionId: "00000000-0000-0000-0000-000000000001" });
-  assert.match(report.blockers[0], /stale_browser_tab_claim.*00000000-0000-0000-0000-000000000001/);
+  assert.equal(report.blockers[0].code, "stale_browser_tab_claim");
+  assert.equal(report.blockers[0].sessionId, "00000000-0000-0000-0000-000000000001");
+  assert.equal(report.blockers[0].tabId, "123");
   assert.equal(buildWorkerReport({ status: 1, error: text }).browserBlocker.kind, "stale_browser_tab_claim");
   assert.equal(classifyBrowserBlocker("a tab is already part of another session"), null);
   assert.equal(classifyBrowserBlocker("Tab 123 is already part of browser session malformed"), null);
@@ -86,7 +88,38 @@ test("fully populated report stays within 60 lines including dirty paths and san
   });
   assert.equal(report.status, "needs_input");
   assert.equal(report.preExistingChangesOmitted, 27);
+  assert.deepEqual(report.blockers, [{ code: "needs_input", message: "Which target?" }]);
   assert.ok(`${JSON.stringify(report, null, 2)}\n`.split("\n").length <= 60);
+});
+
+test("Computer Use refusals and declared blocks are structured blockers with status blocked", () => {
+  const rawOutput = [
+    "**Blocked before native capture.** No new screenshots were taken.",
+    "- `cua.getApp(\"Google Chrome\")` failed: `Computer Use was not approved to use Google Chrome`.",
+    "| Tab | Session | Result |", "| --- | --- | --- |",
+    "| `128187414` | `codex-readme-shots` | Could not close: `Debugger unattached`. May require manual closure. |",
+    "The first tab failed inspection, rebinding, and close operations with `Debugger unattached`.",
+    "Assumptions", "None beyond the above."
+  ].join("\n");
+  const report = buildWorkerReport({ status: 0, rawOutput, approvedComputerApps: ["com.google.Chrome"], touchedFiles: Array(40).fill("changed.js"), preExistingChanges: Array(30).fill("dirty.js"), commandExecutions: Array(10).fill({ command: "node --test", exitCode: 0, status: "completed" }), approvedBrowserOrigins: Array.from({ length: 10 }, (_, i) => `https://fixture${i}.example`) });
+  assert.equal(report.status, "blocked");
+  assert.deepEqual(report.approvedComputerApps, ["com.google.Chrome"]);
+  assert.deepEqual(report.blockers.map(b => b.code), ["computer_use_app_not_approved", "browser_tab_debugger_unattached"]);
+  assert.equal(report.blockers[0].app, "Google Chrome");
+  assert.deepEqual([report.blockers[1].tabId, report.blockers[1].sessionId, report.blockers[1].closed], ["128187414", "codex-readme-shots", false]);
+  assert.equal(report.blockersOmitted, 1, "the declared block is counted when the budget drops it");
+  assert.ok(`${JSON.stringify(report, null, 2)}\n`.split("\n").length <= 60);
+  const declared = buildWorkerReport({ status: 0, rawOutput: "Blocked: the review cannot proceed without the design file.\nDetails follow." });
+  assert.equal(declared.status, "blocked");
+  assert.deepEqual(declared.blockers, [{ code: "reported_blocked", message: "Blocked: the review cannot proceed without the design file." }]);
+  assert.equal(buildWorkerReport({ status: 0, rawOutput: "Status: blocked\nWaiting on credentials." }).status, "blocked");
+  // Captured runtime blockers make a turn blocked even when the final answer claims success.
+  const captured = buildWorkerReport({ status: 0, rawOutput: "Done, screenshots attached.", blockers: [{ code: "computer_use_app_not_approved", app: "com.google.Chrome", message: "Computer Use elicitation for com.google.Chrome cancelled (no-flag)" }] });
+  assert.equal(captured.status, "blocked");
+  assert.equal(captured.blockers[0].app, "com.google.Chrome");
+  assert.equal(classifyWorkerOutcome("Computer Use is blocked from using the app 'com.evil.App' by your organization's policy."), "blocked");
+  assert.equal(classifyWorkerOutcome("Implemented the unblocking fix; tests passed."), "completed");
+  assert.equal(buildWorkerReport({ status: 1, error: "Computer Use was not approved to use Google Chrome" }).status, "failed");
 });
 
 test("compact report budgets origin grants and a stale claim without losing the session ID", () => {
