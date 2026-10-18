@@ -216,6 +216,13 @@ call that hits its timeout to the background instead of killing it, so no grace
 is needed for that case. A `returned` owner that never comes back still falls
 back to lease expiry.
 
+Task-workers and shared brokers start through a short-lived launcher that exits
+before returning their real PIDs. They are therefore outside the calling shell's
+descendant tree, so Claude Code stopping a background `task --direct` or
+`--follow` shell lets its worker confirm `owner_stopped` while the broker and
+other jobs keep running. Broker output still goes to its log. If the launcher
+fails, a one-line stderr warning accompanies a direct detached-spawn fallback.
+
 Claude Code 2.1.301 cannot resume a native agent stopped by the user. Every
 interrupted or failed report (and `result --report --json`) carries
 `continuationCommand`: `task --continue <jobId> --cwd <cwd> --direct` in direct

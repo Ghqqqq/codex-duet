@@ -20,6 +20,47 @@ export function spawnOwned(command, args, options = {}) {
   return child;
 }
 
+// A new process group alone is still in the caller's descendant tree. Reap a
+// short-lived launcher before returning, so tree-based shell stops cannot reach
+// the target. spawnOwned runs in the launcher to ledger the real target PID.
+export function spawnDetached(command, args = [], options = {}) {
+  if (process.env.CODEX_COMPANION_TEST_MODE === "1") options = { ...options, env: { ...process.env, ...options.env } };
+  try {
+    const launcherStdio = ["ignore", "pipe", "pipe"];
+    const requestedStdio = options.stdio ?? "ignore";
+    const targetStdio = (Array.isArray(requestedStdio) ? requestedStdio : [requestedStdio, requestedStdio, requestedStdio]).map((entry, index) => {
+      if (entry === "ignore") return "ignore";
+      // Reserve stdout for the PID handshake. Forward open files/streams through
+      // extra launcher descriptors; their numbers can differ in the target.
+      if (entry === "inherit") entry = index;
+      if (typeof entry !== "number" && !Number.isInteger(entry?.fd)) throw new Error("Unsupported detached stdio");
+      return launcherStdio.push(entry) - 1;
+    });
+    const launch = `
+      import fs from "node:fs";
+      import { spawnOwned } from ${JSON.stringify(import.meta.url)};
+      const { command, args, options } = JSON.parse(process.argv[1]);
+      const child = spawnOwned(command, args, options);
+      child.once("error", () => { process.exitCode = 1; });
+      child.once("spawn", () => {
+        child.unref();
+        fs.writeSync(1, String(child.pid) + "\\n");
+      });
+    `;
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", launch, JSON.stringify({
+      command, args, options: { ...options, env: undefined, detached: true, stdio: targetStdio }
+    })], { env: options.env, stdio: launcherStdio, encoding: "utf8", timeout: 1500, killSignal: "SIGKILL", windowsHide: true });
+    const pid = Number(result.stdout?.trim());
+    if (result.error || result.status !== 0 || !Number.isSafeInteger(pid) || pid <= 0) throw new Error("Detached launcher failed");
+    return { pid };
+  } catch {
+    try { fs.writeSync(2, "codex-companion: detached launcher failed; using direct detached spawn.\n"); } catch { /* a closed stderr must not prevent fallback */ }
+    const child = spawnOwned(command, args, { ...options, detached: true, stdio: options.stdio ?? "ignore" });
+    child.unref();
+    return { pid: child.pid };
+  }
+}
+
 export async function stopOwnedProcessGroup(child, graceMs = 500) {
   if (!child?.pid) return;
   const signal = value => {

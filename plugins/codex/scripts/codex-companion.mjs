@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawnOwned as spawn } from "./lib/process.mjs";
+import { spawnDetached } from "./lib/process.mjs";
 import { isolatedCodexCommand } from "./lib/codex-home.mjs";
 import { UNREACHABLE_GUIDANCE } from "./lib/runtime-errors.mjs";
 import { getToolAvailability, syncToolConfig } from "./lib/tool-config.mjs";
@@ -888,15 +888,13 @@ async function runForegroundCommand(job, runner, options = {}) {
 
 function spawnDetachedTaskWorker(cwd, jobId) {
   const scriptPath = path.join(ROOT_DIR, "scripts", "codex-companion.mjs");
-  const child = spawn(process.execPath, [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId], {
+  return spawnDetached(process.execPath, [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId], {
     cwd,
     env: process.env,
     detached: true,
     stdio: "ignore",
     windowsHide: true
   });
-  child.unref();
-  return child;
 }
 
 function enqueueBackgroundTask(cwd, job, request) {

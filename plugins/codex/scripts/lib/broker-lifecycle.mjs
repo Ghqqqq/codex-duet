@@ -3,7 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { spawnOwned as spawn } from "./process.mjs";
+import { spawnDetached } from "./process.mjs";
 import { fileURLToPath } from "node:url";
 import { createBrokerEndpoint, parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { resolveStateDir } from "./state.mjs";
@@ -62,15 +62,16 @@ export async function sendBrokerShutdown(endpoint) {
 
 export function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile, env = process.env }) {
   const logFd = fs.openSync(logFile, "a");
-  const child = spawn(process.execPath, [scriptPath, "serve", "--endpoint", endpoint, "--cwd", cwd, "--pid-file", pidFile], {
-    cwd,
-    env,
-    detached: true,
-    stdio: ["ignore", logFd, logFd]
-  });
-  child.unref();
-  fs.closeSync(logFd);
-  return child;
+  try {
+    return spawnDetached(process.execPath, [scriptPath, "serve", "--endpoint", endpoint, "--cwd", cwd, "--pid-file", pidFile], {
+      cwd,
+      env,
+      detached: true,
+      stdio: ["ignore", logFd, logFd]
+    });
+  } finally {
+    fs.closeSync(logFd);
+  }
 }
 
 function resolveBrokerStateFile(cwd) {
@@ -153,7 +154,7 @@ export async function ensureBrokerSession(cwd, options = {}) {
 
   const ready = await waitForBrokerEndpoint(endpoint, options.timeoutMs ?? 2000);
   if (!ready) {
-    // This ChildProcess was spawned here; never kill an inherited saved PID.
+    // This target PID was spawned here; never kill an inherited saved PID.
     await stopOwnedProcessGroup(child);
     teardownBrokerSession({
       endpoint,
