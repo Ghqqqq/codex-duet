@@ -5,17 +5,23 @@
   },
   "metadata": {
     "description": "Duet — Codex workers as native Claude Code subagents, in an isolated Codex home. Fork of openai/codex-plugin-cc.",
-    "version": "1.0.6-isolated.19"
+    "version": "1.0.6-isolated.20"
   },
   "plugins": [
     {
       "name": "codex",
       "description": "Duet: delegate coding, research and review from Claude Code to parallel Codex workers.",
-      "version": "1.0.6-isolated.19",
+      "version": "1.0.6-isolated.20",
       "author": {
         "name": "OpenAI"
       },
       "source": "./plugins/codex"
+    },
+    {
+      "name": "codex-live",
+      "description": "Read-only live pane for this Claude session's Duet Codex jobs.",
+      "version": "1.0.6-isolated.20",
+      "source": "./plugins/codex-live"
     }
   ]
 }
