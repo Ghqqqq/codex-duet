@@ -12,6 +12,17 @@ export function redactActivity(value) {
 export const snippet = (value, length) => redactActivity(value).replace(/\s+/g, " ").trim().slice(0, length);
 const statusOf = (item, lifecycle) => ["inProgress", "completed", "failed", "declined", "cancelled"].includes(item.status) ? item.status : lifecycle;
 
+// A worker's final message is the worker-report JSON (schemas/worker-report.schema.json);
+// the live feed shows its status and summary rather than the envelope.
+function reportText(text) {
+  const trimmed = String(text).trim();
+  if (!trimmed.startsWith("{")) return text;
+  try {
+    const value = JSON.parse(trimmed);
+    if (value && typeof value.status === "string" && typeof value.summary === "string") return `[${value.status}] ${value.summary}`;
+  } catch { /* ordinary message */ }
+  return text;
+}
 // Select fields explicitly. Never copy arguments, results, diffs, command output,
 // reasoning, web-search results or page content from a protocol item.
 export function itemActivity(item, lifecycle, starts, key, now = Date.now()) {
@@ -23,7 +34,7 @@ export function itemActivity(item, lifecycle, starts, key, now = Date.now()) {
   const base = { type: item.type, status: statusOf(item, lifecycle), lifecycle };
   switch (item.type) {
     case "agentMessage":
-      return lifecycle === "completed" && item.text ? [{ ...base, text: snippet(item.text, 300) }] : [];
+      return lifecycle === "completed" && item.text ? [{ ...base, text: snippet(reportText(item.text), 300) }] : [];
     case "commandExecution":
       return [{ ...base, command: snippet(redactActivity(item.command).split(/\r?\n/)[0], 160), exitCode: Number.isInteger(item.exitCode) ? item.exitCode : null, durationMs }];
     case "fileChange":

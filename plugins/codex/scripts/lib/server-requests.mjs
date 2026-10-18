@@ -56,6 +56,21 @@ function computerUseElicitation(params) {
   try { return normalizeBundleId(meta.tool_params.app); } catch { return null; }
 }
 
+// The parent's answer to a forwarded Computer Use request: one call, the rest of
+// this task (thread-scoped persisted state, withdrawn when the turn ends), always
+// (the isolated home's own allow list; `~/.codex` is never written) or deny.
+export const APPROVAL_CHOICES = ["call", "task", "always", "deny"];
+export const APPROVAL_OPTIONS = ["Allow this call", "Allow for this task", "Allow always (isolated Codex home)", "Deny"];
+export function parseApprovalAnswer(answer) {
+  const text = String(answer ?? "").trim().toLowerCase();
+  if (!text) return "deny";
+  if (/^(?:4|deny|no|reject|decline|refuse)\b/.test(text) || /\b(?:deny|denied|reject|decline)\b/.test(text)) return "deny";
+  if (/^3\b|\balways\b/.test(text)) return "always";
+  if (/^2\b|\b(?:task|session|thread)\b/.test(text)) return "task";
+  if (/^1\b|\b(?:call|once|yes|allow|approve|accept|ok|okay)\b/.test(text)) return "call";
+  return "deny";
+}
+
 export function unsupportedServerRequest(message) {
   // browser-service oee persists accept/decline only; cancel avoids a stale deny.
   if (message.method === "mcpServer/elicitation/request") return { id: message.id, result: { action: "cancel" } };

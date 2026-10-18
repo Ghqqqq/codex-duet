@@ -165,6 +165,73 @@ test("a Computer Use elicitation is accepted only with the per-call flag; otherw
   assert.deepEqual(f.digest(), f.userHash);
 });
 
+const GRANULAR = { granular: { mcp_elicitations: true, rules: false, sandbox_approval: false, request_permissions: false, skill_approval: false } };
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function waitUntil(fn) { for (const end = Date.now() + 12000; Date.now() < end;) { const result = fn(); if (result) return result; await delay(80); } throw new Error("Fixture deadline expired"); }
+
+test("an owned job forwards an unapproved Computer Use request to the parent; the answer scopes the grant", async () => {
+  const f = fixture("computer-use-requests");
+  f.json(f.call("setup", "--computer-use-approval", "ask", "--json"));
+  const sessionFile = threadId => path.join(f.env.CODEX_COMPANION_HOME, "computer-use", "sessions", `${threadId}.toml`);
+  const answer = (launch, id, text) => run(process.execPath, [script, "answer", launch.jobId, "--owner", launch.ownerId, "--question", id, "--json"], { cwd: f.repo, env: f.env, input: text });
+  const ask = async (text) => {
+    const launch = f.json(f.call("task", "--detached", "--json", "--report", "capture chrome"));
+    const pending = f.json(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--json", "--report"));
+    assert.equal(pending.status, "needs_answer");
+    assert.equal(pending.question.kind, "approval");
+    assert.match(pending.question.id, /^approval-/);
+    assert.match(pending.question.text, /control com\.google\.Chrome \(Computer Use tool get_app_state\)/);
+    assert.deepEqual(pending.question.options, ["Allow this call", "Allow for this task", "Allow always (isolated Codex home)", "Deny"]);
+    assert.match(pending.questionMessage, /^Question approval-/);
+    assert.equal(f.json(answer(launch, pending.question.id, text)).status, "answer_submitted");
+    const finished = f.call("wait", launch.jobId, "--owner", launch.ownerId, "--json", "--report");
+    assert.ok([0, 2].includes(finished.status), finished.stderr + finished.stdout);
+    const done = JSON.parse(finished.stdout);
+    const log = fs.readFileSync(f.json(f.call("status", launch.jobId, "--json")).job.logFile, "utf8");
+    assert.doesNotMatch(log, /DO_NOT_LOG_FIXTURE|tool_params_display/);
+    return { done, log, reply: f.state().serverRequestReplies.at(-1), threadId: done.threadId };
+  };
+  // The thread and the turn both carry the granular policy that lets Codex forward MCP elicitations.
+  const denied = await ask("Deny");
+  assert.deepEqual(f.state().lastThreadStart.approvalPolicy, GRANULAR);
+  assert.deepEqual(f.state().lastTurnStart.approvalPolicy, GRANULAR);
+  assert.equal(denied.done.status, "blocked");
+  assert.equal(denied.done.approvalPolicy, "never+elicitations");
+  assert.deepEqual(denied.done.blockers.map(b => [b.code, b.app]), [["computer_use_app_not_approved", "com.google.Chrome"]]);
+  assert.deepEqual(denied.reply.result, { action: "cancel" });
+  assert.match(denied.log, /"decision":"pending","reason":"ask-parent"/);
+  assert.match(denied.log, /"decision":"cancelled","reason":"parent-denied"/);
+  // One call: accepted without any persisted state.
+  const once = await ask("1");
+  assert.equal(once.done.status, "completed");
+  assert.deepEqual(once.reply.result, { action: "accept" });
+  assert.equal(once.reply.computerUse.session, null);
+  assert.equal(allowedIn(f.isolatedFile), null, "ask mode and no always-grant: no isolated allow list yet");
+  // This task: the thread's session file exists while the turn runs and is withdrawn afterwards.
+  const task = await ask("Allow for this task");
+  assert.equal(task.done.status, "completed");
+  assert.deepEqual(task.reply.result, { action: "accept" });
+  assert.match(task.reply.computerUse.session, /com\.google\.Chrome/);
+  assert.equal(fs.existsSync(sessionFile(task.threadId)), false);
+  assert.match(task.log, /"decision":"approved","reason":"parent-task"/);
+  // Always: the isolated home's own allow list; the user's ~/.codex is untouched.
+  const always = await ask("allow always");
+  assert.equal(always.done.status, "completed");
+  assert.match(always.reply.computerUse.global, /com\.google\.Chrome/);
+  assert.deepEqual(allowedIn(f.isolatedFile), ["com.google.Chrome"]);
+  assert.deepEqual(f.json(f.call("setup", "--list-computer-apps", "--json")).computerUse.allowed, [{ app: "com.google.Chrome", source: "explicit" }]);
+  assert.deepEqual(f.digest(), f.userHash);
+  // An unrecognised answer denies; a plain foreground run keeps "never" and fails closed at once.
+  const garbage = await ask("maybe later");
+  assert.equal(garbage.done.status, "blocked");
+  assert.match(garbage.log, /parent-denied/);
+  const foreground = f.call("task", "--json", "--report", "capture chrome");
+  assert.equal(foreground.status, 2, foreground.stderr);
+  assert.equal(JSON.parse(foreground.stdout).approvalPolicy, "never");
+  assert.equal(f.state().lastTurnStart.approvalPolicy, "never");
+  assert.match(fs.readFileSync(f.json(f.call("status", JSON.parse(foreground.stdout).jobId, "--json")).job.logFile, "utf8"), /"reason":"no-flag"/);
+});
+
 test("a refusal surfaced only through the tool result makes the turn blocked with a structured blocker", () => {
   const f = fixture("computer-use-denied");
   const result = f.call("task", "--json", "--report", "capture chrome");

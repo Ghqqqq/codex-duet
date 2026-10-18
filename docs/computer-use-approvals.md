@@ -29,13 +29,18 @@ that workers see the same approvals as the user's own Codex app.
   been allowed for one conversation, not "always".
 - The isolated runtime starts node_repl with `CODEX_HOME=<isolated home>`
   (`~/.claude/codex-isolated`), so it consults
-  `<isolated home>/computer-use/` — empty on a fresh install. Duet runs turns
-  with `approvalPolicy: "never"`; under that policy Codex resolves the
-  elicitation itself and the worker never receives a server request (a failing
-  job log shows no `Server request` lines). An approval therefore has to be
-  present in node_repl's persisted state before the tool call; answering the
-  prompt at run time is only possible on runtimes that forward it, which Duet
-  also supports.
+  `<isolated home>/computer-use/` — empty on a fresh install. Under
+  `approvalPolicy: "never"` Codex resolves the elicitation itself and the worker
+  never receives a server request (a failing job log shows no `Server request`
+  lines). Owned worker jobs therefore run with the granular policy
+  `{ granular: { mcp_elicitations: true, rules: false, sandbox_approval: false,
+  request_permissions: false, skill_approval: false } }` (reported as
+  `never+elicitations`): every command, sandbox, rule, skill and permission
+  prompt is still rejected automatically, and MCP elicitations are forwarded to
+  Duet, which turns a Computer Use app request into a question for the parent
+  (see "Forwarded approvals"). Verified live on codex-cli 0.162: the request
+  arrived as `mcpServer/elicitation/request`, the tool call paused until the
+  answer, and `{ action: "accept" }` let it proceed.
 
 ## What Duet does
 
@@ -108,6 +113,34 @@ A follow-up with `--thread` does not inherit the grant; `task --continue` does,
 and rejects the flag. The job record, `status`, `result` and the report show
 `approvedComputerApps`.
 
+### Forwarded approvals (owned jobs)
+
+A detached or `--follow` job has an owner polling it, so a Computer Use request
+that no flag covers is not refused outright: the helper parks it as a pending
+question with `question.kind: "approval"` and the fixed options `Allow this
+call`, `Allow for this task`, `Allow always (isolated Codex home)`, `Deny`. The
+worker relays the `questionMessage` to the parent like any other question; the
+parent (or the user through it) answers with `answer <jobId> --question <id>`.
+The effect of each choice:
+
+| answer | reply to Codex | persisted state |
+| --- | --- | --- |
+| Allow this call | `{ action: "accept" }` | none |
+| Allow for this task | accept | `sessions/<thread>.toml` for this thread, withdrawn when the turn ends |
+| Allow always | accept | `<isolated home>/computer-use/config.toml` `[apps] allowed` (an explicit entry, like `setup --allow-computer-app`) |
+| Deny, timeout, unrecognised answer, cancelled job | `{ action: "cancel" }` | none; the turn is reported `blocked` with `computer_use_app_not_approved` |
+
+The reply never carries `_meta.persist`, so Codex's own runtime records nothing;
+the user's `~/.codex` is never written. The question uses the job's question
+timeout (default 15 minutes). A plain foreground `task` (no `--detached`,
+`--background` or `--follow`) has nobody to ask and keeps `approvalPolicy:
+"never"`: the request fails closed at once, as before.
+
+The job log records the decision without the request payload:
+`"kind":"computer-use-app","decision":"pending","reason":"ask-parent"` followed
+by `"decision":"approved","reason":"parent-task"` (or `parent-call`,
+`parent-always`) or `"decision":"cancelled","reason":"parent-denied"`.
+
 ## Honest blocking
 
 A denied authorization is a blocker, not a success. Reports use
@@ -148,7 +181,11 @@ dry runs; rejection of invalid bundle ids before any write; unchanged hashes for
 every file under the user's Codex home; the per-call session file observed by
 the fake runtime at `turn/start` and removed afterwards; an elicitation accepted
 with the flag and cancelled without it (report `blocked`, non-empty `blockers`,
-exit 2); and a refusal that surfaces only through a tool result.
+exit 2); a refusal that surfaces only through a tool result; and the forwarded
+approval on an owned job with each of the four answers, including the
+thread-scoped file appearing during the turn and disappearing afterwards, the
+always-grant landing in the isolated home only, and the granular policy on
+`thread/start` and `turn/start`.
 
 Live verification against the real runtime is a manual step for the parent
 session: `setup --allow-computer-app com.google.Chrome` followed by a small task
@@ -167,10 +204,17 @@ problem and is not classified as one. Finder (always has the Desktop window) is
 also allowed by Codex's own policy without an elicitation, so it cannot be used
 to prove the gate. Re-run the Chrome check while Chrome has a visible window.
 
+Observed live for forwarded approvals (1.0.6-isolated.17, TextEdit with an open
+window): a detached task asking for `com.apple.TextEdit` reached `needs_answer`
+with the approval question in about 9 s; `answer … "Allow for this task"` wrote
+`sessions/<thread>.toml` with the app, the `cua_repl/js` call completed and
+returned the window title, the report came back `completed`, and the session
+file was gone afterwards. `~/.codex/computer-use` was not modified.
+
 ## Limitations
 
 - "This session" approvals in the user's Codex app are not mirrored; choose
-  "Always" there or use `--allow-computer-app`.
+  "Always" there, use `--allow-computer-app`, or answer the forwarded question.
 - The file formats belong to node_repl; a future Codex release may change them.
 - Whether a warm, long-running node_repl re-reads the files between tool calls
   is runtime behaviour; a cold start (new broker) always sees the current files.

@@ -3,7 +3,7 @@ import path from "node:path";
 import { spawnOwned as spawn } from "../plugins/codex/scripts/lib/process.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildWorkerReport, classifyWorkerOutcome, classifyBrowserBlocker } from "../plugins/codex/scripts/lib/worker-report.mjs";
+import { buildWorkerReport, classifyWorkerOutcome, classifyBrowserBlocker, parseStructuredReport } from "../plugins/codex/scripts/lib/worker-report.mjs";
 import { makeTempDir, run, initGitRepo } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 
@@ -51,6 +51,70 @@ test("compact worker report is bounded, separates claims and preserves full outp
   const legacy = JSON.parse(f.call("result", report.jobId, "--json").stdout);
   assert.ok(legacy.storedJob.result.rawOutput.includes("Finding 299"));
   assert.equal(f.state().nextTurnId, 2);
+});
+
+test("a --report worker runs with the worker-report schema and the parent reads the declared report", () => {
+  const f = fixture("review-ok");
+  const response = f.call("task", "--report", "--json", "implement safely");
+  assert.equal(response.status, 0, response.stderr);
+  const report = JSON.parse(response.stdout);
+  const schema = f.state().lastTurnStart.outputSchema;
+  assert.deepEqual(Object.keys(schema.properties).sort(), ["assumptions", "blockers", "key_findings", "question", "status", "summary", "verification"]);
+  assert.equal(schema.additionalProperties, false, "strict structured output requires a closed object");
+  assert.deepEqual(schema.required.sort(), Object.keys(schema.properties).sort(), "strict structured output requires every property");
+  assert.equal(report.status, "completed");
+  assert.equal(report.reportFormat, "structured");
+  assert.deepEqual(report.keyFindings, ["Fixture finding one", "Fixture finding two"]);
+  assert.deepEqual(report.assumptions, ["Fixture assumption"]);
+  assert.deepEqual(report.claimedVerification, ["fixture check: passed"]);
+  assert.match(report.findingsBasis, /Declared by Codex/);
+  // The summary is the prose the parent reads; the raw output file holds it, not the JSON envelope.
+  assert.equal(fs.readFileSync(report.rawOutputFile, "utf8"), "Handled the requested task.\nTask prompt accepted.");
+  const stored = JSON.parse(fs.readFileSync(report.resultFile, "utf8"));
+  assert.equal(stored.rawOutput, "Handled the requested task.\nTask prompt accepted.");
+  assert.equal(stored.structured.status, "completed");
+  // A task without --report (stop-gate hook, plain rescue) keeps prose output and no schema.
+  const plain = f.call("task", "--json", "implement safely");
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.equal(f.state().lastTurnStart.outputSchema, null);
+  assert.equal(JSON.parse(plain.stdout).rawOutput, "Handled the requested task.\nTask prompt accepted.");
+});
+
+test("a declared blocked report is blocked with Codex's own blocker entries", () => {
+  const f = fixture("structured-blocked");
+  const response = f.call("task", "--report", "--json", "install the dependency");
+  assert.equal(response.status, 2, response.stderr);
+  const report = JSON.parse(response.stdout);
+  assert.equal(report.status, "blocked");
+  assert.deepEqual(report.blockers, [{ code: "missing_dependency", message: "fixture-dep is not installed" }]);
+  assert.match(fs.readFileSync(report.rawOutputFile, "utf8"), /^Stopped: the fixture dependency is unavailable/);
+  assert.equal(JSON.parse(f.call("status", report.jobId, "--json").stdout).job.status, "blocked");
+});
+
+test("parseStructuredReport accepts the schema object or a trailing json block and rejects prose", () => {
+  const object = { status: "needs_input", summary: "Need the target branch.", key_findings: [], assumptions: ["x"], verification: [], blockers: [], question: "Which branch should receive the fix?" };
+  const parsed = parseStructuredReport(JSON.stringify(object));
+  assert.equal(parsed.status, "needs_input");
+  assert.equal(parsed.question, "Which branch should receive the fix?");
+  const fenced = parseStructuredReport(`Done.\n\n\`\`\`json\n${JSON.stringify({ ...object, status: "completed", question: null })}\n\`\`\``);
+  assert.equal(fenced.status, "completed");
+  assert.equal(fenced.question, null);
+  assert.equal(parseStructuredReport("Implemented the fix. Tests passed."), null);
+  assert.equal(parseStructuredReport(JSON.stringify({ status: "done", summary: "x" })), null, "unknown status is not a report");
+  assert.equal(parseStructuredReport(JSON.stringify({ verdict: "approve", summary: "x" })), null);
+  // Declared completed with a plan-only summary is still needs_input; declared needs_input carries its question.
+  const over = buildWorkerReport({ status: 0, rawOutput: "I will inspect the repository and then implement the change.", structured: { ...parsed, status: "completed", summary: "I will inspect the repository and then implement the change.", question: null } });
+  assert.equal(over.status, "needs_input");
+  const asks = buildWorkerReport({ status: 0, rawOutput: object.summary, structured: parsed });
+  assert.equal(asks.status, "needs_input");
+  assert.equal(asks.question, "Which branch should receive the fix?");
+  assert.equal(asks.blockers[0].code, "needs_input");
+  // A captured runtime refusal outranks a declared completed.
+  const captured = buildWorkerReport({ status: 0, rawOutput: "Done.", structured: { ...parsed, status: "completed", summary: "Done.", question: null }, blockers: [{ code: "computer_use_app_not_approved", app: "com.google.Chrome" }] });
+  assert.equal(captured.status, "blocked");
+  // Declared blocked without entries names the summary.
+  const bare = buildWorkerReport({ status: 0, rawOutput: "Blocked by the firewall.", structured: { ...parsed, status: "blocked", summary: "Blocked by the firewall.", question: null } });
+  assert.deepEqual(bare.blockers, [{ code: "reported_blocked", message: "Blocked by the firewall." }]);
 });
 
 for (const behavior of ["question-only", "unfinished-task"]) test(`${behavior} is needs_input, not success`, () => {

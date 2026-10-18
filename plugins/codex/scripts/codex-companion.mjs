@@ -4,9 +4,9 @@ import { spawnOwned as spawn } from "./lib/process.mjs";
 import { isolatedCodexCommand } from "./lib/codex-home.mjs";
 import { UNREACHABLE_GUIDANCE } from "./lib/runtime-errors.mjs";
 import { getToolAvailability, syncToolConfig } from "./lib/tool-config.mjs";
-import { buildWorkerReport, persistTaskArtifacts, taskArtifactPaths } from "./lib/worker-report.mjs";
+import { buildWorkerReport, parseStructuredReport, persistTaskArtifacts, taskArtifactPaths } from "./lib/worker-report.mjs";
 import { normalizeBrowserOrigins, normalizeBundleIds } from "./lib/server-requests.mjs";
-import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, ensureBrowserApproval, ensureComputerUseApproval, SANDBOX_MODES } from "./lib/setup-config.mjs";
+import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, ensureBrowserApproval, ensureComputerUseApproval, ensureProjectDocs, projectDocsSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
 import { activityReader, formatActivity, redactActivity, snippet } from "./lib/activity.mjs";
 import { JobRuntime, ACTIVE, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, continuationReport, adoptJob, ownershipNotice, markOwnerAttachment } from "./lib/job-runtime.mjs";
 import { updateJob } from "./lib/state.mjs";
@@ -21,6 +21,7 @@ import {
     buildPersistentTaskThreadName,
     DEFAULT_CONTINUE_PROMPT,
     findLatestTaskThread,
+    FORWARDED_APPROVALS_LABEL,
     getCodexAuthStatus,
     getCodexAvailability,
     getSessionRuntimeStatus,
@@ -78,6 +79,9 @@ import {
 
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
+// Delegated workers (--report) answer with this schema, so the parent gets a
+// declared status and findings instead of inferring them from prose.
+const WORKER_REPORT_SCHEMA = path.join(ROOT_DIR, "schemas", "worker-report.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -232,6 +236,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     defaultSandbox: defaultSandboxSetup().defaultSandbox,
     browserOrigins: browserOriginSetup(),
     computerUse: computerUseSummary(),
+    projectDocs: projectDocsSummary(),
     actionsTaken,
     nextSteps
   };
@@ -242,10 +247,14 @@ function computerUseSummary() {
   try { return computerUseSetup({ dryRun: true }); }
   catch (error) { return { error: error.message }; }
 }
+function projectDocsSummary() {
+  try { return projectDocsSetup({ dryRun: true }); }
+  catch (error) { return { error: error.message }; }
+}
 
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "cua-template", "chatgpt-resources", "transport", "profile", "default-sandbox", "browser-approval", "computer-use-approval"],
+    valueOptions: ["cwd", "cua-template", "chatgpt-resources", "transport", "profile", "default-sandbox", "browser-approval", "computer-use-approval", "project-docs"],
     repeatableOptions: ["allow-browser-origin", "revoke-browser-origin", "allow-computer-app", "revoke-computer-app"],
     booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "sync-tools", "dry-run", "list-browser-origins", "list-computer-apps", "replace-cua"]
   });
@@ -262,8 +271,14 @@ async function handleSetup(argv) {
     if (options[key] !== undefined && !options["sync-tools"]) throw new Error(`--${key} requires --sync-tools.`);
   }
   if (options["default-sandbox"] !== undefined) {
-    if (options["sync-tools"] || options.transport !== undefined || options["browser-approval"] !== undefined || options["allow-browser-origin"] || options["revoke-browser-origin"] || options["list-browser-origins"] || computerUseFlags || options["enable-review-gate"] || options["disable-review-gate"]) throw new Error("Run --default-sandbox separately from other setup changes.");
+    if (options["sync-tools"] || options.transport !== undefined || options["browser-approval"] !== undefined || options["allow-browser-origin"] || options["revoke-browser-origin"] || options["list-browser-origins"] || computerUseFlags || options["project-docs"] !== undefined || options["enable-review-gate"] || options["disable-review-gate"]) throw new Error("Run --default-sandbox separately from other setup changes.");
     const report = defaultSandboxSetup({ mode: options["default-sandbox"], dryRun: Boolean(options["dry-run"]) });
+    outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
+    return;
+  }
+  if (options["project-docs"] !== undefined) {
+    if (options["sync-tools"] || options.transport !== undefined || options["browser-approval"] !== undefined || options["allow-browser-origin"] || options["revoke-browser-origin"] || options["list-browser-origins"] || computerUseFlags || options["enable-review-gate"] || options["disable-review-gate"]) throw new Error("Run --project-docs separately from other setup changes.");
+    const report = { projectDocs: projectDocsSetup({ mode: options["project-docs"], dryRun: Boolean(options["dry-run"]) }) };
     outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
     return;
   }
@@ -586,14 +601,19 @@ async function executeTaskRun(request) {
 
   const before = snapshotWorkspace(workspaceRoot);
   const sandbox = request.sandbox ?? (request.write ? "workspace-write" : "read-only");
-  updateJob(workspaceRoot, request.jobId, () => ({ preExistingChanges: before.preExistingChanges, sandbox, approvalPolicy: "never" }));
-  request.onProgress?.(`Sandbox: ${sandbox}; approval policy: never. Captured workspace baseline (${before.status}).`);
+  // Only an owned (detached/--follow) job has a parent polling for questions, so
+  // only there can a Computer Use request be forwarded; a plain foreground run
+  // keeps "never" and such a request fails closed at once.
+  const approvalPolicy = request.detached ? FORWARDED_APPROVALS_LABEL : "never";
+  updateJob(workspaceRoot, request.jobId, () => ({ preExistingChanges: before.preExistingChanges, sandbox, approvalPolicy }));
+  request.onProgress?.(`Sandbox: ${sandbox}; approval policy: ${approvalPolicy}${request.detached ? " (Computer Use app requests are forwarded to the parent)" : ""}. Captured workspace baseline (${before.status}).`);
 
   const runtime = new JobRuntime(workspaceRoot, request.jobId, { foreground: !request.detached, onProgress: request.onProgress });
   let result;
   try { result = await runAppServerTurn(workspaceRoot, {
     resumeThreadId,
     prompt: request.report ? `${request.prompt || DEFAULT_CONTINUE_PROMPT}\n\n${loadPromptTemplate(ROOT_DIR, "worker-task")}` : request.prompt,
+    outputSchema: request.report ? readOutputSchema(WORKER_REPORT_SCHEMA) : null,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
@@ -605,6 +625,7 @@ async function executeTaskRun(request) {
     onProgress: request.onProgress,
     signal: runtime.abort.signal,
     onParentQuestion: message => runtime.question(message),
+    onApprovalRequest: request.detached ? approval => runtime.approval(approval) : undefined,
     parentBridge: { cwd: workspaceRoot, questionTimeoutSec: readStoredJob(workspaceRoot, request.jobId)?.questionTimeoutSec ?? 900 },
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
@@ -620,7 +641,11 @@ async function executeTaskRun(request) {
 }
 
 function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task" }) {
-  const rawOutput = typeof result.finalMessage === "string" ? result.finalMessage : "";
+  const finalMessage = typeof result.finalMessage === "string" ? result.finalMessage : "";
+  // A worker's final message is the structured report; its summary is the prose
+  // the parent reads, so it takes the place of the raw output everywhere.
+  const structured = request.report ? parseStructuredReport(finalMessage) : null;
+  const rawOutput = structured ? structured.summary : finalMessage;
   const failureMessage = result.error?.message ?? result.stderr ?? "";
   const rendered = renderTaskResult(
     {
@@ -642,6 +667,7 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
     threadId: result.threadId,
     turnId: result.turnId,
     rawOutput,
+    ...(structured ? { structured } : {}),
     ...(result.status !== 0 && failureMessage ? { error: failureMessage } : {}),
     touchedFiles: result.touchedFiles,
     preExistingChanges: result.preExistingChanges ?? [],
@@ -755,7 +781,7 @@ function createTrackedProgress(job, options = {}) {
   };
 }
 
-function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins = [], lifecycle = {}, approvedComputerApps = []) {
+function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins = [], lifecycle = {}, approvedComputerApps = [], detached = false) {
   const job = createCompanionJob({
     prefix: "task",
     kind: "task",
@@ -767,7 +793,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
   });
   return { ...job, ownerId: lifecycle.owner ?? ownerId(job.id), sessionId: job.sessionId ?? null, leaseRenewedAt: Date.now(), leaseSec: lifecycle.leaseSec ?? 180, questionTimeoutSec: lifecycle.questionTimeoutSec ?? 900,
     leaseExpiresAt: Date.now() + (lifecycle.leaseSec ?? 180) * 1000,
-    sandbox: sandbox ?? (write ? "workspace-write" : "read-only"), approvalPolicy: "never", approvedBrowserOrigins, approvedComputerApps, ...taskArtifactPaths(workspaceRoot, job.id) };
+    sandbox: sandbox ?? (write ? "workspace-write" : "read-only"), approvalPolicy: detached ? FORWARDED_APPROVALS_LABEL : "never", approvedBrowserOrigins, approvedComputerApps, ...taskArtifactPaths(workspaceRoot, job.id) };
 }
 
 function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins = [], approvedComputerApps = [], resumeLast, threadId, jobId, report, detached = false }) {
@@ -1034,6 +1060,9 @@ async function handleTask(argv) {
   // allow" in their Codex app are copied into the isolated runtime's own
   // approval file (read-only on ~/.codex; a no-op once in step).
   try { ensureComputerUseApproval(); } catch (error) { process.stderr.write(`Computer Use approval preference not applied: ${error.message}\n`); }
+  // Project instructions: let Codex read CLAUDE.md where no AGENTS.md exists
+  // (its own project_doc_fallback_filenames; a no-op once written).
+  try { ensureProjectDocs(); } catch (error) { process.stderr.write(`Project instructions preference not applied: ${error.message}\n`); }
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast: Boolean(resumeLast || threadId)
@@ -1043,7 +1072,7 @@ async function handleTask(argv) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast, threadId);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps);
+    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, true);
     const request = buildTaskRequest({
       cwd,
       model,

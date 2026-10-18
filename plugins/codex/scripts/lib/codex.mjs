@@ -50,7 +50,8 @@ import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from 
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable } from "./process.mjs";
 import { classifyRuntimeError } from "./runtime-errors.mjs";
-import { grantComputerAppsForThread } from "./setup-config.mjs";
+import { computerUseSetup, grantComputerAppsForThread } from "./setup-config.mjs";
+import { APPROVAL_CHOICES } from "./server-requests.mjs";
 import { dedupeBlockers, toolCallBlockers } from "./blockers.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
@@ -68,6 +69,19 @@ function cleanCodexStderr(stderr) {
     .join("\n");
 }
 
+// Workers answer no approval prompt themselves: command, sandbox, rule, skill
+// and permission requests are rejected as under "never". MCP elicitations are
+// the exception: with mcp_elicitations enabled, Codex sends a Computer Use app
+// request to this client instead of resolving it, so the parent can decide
+// (see AppServerClient.handleServerRequest). The label is what results report.
+export const FORWARDED_APPROVALS = Object.freeze({ granular: Object.freeze({ mcp_elicitations: true, rules: false, sandbox_approval: false, request_permissions: false, skill_approval: false }) });
+export const FORWARDED_APPROVALS_LABEL = "never+elicitations";
+export function approvalPolicyFor(options) {
+  return options.onApprovalRequest ? FORWARDED_APPROVALS : "never";
+}
+export function approvalPolicyLabel(policy) {
+  return policy === FORWARDED_APPROVALS ? FORWARDED_APPROVALS_LABEL : typeof policy === "string" ? policy : "granular";
+}
 /** @returns {ThreadStartParams} */
 function buildThreadParams(cwd, options = {}) {
   return {
@@ -97,8 +111,9 @@ export function parentBridgeConfig(bridge) {
   return { mcp_servers: { [PARENT_BRIDGE_SERVER]: {
     command: process.execPath, args: [fileURLToPath(new URL("../parent-bridge-mcp.mjs", import.meta.url))], env,
     enabled: true, enabled_tools: ["ask_parent"], omit_tools_from: ["code_mode", "deferred"],
-    // Workers run with approvalPolicy "never"; without this (and the tool's
-    // readOnlyHint) Codex rejects the call as "requires approval".
+    // Workers reject tool approvals ("never", or the granular policy that only
+    // forwards MCP elicitations); without this (and the tool's readOnlyHint)
+    // Codex rejects the call as "requires approval".
     tools: { ask_parent: { approval_mode: "approve" } },
     startup_timeout_sec: 30, tool_timeout_sec: Math.min(86400, (bridge.questionTimeoutSec ?? 900) + 120)
   } } };
@@ -1240,10 +1255,22 @@ export async function runAppServerTurn(cwd, options = {}) {
   const serverRequestBlockers = [];
   const onServerRequestLog = summary => {
     emitProgress(options.onProgress, `Server request ${JSON.stringify(summary)}`, null);
-    if (summary.kind === "computer-use-app" && summary.decision !== "approved" && summary.app) {
+    if (summary.kind === "computer-use-app" && !["approved", "pending"].includes(summary.decision) && summary.app) {
       serverRequestBlockers.push({ code: "computer_use_app_not_approved", app: summary.app, message: `Computer Use elicitation for ${summary.app} ${summary.decision} (${summary.reason})` });
     }
   };
+  const approvalPolicy = approvalPolicyFor(options);
+  // Mid-turn grants the parent made for the rest of this task; withdrawn with
+  // the per-call grants when the turn ends.
+  const taskGrants = [];
+  const onApprovalRequest = options.onApprovalRequest ? async request => {
+    const choice = await options.onApprovalRequest(request);
+    if (!APPROVAL_CHOICES.includes(choice) || choice === "deny") return { action: "cancel", reason: choice === "deny" ? "parent-denied" : "parent-unavailable" };
+    if (choice === "task") taskGrants.push(grantComputerAppsForThread(request.threadId, [request.app]));
+    if (choice === "always") computerUseSetup({ allow: [request.app] });
+    emitProgress(options.onProgress, `Computer Use app ${request.app} approved by the parent (${choice}).`, null);
+    return { action: "accept", reason: `parent-${choice}` };
+  } : undefined;
   return withAppServer(cwd, async (client) => {
     if (options.signal?.aborted) throw new Error("Task interrupted during startup.");
     let threadId;
@@ -1256,6 +1283,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       const response = await resumeThread(client, options.resumeThreadId, cwd, {
         model: options.model,
         sandbox: options.sandbox,
+        approvalPolicy,
         ephemeral: false,
         onProgress: options.onProgress,
         parentBridge: options.onParentQuestion && options.parentBridge ? options.parentBridge : null
@@ -1268,6 +1296,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       const response = await startThread(client, cwd, {
         model: options.model,
         sandbox: options.sandbox,
+        approvalPolicy,
         ephemeral: options.persistThread ? false : true,
         threadName: options.persistThread ? options.threadName : options.threadName ?? null,
         onProgress: options.onProgress,
@@ -1323,18 +1352,23 @@ export async function runAppServerTurn(cwd, options = {}) {
             effort: options.effort ?? null,
             serviceTier: options.serviceTier ?? null,
             outputSchema: options.outputSchema ?? null,
-            approvalPolicy: "never",
+            approvalPolicy,
             ...(options.explicitSandbox ? { sandboxPolicy: turnPolicy } : {})
           }),
         { onProgress: options.onProgress, safeProgress: true, onTiming, signal: options.signal }
       );
-    } finally { releaseComputerApps(); }
+    } finally {
+      // Newest grant first: each release restores the file as it was before
+      // that grant, so the per-call grant's release removes the file last.
+      for (const release of taskGrants.reverse()) release();
+      releaseComputerApps();
+    }
 
     return {
       status: buildResultStatus(turnState),
       sandbox,
       sandboxPolicy: options.explicitSandbox ? turnPolicy : threadPolicy,
-      approvalPolicy: "never",
+      approvalPolicy: approvalPolicyLabel(approvalPolicy),
       // What this turn ran with: the per-turn request, else the thread's setting.
       model: options.model ?? threadSettings.model ?? null,
       effort: options.effort ?? threadSettings.reasoningEffort ?? null,
@@ -1358,6 +1392,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     approvedBrowserOrigins: options.approvedBrowserOrigins ?? [],
     approvedComputerApps: options.approvedComputerApps ?? [],
     onParentQuestion: options.onParentQuestion,
+    onApprovalRequest,
     signal: options.signal,
     onRuntimeEvent: runtimeEvent,
     onServerRequestLog

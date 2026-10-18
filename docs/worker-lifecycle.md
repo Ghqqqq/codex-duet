@@ -109,7 +109,7 @@ Two details were only found against the real app-server
 `omit_tools_from = ["code_mode", "deferred"]`, because otherwise the server starts
 and `mcpServerStatus/list` shows the tool but the model's tool list never contains
 `mcp__duet_parent.ask_parent`; and the call must be approval-free under the
-worker's `approvalPolicy: never`, which the tool's `readOnlyHint` annotation plus
+worker's approval policy (`never`, or the granular `never+elicitations` of owned jobs, which rejects tool approvals the same way), which the tool's `readOnlyHint` annotation plus
 `tools.ask_parent.approval_mode = "approve"` guarantee (without them Codex fails
 the call with "requires approval"). A runtime rejecting the registration gets one
 registration-free thread/start or thread/resume fallback before any model turn;

@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { snippet, activityReader } from "./activity.mjs";
 import { randomUUID } from "node:crypto";
 import { listJobs, updateJob, readJobFile, resolveJobFile } from "./state.mjs";
+import { APPROVAL_OPTIONS, parseApprovalAnswer } from "./server-requests.mjs";
 
 export const ACTIVE = new Set(["queued", "running"]);
 export function seconds(value, fallback, name, maximum = 86400) {
@@ -134,12 +135,14 @@ export function activeJobForThread(cwd, threadId) {
  * tool (new threads) and the stdio MCP bridge process (resumed threads), so the
  * owner-facing wait/answer flow is identical for both.
  */
-export async function askParentQuestion(cwd, id, { question, options = [] }, { signal = null, onProgress = null, stopped = () => false } = {}) {
-  const questionId = `question-${randomUUID()}`;
+// kind "question" is Codex's own ask_parent call; kind "approval" is a Computer
+// Use request the runtime forwards, with the fixed choices from APPROVAL_CHOICES.
+export async function askParentQuestion(cwd, id, { question, options = [], kind = "question" }, { signal = null, onProgress = null, stopped = () => false } = {}) {
+  const questionId = `${kind}-${randomUUID()}`;
   const job = readJobFile(resolveJobFile(cwd, id));
   if (!ACTIVE.has(job.status) || job.cancelRequested) return { text: "The owner cancelled this task. Stop work and report interrupted.", resolution: "interrupted" };
   if (job.pendingQuestion) return { text: "Another parent question is pending. Proceed on a conservative assumption and report it.", resolution: "busy" };
-  const pending = { id: questionId, text: question, options, expiresAt: Date.now() + (job.questionTimeoutSec ?? 900) * 1000 };
+  const pending = { id: questionId, kind, text: question, options, expiresAt: Date.now() + (job.questionTimeoutSec ?? 900) * 1000 };
   updateJob(cwd, id, () => ({ pendingQuestion: pending, phase: "needs_answer" }));
   onProgress?.({ message: `Parent question pending: ${questionId}.`, phase: "needs_answer" });
   let text = "No answer arrived before the timeout. Proceed on a conservative assumption within the authorized scope and report the assumption. If essential input is missing, finish with needs_input.";
@@ -205,6 +208,13 @@ export class JobRuntime {
     const { text } = await askParentQuestion(this.cwd, this.id, message.params.arguments, { signal: this.abort.signal, onProgress: this.onProgress });
     return textReply(text);
   }
+  // A forwarded Computer Use request. Only an explicit answer grants anything;
+  // timeout, cancellation and a second pending question all deny.
+  async approval(request) {
+    const question = `Codex asks to control ${request.app}${request.toolName ? ` (Computer Use tool ${request.toolName})` : " via Computer Use"}. Allow? Nothing outside the isolated Codex home is changed by any choice.`;
+    const { text, resolution } = await askParentQuestion(this.cwd, this.id, { question, options: APPROVAL_OPTIONS, kind: "approval" }, { signal: this.abort.signal, onProgress: this.onProgress });
+    return resolution === "answered" ? parseApprovalAnswer(text) : "deny";
+  }
   close() { clearInterval(this.timer); for (const [signal, handler] of this.handlers) process.off(signal, handler); }
 }
 
@@ -237,5 +247,5 @@ export function progressSnapshot(job) {
     headline: `${pending ? "waiting for parent" : job.currentItem?.summary ?? phase} · ${elapsed}`.slice(0, 60), phase, elapsed, elapsedMs,
     startupTimings: { mcpReady: null, ...job.startupTimings }, startupWarning: job.startupWarning ?? null,
     currentItem: job.currentItem ?? null, completedItems: job.completedItems ?? [],
-    ...(pending ? { questionMessage: questionMessage(pending), question: { id: pending.id, text: snippet(pending.text, 1000), options: pending.options.map(option => snippet(option, 160)), expiresAt: pending.expiresAt } } : {}) };
+    ...(pending ? { questionMessage: questionMessage(pending), question: { id: pending.id, kind: pending.kind ?? "question", text: snippet(pending.text, 1000), options: pending.options.map(option => snippet(option, 160)), expiresAt: pending.expiresAt } } : {}) };
 }

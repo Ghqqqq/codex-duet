@@ -3,7 +3,7 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseArgs } from "../plugins/codex/scripts/lib/args.mjs";
-import { normalizeBrowserOrigin, normalizeBrowserOrigins, normalizeBundleId, normalizeBundleIds, decideServerRequest, ServerRequestRelay } from "../plugins/codex/scripts/lib/server-requests.mjs";
+import { normalizeBrowserOrigin, normalizeBrowserOrigins, normalizeBundleId, normalizeBundleIds, decideServerRequest, parseApprovalAnswer, ServerRequestRelay } from "../plugins/codex/scripts/lib/server-requests.mjs";
 import { makeTempDir, initGitRepo, run, requireLocalSockets } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 
@@ -250,4 +250,22 @@ test("shared broker delivers task server requests and origin approvals to the ac
     const cleanup = run(process.execPath, [hook, "SessionEnd"], { cwd: f.repo, env: f.env, input: JSON.stringify({ hook_event_name: "SessionEnd", cwd: f.repo }) });
     assert.equal(cleanup.status, 0, cleanup.stderr);
   }
+});
+
+test("a parent's approval answer maps to one of four choices and denies by default", () => {
+  assert.equal(parseApprovalAnswer("Allow this call"), "call");
+  assert.equal(parseApprovalAnswer("1"), "call");
+  assert.equal(parseApprovalAnswer("yes"), "call");
+  assert.equal(parseApprovalAnswer("Allow for this task"), "task");
+  assert.equal(parseApprovalAnswer("2"), "task");
+  assert.equal(parseApprovalAnswer("allow for this session"), "task");
+  assert.equal(parseApprovalAnswer("Allow always (isolated Codex home)"), "always");
+  assert.equal(parseApprovalAnswer("3"), "always");
+  assert.equal(parseApprovalAnswer("Deny"), "deny");
+  assert.equal(parseApprovalAnswer("4"), "deny");
+  assert.equal(parseApprovalAnswer("no, deny this"), "deny");
+  assert.equal(parseApprovalAnswer("please deny always"), "deny", "an explicit deny wins over a scope word");
+  assert.equal(parseApprovalAnswer(""), "deny");
+  assert.equal(parseApprovalAnswer("maybe later"), "deny");
+  assert.equal(parseApprovalAnswer(undefined), "deny");
 });

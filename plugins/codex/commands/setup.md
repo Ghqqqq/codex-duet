@@ -1,6 +1,6 @@
 ---
 description: Check Codex readiness and explicitly configure isolated tools, sandbox and browser access
-argument-hint: '[--sync-tools [--profile chrome|codex-app] [--replace-cua] [--cua-template <file>] [--dry-run]] [--enable-review-gate|--disable-review-gate] [--default-sandbox read-only|workspace-write|danger-full-access] [--browser-approval never-ask|ask] [--transport http|websocket|status] [--allow-browser-origin <origin>|--revoke-browser-origin <origin>|--list-browser-origins] [--computer-use-approval mirror|ask] [--allow-computer-app <bundle-id>|--revoke-computer-app <bundle-id>|--list-computer-apps]'
+argument-hint: '[--sync-tools [--profile chrome|codex-app] [--replace-cua] [--cua-template <file>] [--dry-run]] [--enable-review-gate|--disable-review-gate] [--default-sandbox read-only|workspace-write|danger-full-access] [--browser-approval never-ask|ask] [--transport http|websocket|status] [--allow-browser-origin <origin>|--revoke-browser-origin <origin>|--list-browser-origins] [--computer-use-approval mirror|ask] [--allow-computer-app <bundle-id>|--revoke-computer-app <bundle-id>|--list-computer-apps] [--project-docs claude-md|agents-only]'
 allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
 ---
 
@@ -98,7 +98,20 @@ echoed. Support `--dry-run` and `--json`; the JSON `computerUse` object lists
 from other setup changes. For one call the parent may instead pass
 `task --approve-computer-app <bundle-id>`. If the user has only chosen "This
 session" in the Codex app, mirror has nothing to copy; tell them to choose
-"Always" there or use `--allow-computer-app`.
+"Always" there or use `--allow-computer-app`. An app that no list covers is not
+refused outright on an owned worker job: the request reaches the parent as a
+pending question with four fixed options (allow this call, allow for this task,
+allow always in the isolated home, deny), so the user decides at run time.
+
+Project instructions: Codex reads `AGENTS.md` itself; `--project-docs claude-md`
+(the default, saved as `project_docs` in `<isolated home>/duet/config.toml`)
+makes every task set Codex's own `project_doc_fallback_filenames = ["CLAUDE.md"]`
+in the isolated home's `config.toml`, so workers read the project's `CLAUDE.md`
+wherever an `AGENTS.md` is missing. `--project-docs agents-only` removes Duet's
+list and is remembered; a hand-written list is reported as `custom` and left
+alone. Run this flag separately from other setup changes; supports `--dry-run`
+and `--json` (`projectDocs`: `projectDocs`, `fallbackFilenames`, `custom`,
+`changedFiles`). The user-level `~/.claude/CLAUDE.md` is never involved.
 
 Transport/browser setup is offline. `--transport status` only reads selected
 transport; explicit `--transport http|websocket` merges a named ChatGPT provider

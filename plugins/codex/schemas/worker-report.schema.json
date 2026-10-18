@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "key_findings",
+    "assumptions",
+    "verification",
+    "blockers",
+    "question"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "needs_input",
+        "blocked"
+      ],
+      "description": "completed: the assignment was delivered. needs_input: essential input is missing (fill question). blocked: a runtime refusal or external condition stopped the work (fill blockers)."
+    },
+    "summary": {
+      "type": "string",
+      "description": "The report for the parent in prose: what was done, which files changed, what was verified and how, remaining caveats. Never a plan or a promise of future work."
+    },
+    "key_findings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Short facts the parent must know, one per entry."
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Assumptions made where the assignment was ambiguous."
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Commands or checks actually run in this turn with their observed result, e.g. 'npm test: 210 passed'. Empty when nothing was verified."
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message",
+          "app",
+          "tab_id",
+          "session_id"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable identifier such as computer_use_app_not_approved, stale_browser_tab_claim, debugger_unattached, missing_dependency."
+          },
+          "message": {
+            "type": "string"
+          },
+          "app": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact application name or bundle id for Computer Use refusals; otherwise null."
+          },
+          "tab_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "question": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "When status is needs_input: the exact missing input as one question. Otherwise null."
+    }
+  }
+}

@@ -271,6 +271,17 @@ function taskPayload(prompt, resume) {
   return "Handled the requested task.\\nTask prompt accepted.";
 }
 
+// The worker-report schema wraps the prose above as the summary. question-only
+// declares needs_input; unfinished-task over-claims completed, which the parent
+// must still catch from the summary; structured-blocked declares its blocker.
+function structuredTaskPayload(text) {
+  if (BEHAVIOR === "structured-blocked") {
+    return JSON.stringify({ status: "blocked", summary: "Stopped: the fixture dependency is unavailable.\\nPRIVATE_FIXTURE_DETAIL", key_findings: ["Dependency missing"], assumptions: [], verification: [], blockers: [{ code: "missing_dependency", message: "fixture-dep is not installed", app: null, tab_id: null, session_id: null }], question: null });
+  }
+  const status = BEHAVIOR === "question-only" ? "needs_input" : "completed";
+  return JSON.stringify({ status, summary: text, key_findings: ["Fixture finding one", "Fixture finding two"], assumptions: ["Fixture assumption"], verification: status === "completed" ? ["fixture check: passed"] : [], blockers: [], question: status === "needs_input" ? text : null });
+}
+
 const args = process.argv.slice(2);
 if (args[0] === "--version") {
   console.log("codex-cli test");
@@ -317,7 +328,9 @@ rl.on("line", (line) => {
     if (message.method === undefined && serverRequests.has(message.id)) {
       const pending = serverRequests.get(message.id);
       serverRequests.delete(message.id);
-      state.serverRequestReplies = [...(state.serverRequestReplies || []), message];
+      // What node_repl would see right after this reply: the thread's and the
+      // isolated home's Computer Use approval files.
+      state.serverRequestReplies = [...(state.serverRequestReplies || []), { ...message, computerUse: readComputerUse(process.env.CODEX_HOME, pending.threadId) }];
       saveState(state);
       if (!serverRequests.size && state.lastInterrupt?.turnId !== pending.turnId) emitTurnCompleted(pending.threadId, pending.turnId, { completed: { type: "agentMessage", id: "approval-result", text: "Completed fixture request handling.", phase: "final_answer" } });
       return;
@@ -509,6 +522,7 @@ rl.on("line", (line) => {
           serviceTier: message.params.serviceTier,
           sandboxPolicy: message.params.sandboxPolicy,
           approvalPolicy: message.params.approvalPolicy,
+          outputSchema: message.params.outputSchema ?? null,
 	          prompt,
           // What node_repl would see at this moment: the isolated home's
           // Computer Use approval files for this thread and globally.
@@ -601,9 +615,12 @@ rl.on("line", (line) => {
           // Deliberately emits no fileChange events: shell writes need snapshots.
         }
 
-        const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict
+        const schemaProperties = (message.params.outputSchema && message.params.outputSchema.properties) || {};
+        const payload = schemaProperties.verdict
           ? structuredReviewPayload(prompt)
-          : taskPayload(prompt, thread.name && thread.name.startsWith("Codex Companion Task") && prompt.includes("Continue from the current thread state"));
+          : schemaProperties.status
+            ? structuredTaskPayload(taskPayload(prompt, thread.name && thread.name.startsWith("Codex Companion Task") && prompt.includes("Continue from the current thread state")))
+            : taskPayload(prompt, thread.name && thread.name.startsWith("Codex Companion Task") && prompt.includes("Continue from the current thread state"));
 
         if (
           BEHAVIOR === "with-subagent" ||

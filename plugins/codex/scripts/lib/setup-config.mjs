@@ -251,6 +251,39 @@ export function grantComputerAppsForThread(threadId, apps, env = process.env) {
   };
 }
 
+// Project instructions. Codex discovers AGENTS.md on its own (repository root
+// down to the working directory). Claude Code projects usually keep theirs in
+// CLAUDE.md, which Codex ignores unless its `project_doc_fallback_filenames`
+// lists it; with that key a worker reads CLAUDE.md wherever AGENTS.md is
+// missing, under Codex's own size limit (`project_doc_max_bytes`). The key lives
+// in the isolated home's config.toml; the user-level ~/.claude/CLAUDE.md and
+// ~/.codex are never involved.
+export const PROJECT_DOC_MODES = ["claude-md", "agents-only"];
+export const BUILTIN_PROJECT_DOCS = "claude-md";
+export const CLAUDE_MD_FALLBACKS = ["CLAUDE.md"];
+export function projectDocsSetup({ mode, env = process.env, dryRun = false } = {}) {
+  if (mode !== undefined && !PROJECT_DOC_MODES.includes(mode)) throw new Error("--project-docs must be claude-md or agents-only.");
+  const home = resolveIsolatedCodexHome(env), file = path.join(home, "config.toml"), before = read(home, file);
+  const preference = duetConfig(env), preferenceBefore = read(preference.root, preference.file);
+  const preferenceAfter = mode === undefined ? preferenceBefore : setTomlField(preferenceBefore, ["project_docs"], mode);
+  const projectDocs = readTomlField(preferenceAfter, ["project_docs"]) ?? BUILTIN_PROJECT_DOCS;
+  if (!PROJECT_DOC_MODES.includes(projectDocs)) throw new Error("Invalid saved project_docs; repair it with setup --project-docs.");
+  const current = readTomlField(before, ["project_doc_fallback_filenames"]);
+  if (current !== undefined && (!Array.isArray(current) || current.some(v => typeof v !== "string"))) throw new Error("project_doc_fallback_filenames must be a string array; no configuration changed.");
+  // A hand-written list that already covers CLAUDE.md (or lists other names) is
+  // the user's; only Duet's own default list is added or removed.
+  const custom = current !== undefined && !same(current, CLAUDE_MD_FALLBACKS);
+  const wanted = projectDocs === "claude-md" ? (custom ? current : CLAUDE_MD_FALLBACKS) : (custom ? current : undefined);
+  const after = same(current, wanted) ? before : setTomlField(before, ["project_doc_fallback_filenames"], wanted);
+  const result = apply(home, [{ file, before, after }, { file: preference.file, before: preferenceBefore, after: preferenceAfter }], dryRun);
+  return { file, projectDocs, fallbackFilenames: wanted ?? [], custom, ...result };
+}
+// Before every task; never raises into the task flow.
+export function ensureProjectDocs({ env = process.env } = {}) {
+  const result = projectDocsSetup({ env });
+  return { projectDocs: result.projectDocs, fallbackFilenames: result.fallbackFilenames, changedFiles: result.changedFiles };
+}
+
 export const SANDBOX_MODES = ["read-only", "workspace-write", "danger-full-access"];
 // Workers run like the user's own Codex app in full-access mode unless the user
 // lowers the default here or the parent narrows one call with --sandbox.

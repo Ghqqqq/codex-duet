@@ -54,14 +54,25 @@ the native worker runtime, isolation and lifecycle work are Duet additions.
   are never copied. Job state (`duet/state/`) and plugin settings
   (`duet/config.toml`) live in the same home, so a terminal and a Claude
   session always see the same jobs.
-- **Honest reports.** Compact JSON reports separate captured facts from Codex's
-  claims, list touched files against a before/after snapshot (pre-existing dirt
-  reported separately), and keep handles for read-only recovery.
+- **Structured, honest reports.** Every worker turn ends with a schema-enforced
+  JSON report from Codex (status, summary, key findings, assumptions,
+  verification, blockers, question). Compact reports separate captured facts
+  from Codex's claims, list touched files against a before/after snapshot
+  (pre-existing dirt reported separately), and keep handles for read-only
+  recovery.
+- **Project instructions.** Workers read the project's `CLAUDE.md` wherever no
+  `AGENTS.md` exists, through Codex's own `project_doc_fallback_filenames`
+  (`setup --project-docs agents-only` turns it off).
+- **Orchestration.** `/codex:ultra-codex <task>` runs a substantive task
+  Ultracode-style: Claude scouts, assigns, judges and integrates; parallel Codex
+  workers investigate, implement and adversarially review. See
+  [docs/ultra-codex.md](docs/ultra-codex.md).
 - **Browser and desktop work.** Optional Chrome/computer-use tooling, fresh
   session-owned tabs, an unrestricted browser by default, and Computer Use app
   approvals mirrored from the user's own Codex app (read-only on `~/.codex`),
-  with per-app and per-call overrides. Denied approvals are reported as
-  structured blockers, never as success.
+  with per-app and per-call overrides. An app no list covers is asked of the
+  parent at run time (allow this call / this task / always / deny). Denied
+  approvals are reported as structured blockers, never as success.
 
 ## Requirements
 
@@ -192,9 +203,10 @@ half the lease for shorter leases).
 | Reasoning effort | `xhigh` | `--effort none…xhigh` or `--effort max` where the model supports it |
 | Speed | normal | `--fast` requests the fast tier for that call only; `--normal` resets |
 | Codex sandbox | `danger-full-access` (full access, like the Codex app's own full-access mode) | Lower the default with `setup --default-sandbox read-only\|workspace-write` (stored in `~/.claude/codex-isolated/duet/config.toml`); narrow or widen one call with `task --sandbox <mode>`; `--write` is a floor (at least `workspace-write`), `--write=false` an explicit read-only call |
-| Approval policy | `never` | — |
+| Approval policy | `never+elicitations` on owned jobs (every command/sandbox/rule prompt rejected; a Computer Use app request is forwarded to the parent as a question); `never` on a plain foreground `task` | — |
 | Browser | unrestricted: any website, no per-origin prompt (`approval_mode = "never_ask"` is mirrored into the isolated browser runtime before every task); network access stays on in every sandbox mode | `setup --browser-approval ask` restores the runtime's ordinary origin checks (saved in `duet/config.toml`); `setup --browser-approval never-ask` returns to the default |
-| Computer Use apps | `mirror`: apps the user marked "always allow" in their Codex app (`~/.codex/computer-use/config.toml`, read-only) are copied into the isolated runtime's approval file before every task | `setup --computer-use-approval ask` stops the sync (unapproved apps are denied and reported as blockers); `setup --allow-computer-app`/`--revoke-computer-app <bundle id>` adjust individual apps; `task --approve-computer-app <bundle id>` approves one app for one call |
+| Computer Use apps | `mirror`: apps the user marked "always allow" in their Codex app (`~/.codex/computer-use/config.toml`, read-only) are copied into the isolated runtime's approval file before every task; any other app is asked of the parent during the task | `setup --computer-use-approval ask` stops the sync; `setup --allow-computer-app`/`--revoke-computer-app <bundle id>` adjust individual apps; `task --approve-computer-app <bundle id>` pre-approves one app for one call |
+| Project instructions | `claude-md`: Codex reads `CLAUDE.md` where no `AGENTS.md` exists (`project_doc_fallback_filenames` in the isolated `config.toml`) | `setup --project-docs agents-only` |
 
 The parent chooses a sandbox per call the way it would choose a permission mode
 for a native subagent; without a flag the configured default applies. Each
@@ -255,6 +267,25 @@ smaller model. It supports `--background`, `--wait`, `--resume` and `--fresh`.
 If you do not pass `--model` or `--effort`, delegated tasks use `gpt-6-astra` and `xhigh`.
 If you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`. For planned,
 parallel work Claude uses `codex:codex-worker` instead (see above).
+
+### `/codex:ultra-codex`
+
+Orchestrates a substantive task with parallel Codex workers the way Claude
+Code's Ultracode mode orchestrates Claude subagents. Claude scouts the code,
+writes precise assignments, judges results and integrates; Codex workers do the
+investigation, implementation and adversarial review, so the heavy lifting spends
+Codex quota only.
+
+```bash
+/codex:ultra-codex --thorough migrate the job store to SQLite with a reversible upgrade path
+/codex:ultra-codex --quick add --json to the cancel command and cover it with a test
+```
+
+Phases: scout → understand (parallel read-only workers) → design (thorough
+only, independent drafts judged by Claude) → implement (disjoint ownership or
+worktrees) → verify (adversarial reviewers plus the test suite, loop until dry)
+→ integrate. `--max-workers <n>` caps concurrent workers (default 6). Details and
+the mapping to Ultracode's Workflow tool: [docs/ultra-codex.md](docs/ultra-codex.md).
 
 ### `/codex:transfer`
 
@@ -369,9 +400,12 @@ Codex's Computer Use tooling asks before it drives a macOS app. The user's own
 Codex app records a "This session" choice in
 `~/.codex/computer-use/sessions/<thread>.toml` and an "Always" choice in
 `~/.codex/computer-use/config.toml` (`[apps] allowed`). The isolated runtime reads
-its own copy, `~/.claude/codex-isolated/computer-use/`, and a worker runs with
-approval policy `never`, so an app that is not listed there fails with
-`Computer Use was not approved to use <App>`.
+its own copy, `~/.claude/codex-isolated/computer-use/`. An owned worker job
+runs with approval policy `never+elicitations`: an app that is not listed there
+pauses the tool call and reaches the parent as a question with four fixed
+options (`Allow this call`, `Allow for this task`, `Allow always (isolated Codex
+home)`, `Deny`); denied, it fails with `Computer Use was not approved to use
+<App>` and the report is `blocked`.
 
 By default (`computer_use_approval = "mirror"`) every task first copies the apps
 from the user's global `[apps] allowed` list into the isolated file. Only
@@ -397,9 +431,11 @@ allowed again. Both take bundle identifiers (`com.google.Chrome`), support
 grant is written as a session-scoped approval for the job's own thread while the
 turn runs and withdrawn afterwards; a follow-up on the same thread does not
 inherit it, `task --continue` does. If the user has only ever chosen "This
-session" in the Codex app, mirror finds nothing to copy; choose "Always" there
-or use `--allow-computer-app`. Details:
-[Computer Use approvals](docs/computer-use-approvals.md).
+session" in the Codex app, mirror finds nothing to copy; choose "Always" there,
+use `--allow-computer-app`, or answer the forwarded question when a worker asks.
+"Allow for this task" grants the app to that worker's thread until the turn
+ends; "Allow always" adds an explicit entry to the isolated home's list, never to
+`~/.codex`. Details: [Computer Use approvals](docs/computer-use-approvals.md).
 
 ### Browser and computer-use tooling
 

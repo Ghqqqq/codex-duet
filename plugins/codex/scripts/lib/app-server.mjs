@@ -180,6 +180,21 @@ class AppServerClientBase {
       return;
     }
     const { reply, summary } = decideServerRequest(message, this.serverRequestPolicy);
+    // A Computer Use elicitation for this turn that no per-call flag covers is
+    // the parent's decision: the owner answers through the question bridge and
+    // the reply is accept or cancel, never a persistence instruction to Codex.
+    if (summary.kind === "computer-use-app" && summary.decision !== "approved" && summary.reason !== "turn-mismatch" && this.options.onApprovalRequest) {
+      logServerRequest({ ...summary, decision: "pending", reason: "ask-parent" }, this.options.onServerRequestLog);
+      const meta = message.params?._meta ?? {};
+      Promise.resolve(this.options.onApprovalRequest({ kind: summary.kind, app: summary.app, threadId: message.params.threadId, toolName: typeof meta.tool_name === "string" ? meta.tool_name.slice(0, 80) : null }))
+        .then(decision => ({ action: decision?.action === "accept" ? "accept" : "cancel", reason: decision?.reason ?? "parent-unavailable" }), () => ({ action: "cancel", reason: "parent-unavailable" }))
+        .then(decision => {
+          if (this.closed) return;
+          logServerRequest({ ...summary, decision: decision.action === "accept" ? "approved" : "cancelled", reason: decision.reason }, this.options.onServerRequestLog);
+          this.sendMessage(decision.action === "accept" ? { id: message.id, result: { action: "accept" } } : reply);
+        });
+      return;
+    }
     // Logging precedes the reply; a logging failure must never grant access.
     logServerRequest(summary, this.options.onServerRequestLog);
     this.sendMessage(reply);

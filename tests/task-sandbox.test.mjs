@@ -101,7 +101,7 @@ test("background task persists and reports the deliberately requested sandbox", 
   assert.equal(launched.status, 0, launched.stderr);
   const queued = JSON.parse(launched.stdout);
   assert.equal(queued.sandbox, "danger-full-access");
-  assert.equal(queued.approvalPolicy, "never");
+  assert.equal(queued.approvalPolicy, "never+elicitations", "an owned job can forward Computer Use requests to its parent");
   let job;
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {

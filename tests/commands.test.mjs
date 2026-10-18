@@ -81,8 +81,21 @@ test("continue is not exposed as a user-facing command", () => {
     "review.md",
     "setup.md",
     "status.md",
-    "transfer.md"
+    "transfer.md",
+    "ultra-codex.md"
   ]);
+});
+
+test("ultra-codex orchestrates through codex-worker agents and keeps Claude out of the implementation", () => {
+  const command = fs.readFileSync(path.join(PLUGIN_ROOT, "commands", "ultra-codex.md"), "utf8");
+  assert.match(command, /^allowed-tools: .*\bAgent\b/m);
+  assert.match(command, /subagent_type: "codex:codex-worker"/);
+  assert.match(command, /run_in_background: true/);
+  assert.match(command, /isolation: "worktree"/);
+  assert.match(command, /\$ARGUMENTS/);
+  for (const phase of ["Scout", "Understand", "Design", "Implement", "Verify", "Integrate"]) assert.match(command, new RegExp(`\\*\\*${phase}`));
+  assert.match(command, /Substantive code is written by workers, not by you/);
+  assert.match(command, /needs_input|blocked/);
 });
 
 test("rescue command absorbs continue semantics", () => {

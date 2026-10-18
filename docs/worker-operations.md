@@ -6,10 +6,21 @@ acceptance criteria. For follow-ups, supply that worker's exact thread ID. No
 hand-written environment or sandbox instructions are needed in each assignment.
 The worker sets Bash `dangerouslyDisableSandbox: true` on every companion call.
 This affects the outer Claude Bash sandbox. Codex tasks use the plugin's configured
-sandbox default (`danger-full-access` unless lowered with `setup --default-sandbox`)
-and always receive `approvalPolicy: "never"`. Workers omit `--sandbox` so that this
+sandbox default (`danger-full-access` unless lowered with `setup --default-sandbox`).
+Owned jobs (detached, `--background`, `--follow`) run with the granular approval
+policy reported as `never+elicitations`: command, sandbox, rule, skill and
+permission prompts are rejected as under `never`, and MCP elicitations are
+forwarded so a Computer Use app request becomes a question for the parent. A
+plain foreground `task` keeps `never`. Workers omit `--sandbox` so that the
 default applies and pass `--sandbox read-only|workspace-write` only when the
 parent narrows one assignment.
+
+Project instructions: Codex discovers `AGENTS.md` itself. Before every task the
+helper sets Codex's `project_doc_fallback_filenames = ["CLAUDE.md"]` in the
+isolated home's `config.toml` (once; `setup --project-docs agents-only` turns it
+off), so a worker also reads the project's `CLAUDE.md` wherever no `AGENTS.md`
+exists, under Codex's own discovery rules and size limit. The user-level
+`~/.claude/CLAUDE.md` is not involved.
 
 Parallel workers need disjoint write ownership or separate worktrees. A worker
 starts one detached Codex turn and loops `wait` for progress, questions and completion.
@@ -67,8 +78,9 @@ or `approvalPolicy: never`, and never grants session-wide authority.
 ## Computer Use app approvals
 
 Computer Use (driving a macOS app) is approved per app by node_repl's persisted
-state under `<isolated home>/computer-use/`, which a worker cannot answer
-interactively (`approvalPolicy: never`). By default every task mirrors the apps
+state under `<isolated home>/computer-use/`, or at run time by the parent when an
+owned job forwards the request (`approvalPolicy: never+elicitations`; see
+below). By default every task mirrors the apps
 the user marked "Always" in their own Codex app (`~/.codex/computer-use/config.toml`
 `[apps] allowed`, read-only; session-level and denied apps are never copied) into
 the isolated file before Codex starts. The user switches with
@@ -79,9 +91,15 @@ repeated `task --approve-computer-app <bundle id>` flags for one call: the apps 
 granted to the job's own thread only while the turn runs, and a forwarded
 elicitation is accepted only for an exact bundle-id match on the current turn
 without persistence. `--thread` follow-ups start with no grant; `--continue`
-inherits. An unapproved app is reported as `status: blocked` with
-`computer_use_app_not_approved` and the app name, never as `completed`. Details:
-[Computer Use approvals](computer-use-approvals.md).
+inherits. On an owned job, an app that no list or flag covers pauses the tool
+call and reaches the parent as a pending question (`question.kind: "approval"`,
+options `Allow this call` / `Allow for this task` / `Allow always (isolated
+Codex home)` / `Deny`); the worker relays it like any question and delivers the
+parent's choice with `answer`. "This task" writes the thread's session file for
+the rest of the turn; "always" adds an explicit entry to the isolated home's
+allow list; everything else cancels the request. An unapproved app is reported
+as `status: blocked` with `computer_use_app_not_approved` and the app name,
+never as `completed`. Details: [Computer Use approvals](computer-use-approvals.md).
 
 Only schema-defined **network-only** `item/commandExecution/requestApproval`
 requests for the current thread/turn can receive `{ "decision": "accept" }`.
@@ -499,7 +517,21 @@ and the [README](../README.md#delay-before-the-first-tool-call).
 ## Results, progress and recovery
 
 Native workers use `task --report --json`. This retains legacy full-output task
-and result behavior when `--report` is omitted. The compact report includes
+and result behavior when `--report` is omitted. A `--report` turn runs with the
+worker-report output schema (`schemas/worker-report.schema.json`): Codex's final
+message is a JSON object with `status` (`completed`/`needs_input`/`blocked`),
+`summary`, `key_findings`, `assumptions`, `verification`, `blockers` and
+`question`. The helper stores the summary as the raw output (so `result`, the
+stop-gate hook and the live feed keep showing prose; the feed shows the final
+message as `[status] summary`), keeps the parsed object as `structured` in the
+result artifact, and builds the report from it: the declared status (a captured
+runtime refusal still forces `blocked`; a `completed` whose summary is a plan or
+a question becomes `needs_input`), `keyFindings`, `assumptions`,
+`claimedVerification` (Codex's list, distinct from the captured `verification`
+command events), `blockers` (captured first, then declared) and `question`.
+`reportFormat: "structured"` marks such a report; when the final message is not
+a valid report (interrupted turn, older runtime) the fields are inferred from
+the prose as before. The compact report includes
 status, jobId, threadId, turnId, the sandbox and approval policy, the `model`,
 `effort` and `serviceTier` the runtime actually used (from the thread-start or
 thread-resume response, overridden by per-call flags; the request's values when
