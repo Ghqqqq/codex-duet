@@ -89,6 +89,10 @@ test("continue is not exposed as a user-facing command", () => {
 test("ultra-codex is a mode switch plus one-shot orchestration; the protocol lives in prompts/", () => {
   const command = fs.readFileSync(path.join(PLUGIN_ROOT, "commands", "ultra-codex.md"), "utf8");
   assert.match(command, /^allowed-tools: .*\bAgent\b/m);
+  assert.match(command, /main agent runs `task --direct` via Bash with `run_in_background: true`/);
+  assert.match(command, /only as fallback when background Bash is unavailable/);
+  assert.match(command, /Never pass `model` or `effort` to that Haiku forwarder/);
+  assert.match(command, /start no new Codex jobs or fallback workers unless asked/);
   assert.match(command, /^argument-hint: .*on \[--quick\|--thorough\] \[--max-workers <n>\] \| off \| status \| <what to accomplish>/m);
   assert.match(command, /\$ARGUMENTS/);
   assert.match(command, /ultra-codex status --for-command/);
@@ -105,6 +109,12 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(rescue, /The rescue subagent returns Codex's output to the parent unchanged/i);
   assert.match(rescue, /The parent may summarize that result for the user/i);
   assert.match(rescue, /subagent_type: "codex:codex-worker"/);
+  assert.match(rescue, /use direct mode first: the main agent runs `task --direct`/);
+  assert.match(rescue, /run_in_background: true/);
+  assert.match(rescue, /reads one JSON line from the output file on the completion notification/);
+  assert.match(rescue, /task --thread <threadId> --direct` with the same `--cwd`/);
+  assert.match(rescue, /only as fallback when background Bash is unavailable/);
+  assert.match(rescue, /never pass `model` or `effort` to that Haiku forwarder/);
   assert.doesNotMatch(rescue, /final user-visible response must be Codex's output verbatim/i);
   assert.match(rescue, /allowed-tools:\s*Bash\(node:\*\),\s*AskUserQuestion,\s*Agent/);
   // Regression for #234: `Skill(codex:rescue)` from the main agent recursed
@@ -189,13 +199,17 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(readme, /### `\/codex:cancel`/);
 });
 
-test("native Codex worker preserves identity, native lifecycle, and parallel ownership", () => {
+test("fallback Codex worker preserves identity, native lifecycle, and parallel ownership", () => {
   const worker = read("agents/codex-worker.md");
 
   assert.match(worker, /^name: codex-worker$/m);
   // The worker is a relay; the cheapest model keeps delegation from spending
   // the parent's Claude quota on polling and transcription.
   assert.match(worker, /^model: haiku$/m);
+  assert.match(worker, /^effort: low$/m);
+  assert.match(worker, /^omitClaudeMd: true$/m);
+  assert.match(worker, /^autoCompactWindow: 100000$/m);
+  assert.match(worker, /^description: Fallback to direct mode .*Never pass model or effort to this Haiku forwarder;/m);
   assert.match(worker, /^tools: Bash, Read, SendMessage$/m);
   assert.doesNotMatch(worker, /^skills:/m);
   assert.match(worker, /multiple independent parallel workers/i);
@@ -203,6 +217,10 @@ test("native Codex worker preserves identity, native lifecycle, and parallel own
   assert.doesNotMatch(worker, /--follow --json/, "feed mode: the live lines are the user-visible agent view");
   assert.match(worker, /never pass `--json` on task\/wait calls/);
   assert.match(worker, /task --thread <threadId> --follow --report/);
+  assert.match(worker, /For follow-ups or rework the parent starts a NEW worker/);
+  assert.match(worker, /SendMessage to an existing worker is only for answering its pending question/);
+  assert.match(worker, /same `--cwd`/);
+  assert.match(worker, /default `--feed-limit` 60/);
   assert.match(worker, /task --continue <jobId> --follow --report/);
   assert.match(worker, /Never use `--resume-last`/);
   assert.match(worker, /exact `threadId` from that result or explicitly supplied by the parent/i);
@@ -241,7 +259,11 @@ test("native Codex worker preserves identity, native lifecycle, and parallel own
   assert.match(worker, /single-quoted heredoc delimiter that does not occur as a complete line/i);
   assert.match(worker, /<<'CODEX_WORKER_PROMPT'/);
   assert.match(worker, /Shell-quote every dynamic runtime argument separately/i);
-  assert.match(worker, /concise structured report, targeting 60 lines or fewer/i);
+  assert.match(worker, /Return the helper's final JSON line verbatim plus at most 5 lines of notes for stderr, retries or a relayed question/);
+  assert.match(worker, /Do not write a prose report or re-print the feed\/raw output/);
+  assert.match(worker, /Preserve `needs_input` and `blocked`; never present either as completed/);
+  assert.match(worker, /captured `verification` versus `claimedVerification`/);
+  assert.match(worker, /reads `rawOutputFile` only if a report field is insufficient/);
   assert.match(worker, /dangerouslyDisableSandbox: true/);
   assert.match(worker, /one automatic retry/);
   assert.match(worker, /needs_input/);
@@ -251,27 +273,57 @@ test("native Codex worker preserves identity, native lifecycle, and parallel own
   assert.match(worker, /Preserve captured stderr and the command's exit status on failure/i);
   assert.match(worker, /parent may summarize the result for the user/i);
   assert.match(worker, /do not require the final user response to reproduce all helper output/i);
+  assert.match(worker, /open a fresh tab owned by this session/);
+  assert.match(worker, /stale_browser_tab_claim.*full session ID/);
+  assert.match(worker, /Debugger unattached.*re-obtain the tab by id/);
+  assert.match(worker, /question.kind: "approval"/);
+  assert.match(worker, /computer_use_app_not_approved/);
+  assert.match(worker, /only if the parent explicitly supplied it up front/);
 });
 
 test("stopped-worker docs require consent and replacement adoption", () => {
   const readme = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
   assert.match(readme, /### If a worker is stopped\n/);
-  assert.match(readme, /Esc or Ctrl\+C/);
-  assert.match(readme, /ALL background agents/);
-  assert.match(readme, /ctrl\+x ctrl\+k/);
-  assert.match(readme, /`x` in a subagent's detail view/);
+  assert.match(readme, /Stop the background task in Claude Code/);
+  assert.match(readme, /interruptionReason: owner_stopped/);
+  assert.match(readme, /cancel <jobId> --json/);
+  assert.doesNotMatch(readme, /Esc or Ctrl\+C|ctrl\+x ctrl\+k|`x` in a subagent's detail view/, "do not prescribe background-shell stop keybindings");
   assert.match(readme, /user's explicit consent/);
   assert.match(readme, /FIRST action is `adopt <jobId> --json`/);
   assert.match(readme, /Thread context and on-disk edits\npersist/);
   assert.match(readme, /owner_lost/);
-  assert.match(readme, /task --continue <jobId> --cwd <cwd> --follow --report --json/);
+  assert.match(readme, /task --continue <jobId> --cwd <cwd> --direct/);
   assert.doesNotMatch(readme, /Resume the \*\*same native agent/);
   const status = read("commands/status.md");
   assert.match(status, /exact adopt instruction/);
   assert.match(status, /do not supply `--owner`/);
   assert.match(status, /stopped worker agent cannot resume/);
   assert.match(status, /owner_lost/);
-  assert.match(status, /task --continue <jobId> --follow --report --json/);
+  assert.match(status, /task --continue <jobId> --cwd <cwd> --direct/);
+  const statusText = status.replace(/\s+/g, " ");
+  assert.match(statusText, /user's explicit consent, run it in background Bash with `run_in_background: true`/);
+  assert.match(statusText, /only as fallback when background Bash is unavailable/);
+  assert.match(statusText, /Never pass `model` or `effort` to that Haiku forwarder/);
+  assert.match(statusText, /default 1800 s in direct mode, 180 s otherwise/);
+  assert.match(statusText, /retired owner reports `ownership_moved` and must stop/);
+});
+
+test("direct-mode docs share the dispatch, wait, answer, fallback and live-pane contract", () => {
+  for (const file of ["README.md", "docs/worker-operations.md", "plugins/codex/prompts/ultra-codex-protocol.md"]) {
+    const source = fs.readFileSync(path.join(ROOT, file), "utf8");
+    const text = source.replace(/\s+/g, " ");
+    assert.match(source, /node "\$CODEX_COMPANION" task --fresh --direct --model gpt-6-astra --effort xhigh --normal <<'CODEX_TASK'\n[^]*\nCODEX_TASK\n/, file);
+    assert.match(text, /run_in_background: true/, file);
+    assert.match(text, /`needs_answer`: FIRST run its `waitCommand` in (?:the )?background.*--after-question <id>.*Then .*`answerCommand`/, file);
+    assert.match(text, /Never run two waits for one job/, file);
+    assert.match(text, /Agent\(subagent_type: "codex:codex-worker"\).*when direct mode cannot be used/, file);
+    assert.match(text, /Never pass `model` or `effort` to that agent/, file);
+    assert.match(text, /\/plugin install codex-live@duet/, file);
+  }
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  assert.match(readme, /\| Direct-mode timeout \| 3600 s \|/);
+  assert.match(readme, /\| Owner lease \| 1800 s in direct mode; 180 s otherwise \|/);
+  assert.match(readme, /\| Fallback feed limit \| 60 lines per call \|/);
 });
 
 test("transfer, result, and cancel commands are exposed as deterministic runtime entrypoints", () => {

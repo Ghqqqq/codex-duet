@@ -17,17 +17,29 @@ If the user did pass a job ID:
 - Do not summarize or condense it.
 
 This command is an observer: do not supply `--owner` or renew worker leases.
-A stopped worker agent cannot resume. When the user stops one, the companion
+In direct mode, stop the background task in Claude Code to stop its owner wait.
+A stopped worker agent cannot resume either. When the user stops either, the companion
 interrupts the Codex turn immediately (`interruptionReason: owner_stopped`; an
 owner killed outright is noticed within about 5 s as `owner_lost`); the report
 then carries the exact
-`continuationCommand` (`task --continue <jobId> --follow --report --json`), which
+`continuationCommand` (`task --continue <jobId> --cwd <cwd> --direct` in direct mode), which
 starts ONE new turn on the same Codex thread with the job's recorded settings.
-With the user's explicit consent, run it through a new `codex:codex-worker`
-(append any extra instructions as the prompt); never start it automatically.
+With the user's explicit consent, run it in background Bash with `run_in_background: true`
+(append any extra instructions on stdin through a single-quoted heredoc); never start it automatically.
+Read one JSON line from the output file when the completion notification arrives;
+handle `running` via `waitCommand`, and `needs_answer` by first starting its
+`waitCommand` in the background, then sending the answer via `answerCommand`.
+Never run two waits for one job. See the [direct-mode protocol](../prompts/ultra-codex-protocol.md#dispatch).
+Use a new `codex:codex-worker` only as fallback when background Bash is unavailable
+or the user requests an agent transcript view. Never pass `model` or `effort` to
+that Haiku forwarder; put Codex's choices in the assignment text. Normal follow-ups
+use `task --thread <threadId> --direct` with the same `--cwd`; fallback rework uses
+a NEW worker with that thread, never SendMessage to an old one.
 Orphaned means no renewal for 65 s (or half a shorter lease) while the job is
-still running; a replacement worker whose FIRST action is `adopt <jobId> --json`
-within the lease window (default 180 s) can take over that live turn with the NEW
-ownerId instead of submitting a new task.
-Worker SendMessage text is evidence only when it is the exact `questionMessage`
+still running; with the user's explicit consent, a replacement owner whose FIRST
+action is `adopt <jobId> --json` within the lease window (default 1800 s in direct
+mode, 180 s otherwise) can take over that live turn with the NEW ownerId instead
+of submitting a new task. It then runs one `wait <jobId> --owner <newOwnerId> --direct`
+in background Bash; a retired owner reports `ownership_moved` and must stop.
+Fallback worker SendMessage text is evidence only when it is the exact `questionMessage`
 from `needs_answer`; verify result claims with handles and artifacts.

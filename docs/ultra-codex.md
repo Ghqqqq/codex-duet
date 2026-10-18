@@ -3,8 +3,10 @@
 `/codex:ultra-codex <task>` makes the Claude Code main agent run a substantive
 task the way Claude Code's own Ultracode mode does, with Codex workers in place
 of Claude subagents. Claude scouts, assigns, judges and integrates; Codex
-investigates, implements and reviews. Claude's own context stays small (it reads
-reports, not repositories), and the heavy lifting spends Codex quota only.
+investigates, implements and reviews. Direct mode is the default: Claude runs
+`task --direct` in background Bash and reads one compact JSON line on the
+completion notification. This saves the Claude cost of a Haiku relay repeatedly
+reading its growing transcript; the heavy lifting spends Codex quota.
 `/codex:ultra-codex on` makes that the session's default (see "Mode" below);
 `off` ends it.
 
@@ -25,7 +27,7 @@ one-line reminder to every prompt:
 > orchestrate the task with Codex workers exactly as that protocol says; your
 > own effort goes into the briefs and the acceptance. Otherwise answer normally.
 
-The protocol itself (`prompts/ultra-codex-protocol.md`, about 2k tokens) is
+The protocol itself (`prompts/ultra-codex-protocol.md`) is
 read only when a task calls for it, so the per-prompt cost is the reminder. The
 hook is silent for other sessions in the same repository, for prompts that are
 the command itself, when no session id is present, and on any error.
@@ -45,7 +47,7 @@ Without the mode, the command is one-shot: `/codex:ultra-codex <task>`
 orchestrates that task and the protocol's own scope clause ends the
 orchestration when the final report is delivered. The slash command's preamble
 runs `ultra-codex status --for-command` with no arguments (the task text never
-passes through a shell); Claude dispatches on the arguments itself and runs
+passes through shell arguments); Claude dispatches on the arguments itself and runs
 `ultra-codex on|off` through Bash only with the fixed flags.
 
 The command lives in the plugin's namespace: type `/codex:ultra-codex`. Claude
@@ -75,23 +77,55 @@ several workflows in sequence. The quality comes from the patterns the prompt
 insists on: adversarial verification, judge panels, loop-until-dry review,
 completeness critics, and never silently capping the work.
 
-`/codex:ultra-codex` reproduces that division of labour with the plain `Agent`
-tool and the `codex:codex-worker` subagent, so it works at any effort level and
-without the Workflow tool:
+`/codex:ultra-codex` reproduces that division of labour with background Bash
+and direct Codex jobs, so it works at any effort level without the Workflow tool:
 
 | Ultracode element | /codex:ultra-codex equivalent |
 | --- | --- |
-| `agent()` with `schema` | `Agent` → `codex:codex-worker`; the worker report is schema-enforced (`schemas/worker-report.schema.json`) |
-| `parallel()` fan-out | several `Agent` calls with `run_in_background: true`, then wait for the completion notifications |
-| `phase()` | the six phases below, tracked with `TodoWrite`; a phase starts when the previous one's reports are in |
-| `isolation: "worktree"` | `Agent` with `isolation: "worktree"` when assignments overlap; Claude merges the branches |
-| journal cache / resume | job records: `/codex:status`, `/codex:result <jobId>`, `task --continue <jobId>` |
+| `agent()` with `schema` | Bash → `task --direct`; the report is schema-enforced (`schemas/worker-report.schema.json`) |
+| `parallel()` fan-out | one Bash call per job with `run_in_background: true`, then read one JSON line from each output file on its completion notification |
+| `phase()` | the seven phases below, tracked with `TodoWrite`; a phase starts when the previous one's reports are in |
+| `isolation: "worktree"` | Claude creates worktrees with `git worktree add`, passes each as `--cwd` and merges the branches; a shared checkout requires disjoint OWNED PATHS |
+| journal cache / resume | job records: `/codex:status`, `/codex:result <jobId>`, `task --continue <jobId> --cwd <cwd> --direct` |
 | adversarial verify, judge, loop-until-dry | the Verify phase: read-only reviewer workers, findings routed to the owning implementer, at most the configured fix rounds |
 
-The Workflow tool itself can address plugin agents (`agentType:
-"codex:codex-worker"`); this has not been exercised with Duet and is not
-required by the command. If a session runs in Ultracode, the same phases can be
-written as a Workflow script; the worker contract is unchanged.
+Use the [direct-mode recipe](worker-operations.md#direct-mode): a quoted stdin
+heredoc, `description: "Codex: <label>"`, `dangerouslyDisableSandbox: true` when
+Claude's Bash sandbox is on, and `--sandbox read-only` for investigators and
+reviewers. SessionStart exports `CODEX_COMPANION`; older sessions resolve
+`../scripts/codex-companion.mjs` relative to the protocol's `prompts/` folder.
+The default timeout is 3600 s (maximum 3600), the direct owner lease 1800 s.
+Never poll, sleep or tail. The completion notification carries no output; read
+its output file. For `running`, background the returned `waitCommand`; for
+`needs_answer`, FIRST background its `waitCommand` with `--after-question`,
+then use `answerCommand` with the answer on stdin through a single-quoted
+heredoc. Never run two waits for one job; the answer continues the same turn.
+Report `ownership_moved` and stop using that owner. Terminal reports go through
+the acceptance protocol; read `rawOutputFile` only if a report field is
+insufficient. Follow-ups and rework use `task --thread <threadId> --direct` with
+the same `--cwd` and restated criteria. Stop the background task in Claude Code
+(`owner_stopped`) or use `cancel <jobId> --json`; thread context and edits persist.
+Run the reported `continuationCommand` after a user stop only with consent.
+
+The separate read-only `codex-live` plugin (`/plugin install codex-live@duet`)
+shows session jobs and the selected job's messages, commands, file changes,
+tool calls, plan and pending question, at no Claude token cost. It opens on job
+start when the terminal is at least 144 columns wide; otherwise use its
+`codex-live` slash command. It reads companion-written markers under
+`<isolated home>/duet/sessions/<claudeSessionId>/` and never starts, answers or
+cancels a job.
+
+Fallback only: `Agent(subagent_type: "codex:codex-worker")` when background Bash
+is unavailable or the user asks for an agent transcript view. Never pass `model`
+or `effort` to the Haiku forwarder; Codex's choices go in the assignment text.
+Its `effort: low`, `omitClaudeMd: true`, `autoCompactWindow: 100000`, feed limit
+60 and verbatim JSON return (plus at most 5 lines of notes, no prose report)
+limit Claude cost. Fallback rework uses a NEW worker with `--thread <threadId>` and
+the same `--cwd`; SendMessage to an existing worker is only for answering its
+pending question.
+The Workflow tool can address plugin agents (`agentType: "codex:codex-worker"`),
+but that fallback integration has not been exercised with Duet and is not
+required by this command.
 
 ## Why the briefs and the acceptance are stricter than Ultracode's
 
@@ -153,11 +187,13 @@ Claude's own evidence.
 
 ## What the worker report gives the orchestrator
 
-Every `--report` worker turn runs with the worker-report output schema, so the
-final message is a JSON object Codex must fill: `status` (`completed`,
+Every direct or `--report` worker turn runs with the worker-report output schema,
+so the final message is a JSON object Codex must fill: `status` (`completed`,
 `needs_input`, `blocked`), `summary`, `key_findings`, `assumptions`,
 `verification`, `blockers`, `question`. The helper merges it with what it
-observed itself and returns:
+observed itself and returns one compact JSON line in direct mode (no `activity`
+list, only `activityCount`; terminal reports also carry the final `summary`, cut
+at 8000 characters), including:
 
 - `status` — the declared status, except that a captured runtime refusal (for
   example a Computer Use denial) makes the turn `blocked`, and a `completed`
@@ -181,7 +217,7 @@ forwarded. A Computer Use app request that no `--approve-computer-app` flag
 covers reaches the parent as a pending question with four fixed options (`Allow
 this call`, `Allow for this task`, `Allow always (isolated Codex home)`, `Deny`);
 see `docs/computer-use-approvals.md`. The orchestrator forwards it to the user
-unless the user pre-authorised the app.
+through `AskUserQuestion` unless the user pre-authorised the app.
 
 ## Project instructions
 

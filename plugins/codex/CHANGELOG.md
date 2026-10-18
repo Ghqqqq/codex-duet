@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.0.6-isolated.20
+
+- Direct mode: Claude runs a Codex job itself, with no Haiku forwarder. `task --direct` starts the same detached job as `--follow`, with the calling process attached as its owner wait, run by Claude as a background Bash call (`run_in_background: true`). It prints no feed and exactly one compact JSON line when the job ends, needs an answer or reaches the wait budget; Claude Code's completion notification wakes Claude, which reads that line. Defaults are `--timeout-sec 3600` and `--lease-sec 1800`. Conflicting flags (`--follow`, `--detached`, `--background`, `--json`, `--feed-limit`, `--min-interval-sec`) are rejected before a job is created.
+  - `wait <job> --owner <owner> --direct [--after-question <id>]` gives the same single line.
+  - The payload drops the activity list and progress internals (keeping `activityCount`), carries Codex's final `summary` on terminal reports (cut at 8000 characters), and adds ready-to-run handles. `running` carries a `waitCommand`. `needs_answer` carries a `waitCommand` that includes `--after-question`, so a background re-wait keeps the lease alive, plus an `answerCommand`. A non-completed terminal report has a `continuationCommand` ending in `--direct`.
+  - A finished report is about 4 KB, roughly what the Haiku worker used to return. The Haiku layer's own context, including feed lines and repeated waits, is gone.
+- SessionStart exports `CODEX_COMPANION`, the absolute companion path, to every Bash call of the session.
+- Session markers: every task job started in a Claude session writes `<isolated home>/duet/sessions/<session id>/<job id>.json` (0600, atomic), with the job and log paths, title, shortened summary, workspace and creation time. SessionStart prunes marker folders older than 7 days. A marker write failure never fails the task.
+- New plugin `codex-live` (`/plugin install codex-live@duet`): a read-only Claude Code pane that shows this session's Codex jobs and the selected job's live activity (Codex messages, commands, file changes, tool calls, plan, a pending question).
+  - It opens by itself when a job starts on a terminal at least 144 columns wide; the `codex-live` command opens it at any width.
+  - It reads the markers and job files only. It never starts, answers or cancels a job, makes no model calls and costs no Claude tokens.
+  - It needs Claude Code 2.1.302's function-hooks pane API.
+- Ultra-codex protocol, `/codex:ultra-codex`, `/codex:rescue`, `/codex:status`, README and docs dispatch through direct mode. The brief template, acceptance protocol, phases and mode semantics are unchanged.
+- The Haiku `codex-worker` is now a fallback, for a surface without background Bash or when an agent transcript view is wanted. Changes:
+  - `effort: low`, `omitClaudeMd: true` and `autoCompactWindow: 100000`.
+  - The feed default drops from 150 to 60 lines per call.
+  - It returns the helper's JSON line verbatim, plus at most 5 lines of notes.
+  - Rework goes to a new worker with `--thread` instead of SendMessage to an old one.
+  - The parent never passes it a model or effort.
+- Hardening from an adversarial review:
+  - An answer accepted just before a question's deadline is delivered, not dropped. This also affected the Haiku path.
+  - Direct calls always print one JSON line: `{status:"error", error}` when rejected, and `{status:"owner_stopped", …, continuationCommand}` when the wait is stopped.
+  - A clean return is recorded only after the line was delivered; a closed stdout stops the turn as `owner_stopped` instead of crashing.
+  - Attaching after lease expiry no longer revives the lease.
+  - Direct flag conflicts are read from the raw arguments.
+  - Adopting a direct job returns a `--direct` wait command.
+  - A direct job counts as orphaned after half its lease, not after 65 s.
+  - Direct terminal reports carry Codex's full findings, assumptions and claimed verification (up to 20 entries of 2000 characters).
+  - Marker pruning never follows a symlinked `duet`/`sessions` folder, and removes stale files one by one, so a fresh marker survives.
+- Activity events for the pane: Codex messages keep their full text (`body`, newlines kept, up to 4000 characters; a final report's summary); plan updates carry step `statuses`; file changes carry `added`/`removed` line counts (never the diff).
+- codex-live draws Codex's work the way Claude Code draws its transcript:
+  - `⏺` rows, `Bash(…)`/`Update(…)`/`Write(…)`/`server - tool (MCP)` headers and `⎿` result lines;
+  - a `Codex(…)` header with state, tool-use count, elapsed time and model;
+  - colours from the person's theme;
+  - Markdown messages;
+  - shell wrappers removed from commands.
+- codex-live keeps a fixed layout:
+  - Pinned agent list at the top. Active jobs come first. An ended job (done, failed, stopped) stays for 2 minutes, then folds into an expandable `+N more` history. The job being read never folds.
+  - A feed the pane scrolls itself, by wheel, arrows, page keys and Home/End.
+  - A pinned footer with the live status and Claude Code's spinner.
+  - `↓ N new · Jump to bottom` (hotkey `b`) appears once you scroll up.
+  - Messages are laid out by the pane (bold, code, lists, fences, tables, links), so every row's height is exact.
+- codex-live hardening, from an adversarial review of the pane:
+  - State stays bounded: full rows are kept only for the selected job, and a rejected state write is shown in the footer.
+  - Active and selected jobs are never evicted.
+  - Failed reads are retried with backoff.
+  - Ended jobs are re-checked every 10 s.
+  - A stale-data warning is pinned in the footer.
+  - Statuses: `needs_input` counts as ended; a terminal status wins over a leftover question; queued is shown as Queued.
+  - Overlapping identical commands pair first-in, first-out. Cancelled tools read Cancelled; abandoned ones read Interrupted.
+  - The view (selection, scroll anchor, expansion) survives `/reload-plugins` without re-opening the pane.
+  - Engine-offset padding keeps the pinned rows in place.
+  - Emoji widths and grapheme clusters are handled.
+  - Resize and content shrink clamp the scroll position, and clock-only updates never count as new lines.
+- Fixture coverage: direct payload shapes, conflicts and lease defaults, markers and pruning, the `CODEX_COMPANION` export, the codex-live view model, collapsing, layout and polling, and pane mounts on four surfaces.
+
 ## 1.0.6-isolated.19
 
 - Ultra-codex is now a session mode as well as a one-shot command. `/codex:ultra-codex on [--quick|--thorough] [--max-workers <n>]` writes a per-session record (`<isolated home>/duet/state/<workspace>/ultra-codex/<session id>.json`, keyed by the Claude session id from the SessionStart hook); while it exists, a new `UserPromptSubmit` hook (`scripts/ultra-codex-hook.mjs`, ~70 ms) appends a one-line reminder to every prompt telling Claude to read `prompts/ultra-codex-protocol.md` and orchestrate substantive tasks with Codex workers, leaving chat and one-line fixes inline. `off` removes the record, lists the session's still-running Codex jobs and tells Claude the orchestration has ended; `status` reports the mode. SessionEnd, a fresh start and `/clear` clear the mode, `--resume`/compaction keep it, and records older than 30 days are pruned at SessionStart. The hook is silent for other sessions in the same repository, for the command's own prompt, without a session id, and on any error.

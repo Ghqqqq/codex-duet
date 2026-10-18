@@ -11,9 +11,11 @@ Raw slash-command arguments:
 
 Dispatch on the arguments before anything else. The mode switch is a per-session setting (like `/effort ultracode`): while it is on, every prompt carries a one-line reminder and each substantive task is orchestrated under the protocol above without typing this command again.
 
-- Exactly `off`: run `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" ultra-codex off` with Bash and show its output to the user. It lists this session's Codex jobs that are still running; cancel them only if the user asks. The orchestration has ended: from here on handle requests normally and spawn no Codex workers unless asked. Stop.
+Dispatch assignments in direct mode: the main agent runs `task --direct` via Bash with `run_in_background: true`, then reads one JSON line from the output file on the completion notification, following the protocol above. Use `Agent(subagent_type: "codex:codex-worker")` only as fallback when background Bash is unavailable or the user requests an agent transcript view. Never pass `model` or `effort` to that Haiku forwarder; put Codex's choices in the assignment text.
+
+- Exactly `off`: run `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" ultra-codex off` with Bash and show its output to the user. It lists this session's Codex jobs that are still running; cancel them only if the user asks. The orchestration has ended: from here on handle requests normally and start no new Codex jobs or fallback workers unless asked. Stop.
 - `on`, optionally followed by `--quick` or `--thorough` and `--max-workers <n>`: run `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" ultra-codex on` with exactly those flags via Bash and show its output. If task text follows the flags, orchestrate that task now under the protocol above; otherwise stop.
 - `status` or no arguments: report the mode line printed above and this usage. Stop.
 - Anything else: the arguments describe one task. Orchestrate it now under the protocol above; the mode is unchanged.
 
-Never pass the task text through a shell command; it is for your briefs, not for `ultra-codex on`.
+Never pass the task text through a shell command's arguments; it is for your briefs on stdin through a single-quoted heredoc, not for `ultra-codex on`.

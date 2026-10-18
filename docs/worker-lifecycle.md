@@ -1,15 +1,86 @@
 # Native worker lifecycle and protocol evidence
 
-Duet's native Claude Agent (a Haiku relay) makes ONE blocking call per
-assignment: `task --fresh --follow --report`. `--follow` enqueues the same
-detached task-worker that `--detached` uses, then runs the owner `wait` loop in
-the same process, so the Claude side spends no tokens while Codex works. The call
-returns a single JSON line when the job ends, a parent question is pending, or the
-wait budget runs out; `task --detached` (return after ≤1.2 s of handle waiting)
-remains available for scripts that want the job ID first.
+Duet defaults to direct mode: the main Claude agent runs `task --fresh --direct`
+in background Bash and reads one compact JSON line after Claude Code's
+completion notification. The Haiku `codex:codex-worker` is a fallback for a
+surface without background Bash or a user-requested agent transcript view.
+
+## Direct mode
+
+`task --direct` enqueues the same detached task-worker as `--follow`, then
+attaches this process as its owner wait. Use Bash `run_in_background: true`,
+`description: "Codex: <label>"` and, when Claude's Bash sandbox is on,
+`dangerouslyDisableSandbox: true` for network and local sockets. The prompt goes
+on stdin through a single-quoted heredoc. SessionStart exports the companion's
+absolute path as `CODEX_COMPANION`; for older sessions use
+`../scripts/codex-companion.mjs` relative to the [protocol's prompts
+folder](../plugins/codex/prompts/ultra-codex-protocol.md). See the
+[dispatch recipe](worker-operations.md#direct-mode).
+
+Direct mode prints no feed and exactly one compact JSON line when the job ends,
+a question is pending or the timeout passes. The default `--timeout-sec` is
+3600 (maximum 3600); the default `--lease-sec` is 1800, versus 180 otherwise.
+The process heartbeats and renews the lease while attached. A normal return
+leaves the lease protecting the job; an observer never renews it.
+
+The completion notification carries no output. Read the output file it names;
+never poll, sleep or tail. Act on its `status`:
+
+- Terminal: run the acceptance protocol even after a nonzero exit. The report
+  preserves handles, runtime settings, touchedFiles/preExistingChanges,
+  fileTrackingStatus, verification/claimedVerification, keyFindings, assumptions,
+  blockers and artifact paths, plus Codex's final `summary` (cut at 8000
+  characters with `summaryTruncated: true`). It has `activityCount` and no
+  `activity` list; read `rawOutputFile` only if a report field is insufficient.
+- `running`: run `waitCommand` (`wait <job-id> --owner <owner-id> --direct`)
+  in background Bash again and wait for its notification.
+- `needs_answer`: first run its `waitCommand` in the background. Its
+  `--after-question <id>` keeps the lease alive while suppressing a repeat return
+  for that question. Then use `answerCommand` (`answer '<job>' --cwd ...
+  --owner ... --question '<id>' --json`) with the answer on stdin through a
+  single-quoted heredoc. `question` includes `id`, `kind`, `text`, `options` and
+  `expiresAt`. Forward Computer Use `question.kind: approval` to the user with
+  `AskUserQuestion` unless the user pre-authorised the app. The answer continues
+  the same turn; do not start a second wait after answering.
+- `ownership_moved`: report it and stop using that owner; never re-adopt.
+
+Never run two waits for one job. Exit codes are completed 0, blocked/needs_input
+2, other terminal states 1; non-terminal returns exit 0. `--direct` rejects
+`--follow`, `--detached`, `--background`, `--json`, `--feed-limit` and
+`--min-interval-sec`. Follow-ups and rework start a new job with
+`task --thread <threadId> --direct`, the same `--cwd` and restated criteria.
+
+Stop the background task in Claude Code to signal the owner wait and interrupt
+the turn as `owner_stopped`, or run `cancel <jobId> --json`. Thread context and
+edits persist; direct reports supply
+`node '<companion>' task --continue '<job>' --cwd '<cwd>' --direct` as the
+`continuationCommand`. Continue a user-stopped job only with the user's consent.
+Adoption, `ownership_moved`, orphan detection and owner-loss handling below are
+unchanged; after adoption, use the new owner in one background direct wait.
+
+The companion writes per-session markers under
+`<isolated home>/duet/sessions/<claudeSessionId>/`. The separate `codex-live`
+plugin (`/plugin install codex-live@duet`) reads those markers and shows session
+jobs and the selected job's live messages, commands, file changes, tool calls,
+plan and pending question. It opens automatically on job start in terminals at
+least 144 columns wide; otherwise use its `codex-live` slash command. It is
+read-only: it never starts, answers or cancels a job and costs no Claude tokens.
+
+## Fallback feed mode
+
+Never pass `model` or `effort` to `Agent(subagent_type: "codex:codex-worker")`;
+Codex's choices belong in the assignment text. The Haiku forwarder has
+`effort: low`, `omitClaudeMd: true` and `autoCompactWindow: 100000`. It runs
+`task --fresh --follow --report`; follow-ups and rework use a NEW worker with
+`--thread <threadId>` and the same cwd. SendMessage to an existing worker is only
+for answering its pending question. It returns the final JSON line verbatim
+plus at most 5 lines of notes for stderr, retries or a relayed question, with no
+prose report. `task --detached` (return after ≤1.2 s of handle waiting) remains
+available for scripts that want the job ID first.
 
 `wait <job> --owner <ownerId> --report` streams a human-readable activity feed
 into stdout, one flushed line per event, then ends with ONE compact JSON line.
+The fallback feed defaults to `--feed-limit` 60 lines per call.
 The final line preserves the progress/report fields and adds `activity` (at most
 the 12 newest structured events in this call), `activityCount`/`activityOmitted`
 and `cursor` (last consumed sequence number). `--json` suppresses feed lines and
@@ -41,7 +112,7 @@ stop between delivery and cursor persistence may replay lines; run one wait per
 owner at a time. The journal is retained with the job (no silent event dropping).
 Legacy jobs without a journal return empty activity and cursor 0.
 
-The native agent uses JSON mode and never re-prints the feed. After forwarding a
+The fallback agent uses feed mode and never re-prints the feed. After forwarding a
 question once, it uses `--after-question <id> --timeout-sec 20` with the same
 `--owner` to wait without immediately returning that question on every call; the
 short budget exists only so the parent's SendMessage reply can be picked up
@@ -51,9 +122,10 @@ between tool calls.
 
 The installed CLI's generated experimental schema exposes dynamic tool
 registration. Duet enables `initialize.capabilities.experimentalApi: true` and
-registers one `ask_parent` function on new threads. Approval policy stays `never`;
-there is no plan-mode switch or approval prompt. Request-user-input availability
-in ordinary mode was not assumed. A valid registered tool call keeps its RPC
+registers one `ask_parent` function on new threads. Owned jobs use
+`never+elicitations`: command/sandbox/rule approvals are rejected, and Computer
+Use app elicitations go to the parent. There is no plan-mode switch.
+Request-user-input availability in ordinary mode was not assumed. A valid registered tool call keeps its RPC
 response pending while a private job record carries text/options/expiry. Answer
 stdin supplies one inputText content item and continues the **same turn**.
 
@@ -76,7 +148,7 @@ Exact successful dynamic-tool result (original request ID retained):
 
 `needs_answer` includes a one-line `questionMessage`:
 `Question <id>: <text> | Options: "First"; "Second"` (or `(none)`). Whitespace is
-normalized to one line; the native worker must send this
+normalized to one line; the fallback worker must send this
 field verbatim to `main` once per question. SendMessage is allowed ONLY for this
 purpose: no progress, completion claims or placeholders. The final result is
 only the agent's return value. Worker messages that are not verbatim questions
@@ -125,11 +197,12 @@ The Claude session ID is recorded separately as `sessionId`. Only calls with the
 explicit matching `--owner` renew an unexpired lease, including wait/status/answer;
 parent `/codex:status`, ownerless status/wait and all result reads never renew.
 Foreground owners renew while alive; detached task-workers never renew themselves.
-The default lease is 180 seconds. SessionEnd matches sessionId, falling back to
-the old session-ID ownerId only for legacy jobs without sessionId. Such jobs stay
+The default lease is 1800 seconds in direct mode, 180 seconds otherwise.
+SessionEnd matches sessionId, falling back to the old session-ID ownerId only
+for legacy jobs without sessionId. Such jobs stay
 readable and can renew only with an explicit matching owner.
 
-An attached owner `wait` (`--owner`, including `task --follow`) records
+An attached owner `wait` (`--owner`, including `task --direct` and `task --follow`) records
 `ownerAttached: true` and renews the lease about once per second, which doubles as
 its heartbeat. On SIGINT/SIGTERM/SIGHUP, a changed parent PID or a closed stdout
 pipe it marks `ownerDetachReason: signal|parent_exit|stdout_closed` and exits 130;
@@ -145,12 +218,14 @@ back to lease expiry.
 
 Claude Code 2.1.301 cannot resume a native agent stopped by the user. Every
 interrupted or failed report (and `result --report --json`) carries
-`continuationCommand`: `task --continue <jobId> --cwd <cwd> --follow --report --json`.
+`continuationCommand`: `task --continue <jobId> --cwd <cwd> --direct` in direct
+mode; legacy report mode uses `--follow --report --json`.
 `--continue` refuses active jobs and any flag it inherits (`--thread`, `--fresh`,
 `--resume*`, `--write`, `--sandbox`, `--model`, `--effort`, `--fast`, `--normal`,
 `--approve-browser-origin`); it reuses the job's threadId, sandbox/write, model,
 effort, speed and approved origins, records `request.continuedFrom`, and appends
-any prompt text to the default continue prompt. It is never run automatically.
+any prompt text to the default continue prompt. With the user's consent, run it
+in background Bash, or through a new fallback worker; never automatically.
 
 For a job that is still running, with the user's explicit consent, the parent
 launches a replacement with the existing jobId. Its FIRST action is `adopt
@@ -159,7 +234,8 @@ job-state lock, adoption checks that the task is queued/running with an unexpire
 lease and no cancellation, rotates to a new ownerId and renews the lease. It does
 not call thread/resume or turn/start. It preserves the thread/turn, pending
 question and last delivered owner's cursor. The replacement loops
-`wait <jobId> --owner <newOwnerId> --report`. Retired owners get
+`wait <jobId> --owner <newOwnerId> --direct` in background Bash (fallback uses
+`--report`). Retired owners get
 `ownership_moved` from wait/status/answer, including an already-running wait,
 and cannot renew or answer. They must stop polling and must not adopt again.
 The replacement's Claude session takes over SessionEnd scoping; absent a caller
