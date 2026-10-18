@@ -8,7 +8,8 @@ import { buildWorkerReport, parseStructuredReport, persistTaskArtifacts, taskArt
 import { normalizeBrowserOrigins, normalizeBundleIds } from "./lib/server-requests.mjs";
 import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, ensureBrowserApproval, ensureComputerUseApproval, ensureProjectDocs, projectDocsSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
 import { activityReader, formatActivity, redactActivity, snippet } from "./lib/activity.mjs";
-import { JobRuntime, ACTIVE, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, continuationReport, adoptJob, ownershipNotice, markOwnerAttachment } from "./lib/job-runtime.mjs";
+import { JobRuntime, ACTIVE, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, continuationReport, directReport, adoptJob, ownershipNotice, markOwnerAttachment } from "./lib/job-runtime.mjs";
+import { writeSessionMarker } from "./lib/session-markers.mjs";
 import { listSessionJobs, updateJob } from "./lib/state.mjs";
 import { clearMode, DEFAULT_MAX_WORKERS, PROTOCOL_PATH, readMode, setMode } from "./lib/ultra-codex-mode.mjs";
 import { snapshotWorkspace, compareWorkspaceSnapshots } from "./lib/workspace-changes.mjs";
@@ -88,6 +89,15 @@ const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+let directOutputStarted = false;
+// Write callbacks handle delivery failures; the stream also emits an error
+// event, which must not crash the owner before its detach can be recorded.
+process.stdout.on("error", () => {});
+function writeDirectLineSync(payload) {
+  if (directOutputStarted) return;
+  directOutputStarted = true;
+  try { fs.writeSync(1, `${JSON.stringify(payload)}\n`); } catch { /* stdout may already be closed */ }
+}
 
 function printUsage() {
   console.log(
@@ -96,16 +106,17 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--sync-tools [--profile chrome|codex-app] [--replace-cua] [--cua-template <file>] [--chatgpt-resources <dir>]] [--default-sandbox read-only|workspace-write|danger-full-access] [--browser-approval never-ask|ask] [--dry-run] [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--report] [--background|--detached|--follow] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--approve-browser-origin <origin>]... [--approve-computer-app <bundle-id>]... [--thread <id>|--continue <job-id>|--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--fast|--normal] [prompt]",
+      "  node scripts/codex-companion.mjs task [--report] [--background|--detached|--follow|--direct] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--approve-browser-origin <origin>]... [--approve-computer-app <bundle-id>]... [--thread <id>|--continue <job-id>|--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--fast|--normal] [prompt]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id|--thread <id>] [--wait] [--all] [--json]",
       "  node scripts/codex-companion.mjs ultra-codex [on [--quick|--thorough] [--max-workers <n>]|off|status [--for-command]] [--json]",
       "  node scripts/codex-companion.mjs result [job-id|--thread <id>] [--report] [--json]",
-      "  node scripts/codex-companion.mjs wait <job-id> [--timeout-sec 570] [--min-interval-sec <s>] [--owner <id>] [--after-question <id>] [--feed-limit 150] [--json] --report",
+      "  node scripts/codex-companion.mjs wait <job-id> [--timeout-sec 570] [--min-interval-sec <s>] [--owner <id>] [--after-question <id>] [--feed-limit 60] [--json|--direct] --report",
       "  node scripts/codex-companion.mjs adopt <job-id> [--cwd <path>] [--json]",
       "  node scripts/codex-companion.mjs answer <job-id> --owner <ownerId> --question <id> --json < answer.txt",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]",
       "  task lifecycle: --detached [--lease-sec 180] [--question-timeout-sec 900] [--owner <id>]; --follow = --detached + wait in one call [--timeout-sec 570]",
+      "  --direct: the parent agent owns the job from a background shell; prints one compact JSON line (default --timeout-sec 3600, --lease-sec 1800)",
       "  setup: --transport http|websocket|status; --allow-browser-origin <origin>; --revoke-browser-origin <origin>; --list-browser-origins"
     ].join("\n")
   );
@@ -864,7 +875,10 @@ async function runForegroundCommand(job, runner, options = {}) {
     logFile: options.logFile,
     stderr: true
   });
-  const execution = await runTrackedJob(job, () => runner(progress), { logFile, onStarted: () => progress(`Job handle: ${job.id}; log: ${logFile}${job.rawOutputFile ? `; raw output: ${job.rawOutputFile}` : ""}`) });
+  const execution = await runTrackedJob(job, () => runner(progress), { logFile, onStarted: () => {
+    if (job.jobClass === "task") writeSessionMarker({ ...job, logFile });
+    progress(`Job handle: ${job.id}; log: ${logFile}${job.rawOutputFile ? `; raw output: ${job.rawOutputFile}` : ""}`);
+  } });
   outputResult(options.report ? (options.json ? execution.report : `${JSON.stringify(execution.report, null, 2)}\n`) : options.json ? execution.payload : execution.rendered, options.json);
   if (execution.exitStatus !== 0) {
     process.exitCode = execution.exitStatus;
@@ -899,6 +913,7 @@ function enqueueBackgroundTask(cwd, job, request) {
   };
   writeJobFile(job.workspaceRoot, job.id, queuedRecord);
   upsertJob(job.workspaceRoot, queuedRecord);
+  writeSessionMarker(queuedRecord);
   const child = spawnDetachedTaskWorker(cwd, job.id);
   // Publish the request before the child can read it. Do not overwrite a
   // running/completed child record when recording its launch PID.
@@ -989,15 +1004,20 @@ async function handleReview(argv) {
 }
 
 async function handleTask(argv) {
-  const { options, positionals } = parseCommandInput(argv, {
+  validateDirectOptions(argv, ["follow", "detached", "background", "json", "feed-limit", "min-interval-sec"]);
+  const taskOptions = {
     valueOptions: ["model", "effort", "cwd", "prompt-file", "thread", "continue", "sandbox", "lease-sec", "question-timeout-sec", "owner", "timeout-sec", "feed-limit"],
     repeatableOptions: ["approve-browser-origin", "approve-computer-app"],
-    booleanOptions: ["json", "report", "write", "resume-last", "resume", "fresh", "background", "detached", "follow", "fast", "normal"],
+    booleanOptions: ["json", "report", "write", "resume-last", "resume", "fresh", "background", "detached", "follow", "direct", "fast", "normal"],
     aliasMap: {
       m: "model"
     }
-  });
+  };
+  const { options, positionals } = parseCommandInput(argv, taskOptions);
 
+  if (options.direct) {
+    seconds(options["timeout-sec"], WAIT_MAX_SEC, "--timeout-sec", WAIT_MAX_SEC);
+  }
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   // --continue <job-id>: one more turn on a stopped/finished job's own thread,
@@ -1018,7 +1038,7 @@ async function handleTask(argv) {
   // Per-call Computer Use approval, like --approve-browser-origin: only the
   // listed bundle ids, only for this job's turn.
   const approvedComputerApps = continued ? continued.approvedComputerApps ?? [] : normalizeBundleIds(options["approve-computer-app"] ?? []);
-  const lifecycle = { owner: options.owner, leaseSec: seconds(options["lease-sec"] ?? process.env.CODEX_COMPANION_LEASE_SEC, 180, "--lease-sec"), questionTimeoutSec: seconds(options["question-timeout-sec"], 900, "--question-timeout-sec") };
+  const lifecycle = { owner: options.owner, leaseSec: seconds(options["lease-sec"] ?? process.env.CODEX_COMPANION_LEASE_SEC, options.direct ? 1800 : 180, "--lease-sec"), questionTimeoutSec: seconds(options["question-timeout-sec"], 900, "--question-timeout-sec") };
   const model = continued ? continued.request?.model ?? "gpt-6-astra" : normalizeRequestedModel(options.model) ?? "gpt-6-astra";
   const effort = continued ? continued.request?.effort ?? "xhigh" : normalizeReasoningEffort(options.effort) ?? "xhigh";
   if (options.fast && options.normal) throw new Error("Choose either --fast or --normal.");
@@ -1070,11 +1090,12 @@ async function handleTask(argv) {
     resumeLast: Boolean(resumeLast || threadId)
   });
 
-  if (options.background || options.detached || options.follow) {
+  if (options.background || options.detached || options.follow || options.direct) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast, threadId);
 
     const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, true);
+    if (options.direct) job.direct = true;
     const request = buildTaskRequest({
       cwd,
       model,
@@ -1088,14 +1109,14 @@ async function handleTask(argv) {
       resumeLast,
       threadId,
       jobId: job.id,
-      report: Boolean(options.report || options.detached || options.follow), detached: true
+      report: Boolean(options.report || options.detached || options.follow || options.direct), detached: true
     });
     if (continued) request.continuedFrom = continued.id;
     const { payload } = enqueueBackgroundTask(cwd, job, request);
-    if (options.follow) {
+    if (options.follow || options.direct) {
       // Native-like single call: submit, then stay attached as the owner until the
       // job ends, needs an answer, or the wait budget runs out.
-      await waitForJob(workspaceRoot, job, { owner: job.ownerId, timeoutSec: options["timeout-sec"], feedLimit: options["feed-limit"], json: options.json });
+      await waitForJob(workspaceRoot, job, { owner: job.ownerId, timeoutSec: options["timeout-sec"], feedLimit: options["feed-limit"], json: options.json, direct: options.direct });
       return;
     }
     if (options.detached) {
@@ -1388,13 +1409,27 @@ const WAIT_DEFAULT_SEC = 570, WAIT_MAX_SEC = 3600, REPORTED_ACTIVITY_LIMIT = 12;
 // Claude agent view shows Codex working live. Every streamed line also lands in
 // that agent's context when the call returns, so one call streams at most
 // --feed-limit lines (0 = unlimited) and summarizes the rest in the final JSON.
-const FEED_LIMIT_DEFAULT = 150;
+const FEED_LIMIT_DEFAULT = 60;
 
-async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSec, afterQuestion, feedLimit, json }) {
-  const timeout = seconds(timeoutSec, WAIT_DEFAULT_SEC, "--timeout-sec", WAIT_MAX_SEC);
+function validateDirectOptions(argv, conflicts) {
+  const tokens = normalizeArgv(argv);
+  if (!tokens.some(token => token === "--direct" || (token.startsWith("--direct=") && token !== "--direct=false"))) return;
+  for (const flag of conflicts) {
+    if (tokens.some(token => token === `--${flag}` || token.startsWith(`--${flag}=`))) throw new Error(`--direct cannot be combined with --${flag}.`);
+  }
+}
+
+async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSec, afterQuestion, feedLimit, json, direct }) {
+  const timeout = seconds(timeoutSec, direct ? WAIT_MAX_SEC : WAIT_DEFAULT_SEC, "--timeout-sec", WAIT_MAX_SEC);
   const feedMax = feedLimit === undefined ? FEED_LIMIT_DEFAULT : /^\d+$/.test(String(feedLimit)) ? Number(feedLimit) : (() => { throw new Error("--feed-limit must be a non-negative integer."); })();
   let streamed = 0;
   const minimum = minIntervalSec === undefined ? null : seconds(minIntervalSec, 10, "--min-interval-sec", WAIT_MAX_SEC);
+  if (direct) {
+    json = true; // Use the existing no-feed cursor and lease semantics.
+    job = updateJob(workspaceRoot, job.id, current => ({ direct: true,
+      ...(current.report?.continuationCommand ? { report: { ...current.report, ...continuationReport({ ...current, direct: true }) } } : {})
+    }));
+  }
   const reader = activityReader(owner), started = Date.now(), activity = [];
   let cursor = readStoredJob(workspaceRoot, job.id).activityCursors?.[reader] ?? 0;
   let nextRenewal = 0, detachReason = null;
@@ -1402,20 +1437,34 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
   // An owner that leaves abnormally cannot tell the worker; mark the detach so the
   // worker interrupts after the grace period unless a replacement wait re-attaches.
   const detach = reason => { if (owner && !detachReason) { detachReason = reason; try { markOwnerAttachment(workspaceRoot, job.id, owner, reason); } catch { /* best effort */ } } };
+  const reportOwnerStopped = () => {
+    if (!direct) return;
+    let current = job;
+    try { current = readStoredJob(workspaceRoot, job.id) ?? job; } catch { /* retain known handles */ }
+    writeDirectLineSync({ status: "owner_stopped", jobId: current.id, ownerId: current.ownerId ?? null,
+      threadId: current.threadId ?? null, turnId: current.turnId ?? null, interruptionReason: "owner_stopped",
+      ...(current.threadId ? { continuationCommand: continuationReport({ ...current, direct: true }).continuationCommand } : {}) });
+  };
   const signalHandlers = new Map();
   if (owner) {
     markOwnerAttachment(workspaceRoot, job.id, owner);
     for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-      const handler = () => { detach("signal"); process.exit(130); };
+      const handler = () => { detach("signal"); reportOwnerStopped(); process.exit(130); };
       signalHandlers.set(signal, handler); process.on(signal, handler);
     }
   }
   // Await each write callback: feed lines reach the pipe during the wait, never
   // buffered until the final report. JSON mode uses the same cursor semantics.
   const writeLine = line => new Promise((resolve, reject) => process.stdout.write(`${line}\n`, error => error ? reject(error) : resolve()));
-  const finish = async (payload, exitCode = 0) => {
+  const finish = async (payload, exitCode = 0, current = job) => {
+    const line = JSON.stringify(direct ? directReport(payload, current) : payload);
+    if (direct) directOutputStarted = true;
+    try { await writeLine(line); }
+    catch (error) {
+      if (error.code !== "EPIPE") throw error;
+      detach("stdout_closed"); process.exitCode = 130; return;
+    }
     detach("returned");
-    try { await writeLine(JSON.stringify(payload)); } catch (error) { if (error.code !== "EPIPE") throw error; }
     if (exitCode) process.exitCode = exitCode;
   };
   const reported = () => activity.length > REPORTED_ACTIVITY_LIMIT
@@ -1423,7 +1472,7 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
     : { activity, activityCount: activity.length };
   try {
     for (;;) {
-      if (owner && process.ppid !== startPpid) { detach("parent_exit"); process.exitCode = 130; return; }
+      if (owner && process.ppid !== startPpid) { detach("parent_exit"); reportOwnerStopped(); process.exitCode = 130; return; }
       const renew = owner && Date.now() >= nextRenewal;
       const current = renew ? renewLease(workspaceRoot, job.id, owner) : readStoredJob(workspaceRoot, job.id);
       if (renew) nextRenewal = Date.now() + Math.min(1000, (current.leaseSec ?? 180) * 250);
@@ -1453,10 +1502,15 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
           }
           if (report.blockers) report.blockers = report.blockers.map(blocker => typeof blocker === "string" ? redactActivity(blocker) : typeof blocker?.message === "string" ? { ...blocker, message: redactActivity(blocker.message) } : blocker);
           if (typeof report.question === "string") report.question = redactActivity(report.question);
-          if (report.status !== "completed" && current.threadId && !report.continuationCommand) Object.assign(report, continuationReport(current));
+          if (report.status !== "completed" && current.threadId && (!report.continuationCommand || current.direct)) Object.assign(report, continuationReport(current));
+          // A worker may have read its report settings just before this wait
+          // set direct. Keep later result reads on the same continuation mode.
+          if (current.direct && current.report?.continuationCommand && current.report.continuationCommand !== report.continuationCommand) {
+            updateJob(workspaceRoot, job.id, stored => ({ report: { ...stored.report, ...continuationReport(stored) } }));
+          }
         }
         if (json && activity.length) updateJob(workspaceRoot, job.id, stored => ({ activityCursors: { ...stored.activityCursors, [reader]: Math.max(cursor, stored.activityCursors?.[reader] ?? 0) } }));
-        await finish({ ...report, ...reported(), cursor }, terminal ? exitCodeForReport(report.status) : 0);
+        await finish({ ...report, ...reported(), cursor }, terminal ? exitCodeForReport(report.status) : 0, current);
         return;
       }
       await sleep(100);
@@ -1467,11 +1521,12 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
 }
 
 async function handleWait(argv) {
-  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "timeout-sec", "min-interval-sec", "owner", "after-question", "feed-limit"], booleanOptions: ["json", "report"] });
+  validateDirectOptions(argv, ["json", "feed-limit", "min-interval-sec"]);
+  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "timeout-sec", "min-interval-sec", "owner", "after-question", "feed-limit"], booleanOptions: ["json", "report", "direct"] });
   if (!positionals[0]) throw new Error("wait requires a job id.");
   const cwd = resolveCommandCwd(options);
   const { workspaceRoot, job } = buildSingleJobSnapshot(cwd, positionals[0]);
-  await waitForJob(workspaceRoot, job, { owner: options.owner, timeoutSec: options["timeout-sec"], minIntervalSec: options["min-interval-sec"], afterQuestion: options["after-question"], feedLimit: options["feed-limit"], json: options.json });
+  await waitForJob(workspaceRoot, job, { owner: options.owner, timeoutSec: options["timeout-sec"], minIntervalSec: options["min-interval-sec"], afterQuestion: options["after-question"], feedLimit: options["feed-limit"], json: options.json, direct: options.direct });
 }
 
 async function handleAnswer(argv) {
@@ -1590,6 +1645,7 @@ async function main() {
 
 main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
+  if (["task", "wait"].includes(process.argv[2]) && process.argv.slice(3).includes("--direct")) writeDirectLineSync({ status: "error", error: message });
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
 });

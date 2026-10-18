@@ -14,14 +14,30 @@ const statusOf = (item, lifecycle) => ["inProgress", "completed", "failed", "dec
 
 // A worker's final message is the worker-report JSON (schemas/worker-report.schema.json);
 // the live feed shows its status and summary rather than the envelope.
-function reportText(text) {
+function reportText(text, summaryOnly = false) {
   const trimmed = String(text).trim();
   if (!trimmed.startsWith("{")) return text;
   try {
     const value = JSON.parse(trimmed);
-    if (value && typeof value.status === "string" && typeof value.summary === "string") return `[${value.status}] ${value.summary}`;
+    if (value && typeof value.status === "string" && typeof value.summary === "string") return summaryOnly ? value.summary : `[${value.status}] ${value.summary}`;
   } catch { /* ordinary message */ }
   return text;
+}
+function changeLineCounts(change) {
+  const diff = change.diff ?? change.kind?.unified_diff;
+  if (typeof diff === "string") {
+    let added = 0, removed = 0;
+    for (const line of diff.split(/\r?\n/)) {
+      if (line.startsWith("+") && !line.startsWith("+++")) added += 1;
+      if (line.startsWith("-") && !line.startsWith("---")) removed += 1;
+    }
+    return { added, removed };
+  }
+  const content = change.content ?? change.kind?.content;
+  if ((change.kind?.type ?? change.kind) === "add" && typeof content === "string") {
+    return { added: content === "" ? 0 : content.split("\n").length - (content.endsWith("\n") ? 1 : 0) };
+  }
+  return {};
 }
 // Select fields explicitly. Never copy arguments, results, diffs, command output,
 // reasoning, web-search results or page content from a protocol item.
@@ -34,11 +50,11 @@ export function itemActivity(item, lifecycle, starts, key, now = Date.now()) {
   const base = { type: item.type, status: statusOf(item, lifecycle), lifecycle };
   switch (item.type) {
     case "agentMessage":
-      return lifecycle === "completed" && item.text ? [{ ...base, text: snippet(reportText(item.text), 300) }] : [];
+      return lifecycle === "completed" && item.text ? [{ ...base, text: snippet(reportText(item.text), 300), body: redactActivity(reportText(item.text, true)).slice(0, 4000) }] : [];
     case "commandExecution":
       return [{ ...base, command: snippet(redactActivity(item.command).split(/\r?\n/)[0], 160), exitCode: Number.isInteger(item.exitCode) ? item.exitCode : null, durationMs }];
     case "fileChange":
-      return lifecycle === "completed" ? (item.changes ?? []).map(change => ({ ...base, path: snippet(change.path, 180), kind: ["add", "delete", "update"].includes(change.kind?.type ?? change.kind) ? (change.kind?.type ?? change.kind) : "unknown" })) : [];
+      return lifecycle === "completed" ? (item.changes ?? []).map(change => ({ ...base, path: snippet(change.path, 180), kind: ["add", "delete", "update"].includes(change.kind?.type ?? change.kind) ? (change.kind?.type ?? change.kind) : "unknown", ...changeLineCounts(change) })) : [];
     case "mcpToolCall":
     case "dynamicToolCall":
       return [{ ...base, server: snippet(item.server ?? item.namespace ?? "dynamic", 80), tool: snippet(item.tool ?? item.name ?? "unknown", 80), durationMs }];
@@ -46,7 +62,7 @@ export function itemActivity(item, lifecycle, starts, key, now = Date.now()) {
   }
 }
 export function planActivity(plan = []) {
-  return [{ type: "plan", steps: plan.map(step => snippet(step.step, 80)) }];
+  return [{ type: "plan", steps: plan.map(step => snippet(step.step, 80)), statuses: plan.map(step => ["pending", "inProgress", "completed"].includes(step.status) ? step.status : "pending") }];
 }
 export function formatActivity(event) {
   const duration = event.durationMs == null ? "duration unknown" : `${event.durationMs}ms`;

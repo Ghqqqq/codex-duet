@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { snippet, activityReader } from "./activity.mjs";
+import { snippet, activityReader, redactActivity } from "./activity.mjs";
 import { randomUUID } from "node:crypto";
 import { listJobs, updateJob, readJobFile, resolveJobFile } from "./state.mjs";
 import { APPROVAL_OPTIONS, parseApprovalAnswer } from "./server-requests.mjs";
@@ -38,7 +38,7 @@ export function markOwnerAttachment(cwd, id, owner, reason = null) {
     if (!owner || job.ownerId !== owner) return null;
     const now = Date.now();
     if (reason !== null) return job.ownerAttached || ACTIVE.has(job.status) ? { ownerAttached: false, ownerDetachedAt: now, ownerDetachReason: reason } : null;
-    if (!ACTIVE.has(job.status)) return null;
+    if (!ACTIVE.has(job.status) || (job.leaseExpiresAt && job.leaseExpiresAt <= now)) return null;
     return { ownerAttached: true, ownerAttachedAt: now, ownerDetachedAt: null, ownerDetachReason: null, leaseRenewedAt: now, leaseExpiresAt: now + (job.leaseSec ?? 180) * 1000 };
   });
 }
@@ -50,10 +50,41 @@ export function ownerLost(job, now = Date.now()) {
 const quote = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 const companionCommand = args => `node ${quote(fileURLToPath(new URL("../codex-companion.mjs", import.meta.url)))} ${args}`;
 export function continuationReport(job) {
-  const continuationCommand = job.threadId && job.id ? companionCommand(`task --continue ${quote(job.id)} --cwd ${quote(job.request?.cwd ?? job.workspaceRoot)} --follow --report --json`) : null;
+  const continuationCommand = job.threadId && job.id ? companionCommand(`task --continue ${quote(job.id)} --cwd ${quote(job.request?.cwd ?? job.workspaceRoot)} ${job.direct ? "--direct" : "--follow --report --json"}`) : null;
   return { continuationCommand,
     continuationNote: continuationCommand ? "Starts one new turn on the same Codex thread with this job's recorded sandbox, write, model and browser-origin settings; append extra instructions as the prompt. It has not been run. Wait for any pending interruption to finish first." : "No thread handle was recorded; no continuation command is available." };
 }
+// Direct callers get the same report, without the feed or verbose progress.
+// Filter a copy so the existing JSON/feed and status shapes remain unchanged.
+export function directReport(payload, job) {
+  const report = { ...payload };
+  for (const key of ["activity", "activityOmitted", "cursor", "startupTimings", "currentItem", "completedItems", "questionMessage"]) delete report[key];
+  if (report.startupWarning == null) delete report.startupWarning;
+  if (ACTIVE.has(report.status) || report.status === "needs_answer") {
+    const target = `${quote(job.id)} --cwd ${quote(job.request?.cwd ?? job.workspaceRoot)} --owner ${quote(job.ownerId)}`;
+    const question = report.status === "needs_answer" ? report.question : null;
+    report.waitCommand = companionCommand(`wait ${target} --direct${question ? ` --after-question ${quote(question.id)}` : ""}`);
+    if (question) report.answerCommand = companionCommand(`answer ${target} --question ${quote(question.id)} --json`);
+  } else if (report.status !== "completed" && report.status !== "ownership_moved" && job.threadId) {
+    Object.assign(report, continuationReport({ ...job, direct: true }));
+  }
+  // A terminal report carries Codex's final summary, so the caller does not
+  // have to read rawOutputFile for the answer itself.
+  if (!ACTIVE.has(report.status) && report.status !== "needs_answer" && report.status !== "ownership_moved") {
+    if (job.result?.structured) {
+      for (const [target, source] of [["keyFindings", "keyFindings"], ["assumptions", "assumptions"], ["claimedVerification", "verification"]]) {
+        report[target] = (job.result.structured[source] ?? []).slice(0, 20).map(value => redactActivity(value).slice(0, 2000));
+      }
+    }
+    const text = redactActivity(job.result?.structured?.summary ?? job.result?.rawOutput ?? "").trim();
+    if (text) {
+      report.summary = text.slice(0, DIRECT_SUMMARY_LIMIT);
+      if (text.length > DIRECT_SUMMARY_LIMIT) report.summaryTruncated = true;
+    }
+  }
+  return report;
+}
+const DIRECT_SUMMARY_LIMIT = 8000;
 export function ownershipNotice(job, owner) {
   if (!owner || job.ownerId === owner || !job.retiredOwnerIds?.includes(owner)) return null;
   return { status: "ownership_moved", jobStatus: job.status, jobId: job.id, ownerId: job.ownerId,
@@ -81,15 +112,17 @@ export function adoptJob(cwd, id, sessionId) {
     };
   });
   return { ...progressSnapshot(job), status, jobStatus: job.status, adopted: status === "adopted", leaseExpiresAt: job.leaseExpiresAt ?? null,
-    ...(status === "adopted" ? { waitCommand: companionCommand(`wait ${quote(job.id)} --owner ${quote(job.ownerId)} --cwd ${quote(job.request?.cwd ?? cwd)} --report`) }
+    ...(status === "adopted" ? { waitCommand: companionCommand(`wait ${quote(job.id)} --owner ${quote(job.ownerId)} --cwd ${quote(job.request?.cwd ?? cwd)} ${job.direct ? "--direct" : "--report"}`) }
       : { ...continuationReport(job), ...(status === "lease_expired" ? { interruptionReason: "lease_expired", interruptionConfirmed: job.result?.interruptionConfirmed ?? job.interruptionConfirmed ?? null } : {}) }) };
 }
 export function leaseSnapshot(job, now = Date.now()) {
   if (!ACTIVE.has(job.status) || !job.leaseExpiresAt) return {};
   const lastRenewal = job.leaseRenewedAt ?? job.leaseExpiresAt - (job.leaseSec ?? 180) * 1000;
   // Native Agent stops have no companion callback. Infer staleness after the
-  // maximum 60-second wait plus handoff time, or half a short lease.
-  const staleAfterMs = Math.min(65000, (job.leaseSec ?? 180) * 500);
+  // maximum 60-second wait plus handoff time, or half a short lease. Direct
+  // owners can sleep between waits much longer, so use half their full lease.
+  const halfLeaseMs = (job.leaseSec ?? 180) * 500;
+  const staleAfterMs = job.direct === true ? halfLeaseMs : Math.min(65000, halfLeaseMs);
   const orphaned = now - lastRenewal >= staleAfterMs;
   return { orphaned, leaseRemainingSec: Math.max(0, Math.ceil((job.leaseExpiresAt - now) / 1000)), leaseRenewedAt: lastRenewal,
     ...(orphaned && job.id ? { adoptCommand: companionCommand(`adopt ${quote(job.id)} --cwd ${quote(job.request?.cwd ?? job.workspaceRoot)} --json`) } : {}) };
@@ -158,6 +191,7 @@ export async function askParentQuestion(cwd, id, { question, options = [], kind 
     }
     const current = readJobFile(resolveJobFile(cwd, id));
     if (aborted() || !ACTIVE.has(current.status) || current.cancelRequested) { resolution = "interrupted"; text = "The owner cancelled this task. Stop work and report interrupted."; }
+    else if (current.pendingQuestion?.id === questionId && current.pendingQuestion.answer !== undefined) { text = current.pendingQuestion.answer; resolution = "answered"; }
     return { text, resolution };
   } finally {
     updateJob(cwd, id, current => current.pendingQuestion?.id === questionId || current.phase === "needs_answer"
