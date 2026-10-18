@@ -86,24 +86,14 @@ test("continue is not exposed as a user-facing command", () => {
   ]);
 });
 
-test("ultra-codex orchestrates through codex-worker agents and keeps Claude out of the implementation", () => {
+test("ultra-codex is a mode switch plus one-shot orchestration; the protocol lives in prompts/", () => {
   const command = fs.readFileSync(path.join(PLUGIN_ROOT, "commands", "ultra-codex.md"), "utf8");
   assert.match(command, /^allowed-tools: .*\bAgent\b/m);
-  assert.match(command, /subagent_type: "codex:codex-worker"/);
-  assert.match(command, /run_in_background: true/);
-  assert.match(command, /isolation: "worktree"/);
+  assert.match(command, /^argument-hint: .*on \[--quick\|--thorough\] \[--max-workers <n>\] \| off \| status \| <what to accomplish>/m);
   assert.match(command, /\$ARGUMENTS/);
-  for (const phase of ["Scout", "Understand", "Design", "Implement", "Accept", "Verify", "Integrate"]) assert.match(command, new RegExp(`\\*\\*${phase}\\*\\*`));
-  assert.match(command, /Substantive code is written by workers, not by you/);
-  // Cross-model delegation: the brief template and the acceptance protocol are the point of the command.
-  for (const section of ["OBJECTIVE", "WHY", "CONTEXT I ALREADY KNOW", "INTERFACE CONTRACT", "OWNED PATHS", "NON-GOALS / DO NOT", "ACCEPTANCE CRITERIA", "VERIFY WITH", "WHEN TO ASK", "REPORT"]) assert.match(command, new RegExp(`^${section.replace(/[/]/g, "\\/")}:`, "m"), section);
-  for (const step of ["Status gate", "Scope check", "Read the diff", "Criteria walk", "Verification audit", "Assumptions audit", "Decide"]) assert.match(command, new RegExp(`\\*\\*${step}`), step);
-  for (const verdict of ["ACCEPT", "ACCEPT WITH GLUE", "REWORK", "REASSIGN"]) assert.match(command, new RegExp(`\\*\\*${verdict}\\*\\*`), verdict);
-  assert.match(command, /claimedVerification.*verification/s);
-  assert.match(command, /Drift is first a brief defect/);
-  assert.match(command, /Never let a worker grade itself/);
-  assert.match(command, /criterion → evidence → verdict/);
-  assert.match(command, /needs_input|blocked/);
+  assert.match(command, /ultra-codex status --for-command/);
+  assert.ok(fs.existsSync(path.join(PLUGIN_ROOT, "prompts", "ultra-codex-protocol.md")));
+  assert.match(read("hooks/hooks.json"), /UserPromptSubmit[\s\S]*ultra-codex-hook\.mjs/);
 });
 
 test("rescue command absorbs continue semantics", () => {

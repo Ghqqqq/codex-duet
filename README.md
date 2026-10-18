@@ -277,9 +277,20 @@ investigation, implementation and adversarial review, so the heavy lifting spend
 Codex quota only.
 
 ```bash
-/codex:ultra-codex --thorough migrate the job store to SQLite with a reversible upgrade path
-/codex:ultra-codex --quick add --json to the cancel command and cover it with a test
+/codex:ultra-codex on --thorough          # session mode: every substantive prompt is orchestrated
+/codex:ultra-codex off                    # back to normal; lists Codex jobs still running
+/codex:ultra-codex status
+/codex:ultra-codex --quick add --json to the cancel command and cover it with a test   # one task, mode unchanged
 ```
+
+`on` works like `/effort ultracode`: a per-session switch (keyed by the Claude
+session id, so other sessions in the same repository are unaffected). While it
+is on, a `UserPromptSubmit` hook adds a one-line reminder to every prompt and
+Claude applies the orchestration protocol to each substantive task; chat,
+one-line fixes and single-file questions stay inline. `off`, `/clear`, a new
+session or the session's end turn it off; `--resume` keeps it. The saved scale
+(`--quick`/`--thorough`, default auto) and `--max-workers` apply to every task
+in the mode.
 
 Because the workers share none of Claude's context, the command puts Claude's
 effort at both ends of each assignment: every brief follows a fixed template

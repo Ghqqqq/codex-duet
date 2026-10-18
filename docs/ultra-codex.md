@@ -5,6 +5,48 @@ task the way Claude Code's own Ultracode mode does, with Codex workers in place
 of Claude subagents. Claude scouts, assigns, judges and integrates; Codex
 investigates, implements and reviews. Claude's own context stays small (it reads
 reports, not repositories), and the heavy lifting spends Codex quota only.
+`/codex:ultra-codex on` makes that the session's default (see "Mode" below);
+`off` ends it.
+
+## Mode: on, off, and what "off" means
+
+Ultracode is a session setting (`/effort ultracode`), and so is ultra-codex
+mode. `ultra-codex on [--quick|--thorough] [--max-workers <n>]` writes a small
+JSON record to `<isolated home>/duet/state/<workspace>/ultra-codex/<session
+id>.json`, keyed by the Claude session id that the SessionStart hook exports as
+`CODEX_COMPANION_SESSION_ID`. While the record exists, the plugin's
+`UserPromptSubmit` hook (`scripts/ultra-codex-hook.mjs`, about 70 ms) appends a
+one-line reminder to every prompt:
+
+> [Duet] Ultra-codex mode is on for this session (scale: thorough; max
+> workers: 4; turn it off with /codex:ultra-codex off). If this prompt is a
+> substantive task — anything beyond a conversational reply, a one-line fix or
+> a question answerable from one file — Read <protocol path> first and
+> orchestrate the task with Codex workers exactly as that protocol says; your
+> own effort goes into the briefs and the acceptance. Otherwise answer normally.
+
+The protocol itself (`prompts/ultra-codex-protocol.md`, about 2k tokens) is
+read only when a task calls for it, so the per-prompt cost is the reminder. The
+hook is silent for other sessions in the same repository, for prompts that are
+the command itself, when no session id is present, and on any error.
+
+Three things turn the mode off:
+
+- `/codex:ultra-codex off` removes the record, lists this session's Codex jobs
+  that are still running (they are not cancelled; `cancel <jobId>` does that on
+  request) and tells Claude that the orchestration has ended.
+- The session's end (`SessionEnd` hook) and a fresh start or `/clear` for the
+  same session id (`SessionStart` with `source` other than `resume`/`compact`).
+  `claude --resume` keeps the mode.
+- Records older than 30 days are pruned at the next `SessionStart`, so a
+  session that died without `SessionEnd` cannot leave the mode armed.
+
+Without the mode, the command is one-shot: `/codex:ultra-codex <task>`
+orchestrates that task and the protocol's own scope clause ends the
+orchestration when the final report is delivered. The slash command's preamble
+runs `ultra-codex status --for-command` with no arguments (the task text never
+passes through a shell); Claude dispatches on the arguments itself and runs
+`ultra-codex on|off` through Bash only with the fixed flags.
 
 The command lives in the plugin's namespace: type `/codex:ultra-codex`. Claude
 Code namespaces every plugin component, so the bare `/ultra-codex` is not

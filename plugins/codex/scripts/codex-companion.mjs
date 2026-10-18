@@ -9,7 +9,8 @@ import { normalizeBrowserOrigins, normalizeBundleIds } from "./lib/server-reques
 import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, ensureBrowserApproval, ensureComputerUseApproval, ensureProjectDocs, projectDocsSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
 import { activityReader, formatActivity, redactActivity, snippet } from "./lib/activity.mjs";
 import { JobRuntime, ACTIVE, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, continuationReport, adoptJob, ownershipNotice, markOwnerAttachment } from "./lib/job-runtime.mjs";
-import { updateJob } from "./lib/state.mjs";
+import { listSessionJobs, updateJob } from "./lib/state.mjs";
+import { clearMode, DEFAULT_MAX_WORKERS, PROTOCOL_PATH, readMode, setMode } from "./lib/ultra-codex-mode.mjs";
 import { snapshotWorkspace, compareWorkspaceSnapshots } from "./lib/workspace-changes.mjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -98,6 +99,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs task [--report] [--background|--detached|--follow] [--write] [--sandbox <read-only|workspace-write|danger-full-access>] [--approve-browser-origin <origin>]... [--approve-computer-app <bundle-id>]... [--thread <id>|--continue <job-id>|--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh|max>] [--fast|--normal] [prompt]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id|--thread <id>] [--wait] [--all] [--json]",
+      "  node scripts/codex-companion.mjs ultra-codex [on [--quick|--thorough] [--max-workers <n>]|off|status [--for-command]] [--json]",
       "  node scripts/codex-companion.mjs result [job-id|--thread <id>] [--report] [--json]",
       "  node scripts/codex-companion.mjs wait <job-id> [--timeout-sec 570] [--min-interval-sec <s>] [--owner <id>] [--after-question <id>] [--feed-limit 150] [--json] --report",
       "  node scripts/codex-companion.mjs adopt <job-id> [--cwd <path>] [--json]",
@@ -1484,6 +1486,51 @@ async function handleAnswer(argv) {
   outputResult(options.json ? payload : `${JSON.stringify(payload)}\n`, options.json);
 }
 
+// Ultra-codex mode: a per-session switch (like `/effort ultracode`) read by the
+// UserPromptSubmit hook. `status --for-command` is what the slash command's
+// preamble runs: the mode line plus the orchestration protocol.
+function renderUltraMode(mode) {
+  return mode
+    ? `Ultra-codex mode: on for this session since ${mode.since ?? "unknown"} (scale: ${mode.scale}; max workers: ${mode.maxWorkers}). Turn it off with /codex:ultra-codex off.`
+    : "Ultra-codex mode: off for this session. Turn it on with /codex:ultra-codex on [--quick|--thorough] [--max-workers <n>]; a task given as arguments is orchestrated once without changing the mode.";
+}
+async function handleUltraCodex(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "max-workers"],
+    booleanOptions: ["json", "quick", "thorough", "for-command"]
+  });
+  const action = positionals[0] ?? "status";
+  if (!["on", "off", "status"].includes(action) || positionals.length > 1) throw new Error("ultra-codex takes one of: on [--quick|--thorough] [--max-workers <n>], off, status [--for-command].");
+  if (options.quick && options.thorough) throw new Error("Choose either --quick or --thorough.");
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const sessionId = getCurrentClaudeSessionId();
+  if (action === "status") {
+    const mode = sessionId ? readMode(workspaceRoot, sessionId) : null;
+    const payload = { mode: mode ? "on" : "off", sessionId, ...(mode ? { scale: mode.scale, maxWorkers: mode.maxWorkers, since: mode.since } : {}), protocolFile: PROTOCOL_PATH };
+    const text = `${renderUltraMode(mode)}\n${options["for-command"] ? `\n${fs.readFileSync(PROTOCOL_PATH, "utf8")}` : ""}`;
+    outputCommandResult(payload, text, options.json);
+    return;
+  }
+  if (!sessionId) throw new Error("Ultra-codex mode needs the Claude session id (CODEX_COMPANION_SESSION_ID, exported by the SessionStart hook); run this inside Claude Code.");
+  if (action === "on") {
+    if (options["for-command"]) throw new Error("--for-command applies to status only.");
+    const maxWorkers = options["max-workers"] === undefined ? (readMode(workspaceRoot, sessionId)?.maxWorkers ?? DEFAULT_MAX_WORKERS) : Number(options["max-workers"]);
+    const mode = setMode(workspaceRoot, sessionId, { scale: options.quick ? "quick" : options.thorough ? "thorough" : "auto", maxWorkers });
+    const payload = { mode: "on", sessionId, scale: mode.scale, maxWorkers: mode.maxWorkers, since: mode.since, protocolFile: PROTOCOL_PATH };
+    outputCommandResult(payload, `${renderUltraMode(mode)}\nFrom now on every substantive prompt in this session is orchestrated with Codex workers (a reminder is attached to each prompt); conversational turns and one-line fixes stay inline.\n`, options.json);
+    return;
+  }
+  const wasOn = clearMode(workspaceRoot, sessionId);
+  const running = listSessionJobs(workspaceRoot, sessionId).filter(job => ACTIVE.has(job.status)).map(job => ({ jobId: job.id, title: job.title ?? null, status: job.status }));
+  const payload = { mode: "off", sessionId, wasOn, runningJobs: running };
+  const lines = [
+    wasOn ? "Ultra-codex mode: off. Orchestration has ended for this session." : "Ultra-codex mode was already off for this session.",
+    "Handle requests normally from here on; spawn Codex workers only when asked.",
+    running.length ? `Codex jobs from this session still running: ${running.map(job => `${job.jobId} (${job.status})`).join(", ")}. Cancel them only if the user asks: node scripts/codex-companion.mjs cancel <jobId>.` : "No Codex jobs from this session are still running."
+  ];
+  outputCommandResult(payload, `${lines.join("\n")}\n`, options.json);
+}
+
 async function main() {
   const [subcommand, ...argv] = process.argv.slice(2);
   if (!subcommand || subcommand === "help" || subcommand === "--help") {
@@ -1532,6 +1579,9 @@ async function main() {
       break;
     case "cancel":
       await handleCancel(argv);
+      break;
+    case "ultra-codex":
+      await handleUltraCodex(argv);
       break;
     default:
       throw new Error(`Unknown subcommand: ${subcommand}`);
