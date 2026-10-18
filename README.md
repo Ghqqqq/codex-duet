@@ -281,11 +281,18 @@ Codex quota only.
 /codex:ultra-codex --quick add --json to the cancel command and cover it with a test
 ```
 
-Phases: scout → understand (parallel read-only workers) → design (thorough
-only, independent drafts judged by Claude) → implement (disjoint ownership or
-worktrees) → verify (adversarial reviewers plus the test suite, loop until dry)
-→ integrate. `--max-workers <n>` caps concurrent workers (default 6). Details and
-the mapping to Ultracode's Workflow tool: [docs/ultra-codex.md](docs/ultra-codex.md).
+Because the workers share none of Claude's context, the command puts Claude's
+effort at both ends of each assignment: every brief follows a fixed template
+(objective, why, known context with file:line, interface contract, owned paths,
+non-goals, acceptance criteria, verification commands, when to ask), and every
+report goes through the same acceptance protocol (scope check, reading the diff,
+criterion → evidence → verdict, verification and assumptions audits, then
+`ACCEPT` / `ACCEPT WITH GLUE` / `REWORK` / `REASSIGN`). Phases: scout → understand
+(parallel read-only workers) → design (thorough only, independent drafts judged
+by Claude) → implement (disjoint ownership or worktrees) → accept → verify
+(adversarial reviewers plus the test suite, loop until dry) → integrate.
+`--max-workers <n>` caps concurrent workers (default 6). Details and the mapping
+to Ultracode's Workflow tool: [docs/ultra-codex.md](docs/ultra-codex.md).
 
 ### `/codex:transfer`
 

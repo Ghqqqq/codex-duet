@@ -51,19 +51,63 @@ The Workflow tool itself can address plugin agents (`agentType:
 required by the command. If a session runs in Ultracode, the same phases can be
 written as a Workflow script; the worker contract is unchanged.
 
+## Why the briefs and the acceptance are stricter than Ultracode's
+
+Ultracode agents are the same model as the orchestrator, read the same
+`CLAUDE.md`, and in a fan-out share a prompt cache with it; a terse assignment
+is usually read the way it was meant. A Codex worker shares none of that: it
+sees the prompt text and the repository, nothing of the conversation or of the
+orchestrator's reading of the user's intent. Every gap in a brief is filled with
+Codex's own guess, and a plausible guess that differs from what Claude meant is
+the main failure mode of cross-model delegation. The command therefore shifts
+Claude's effort to the two ends of each assignment:
+
+- **Briefs** follow a fixed template (`OBJECTIVE`, `WHY`, `CONTEXT I ALREADY
+  KNOW`, `INTERFACE CONTRACT`, `OWNED PATHS`, `NON-GOALS / DO NOT`, `ACCEPTANCE
+  CRITERIA`, `VERIFY WITH`, `WHEN TO ASK`, `REPORT`). An empty section is a
+  decision not yet made. Briefs name the pattern to copy by file and line, say
+  what wrong looks like ("do not loosen assertions to make tests pass"), define
+  the interface contract so parallel pieces fit, and list the decisions that
+  must come back through `ask_parent`.
+- **Acceptance** runs the same protocol on every report: status gate; scope
+  check (`touchedFiles` within `OWNED PATHS`, confirmed with `git diff --stat`);
+  reading the diff rather than the summary, looking for unrequested behaviour
+  changes, weakened or rewritten tests, new dependencies, stubs, swallowed
+  errors; a criteria walk recording evidence → verdict per criterion;
+  a verification audit comparing `claimedVerification` with the captured
+  `verification` events and rerunning the commands; an assumptions audit
+  accepting or rejecting every assumption; and an explicit decision: `ACCEPT`,
+  `ACCEPT WITH GLUE` (trivial mechanical fixes only), `REWORK` (same thread,
+  findings with file:line and the failed criterion) or `REASSIGN` (corrected
+  brief, when the deviation shows the brief was ambiguous).
+
+Two rules follow from this: drift is treated first as a brief defect, so the
+brief text is fixed before resending and the fix carried into sibling briefs;
+and no worker grades itself, so reviewers see the brief, the criteria and the
+diff but never the implementer's summary. The task-level acceptance criteria
+are written by Claude before any dispatch and organise the final report
+(criterion → evidence → verdict); "done" appears only beside criteria backed by
+Claude's own evidence.
+
 ## Phases
 
-1. **Scout** (Claude, inline): entry points, likely files, the test command; pick
-   `--quick` or `--thorough`.
+1. **Scout** (Claude, inline): entry points and the exact lines the briefs will
+   cite; pick `--quick` or `--thorough`; write the task-level acceptance
+   criteria.
 2. **Understand** (parallel read-only workers): one question each; merge
-   `keyFindings`.
-3. **Design** (thorough only): two independent drafts; Claude judges and records
-   the decision.
-4. **Implement** (parallel workers, disjoint write ownership or worktrees).
-5. **Verify** (parallel): adversarial reviewers plus Claude running the tests;
-   findings go back to the owning worker; loop until dry, bounded.
-6. **Integrate** (Claude): full verification, diff inspection, final report that
-   separates observed verification from Codex claims.
+   `keyFindings`; use them to sharpen `CONTEXT`, `NON-GOALS` and the interface
+   contract.
+3. **Design** (thorough only): two independent drafts; Claude judges against
+   the task criteria, records the decision and derives the interface contract.
+4. **Implement** (parallel workers, disjoint write ownership or worktrees), one
+   templated brief each.
+5. **Accept** (Claude, per worker): the acceptance protocol, with at most two
+   rework rounds per assignment.
+6. **Verify** (parallel): adversarial reviewers with the brief, the criteria and
+   the diff, plus Claude running the tests; findings go back to the owning
+   worker; loop until dry, bounded.
+7. **Integrate** (Claude): full verification, diff inspection, final report
+   organised by criterion.
 
 ## What the worker report gives the orchestrator
 
