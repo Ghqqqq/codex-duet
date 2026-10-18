@@ -14,8 +14,8 @@ function privateDirectory(directory) {
   if (!fs.lstatSync(directory).isDirectory()) throw new Error("Marker directory must not be a symlink.");
   fs.chmodSync(directory, 0o700);
 }
-function requireCanonicalRoot(root) {
-  if (fs.realpathSync(root) !== path.join(fs.realpathSync(resolveIsolatedCodexHome()), "duet", "sessions")) {
+function requireCanonicalRoot(root, env = process.env) {
+  if (fs.realpathSync(root) !== path.join(fs.realpathSync(resolveIsolatedCodexHome(env)), "duet", "sessions")) {
     throw new Error("Session marker root must stay inside the isolated home without symlinks.");
   }
 }
@@ -53,26 +53,50 @@ export function writeSessionMarker(job) {
   }
 }
 
-export function pruneSessionMarkers(maxAgeMs) {
-  if (!Number.isFinite(maxAgeMs) || maxAgeMs < 0) return;
+// Both the dry run and pruning inspect only regular files beneath real marker
+// directories. Never recursively remove a session: a concurrent writer wins.
+export function planSessionMarkers(cutoff, { env = process.env } = {}) {
+  const markers = [], errors = [];
   try {
-    const root = resolveSessionMarkersRoot(), cutoff = Date.now() - maxAgeMs;
-    requireCanonicalRoot(root);
-    if (!fs.lstatSync(root).isDirectory()) return;
+    const root = resolveSessionMarkersRoot(env);
+    requireCanonicalRoot(root, env);
+    if (!fs.lstatSync(root).isDirectory()) throw new Error("Invalid session marker root.");
     for (const session of fs.readdirSync(root, { withFileTypes: true })) {
       if (!session.isDirectory()) continue;
+      const directory = path.join(root, session.name);
       try {
-        const directory = path.join(root, session.name);
-        const files = fs.readdirSync(directory, { withFileTypes: true });
-        for (const file of files) {
-          // Only markers and abandoned atomic-write temporaries are ours.
+        for (const file of fs.readdirSync(directory, { withFileTypes: true })) {
           if (!file.isFile() || !(file.name.endsWith(".json") || /^\..*\.tmp$/.test(file.name))) continue;
           const target = path.join(directory, file.name), stat = fs.lstatSync(target);
-          if (stat.isFile() && stat.mtimeMs < cutoff) fs.unlinkSync(target);
+          if (stat.isFile() && stat.mtimeMs < cutoff) markers.push({ path: target, bytes: stat.size });
         }
-        // A concurrent writer's fresh marker makes this fail safely.
-        fs.rmdirSync(directory);
-      } catch { /* A concurrent writer or unavailable directory can wait until next session. */ }
+      } catch (error) { errors.push({ path: directory, message: error.message }); }
     }
-  } catch { /* Missing or unreadable markers never fail SessionStart. */ }
+  } catch (error) { if (error.code !== "ENOENT") errors.push({ message: error.message }); }
+  return { markers, errors };
+}
+
+export function pruneSessionMarkers(maxAgeMs, { now = Date.now(), env = process.env, files = null } = {}) {
+  const result = { markersDeleted: 0, bytesFreed: 0, errors: [] };
+  if (!Number.isFinite(maxAgeMs) || maxAgeMs < 0) return result;
+  const cutoff = Number(now) - maxAgeMs;
+  const planned = planSessionMarkers(cutoff, { env });
+  result.errors.push(...planned.errors);
+  const selected = files && new Set(files.map(file => file.path));
+  for (const marker of planned.markers) {
+    if (selected && !selected.has(marker.path)) continue;
+    try {
+      const directory = path.dirname(marker.path);
+      requireCanonicalRoot(resolveSessionMarkersRoot(env), env);
+      if (!fs.lstatSync(directory).isDirectory()) continue;
+      const stat = fs.lstatSync(marker.path);
+      if (!stat.isFile() || stat.mtimeMs >= cutoff) continue;
+      fs.unlinkSync(marker.path);
+      result.markersDeleted += 1;
+      result.bytesFreed += stat.size;
+      try { fs.rmdirSync(directory); }
+      catch (error) { if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error.code)) throw error; }
+    } catch (error) { if (error.code !== "ENOENT") result.errors.push({ path: marker.path, message: error.message }); }
+  }
+  return result;
 }

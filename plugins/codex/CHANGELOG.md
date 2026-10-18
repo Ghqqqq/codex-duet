@@ -2,6 +2,8 @@
 
 ## 1.0.6-isolated.20
 
+- Retention now follows Claude Code’s `cleanupPeriodDays` (default 30, environment override available): detached SessionStart prewarm cleans eligible ended jobs, markers (replacing the former 7-day period), and unreferenced old Codex threads through `thread/delete`, at most every 12 hours. `cleanup [--dry-run] [--days N] [--json]` previews or applies it on demand; active jobs, attached owners and live PIDs are protected.
+
 - Task-workers and shared brokers now leave the calling shell's descendant tree through a short-lived launcher, so stopping a background `task --direct` or `--follow` confirms `owner_stopped` without killing the broker or other jobs. Real worker/broker PIDs and broker logs are preserved; fixture coverage kills the holder's whole descendant tree and checks a parallel job survives.
 - Direct mode: Claude runs a Codex job itself, with no Haiku forwarder. `task --direct` starts the same detached job as `--follow`, with the calling process attached as its owner wait, run by Claude as a background Bash call (`run_in_background: true`). It prints no feed and exactly one compact JSON line when the job ends, needs an answer or reaches the wait budget; Claude Code's completion notification wakes Claude, which reads that line. Defaults are `--timeout-sec 3600` and `--lease-sec 1800`. Conflicting flags (`--follow`, `--detached`, `--background`, `--json`, `--feed-limit`, `--min-interval-sec`) are rejected before a job is created.
   - `wait <job> --owner <owner> --direct [--after-question <id>]` gives the same single line.

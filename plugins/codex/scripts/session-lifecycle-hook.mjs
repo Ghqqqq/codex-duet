@@ -9,7 +9,7 @@ import { ACTIVE, requestCancel } from "./lib/job-runtime.mjs";
 import { TRANSCRIPT_PATH_ENV } from "./lib/claude-session-transfer.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { clearMode, pruneModes } from "./lib/ultra-codex-mode.mjs";
-import { pruneSessionMarkers } from "./lib/session-markers.mjs";
+import { runAutomaticRetention } from "./lib/retention.mjs";
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const shellEscape = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 function appendEnvVar(name, value) {
@@ -17,12 +17,17 @@ function appendEnvVar(name, value) {
 }
 async function main() {
   const event = process.argv[2];
-  if (event === "prewarm") { await ensureBrokerSession(process.argv[3] || process.cwd()); return; }
+  if (event === "prewarm") {
+    const cwd = process.argv[3] || process.cwd();
+    let broker = null;
+    try { broker = await ensureBrokerSession(cwd); } catch { /* Retain threads if prewarm is unavailable. */ }
+    await runAutomaticRetention({ cwd, broker });
+    return;
+  }
   const raw = fs.readFileSync(0, "utf8").trim(), input = raw ? JSON.parse(raw) : {};
   const cwd = resolveWorkspaceRoot(input.cwd || process.cwd());
   if ((event || input.hook_event_name) === "SessionStart") {
     try { appendEnvVar("CODEX_COMPANION", fileURLToPath(new URL("./codex-companion.mjs", import.meta.url))); } catch { /* best effort */ }
-    try { pruneSessionMarkers(7 * 24 * 60 * 60 * 1000); } catch { /* best effort */ }
     appendEnvVar(SESSION_ID_ENV, input.session_id);
     appendEnvVar(TRANSCRIPT_PATH_ENV, input.transcript_path);
     // A mode is per session and never inherited: a stale file from a session

@@ -612,6 +612,25 @@ Record format, owner/lease semantics and command output fields are unchanged.
 Once no older release runs anymore, the legacy directories can be removed by
 hand.
 
+### Retention
+
+At session start, Duet's detached prewarm child cleans ended job records, session
+markers and old Codex threads that no retained job uses, at most once every 12
+hours. It follows `cleanupPeriodDays` in `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json`
+(default 30 days); `CODEX_COMPANION_RETENTION_DAYS` overrides it. Values below one
+are clamped to one day and reported. The 50-ended-job cap remains a second bound.
+Running/queued jobs, attached owners and live worker PIDs are protected. Threads
+use rollout last-activity time and are deleted through Codex's `thread/delete`
+API, keeping its indexes consistent; unavailable deletion is reported and skipped.
+Jobs with legacy artifact paths are kept and listed under `retained`, separately
+from errors. Their threads stay protected while unrelated old threads can expire.
+
+Preview with `node "$CODEX_COMPANION" cleanup --dry-run --json`; apply with
+`node "$CODEX_COMPANION" cleanup --json`. Both ignore the 12-hour limit; `--days N`
+overrides the period for that command. Nothing is removed immediately on job
+completion, so results, continuations and pane history remain available during
+the retention period (subject to the count cap).
+
 ## Troubleshooting
 
 **Slow first tool call.** Each job records startup timings: broker connect/spawn,

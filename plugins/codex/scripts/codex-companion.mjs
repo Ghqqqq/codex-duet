@@ -115,6 +115,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs adopt <job-id> [--cwd <path>] [--json]",
       "  node scripts/codex-companion.mjs answer <job-id> --owner <ownerId> --question <id> --json < answer.txt",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]",
+      "  node scripts/codex-companion.mjs cleanup [--dry-run] [--days N] [--json]",
       "  task lifecycle: --detached [--lease-sec 180] [--question-timeout-sec 900] [--owner <id>]; --follow = --detached + wait in one call [--timeout-sec 570]",
       "  --direct: the parent agent owns the job from a background shell; prints one compact JSON line (default --timeout-sec 3600, --lease-sec 1800)",
       "  setup: --transport http|websocket|status; --allow-browser-origin <origin>; --revoke-browser-origin <origin>; --list-browser-origins"
@@ -1584,6 +1585,19 @@ async function handleUltraCodex(argv) {
   outputCommandResult(payload, `${lines.join("\n")}\n`, options.json);
 }
 
+async function handleCleanup(argv) {
+  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["days"], booleanOptions: ["dry-run", "json"] });
+  if (positionals.length) throw new Error("cleanup accepts only --dry-run, --days N and --json.");
+  const { planRetention, applyRetentionWithBroker } = await import("./lib/retention.mjs");
+  const plan = planRetention({ days: options.days });
+  const dryRun = options["dry-run"], result = dryRun ? plan : await applyRetentionWithBroker(plan);
+  const bytes = dryRun ? [...plan.jobs, ...plan.markers, ...plan.threads].reduce((sum, item) => sum + item.bytes, 0) : result.bytesFreed;
+  const counts = dryRun ? `${plan.jobs.length} jobs, ${plan.markers.length} markers, ${plan.threads.length} threads eligible` : `${result.jobsDeleted} jobs, ${result.markersDeleted} markers, ${result.threadsDeleted} threads deleted; ${result.threadsSkipped} threads skipped`;
+  const summary = `${dryRun ? "Dry run" : "Cleanup"} (${plan.days} days): ${counts}; ${(bytes / 1_000_000).toFixed(2)} MB ${dryRun ? "eligible; nothing deleted" : "freed"}.`;
+  const legacyRetained = result.retained.filter(job => job.reason === "legacy-paths").length;
+  outputCommandResult(result, `${[summary, ...(legacyRetained ? [`${legacyRetained} retained (legacy paths)`] : []), ...result.warnings, ...(result.errors.length ? [`${result.errors.length} errors/skips; use --json for details.`] : [])].join("\n")}\n`, options.json);
+}
+
 async function main() {
   const [subcommand, ...argv] = process.argv.slice(2);
   if (!subcommand || subcommand === "help" || subcommand === "--help") {
@@ -1592,6 +1606,9 @@ async function main() {
   }
 
   switch (subcommand) {
+    case "cleanup":
+      await handleCleanup(argv);
+      break;
     case "setup":
       await handleSetup(argv);
       break;

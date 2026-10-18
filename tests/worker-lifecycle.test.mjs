@@ -870,14 +870,18 @@ test("missing or unsafe session IDs leave no marker and marker write failures ne
   assert.equal(fs.readFileSync(root, "utf8"), "not a directory");
 });
 
-test("SessionStart exports the absolute companion path and prunes only stale markers without following symlinks", () => {
-  const f = fixture("slow-task"), root = resolveSessionMarkersRoot(f.env), old = new Date(Date.now() - 8 * 86400000);
+test("SessionStart exports the absolute companion path and prunes only stale markers without following symlinks", async () => {
+  const f = fixture("slow-task"), root = resolveSessionMarkersRoot(f.env), old = new Date(Date.now() - 31 * 86400000);
+  f.env.CLAUDE_CONFIG_DIR = path.join(f.dir, "claude-settings");
   for (const session of ["stale", "fresh", "mixed"]) {
     const directory = path.join(root, session); fs.mkdirSync(directory, { recursive: true });
     const file = path.join(directory, "job.json"); fs.writeFileSync(file, "{}");
     if (session !== "fresh") fs.utimesSync(file, old, old);
     if (session === "mixed") fs.writeFileSync(path.join(directory, "newer.json"), "{}");
   }
+  const withinRetention = path.join(root, "mixed", "eight-days.json");
+  fs.writeFileSync(withinRetention, "{}");
+  const eightDays = new Date(Date.now() - 8 * 86400000); fs.utimesSync(withinRetention, eightDays, eightDays);
   const staleTemporary = path.join(root, "mixed", ".job.old.tmp"), freshTemporary = path.join(root, "mixed", ".job.new.tmp");
   fs.writeFileSync(staleTemporary, "partial"); fs.utimesSync(staleTemporary, old, old); fs.writeFileSync(freshTemporary, "partial");
   const unrelated = path.join(root, "mixed", "keep.txt"); fs.writeFileSync(unrelated, "keep"); fs.utimesSync(unrelated, old, old);
@@ -887,6 +891,10 @@ test("SessionStart exports the absolute companion path and prunes only stale mar
   const input = JSON.stringify({ session_id: "fixture-session", cwd: f.repo });
   const began = Date.now(), started = run(process.execPath, [hook, "SessionStart"], { cwd: f.repo, env: f.env, input });
   assert.equal(started.status, 0, started.stderr); assert.ok(Date.now() - began < 2000);
+  await waitUntil(() => {
+    const file = path.join(f.env.CODEX_COMPANION_HOME, "duet", "retention.json");
+    return fs.existsSync(file) && JSON.parse(fs.readFileSync(file, "utf8")).lastReport;
+  });
   const exported = fs.readFileSync(f.env.CLAUDE_ENV_FILE, "utf8");
   assert.ok(exported.split("\n").includes(`export CODEX_COMPANION='${script}'`));
   assert.match(exported, /export CODEX_COMPANION_SESSION_ID='fixture-session'/);
@@ -894,6 +902,7 @@ test("SessionStart exports the absolute companion path and prunes only stale mar
   for (const session of ["fresh", "mixed", "linked-session"]) assert.equal(fs.existsSync(path.join(root, session)), true);
   assert.equal(fs.existsSync(path.join(root, "mixed", "job.json")), false);
   assert.equal(fs.readFileSync(path.join(root, "mixed", "newer.json"), "utf8"), "{}");
+  assert.equal(fs.existsSync(withinRetention), true, "the former 7-day cutoff no longer applies");
   assert.equal(fs.existsSync(staleTemporary), false); assert.equal(fs.readFileSync(freshTemporary, "utf8"), "partial");
   assert.equal(fs.readFileSync(unrelated, "utf8"), "keep");
   assert.equal(fs.existsSync(path.join(outside, "old.json")), true);
@@ -908,7 +917,7 @@ test("SessionStart exports the absolute companion path and prunes only stale mar
       if (file === ${JSON.stringify(stale)}) fs.writeFileSync(${JSON.stringify(fresh)}, 'fresh during prune');
       return result;
     };
-    pruneSessionMarkers(7 * 86400000);
+    pruneSessionMarkers(30 * 86400000);
   `], { cwd: f.repo, env: f.env });
   assert.equal(raced.status, 0, raced.stderr); assert.equal(fs.existsSync(stale), false);
   assert.equal(fs.readFileSync(fresh, "utf8"), "fresh during prune", "a marker created after the age snapshot survives");
@@ -925,7 +934,7 @@ test("SessionStart exports the absolute companion path and prunes only stale mar
     fs.mkdirSync(path.dirname(link), { recursive: true }); fs.symlinkSync(outside, link);
     const attempted = run(process.execPath, ["--input-type=module", "-e", `
       import { writeSessionMarker, pruneSessionMarkers } from ${JSON.stringify(markerModule)};
-      pruneSessionMarkers(7 * 86400000);
+      pruneSessionMarkers(30 * 86400000);
       writeSessionMarker({ sessionId: 'new-session', id: 'new-job', workspaceRoot: process.cwd() });
     `], { cwd: symlinked.repo, env: symlinked.env });
     assert.equal(attempted.status, 0); assert.equal(attempted.stdout, "");

@@ -529,6 +529,24 @@ export function saveState(cwd, state) {
   });
 }
 
+// Retention already knows the canonical state directory, including workspaces
+// whose checkout no longer exists. Never migrate or use readState's forgiving
+// fallback here: an unreadable index must not authorize deletion.
+export function removeJobsFromState(stateDir, select, options = {}) {
+  return lockStateDir(stateDir, () => {
+    const state = JSON.parse(fs.readFileSync(path.join(stateDir, STATE_FILE_NAME), "utf8"));
+    if (!Array.isArray(state?.jobs)) throw new Error("Invalid job-state index.");
+    const ids = new Set(select(state));
+    const removed = state.jobs.filter(job => ids.has(job.id));
+    const jobs = state.jobs.filter(job => !ids.has(job.id));
+    // Ordinary updates still enforce the count cap. Cleanup must not let that
+    // cap evict additional records outside its checked retention candidates.
+    if (pruneJobs(jobs).length !== jobs.length) throw new Error("Retention would prune unselected jobs.");
+    if (removed.length) commitState(stateDir, state, { ...state, jobs });
+    return removed;
+  }, { lockTimeoutMs: 0, ...options, create: false });
+}
+
 export function updateState(cwd, mutate) {
   return withStateLock(cwd, stateDir => {
     const stateFile = path.join(stateDir, STATE_FILE_NAME);
