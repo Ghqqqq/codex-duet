@@ -23,6 +23,14 @@ a question is pending or the timeout passes. The default `--timeout-sec` is
 The process heartbeats and renews the lease while attached. A normal return
 leaves the lease protecting the job; an observer never renews it.
 
+When a worker tick is delayed by more than two seconds (for example, Mac sleep),
+it shifts an active, uncancelled job's heartbeat and lease by the full gap under
+the state lock, caps them at wake time and one lease beyond wake respectively,
+and skips expiry/owner checks for that tick. `lastPauseMs` and `lastPauseAt` record
+the pause for diagnostics. An owner renewal refused before the worker wakes is
+retried within one second; a silent owner still gets only the five-second grace
+in awake time. Cancellation and terminal jobs are never revived.
+
 The completion notification carries no output. Read the output file it names;
 never poll, sleep or tail. Act on its `status`:
 

@@ -2,6 +2,8 @@
 
 ## 1.0.6-isolated.20
 
+- Mac sleep no longer consumes a running job's owner heartbeat grace or lease: delayed worker ticks shift both timestamps under the state lock, record pause diagnostics, and let the owner resume renewing without reviving cancelled or ended jobs.
+
 - Retention now follows Claude Code’s `cleanupPeriodDays` (default 30, environment override available): detached SessionStart prewarm cleans eligible ended jobs, markers (replacing the former 7-day period), and unreferenced old Codex threads through `thread/delete`, at most every 12 hours. `cleanup [--dry-run] [--days N] [--json]` previews or applies it on demand; active jobs, attached owners and live PIDs are protected.
 
 - Task-workers and shared brokers now leave the calling shell's descendant tree through a short-lived launcher, so stopping a background `task --direct` or `--follow` confirms `owner_stopped` without killing the broker or other jobs. Real worker/broker PIDs and broker logs are preserved; fixture coverage kills the holder's whole descendant tree and checks a parallel job survives.

@@ -24,6 +24,16 @@ export const OWNER_GRACE_MS = (() => {
   const raw = process.env.CODEX_COMPANION_OWNER_GRACE_SEC;
   return /^\d+$/.test(raw ?? "") && Number(raw) >= 1 && Number(raw) <= 600 ? Number(raw) * 1000 : 5000;
 })();
+export const PAUSE_THRESHOLD_MS = 2000;
+export function pauseAdjustment(job, gapMs, now) {
+  if (!Number.isFinite(gapMs) || gapMs <= PAUSE_THRESHOLD_MS || !ACTIVE.has(job.status) || job.cancelRequested) return null;
+  const patch = { lastPauseMs: gapMs, lastPauseAt: now };
+  // The owner may already have renewed after wake. Never put its heartbeat in
+  // the future or grant more than one full lease from this tick.
+  if (Number.isFinite(job.leaseRenewedAt)) patch.leaseRenewedAt = Math.min(job.leaseRenewedAt + gapMs, now);
+  if (Number.isFinite(job.leaseExpiresAt)) patch.leaseExpiresAt = Math.min(job.leaseExpiresAt + gapMs, now + (job.leaseSec ?? 180) * 1000);
+  return patch;
+}
 export function renewLease(cwd, id, owner) {
   return updateJob(cwd, id, job => {
     const now = Date.now(); // Check expiry after acquiring the state lock.
@@ -219,14 +229,21 @@ export class JobRuntime {
       this.handlers.set(signal, handler); process.on(signal, handler);
     }
     const foregroundOwner = foreground ? readJobFile(resolveJobFile(cwd, id)).ownerId : null;
+    let lastTickAt = Date.now();
     const tick = () => {
+      if (this.reason) return;
+      const now = Date.now(), gap = now - lastTickAt;
+      lastTickAt = now;
+      const paused = gap > PAUSE_THRESHOLD_MS;
       try {
-        const job = readJobFile(resolveJobFile(cwd, id));
+        // Shift the current record under its lock before checking a wake tick.
+        // Cancellation still wins, and normal checks resume on the next tick.
+        const job = paused ? updateJob(cwd, id, current => pauseAdjustment(current, gap, now)) : readJobFile(resolveJobFile(cwd, id));
         if (job.cancelRequested) this.stop(job.cancelRequested.reason);
-        else if (job.leaseExpiresAt && Date.now() >= job.leaseExpiresAt) this.stop("lease_expired");
+        else if (!paused && job.leaseExpiresAt && now >= job.leaseExpiresAt) this.stop("lease_expired");
         // owner_stopped: the owner marked its exit (user stopped the agent/wait).
         // owner_lost: the heartbeat went silent (killed outright or crashed).
-        else if (!foreground && ownerLost(job)) this.stop(job.ownerAttached ? "owner_lost" : "owner_stopped");
+        else if (!paused && !foreground && ownerLost(job, now)) this.stop(job.ownerAttached ? "owner_lost" : "owner_stopped");
         else if (foreground && !this.reason) renewLease(cwd, id, foregroundOwner);
       } catch { this.stop("owner_state_unavailable"); }
     };

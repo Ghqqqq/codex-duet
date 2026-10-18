@@ -7,8 +7,8 @@ import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { browserOriginSetup, transportSetup } from "../plugins/codex/scripts/lib/setup-config.mjs";
 import { resolveIsolatedCodexHome } from "../plugins/codex/scripts/lib/codex-home.mjs";
 import { redactActivity, itemActivity, planActivity, activityReader, formatActivity } from "../plugins/codex/scripts/lib/activity.mjs";
-import { writeJobFile, upsertJob, updateJob, readJobFile, resolveJobFile } from "../plugins/codex/scripts/lib/state.mjs";
-import { JobRuntime, renewLease, markOwnerAttachment, leaseSnapshot, questionMessage, adoptJob, ownershipNotice, answerQuestion, askParentQuestion, ownerLost, directReport, progressSnapshot, PARENT_BRIDGE_ENV } from "../plugins/codex/scripts/lib/job-runtime.mjs";
+import { writeJobFile, upsertJob, updateJob, readJobFile, resolveJobFile, resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
+import { JobRuntime, pauseAdjustment, renewLease, markOwnerAttachment, leaseSnapshot, questionMessage, adoptJob, ownershipNotice, answerQuestion, askParentQuestion, ownerLost, directReport, progressSnapshot, PARENT_BRIDGE_ENV } from "../plugins/codex/scripts/lib/job-runtime.mjs";
 import { buildWorkerReport } from "../plugins/codex/scripts/lib/worker-report.mjs";
 import { resolveSessionMarkersRoot } from "../plugins/codex/scripts/lib/session-markers.mjs";
 import { splitRawArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
@@ -405,6 +405,42 @@ test("orphan threshold and questionMessage are deterministic and single-line", (
 });
 
 
+test("pause adjustment excludes suspended time, caps timestamps and preserves owner-loss grace", () => {
+  const gap = 30 * 60 * 1000, before = 1000000, now = before + gap;
+  for (const leaseSec of [180, 1800]) {
+    const record = { status: "running", ownerAttached: true, leaseSec, leaseRenewedAt: before - 500, leaseExpiresAt: before - 500 + leaseSec * 1000 };
+    const original = structuredClone(record);
+    const patch = pauseAdjustment(record, gap, now);
+    assert.deepEqual(patch, { leaseRenewedAt: now - 500, leaseExpiresAt: now - 500 + leaseSec * 1000, lastPauseMs: gap, lastPauseAt: now });
+    assert.deepEqual(record, original, "the helper does not mutate its input");
+    assert.equal(ownerLost({ ...record, ...patch }, now + 4499), false);
+    assert.equal(ownerLost({ ...record, ...patch }, now + 4500), true, "only awake time counts towards the same five-second grace");
+    const renewedFirst = { ...record, leaseRenewedAt: now, leaseExpiresAt: now + leaseSec * 1000 };
+    const capped = pauseAdjustment(renewedFirst, gap, now);
+    assert.equal(capped.leaseRenewedAt, now, "a renewal before the wake tick cannot create a future heartbeat");
+    assert.equal(capped.leaseExpiresAt, now + leaseSec * 1000);
+    assert.equal(ownerLost({ ...record, ...capped }, now + 4999), false);
+    assert.equal(ownerLost({ ...record, ...capped }, now + 5000), true);
+    assert.equal(pauseAdjustment(record, 1000, now), null);
+    assert.equal(pauseAdjustment(record, 2000, now), null);
+    assert.equal(pauseAdjustment({ ...record, cancelRequested: { reason: "cancelled_by_user" } }, gap, now), null);
+    for (const status of ["completed", "cancelled", "interrupted", "failed", "needs_input"]) assert.equal(pauseAdjustment({ ...record, status }, gap, now), null);
+    assert.deepEqual(pauseAdjustment({ ...record, status: "queued" }, gap, now), patch);
+  }
+});
+
+test("an owner renewal refused just after wake succeeds after the worker's pause adjustment", t => {
+  const cwd = makeTempDir(), gap = 30 * 60 * 1000, now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const record = { id: "paused-owner-test", ownerId: "owner", status: "running", ownerAttached: true, leaseSec: 180, leaseRenewedAt: now - gap - 500, leaseExpiresAt: now - gap - 500 + 180000 };
+  writeJobFile(cwd, record.id, record);
+  assert.deepEqual(renewLease(cwd, record.id, "owner"), record, "expiry still refuses renewal before the wake tick");
+  const shifted = updateJob(cwd, record.id, current => pauseAdjustment(current, gap, now));
+  assert.equal(shifted.leaseRenewedAt, now - 500);
+  const renewed = renewLease(cwd, record.id, "owner");
+  assert.equal(renewed.leaseRenewedAt, now); assert.equal(renewed.leaseExpiresAt, now + 180000);
+});
+
 test("expired leases cannot be revived before the worker observes expiry", () => {
   const cwd = makeTempDir(), now = Date.now();
   const record = { id: "expired-owner-test", ownerId: "owner", status: "running", jobClass: "task", workspaceRoot: cwd, threadId: "expired-thread", leaseSec: 180, leaseRenewedAt: now - 180001, leaseExpiresAt: now - 1 };
@@ -468,6 +504,66 @@ test("default wait blocks through activity and caps the reported activity list",
   assert.equal(unlimited.stdout.trim().split("\n").length - 1, JSON.parse(unlimited.stdout.trim().split("\n").at(-1)).activityCount, "--feed-limit 0 streams every event");
   assert.match(f.call("wait", launch.jobId, "--feed-limit", "many", "--timeout-sec", "1").stderr, /--feed-limit/);
   json(f.call("cancel", launch.jobId, "--json"));
+});
+
+test("a worker and its owner survive a seven-second suspension in either wake order", { skip: process.platform === "win32" }, async t => {
+  for (const first of ["worker", "owner"]) await t.test(`${first} wakes first`, async () => {
+    const f = fixture(), launch = json(f.call("task", "--detached", "--json", "--lease-sec", "6", "fixture sleep"));
+    const owner = spawnOwned(process.execPath, [script, "wait", launch.jobId, "--owner", launch.ownerId, "--timeout-sec", "60", "--direct"], { cwd: f.repo, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
+    owner.stdout.resume(); owner.stderr.resume();
+    const ownerClosed = new Promise(resolve => owner.once("close", resolve));
+    const started = await waitUntil(() => { const current = job(f, launch.jobId); return current.ownerAttached && current.turnId && current; });
+    const stateDir = resolveStateDir(f.repo, f.env), jobFile = path.join(stateDir, "jobs", `${launch.jobId}.json`);
+    const readOwned = () => JSON.parse(fs.readFileSync(jobFile));
+    const paused = new Set();
+    const signalOwned = (pid, signal) => {
+      const record = JSON.parse(fs.readFileSync(path.join(process.env.CODEX_COMPANION_TEST_PROCESSES, `${pid}.json`)));
+      assert.equal(record.pid, pid); assert.equal(record.exited, false, "signal only a live fixture-owned process");
+      process.kill(pid, signal);
+      if (signal === "SIGSTOP") paused.add(pid);
+      if (signal === "SIGCONT") paused.delete(pid);
+    };
+    try {
+      // Do not leave a process frozen inside the state lock: that would test
+      // lock contention instead of the intended wake ordering.
+      await waitUntil(() => {
+        signalOwned(started.pid, "SIGSTOP"); signalOwned(owner.pid, "SIGSTOP");
+        const states = run("ps", ["-o", "stat=", "-p", `${started.pid},${owner.pid}`]);
+        assert.equal(states.status, 0, states.stderr);
+        if (states.stdout.trim().split("\n").length === 2 && states.stdout.trim().split("\n").every(state => state.includes("T")) && !fs.existsSync(path.join(stateDir, ".state-lock"))) return true;
+        signalOwned(started.pid, "SIGCONT"); signalOwned(owner.pid, "SIGCONT");
+        return false;
+      });
+      const before = readOwned();
+      await delay(7000);
+      assert.ok(before.leaseExpiresAt <= Date.now(), "the pause exceeds both the six-second lease and five-second owner grace");
+      if (first === "owner") {
+        signalOwned(owner.pid, "SIGCONT");
+        await delay(1100); // At least one renewal attempt while the worker is still stopped.
+        assert.equal(readOwned().leaseRenewedAt, before.leaseRenewedAt, "the expired lease cannot renew before the worker shifts it");
+      }
+      signalOwned(started.pid, "SIGCONT");
+      const shifted = await waitUntil(() => { const current = readOwned(); return current.lastPauseAt && current; });
+      assert.equal(shifted.status, "running"); assert.ok(shifted.lastPauseMs >= 7000);
+      if (first === "worker") {
+        // An owner that woke first may already have renewed past this cap.
+        assert.equal(shifted.leaseRenewedAt, Math.min(before.leaseRenewedAt + shifted.lastPauseMs, shifted.lastPauseAt));
+        assert.equal(shifted.leaseExpiresAt, Math.min(before.leaseExpiresAt + shifted.lastPauseMs, shifted.lastPauseAt + 6000));
+        signalOwned(owner.pid, "SIGCONT");
+      }
+      const renewed = await waitUntil(() => { const current = readOwned(); return current.leaseRenewedAt > shifted.lastPauseAt && current; });
+      assert.equal(renewed.status, "running"); assert.equal(renewed.ownerAttached, true);
+      assert.equal(renewed.leaseExpiresAt, renewed.leaseRenewedAt + 6000);
+      assert.equal(renewed.cancelRequested, undefined); assert.equal(renewed.result?.interruptionReason, undefined);
+      assert.equal(f.state().lastInterrupt, null, "neither owner_lost nor lease_expired interrupts the resumed turn");
+      assert.equal(json(f.call("cancel", launch.jobId, "--json")).confirmation, "confirmed");
+      await ownerClosed;
+      const ended = readOwned();
+      assert.equal(ended.status, "cancelled"); assert.equal(ended.result.interruptionReason, "cancelled_by_user");
+    } finally {
+      for (const pid of paused) signalOwned(pid, "SIGCONT");
+    }
+  });
 });
 
 test("an owner wait that dies abruptly interrupts the worker after the grace period", async () => {
