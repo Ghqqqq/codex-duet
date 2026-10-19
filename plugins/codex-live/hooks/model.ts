@@ -19,6 +19,13 @@ export function clean(value: unknown): string {
   return cleanBody(value).replace(/\s+/g, ' ').trim();
 }
 
+export function taskText(value: unknown): string {
+  let text = clean(value);
+  const prefix = /^(?:OBJECTIVE\s*:|FOLLOW[- ]UP(?:\s+on\b[^:]*)?\s*:|REWORK\b[^:]*:)\s*/i;
+  while (prefix.test(text)) text = text.replace(prefix, '');
+  return text.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? text;
+}
+
 export function markerView(value: unknown): CodexLiveMarker {
   const m = object(value);
   if (m.v !== 1 || !string(m.jobId) || !string(m.jobFile).startsWith('/')) {
@@ -27,6 +34,7 @@ export function markerView(value: unknown): CodexLiveMarker {
   return {
     jobId: string(m.jobId), jobFile: string(m.jobFile),
     summary: limitChars(clean(m.summary), 1000), title: limitChars(clean(m.title), 200),
+    name: limitChars(clean(m.name), 100) || undefined,
     createdAt: string(m.createdAt),
     workspaceRoot: string(m.workspaceRoot).startsWith('/') ? clean(m.workspaceRoot) : undefined,
   };
@@ -112,7 +120,8 @@ export function jobView(value: unknown, marker: CodexLiveMarker, details = true)
     return { ...projected, command: limitChars(clean(projected.command), 2000) };
   }) : [];
   return {
-    id: marker.jobId, label: marker.summary || marker.title || 'Codex Task', status,
+    id: marker.jobId, label: taskText(marker.summary || job.summary || marker.title) || 'Codex Task', status,
+    agentName: limitChars(clean(job.agentName), 100) || marker.name,
     active, finished,
     createdAt: marker.createdAt || string(job.createdAt),
     startedAt: string(job.startedAt) || marker.createdAt || string(job.createdAt),
@@ -154,7 +163,35 @@ export function statusLine(jobs: readonly CodexLiveJob[]): string | undefined {
   const running = jobs.filter(job => jobLifecycle(job).active && job.status === 'running' && job.question === null).length;
   const queued = jobs.filter(job => jobLifecycle(job).active && job.status === 'queued' && job.question === null).length;
   const parts = [running ? `${running} running` : '', queued ? `${queued} queued` : '', waiting ? `${waiting} waiting for answer` : ''].filter(Boolean);
-  return parts.length ? `Codex · ${parts.join(' · ')}` : undefined;
+  const active = jobs.filter(job => jobLifecycle(job).active);
+  const name = active.length === 1 ? active[0]?.agentName : undefined;
+  return parts.length ? `${name || 'Codex'} · ${parts.join(' · ')}` : undefined;
+}
+
+export function isHiddenJob(state: CodexLiveState, job: CodexLiveJob): boolean {
+  if (state.hiddenJobIds?.includes(job.id)) return true;
+  if (state.hiddenFinishedBefore === undefined || !jobLifecycle(job).finished) return false;
+  const completedAt = Date.parse(job.completedAt);
+  const endedAt = Number.isFinite(completedAt) ? completedAt
+    : number(state.firstEndedAtMs?.[job.id]) ?? Date.parse(job.createdAt);
+  return endedAt <= state.hiddenFinishedBefore;
+}
+
+export function visibleJobs(state: CodexLiveState): CodexLiveJob[] {
+  return state.jobs.filter(job => !isHiddenJob(state, job));
+}
+
+export function clearFinished(state: CodexLiveState, nowMs: number): CodexLiveState {
+  const clearing = { ...state, hiddenFinishedBefore: Math.max(state.hiddenFinishedBefore ?? nowMs, nowMs) };
+  // A concurrent poll may have added completions after the captured clear time.
+  const hiddenJobIds = [...new Set([...(state.hiddenJobIds ?? []),
+    ...visibleJobs(state).filter(job => isHiddenJob(clearing, job)).map(job => job.id)])];
+  const cleared = { ...clearing, hiddenJobIds };
+  const jobs = visibleJobs(cleared).sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  const selectedId = jobs.some(job => job.id === state.selectedId) ? state.selectedId
+    : jobs.find(job => jobLifecycle(job).active)?.id ?? jobs[0]?.id ?? null;
+  return { ...cleared, selectedId, historyPage: 0 };
 }
 
 // Header-only summaries are the only information retained for unselected jobs.

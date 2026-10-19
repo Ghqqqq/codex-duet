@@ -1,6 +1,6 @@
 import type { ThemeKey } from 'claude-code';
 import type { CodexLiveEvent, CodexLiveFeedView, CodexLiveJob, CodexLiveState } from '../types';
-import { clean, cleanBody, elapsed, jobLifecycle } from './model';
+import { clean, cleanBody, elapsed, jobLifecycle, taskText, visibleJobs } from './model';
 
 import { cells, clusters, fit, width } from './text';
 export { fit, width } from './text';
@@ -54,8 +54,10 @@ export function jobRow(job: CodexLiveJob, selected: boolean, columns: number, no
   const available = Math.max(0, columns - width(selector + bullet));
   const meta = fit(` ${elapsed(job, now)}`, Math.max(0, available - Math.min(12, Math.ceil(available / 2))));
   const labelColumns = available - width(meta);
-  const label = fit(job.label, labelColumns);
-  return { selector, bullet, label, gap: ' '.repeat(Math.max(0, labelColumns - width(label))), meta };
+  const label = fit(job.agentName || taskText(job.label), labelColumns);
+  const summary = job.agentName && labelColumns > width(label) + 2
+    ? `  ${fit(taskText(job.label), labelColumns - width(label) - 2)}` : '';
+  return { selector, bullet, label, summary, gap: ' '.repeat(Math.max(0, labelColumns - width(label + summary))), meta };
 }
 
 export type ResultLine = { text: string; color: ThemeKey; bold?: boolean; strikethrough?: boolean };
@@ -175,7 +177,7 @@ export function toolUseCount(events: readonly CodexLiveEvent[]): number {
 export function headerItem(job: CodexLiveJob, now: number): FeedItem {
   const { word, color } = jobState(job);
   const model = [job.model, job.effort, job.fast ? 'fast' : '', job.sandbox].filter(Boolean).join(' · ');
-  return { key: 'job-header', title: `Codex(${job.label})`, bold: 'Codex', maxRows: 2, color,
+  return { key: 'job-header', title: job.agentName ? `${job.agentName}(${taskText(job.label)})` : taskText(job.label), bold: job.agentName, maxRows: 2, color,
     results: [{ text: `${word} · ${job.toolUses ?? toolUseCount(job.events)} tool uses · ${elapsed(job, now)}`, color },
       ...(model ? [{ text: model, color: 'subtle' as const }] : []),
       ...(job.detailsUnavailable ? [{ text: 'Details unavailable · showing the last good view', color: 'subtle' as const }] : [])] };
@@ -328,7 +330,7 @@ export function feedLines(job: CodexLiveJob, now: number, columns: number): Feed
   for (const item of feedItems(job, now)) {
     const source = `${item.key}-body`;
     const titleSpans: Span[] = item.bold
-      ? [{ text: item.title.slice(0, item.bold.length), bold: true }, { text: item.title.slice(item.bold.length) }]
+      ? [{ text: item.title.slice(0, item.bold.length), bold: true }, { text: item.title.slice(item.bold.length), color: item.key === 'job-header' ? 'subtle' : undefined }]
       : [{ text: item.title, color: item.key === 'pending-question' ? 'warning' : 'text' }];
     const message = item.markdown !== undefined ? messageLayout(item.markdown, Math.max(0, columns - 2)) : undefined;
     const body = message?.rows ?? laid(wrapSpans(titleSpans, Math.max(0, columns - 2), '', '', item.maxRows));
@@ -357,7 +359,8 @@ export function feedLines(job: CodexLiveJob, now: number, columns: number): Feed
 }
 
 export function selectedJob(state: CodexLiveState): CodexLiveJob | undefined {
-  return state.jobs.find(job => job.id === state.selectedId) ?? state.jobs.find(job => jobLifecycle(job).active) ?? state.jobs[0];
+  const jobs = visibleJobs(state).sort(newestJob);
+  return jobs.find(job => job.id === state.selectedId) ?? jobs.find(job => jobLifecycle(job).active) ?? jobs[0];
 }
 
 const newestJob = (a: CodexLiveJob, b: CodexLiveJob) =>
@@ -371,8 +374,10 @@ export function recentEndedJobIds(jobs: readonly CodexLiveJob[], now: number,
 
 export function headerLayout(state: CodexLiveState, selected: CodexLiveJob, bodyRows: number) {
   // In tiny windows reserve the footer and one feed row before the list.
+  state = { ...state, jobs: visibleJobs(state) };
+  const clear = state.jobs.some(job => jobLifecycle(job).finished);
   const room = Math.max(0, bodyRows - 2);
-  if (state.jobs.length < 2 || room < 2) return { jobs: [], toggle: false, more: 0, rows: 0 };
+  if ((state.jobs.length < 2 && !clear) || room < 2) return { jobs: [], toggle: false, more: 0, rows: 0 };
   const newest = [...state.jobs].sort(newestJob);
   // The poller computes this list against its actual tick, even when no jobs
   // remain active. Older persisted states can still use explicit completedAt.
@@ -396,18 +401,30 @@ export function headerLayout(state: CodexLiveState, selected: CodexLiveJob, body
   // Extra active jobs still lead when they exceeded the collapsed row limit.
   const candidates = state.jobsExpanded ? unique([...active, ...collapsed, ...newest]) : priority;
   const limit = state.jobsExpanded ? 10 : 3;
-  let jobs = take(candidates, Math.min(limit, room - 1));
+  let jobs = take(candidates, Math.min(limit, room - (clear ? 2 : 1)));
   // In expanded mode keep "Show fewer" when all history is visible, never +0.
   const showToggle = jobs.length < state.jobs.length || !!state.jobsExpanded && collapsed.length < state.jobs.length;
-  if (showToggle) jobs = take(candidates, Math.min(limit, room - 2));
+  if (showToggle || clear) jobs = take(candidates, Math.min(limit, room - 2));
   const capacity = Math.max(1, Math.min(10, room - 2));
   const pageCount = Math.ceil(candidates.length / capacity);
   const page = Math.min(Math.max(0, state.historyPage ?? 0), Math.max(0, pageCount - 1));
   if (state.jobsExpanded) jobs = candidates.slice(page * capacity, (page + 1) * capacity);
-  if (!jobs.length || room < 3 && showToggle) return { jobs: [], toggle: false, more: state.jobs.length, rows: 0, pageCount: 0 };
-  return { jobs, toggle: showToggle, more: state.jobs.length - jobs.length,
-    rows: jobs.length + 1 + (showToggle ? 1 : 0), pageCount, page };
+  if (!jobs.length || room < 3 && (showToggle || clear)) return { jobs: [], toggle: false, more: state.jobs.length, rows: 0, pageCount: 0 };
+  return { jobs, toggle: showToggle, clear, more: state.jobs.length - jobs.length,
+    rows: jobs.length + 1 + (showToggle || clear ? 1 : 0), pageCount, page };
 
+}
+
+// Render uses its current props, scroll uses its current event, and polling
+// uses the last measurement. Never grow a render to an older measured height.
+export function paneLayout(state: CodexLiveState, selected: CodexLiveJob | undefined,
+  availableRows: number, failure = false) {
+  const bodyRows = Math.max(0, Math.floor(availableRows));
+  const footerRows = bodyRows > 0 && (selected || failure) ? 1 : 0;
+  const header = selected ? headerLayout(state, selected, bodyRows)
+    : { jobs: [], toggle: false, clear: false, more: 0, rows: 0 };
+  const pinnedRows = header.rows;
+  return { bodyRows, header, pinnedRows, rows: Math.max(0, bodyRows - pinnedRows - footerRows) };
 }
 
 function hash(text: string): number {
@@ -471,7 +488,7 @@ export function footerLayout(job: CodexLiveJob, state: CodexLiveState, columns: 
   const spinner = ['·', '✢', '✳', '✶', '✻', '✽'][(state.spinnerTick ?? 0) % 6];
   let status = word === 'Running' ? `${spinner} Running… ${age} · ${uses}`
     : word === 'Waiting for Claude' ? `? Waiting for Claude · ${age}` : `${word === 'Queued' ? '…' : word === 'Needs input' ? '?' : '⏺'} ${word} · ${uses} · ${age}`;
-  if (state.jobs.length === 1) status += ` · ${job.label}`;
+  if (visibleJobs(state).length === 1) status += ` · ${job.agentName || taskText(job.label)}`;
   const stale = job.detailsUnavailable ? `⚠ stale · last update ${job.lastUpdateMs === undefined ? 'unknown' : `${Math.max(0, Math.floor((state.nowMs - job.lastUpdateMs) / 1000))}s`} ago` : '';
   if (stale) status = `${stale} · ${status}`;
   const color = stale ? 'warning' : stateColor;

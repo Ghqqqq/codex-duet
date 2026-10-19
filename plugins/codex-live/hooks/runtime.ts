@@ -8,6 +8,7 @@ const view = atom({ plugin: 'codex-live', key: 'view' } as const,
   { jobs: [], selectedId: null, nowMs: 0 } as CodexLiveState);
 let failure = '';
 export const updateFailure = () => failure;
+// Only scroll/poll consume these measurements; render always uses its props.
 export const viewports = new Map<string, { columns: number; bodyRows: number }>();
 export function reportFailure($: EngineInterface, error: unknown) {
   failure = limitChars(clean(error instanceof Error ? error.message : String(error)), 300);

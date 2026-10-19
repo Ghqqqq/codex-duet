@@ -1,8 +1,8 @@
 import { atom, read } from 'claude-code';
 import type { EngineInterface } from 'claude-code';
 import type { CodexLiveJob, CodexLiveMarker, CodexLiveState } from '../types';
-import { boundState, jobSummary, jobView, markerView, statusLine, unavailableJob } from './model';
-import { feedLines, headerLayout, normalizeFeed, recentEndedJobIds } from './layout';
+import { boundState, isHiddenJob, jobSummary, jobView, markerView, statusLine, unavailableJob } from './model';
+import { feedLines, paneLayout, normalizeFeed, recentEndedJobIds } from './layout';
 import { reportFailure, updateFailure, viewports, writeView } from './runtime';
 
 const view = atom({ plugin: 'codex-live', key: 'view' } as const,
@@ -27,6 +27,8 @@ export function createPoller($: EngineInterface): (force?: boolean) => Promise<v
   let canonical = false;
   let lastStatus: string | undefined;
   const cache = new Map<string, Cached>();
+  // Evicted entries keep only a header summary and file identity, never raw/details.
+  const evicted = new Map<string, Pick<Cached, 'job' | 'processedMtime'> & { jobFile: string }>();
   const markerNames = new Set<string>();
   const retryMarker = new Map<string, number>();
 
@@ -43,7 +45,7 @@ export function createPoller($: EngineInterface): (force?: boolean) => Promise<v
       const sessionChanged = !!current.sessionId && current.sessionId !== currentSession;
       if (session !== currentSession) {
         session = currentSession;
-        cache.clear(); markerNames.clear(); retryMarker.clear();
+        cache.clear(); evicted.clear(); markerNames.clear(); retryMarker.clear();
       }
       if (sessionChanged) current = { jobs: [], selectedId: null, nowMs: 0 };
       const seen = new Set(current.seenJobIds ?? current.jobs.map(job => job.id));
@@ -60,16 +62,23 @@ export function createPoller($: EngineInterface): (force?: boolean) => Promise<v
         canonical = true;
       }
       const folder = `${home.replace(/\/$/, '')}/duet/sessions/${session}`;
-      const entries = await $.fs.list(folder).catch(() => []);
-      for (const entry of entries) {
+      const entries = await $.fs.list(folder).catch(() => undefined);
+      const presentMarkers = entries && new Set(entries.filter(entry => entry.kind === 'file' && entry.name.endsWith('.json'))
+        .map(entry => entry.name));
+      if (presentMarkers) for (const name of evicted.keys()) if (!presentMarkers.has(name)) evicted.delete(name);
+      for (const entry of entries ?? []) {
         if (entry.kind !== 'file' || !entry.name.endsWith('.json') || markerNames.has(entry.name) || now < (retryMarker.get(entry.name) ?? 0)) continue;
         try {
           const marker = markerView(JSON.parse(await $.fs.read(`${folder}/${entry.name}`)));
           const previous = current.jobs.find(job => job.id === marker.jobId);
+          const remembered = evicted.get(entry.name);
+          const memo = remembered?.job.id === marker.jobId && remembered.jobFile === marker.jobFile ? remembered : undefined;
           if (!cache.has(marker.jobId)) cache.set(marker.jobId, {
-            marker, markerName: entry.name, job: previous ? jobSummary(previous) : unavailableJob(marker),
+            marker, markerName: entry.name, job: memo?.job ?? (previous ? jobSummary(previous) : unavailableJob(marker)),
+            processedMtime: memo?.processedMtime,
             full: previous?.detailsLoaded !== false ? previous : undefined, nextCheck: 0,
           });
+          evicted.delete(entry.name);
           markerNames.add(entry.name); // Only a successful parse marks the marker seen.
           retryMarker.delete(entry.name);
         } catch { retryMarker.set(entry.name, now + 5000); }
@@ -113,14 +122,17 @@ export function createPoller($: EngineInterface): (force?: boolean) => Promise<v
         full: job.detailsLoaded !== false ? job : undefined, nextCheck: Infinity,
       }));
       const newest = [...cache.values(), ...restored].sort((a, b) => b.job.createdAt.localeCompare(a.job.createdAt) || b.job.id.localeCompare(a.job.id));
-      const preferred = newest.find(entry => newlyActive.includes(entry.job.id))?.job.id;
       for (const id of newlyActive) opened.add(id);
       let retainedIds = new Set<string>();
       const compose = (latest: CodexLiveState): CodexLiveState => {
         if (sessionChanged) latest = current;
-        const selectedId = preferred ?? (newest.some(entry => entry.job.id === latest.selectedId) ? latest.selectedId
-          : newest.find(entry => entry.job.active)?.job.id ?? newest[0]?.job.id ?? null);
-        const retained = newest.filter((entry, i) => i < 20 || entry.job.active || entry.job.id === selectedId);
+        // Include this tick's first end observations before deciding visibility.
+        const visibility = { ...latest, firstEndedAtMs };
+        const visible = newest.filter(entry => !isHiddenJob(visibility, entry.job));
+        const preferred = visible.find(entry => newlyActive.includes(entry.job.id))?.job.id;
+        const selectedId = preferred ?? (visible.some(entry => entry.job.id === latest.selectedId) ? latest.selectedId
+          : visible.find(entry => entry.job.active)?.job.id ?? visible[0]?.job.id ?? null);
+        const retained = visible.filter((entry, i) => i < 20 || entry.job.active || entry.job.id === selectedId);
         retainedIds = new Set(retained.map(entry => entry.job.id));
         const jobs = retained.map(entry => {
           if (entry.job.id !== selectedId) return entry.job;
@@ -146,7 +158,7 @@ export function createPoller($: EngineInterface): (force?: boolean) => Promise<v
         if (selected && feed) {
           const measured = viewports.get(feed.surface ?? 'terminal');
           const columns = measured?.columns ?? feed.columns;
-          const rows = measured ? Math.max(0, measured.bodyRows - headerLayout(candidate, selected, measured.bodyRows).rows - 1) : feed.rows ?? 8;
+          const rows = measured ? paneLayout(candidate, selected, measured.bodyRows).rows : feed.rows ?? 8;
           if (columns) candidate.feeds = { ...candidate.feeds, [selected.id]: normalizeFeed(feedLines(selected, nowMs, columns), rows, { ...feed, columns }) };
         }
         return candidate;
@@ -156,6 +168,9 @@ export function createPoller($: EngineInterface): (force?: boolean) => Promise<v
       if (JSON.stringify(candidate) !== JSON.stringify(current) || updateFailure()) saved = await writeView($, compose);
       if (!saved) return;
       for (const [id, entry] of cache) if (!retainedIds.has(id)) {
+        if (!presentMarkers || presentMarkers.has(entry.markerName)) evicted.set(entry.markerName, {
+          job: jobSummary(entry.job), processedMtime: entry.processedMtime, jobFile: entry.marker.jobFile,
+        });
         cache.delete(id);
         markerNames.delete(entry.markerName);
         retryMarker.set(entry.markerName, now + 10000); // Eviction is not a permanent "seen" tombstone.

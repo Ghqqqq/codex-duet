@@ -3,6 +3,7 @@ export type CodexLiveMarker = {
   jobFile: string;
   summary: string;
   title: string;
+  name?: string;
   createdAt: string;
   workspaceRoot?: string;
 };
@@ -31,6 +32,7 @@ export type CodexLiveEvent = {
 export type CodexLiveJob = {
   id: string;
   label: string;
+  agentName?: string;
   status: string;
   active: boolean;
   finished: boolean;
@@ -71,6 +73,9 @@ export type CodexLiveState = {
   // Optional so a persisted view from an older plugin still follows the end.
   feeds?: Record<string, CodexLiveFeedView>;
   jobsExpanded?: boolean;
+  hiddenJobIds?: string[];
+  // Clear time in epoch milliseconds, including finished jobs outside the cache.
+  hiddenFinishedBefore?: number;
   spinnerTick?: number;
   // Eligibility is computed by the poller; lifecycle metadata survives reloads.
   recentEndedIds?: string[];

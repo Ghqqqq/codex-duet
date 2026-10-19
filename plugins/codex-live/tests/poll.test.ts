@@ -1,5 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing';
 import type { EngineInterface, On, PaneOpenArgs, UiScrollArgs } from 'claude-code';
+import { clearFinished, visibleJobs } from '../hooks/model';
 import { createPoller } from '../hooks/poll';
 import type { CodexLiveState } from '../types';
 
@@ -262,7 +263,8 @@ test('poller retains newest activity after the display/event caps without engine
   expect(f.scrolls.length).toBe(0);
 });
 
-test('mounted pane keeps a stopped feed fixed through polling, counts three new lines, and jumps', async ($, on) => {
+for (const placement of ['dock', 'inline'] as const) {
+test(`mounted ${placement} pane keeps a resized stopped feed fixed through polling, counts three new lines, and jumps`, async ($, on) => {
   const f = fixture(on);
   let delegated = 0;
   on('ui.scroll', () => { delegated++; return {}; });
@@ -277,7 +279,7 @@ test('mounted pane keeps a stopped feed fixed through polling, counts three new 
   revise(35, 1);
   await $.session.start(start);
   await f.clock.advance(1000);
-  const props = { title: 'Codex', isFocused: true, bodyColumns: 56, placement: 'inline' as const,
+  const props = { title: 'Codex', isFocused: true, bodyColumns: 56, placement,
     scroll: { offset: 0, bodyRows: 14 }, view: {} };
   const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props });
   const scroll = (by: number) => $.ui.scroll({ component: 'Pane', requestId: 'codex-live', offset: 0,
@@ -289,14 +291,19 @@ test('mounted pane keeps a stopped feed fixed through polling, counts three new 
   const offset = f.latest()?.feeds?.a?.feedOffset;
   expect(stopped).not.toBe(bottom);
   expect((await ui.find({ key: 'jump-bottom' }))?.text).toBe('↓ Jump to bottom');
+  await ui.redraw({ ...props, scroll: { offset: 0, bodyRows: 8 } });
+  const shortStopped = (await ui.find({ key: 'transcript' }))?.text;
   const firstGlyph = (await ui.find({ key: 'live-status' }))?.text[0];
   revise(38, 2);
   await f.clock.advance(1000);
-  expect((await ui.find({ key: 'transcript' }))?.text).toBe(stopped);
+  expect((await ui.find({ key: 'transcript' }))?.text).toBe(shortStopped);
   expect(f.latest()?.feeds?.a?.feedOffset).toBe(offset);
+  expect(f.latest()?.feeds?.a?.rows).toBe(2);
   expect((await ui.find({ key: 'jump-bottom' }))?.text).toBe('↓ 3 new · Jump to bottom');
   expect((await ui.find({ key: 'live-status' }))?.text[0]).not.toBe(firstGlyph);
   expect(await Promise.all(['a', 'b', 'c'].map(async key => (await ui.find({ key }))?.text))).toEqual(headers);
+  await ui.redraw(props);
+  expect((await ui.find({ key: 'transcript' }))?.text).toBe(stopped);
   expect((await ui.find({ key: 'jump-bottom' }))?.props.hotkey).toBe('b');
   await ui.press({ key: 'jump-bottom' });
   expect(f.latest()?.feeds?.a?.following).toBe(true);
@@ -308,6 +315,7 @@ test('mounted pane keeps a stopped feed fixed through polling, counts three new 
   expect(delegated).toBe(0);
   await ui.unmount();
 });
+}
 
 test('spinner ticks only while active and open; finished footer is stable while another job runs', async ($, on) => {
   const f = fixture(on);
@@ -367,7 +375,7 @@ test('poll ticks age recent done/stopped jobs into history at two minutes withou
   await $.session.start(start);
   await f.clock.advance(1000); // Recent jobs ended exactly 30 seconds ago.
   const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
-  const rows = async () => (await ui.findAll({ type: 'Button' })).map(button => button.key);
+  const rows = async () => (await ui.findAll({ type: 'Button' })).map(button => button.key).filter(key => key !== 'clear-finished');
   expect(await rows()).toEqual(['running', 'recent-done', 'recent-stopped', 'toggle-jobs']);
   expect((await ui.find({ key: 'toggle-jobs' }))?.text).toBe('+2 more');
   const jobReads = f.reads.filter(path => path.startsWith('/jobs/')).length;
@@ -387,7 +395,7 @@ test('poll ticks age recent done/stopped jobs into history at two minutes withou
   expect(f.reads.filter(path => path.startsWith('/jobs/')).length).toBe(jobReads);
   expect(f.stats.filter(path => path.startsWith('/jobs/') && path !== '/jobs/running.json').length).toBe(finishedStats + 36); // Four ended jobs, nine ten-second checks.
   await ui.press({ key: 'toggle-jobs' });
-  expect((await ui.findAll({ type: 'Button' })).length).toBe(6);
+  expect((await ui.findAll({ type: 'Button' })).length).toBe(7);
   await ui.press({ key: 'old-done' });
   await ui.press({ key: 'toggle-jobs' });
   expect(await rows()).toEqual(['running', 'old-done', 'toggle-jobs']);
@@ -473,7 +481,7 @@ test('D1: rejected state writes show a pinned error and debug log until recovery
   await $.session.start(start);
   await f.clock.advance(1000);
   const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live',
-    props: { ...historyPane, bodyColumns: 120 } });
+    props: { ...historyPane, placement: 'dock', bodyColumns: 120 } });
   expect((await ui.find({ key: 'footer' }))?.text).toContain('Pane update failed');
   expect((await ui.find({ key: 'footer' }))?.text).toContain('simulated state capacity failure');
   expect((await ui.find({ key: 'live-status' }))?.children[0]).toMatchObject({ props: { color: 'error' } });
@@ -586,4 +594,218 @@ test('D11: a fresh poller adopts session identity, selection, anchors, expansion
   expect(f.latest()?.seenJobIds?.includes('b')).toBe(true);
   expect(f.latest()?.autoOpenedJobIds).toEqual(['b']);
   expect(f.opens.length).toBe(1);
+});
+
+test('cleared jobs remain hidden through fresh poller reloads and new jobs appear', async () => {
+  const f = scrollFixture();
+  f.add('done'); f.add('active', 1);
+  f.files.set('/jobs/done.json', { mtime: 1, text: JSON.stringify({ id: 'done', status: 'completed' }) });
+  await f.poll();
+  f.latest().selectedId = 'done';
+  Object.assign(f.latest(), clearFinished(f.latest(), epoch));
+  const files = [...f.files.entries()];
+  const reloaded = f.reload();
+  await reloaded(true);
+  expect(f.latest().hiddenJobIds).toEqual(['done']);
+  expect(f.latest().hiddenFinishedBefore).toBe(epoch);
+  expect(f.latest().selectedId).toBe('active');
+  expect(visibleJobs(f.latest()).map(job => job.id)).toEqual(['active']);
+  expect([...f.files.entries()]).toEqual(files);
+  // This old job was never retained or added to hiddenJobIds before the reload.
+  f.add('rediscovered', -7200);
+  f.files.set('/jobs/rediscovered.json', { mtime: 1, text: JSON.stringify({
+    id: 'rediscovered', status: 'blocked', completedAt: created(epoch - 3600000),
+  }) });
+  f.advance(2000);
+  f.add('new', 2);
+  await reloaded(true);
+  expect(f.latest().selectedId).toBe('new');
+  expect(visibleJobs(f.latest()).map(job => job.id)).toEqual(['new', 'active']);
+  expect(f.latest().hiddenJobIds).toEqual(['done']);
+  expect(f.latest().hiddenFinishedBefore).toBe(epoch);
+});
+
+test('Clear finished survives polling, leaves disk records intact and resets for another session', async ($, on) => {
+  const f = fixture(on);
+  f.add('done', 'completed');
+  await $.session.start(start);
+  await $.command.run({ command: 'codex-live', args: '', origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 56 } });
+  await f.clock.advance(1000);
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
+  const files = [...f.files.entries()];
+  await ui.press({ key: 'clear-finished' });
+  await f.clock.advance(10000);
+  expect(f.latest()?.hiddenJobIds).toEqual(['done']);
+  expect(f.latest()?.selectedId).toBe(null);
+  expect([...f.files.entries()]).toEqual(files);
+  expect((await ui.find({ key: 'transcript' }))?.text).toContain('Finished jobs are hidden.');
+  f.add('new', 'running', 1);
+  await f.clock.advance(1000);
+  expect(f.latest()?.selectedId).toBe('new');
+  expect((await ui.find({ key: 'job-header-body-0' }))?.text).toContain('Task new');
+  expect(await ui.find({ key: 'toggle-jobs' })).toBe(undefined);
+  f.switchSession();
+  f.add('done', 'completed');
+  await f.clock.advance(1000);
+  expect(f.latest()?.hiddenJobIds).toBe(undefined);
+  expect(f.latest()?.hiddenFinishedBefore).toBe(undefined);
+  expect((await ui.find({ key: 'clear-finished' }))?.text).toBe('Clear finished');
+  await ui.unmount();
+});
+
+test('jobs active at Clear stay visible when they finish, and new jobs remain selectable', async ($, on) => {
+  const f = fixture(on);
+  f.add('done', 'completed', -3);
+  f.add('running', 'running', -2);
+  f.add('missing-end', 'running', -1);
+  await $.session.start(start);
+  await f.clock.advance(1000);
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
+  await ui.press({ key: 'clear-finished' });
+  expect(f.latest()?.hiddenFinishedBefore).toBe(epoch + 1000);
+  f.files.set('/jobs/running.json', { mtime: 2, text: JSON.stringify({
+    id: 'running', status: 'completed', completedAt: created(epoch + 2000),
+  }) });
+  f.files.set('/jobs/missing-end.json', { mtime: 2, text: JSON.stringify({ id: 'missing-end', status: 'interrupted' }) });
+  await f.clock.advance(1000);
+  expect(visibleJobs(f.latest()!).map(job => job.id)).toEqual(['missing-end', 'running']);
+  expect(f.latest()?.jobs.every(job => job.finished)).toBe(true);
+  expect(f.latest()?.firstEndedAtMs?.['missing-end']).toBe(epoch + 2000);
+  f.add('new', 'running', 3);
+  f.add('new-finished', 'completed', 3);
+  await f.clock.advance(1000);
+  expect(f.latest()?.selectedId).toBe('new');
+  expect(visibleJobs(f.latest()!).map(job => job.id)).toEqual(['new-finished', 'new', 'missing-end', 'running']);
+  await ui.press({ key: 'missing-end' });
+  await ui.press({ key: 'new' });
+  expect(f.latest()?.selectedId).toBe('new');
+  await ui.press({ key: 'toggle-jobs' });
+  await ui.press({ key: 'new-finished' });
+  expect(f.latest()?.selectedId).toBe('new-finished');
+  await f.clock.advance(10000);
+  expect(visibleJobs(f.latest()!).map(job => job.id)).toEqual(['new-finished', 'new', 'missing-end', 'running']);
+  expect(f.latest()?.hiddenJobIds).toEqual(['done']);
+  await ui.unmount();
+});
+
+test('hidden jobs do not consume the twenty visible retention slots', async () => {
+  const f = scrollFixture();
+  f.add('old-active', -100);
+  f.add('old-selected', -99);
+  for (let n = 0; n < 25; n++) {
+    const id = `visible-${n}`;
+    f.add(id, n - 50);
+    f.files.set(`/jobs/${id}.json`, { mtime: 1, text: JSON.stringify({ id, status: 'completed', completedAt: created(epoch + 1) }) });
+  }
+  f.files.set('/jobs/old-selected.json', { mtime: 1, text: JSON.stringify({
+    id: 'old-selected', status: 'completed', completedAt: created(epoch + 1),
+  }) });
+  await f.poll();
+  f.latest().selectedId = 'old-selected';
+  // Watermark-only hidden jobs and legacy ID-hidden jobs sort ahead of every visible job.
+  f.latest().hiddenFinishedBefore = epoch;
+  f.latest().hiddenJobIds = ['legacy'];
+  for (const id of ['legacy', ...Array.from({ length: 25 }, (_, n) => `hidden-${n}`)]) {
+    f.add(id);
+    f.files.set(`/jobs/${id}.json`, { mtime: 1, text: JSON.stringify({
+      id, status: 'completed', completedAt: created(epoch + (id === 'legacy' ? 1 : 0)),
+    }) });
+  }
+  f.advance(10000);
+  await f.poll(true);
+  expect(f.latest().jobs.map(job => job.id)).toEqual([
+    ...Array.from({ length: 20 }, (_, n) => `visible-${24 - n}`), 'old-selected', 'old-active',
+  ]);
+  expect(f.latest().selectedId).toBe('old-selected');
+});
+
+test('Clear finished hides all 25 finished jobs across repeated marker rediscovery', async ($, on) => {
+  const f = fixture(on);
+  for (let n = 0; n < 25; n++) {
+    const id = `old-${n}`;
+    const status = n === 0 ? 'blocked' : 'completed';
+    f.add(id, status, n - 7200);
+    if (n % 2 === 0) f.files.set(`/jobs/${id}.json`, { mtime: 1, text: JSON.stringify({
+      id, status, completedAt: created(epoch - 3600000),
+    }) });
+  }
+  await $.session.start(start);
+  await $.command.run({ command: 'codex-live', args: '', origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 100 } });
+  await f.clock.advance(8000); // The idle display clock is stale when Clear is pressed.
+  expect(f.latest()?.jobs.length).toBe(20);
+  expect(f.latest()?.jobs.some(job => job.id === 'old-0')).toBe(false);
+  const jobReads = () => f.reads.filter(path => path.startsWith('/jobs/'));
+  expect(jobReads().length).toBe(25);
+  const firstEndedAtMs = { ...f.latest()?.firstEndedAtMs };
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live',
+    props: { ...historyPane, bodyColumns: 100 } });
+  const files = [...f.files.entries()];
+  await ui.press({ key: 'clear-finished' });
+  for (let cycle = 0; cycle < 3; cycle++) {
+    await f.clock.advance(10000);
+    expect(visibleJobs(f.latest()!).map(job => job.id)).toEqual([]);
+    expect(f.latest()?.selectedId).toBe(null);
+    expect((await ui.find({ key: 'transcript' }))?.text).toContain('No Codex jobs in this session yet.');
+    expect((await ui.find({ key: 'hidden-notice' }))?.text).toBe('Finished jobs are hidden. Their records stay for 30 days.');
+    expect(await ui.find({ key: 'toggle-jobs' })).toBe(undefined);
+    expect(await ui.find({ key: 'clear-finished' })).toBe(undefined);
+  }
+  expect(f.latest()?.hiddenFinishedBefore).toBe(epoch + 8000);
+  expect(f.reads.filter(path => path === '/canonical/duet/sessions/session-a/old-0.json').length).toBe(4);
+  expect([...f.files.entries()]).toEqual(files);
+  expect(jobReads().slice(25).length).toBe(0);
+  expect(f.latest()?.firstEndedAtMs).toEqual(firstEndedAtMs);
+  const changed = '/jobs/old-0.json'; // Hidden by the watermark, outside hiddenJobIds.
+  f.files.set(changed, { ...f.files.get(changed)!, mtime: 2 });
+  await f.clock.advance(10000);
+  expect(jobReads().slice(25)).toEqual([changed]);
+  await f.clock.advance(10000);
+  expect(jobReads().slice(25)).toEqual([changed]);
+  expect(visibleJobs(f.latest()!).map(job => job.id)).toEqual([]);
+  expect(f.latest()?.firstEndedAtMs).toEqual(firstEndedAtMs);
+  await ui.unmount();
+});
+
+test('evicted history reuses mtimes, drops missing marker memos and detects revived jobs', async ($, on) => {
+  const f = fixture(on);
+  for (let n = 0; n < 25; n++) f.add(`old-${n}`, 'completed', n - 25);
+  await $.session.start(start);
+  await $.command.run({ command: 'codex-live', args: '', origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 100 } });
+  await f.clock.advance(1000);
+  const jobReads = () => f.reads.filter(path => path.startsWith('/jobs/'));
+  expect(jobReads().length).toBe(25);
+  const firstEndedAtMs = { ...f.latest()?.firstEndedAtMs };
+  await f.clock.advance(30000);
+  expect(jobReads().length).toBe(25);
+  expect(f.stats.filter(path => path === '/jobs/old-0.json').length).toBe(4);
+  expect(f.latest()?.jobs.length).toBe(20);
+  expect(f.latest()?.firstEndedAtMs).toEqual(firstEndedAtMs);
+
+  const marker = '/canonical/duet/sessions/session-a/old-0.json';
+  const saved = f.files.get(marker)!;
+  f.files.delete(marker);
+  await f.clock.advance(1000); // A successful listing confirms disappearance.
+  f.files.set(marker, saved);
+  await f.clock.advance(10000);
+  expect(jobReads().slice(25)).toEqual(['/jobs/old-0.json']); // Same mtime, but its memo was dropped.
+  expect(f.latest()?.firstEndedAtMs).toEqual(firstEndedAtMs);
+
+  f.files.set('/jobs/old-0.json', { mtime: 2, text: JSON.stringify({ id: 'old-0', status: 'running',
+    activity: [{ seq: 1, type: 'agentMessage', text: 'Revived' }],
+  }) });
+  await f.clock.advance(10000);
+  expect(jobReads().slice(26)).toEqual(['/jobs/old-0.json']);
+  expect(f.latest()?.jobs.find(job => job.id === 'old-0')?.active).toBe(true);
+  expect(f.latest()?.jobs.length).toBe(21);
+  expect(f.latest()?.firstEndedAtMs?.['old-0']).toBe(undefined);
+
+  f.switchSession();
+  f.add('old-1', 'running'); // Same marker name and mtime must not reuse another session's memo.
+  await f.clock.advance(1000);
+  expect(jobReads().slice(27)).toEqual(['/jobs/old-1.json']);
+  expect(f.latest()?.jobs.map(job => job.id)).toEqual(['old-1']);
+  expect(f.latest()?.jobs[0]?.active).toBe(true);
 });

@@ -1,9 +1,10 @@
 import { atom, read } from 'claude-code';
 import type { Register, Timer } from 'claude-code';
 import type { CodexLiveState } from '../types';
-import { feedLines, feedWindow, fit, footerLayout, headerLayout, jobRow, jobState,
+import { feedLines, feedWindow, fit, footerLayout, paneLayout, jobRow, jobState,
   messageLines, scrollFeed, selectedJob, width } from './layout';
 import type { Span } from './layout';
+import { clearFinished, jobLifecycle, visibleJobs } from './model';
 import { createPoller } from './poll';
 import { updateFailure, viewports, writeView } from './runtime';
 
@@ -35,13 +36,12 @@ export const register: Register = on => {
     await writeView($, state => {
       const job = selectedJob(state);
       if (!job) return state;
-      const header = headerLayout(state, job, e.bodyRows);
-      const rows = Math.max(0, e.bodyRows - header.rows - 1);
+      const { bodyRows, pinnedRows, rows } = paneLayout(state, job, e.bodyRows);
       // A wheel over pinned chrome does not move the transcript beneath it.
-      if (e.pointer && (e.pointer.row < header.rows || e.pointer.row >= e.bodyRows - 1 ||
+      if (e.pointer && (e.pointer.row < pinnedRows || e.pointer.row >= bodyRows - 1 ||
           e.pointer.column < 0 || e.pointer.column >= columns)) return state;
       const lines = feedLines(job, state.nowMs, columns);
-      const next = scrollFeed(lines, rows, state.feeds?.[job.id], e.by, e.bodyRows, e.contentRows, !!e.pointer);
+      const next = scrollFeed(lines, rows, state.feeds?.[job.id], e.by, bodyRows, e.contentRows, !!e.pointer);
       return { ...state, feeds: { ...state.feeds, [job.id]: { ...next, columns, surface: surface ?? 'terminal' } } };
     });
     // Consume the move; render compensates for any retained engine offset.
@@ -52,25 +52,44 @@ export const register: Register = on => {
     const { Box, Text, Button } = $.ui.resolve(e);
     const state = await read($, view);
     const columns = Math.max(0, Math.floor(e.props.bodyColumns));
-    const bodyRows = Math.max(0, Math.floor(e.props.scroll.bodyRows));
+    const failure = updateFailure();
+    const selected = selectedJob(state);
+    const { bodyRows, header, rows } = paneLayout(state, selected, e.props.scroll.bodyRows, !!failure);
     viewports.set(e.surface, { columns, bodyRows });
     const engineOffset = Math.max(0, Math.floor(e.props.scroll.offset));
-    const selected = selectedJob(state);
-    const header = selected ? headerLayout(state, selected, bodyRows) : { jobs: [], toggle: false, more: 0, rows: 0 };
-    const rows = Math.max(0, bodyRows - header.rows - (selected || updateFailure() ? 1 : 0));
+    const jobs = visibleJobs(state);
     const lines = selected ? feedLines(selected, state.nowMs, columns)
       : messageLines('No Codex jobs in this session yet. They appear here when Claude starts one.', columns)
         .map((spans, i) => ({ key: `empty-${i}`, spans: spans.map(span => ({ ...span, color: 'subtle' as const })) }));
+    if (!selected && (state.hiddenFinishedBefore !== undefined || state.hiddenJobIds?.length)) lines.push({ key: 'hidden-notice',
+      spans: [{ text: fit('Finished jobs are hidden. Their records stay for 30 days.', columns), color: 'subtle' }] });
     const window = selected ? feedWindow(lines, rows, state.feeds?.[selected.id]) : { lines: lines.slice(0, rows), following: true, newLines: 0 };
-    const failure = updateFailure();
-    const tinyHistory = !!selected && state.jobs.length > 1 && !header.rows;
-    const historyText = tinyHistory ? fit(`+${state.jobs.length - 1} more`, Math.max(0, columns - 3)) : '';
-    const footerColumns = Math.max(0, columns - (tinyHistory ? width(historyText) + 4 : 0));
+    const clearText = 'Clear finished';
+    const canClear = jobs.some(job => jobLifecycle(job).finished) && columns >= width(clearText);
+    const tinyClear = !!selected && !header.rows && canClear;
+    const historyText = `+${jobs.length - 1} more`;
+    const tinyHistory = !!selected && jobs.length > 1 && !header.rows &&
+      width(historyText) + 3 <= columns - (tinyClear ? width(clearText) + 2 : 0);
+    const footerColumns = Math.max(0, columns - (tinyHistory ? width(historyText) + 4 : 0)
+      - (tinyClear ? width(clearText) + 2 : 0));
+    const toggleText = header.more ? `+${header.more} more` : '− Show fewer';
+    const headerClear = !!header.clear && canClear;
+    const headerToggle = header.toggle && width(toggleText) <= columns - (headerClear ? width(clearText) + 2 : 0);
+    const clear = async () => {
+      const now = await $.clock.now();
+      await writeView($, latest => clearFinished(latest, now));
+      await poll?.(true);
+    };
     const footer = failure ? { left: fit(`Pane update failed · ${failure}`, footerColumns), jump: '', gap: '', color: 'error' as const }
       : selected ? footerLayout(selected, state, footerColumns, window.following, window.newLines) : undefined;
+    const jumpToBottom = async () => {
+      await writeView($, latest => ({ ...latest, feeds: { ...latest.feeds,
+        [selected!.id]: { feedOffset: 0, following: true, seenLines: 0 } } }));
+    };
     const select = async (id: string) => {
-      await writeView($, latest => ({ ...latest, selectedId: id, feeds: { ...latest.feeds,
-        [id]: { feedOffset: 0, following: true, seenLines: 0 } } }));
+      await writeView($, latest => visibleJobs(latest).some(job => job.id === id)
+        ? { ...latest, selectedId: id, feeds: { ...latest.feeds,
+          [id]: { feedOffset: 0, following: true, seenLines: 0 } } } : latest);
       await poll?.(true);
     };
     // Budget the drawn rows, not the retained messages. Reserve 36k for the
@@ -88,7 +107,7 @@ export const register: Register = on => {
       return <Text color={span.color} bold={span.bold} strikethrough={span.strikethrough}
         wrap="truncate-end">{text}</Text>;
     }); };
-    return <Box key="pane" flexDirection="column" width={columns} height={engineOffset + bodyRows + 1} flexShrink={0}>
+    return <Box key="pane" flexDirection="column" width={columns} height={engineOffset + bodyRows + 1} minHeight={0} flexShrink={1}>
       {engineOffset > 0 && <Box key="engine-offset-pad" height={engineOffset} flexShrink={0} />}
       {header.jobs.map(job => {
         const isSelected = selected?.id === job.id;
@@ -96,24 +115,26 @@ export const register: Register = on => {
         return <Box key={`header-${job.id}`} height={1} flexShrink={0} overflow="hidden">
           <Button key={job.id} plain onPress={() => select(job.id)}><Text wrap="truncate-end"><Text color="suggestion">{row.selector}</Text><Text
             color={jobState(job).color}>{row.bullet}</Text><Text bold={isSelected} color="text">{row.label}</Text>
-            {row.gap}<Text color="subtle">{row.meta}</Text></Text></Button>
+            <Text color="subtle">{row.summary}</Text>{row.gap}<Text color="subtle">{row.meta}</Text></Text></Button>
         </Box>;
       })}
-      {header.toggle && <Box key="header-toggle" height={1} flexShrink={0} overflow="hidden">
-        <Button key="toggle-jobs" plain onPress={async () => {
+      {(header.toggle || header.clear) && <Box key="header-toggle" flexDirection="row" height={1} flexShrink={0} overflow="hidden">
+        {headerToggle && <Button key="toggle-jobs" plain onPress={async () => {
           await writeView($, latest => {
             const current = selectedJob(latest);
-            const pages = current ? headerLayout(latest, current, bodyRows).pageCount ?? 1 : 1;
+            const pages = paneLayout(latest, current, bodyRows).header.pageCount ?? 1;
             const nextPage = (latest.historyPage ?? 0) + 1;
             return !latest.jobsExpanded ? { ...latest, jobsExpanded: true, historyPage: 0 }
               : nextPage < pages ? { ...latest, historyPage: nextPage } : { ...latest, jobsExpanded: false, historyPage: 0 };
           });
-        }}><Text color="subtle" wrap="truncate-end">{fit(header.more ? `+${header.more} more` : '− Show fewer', columns)}</Text></Button>
+        }}><Text color="subtle" wrap="truncate-end">{toggleText}</Text></Button>}
+        {headerToggle && headerClear && <Text>  </Text>}
+        {headerClear && <Button key="clear-finished" plain onPress={clear}><Text color="subtle">{clearText}</Text></Button>}
       </Box>}
       {header.rows > 0 && <Box key="header-rule" height={1} flexShrink={0}>
         <Text color="subtle" wrap="truncate-end">{'─'.repeat(columns)}</Text>
       </Box>}
-      <Box key="transcript" flexDirection="column" height={rows} flexShrink={0}>
+      <Box key="transcript" flexDirection="column" height={rows} minHeight={0} flexShrink={1} overflow="hidden">
         {Array.from({ length: rows }, (_, i) => {
           const line = window.lines[i];
           return <Box key={line?.key ?? `padding-${i}`} height={1} flexShrink={0} overflow="hidden">
@@ -126,14 +147,14 @@ export const register: Register = on => {
           <Text color={footer.color} wrap="truncate-end">{footer.left}</Text>
         </Box>
         <Text wrap="truncate-end">{footer.gap}</Text>
-        {!window.following && !failure && <Button key="jump-bottom" plain hotkey="b" onPress={async () => {
-          await writeView($, latest => ({ ...latest, feeds: { ...latest.feeds,
-            [selected!.id]: { feedOffset: 0, following: true, seenLines: 0 } } }));
-        }}><Text color="suggestion" wrap="truncate-end">{footer.jump}</Text></Button>}
+        {!window.following && !failure && <Button key="jump-bottom" plain hotkey="b" onPress={jumpToBottom}>
+          <Text color="suggestion" wrap="truncate-end">{footer.jump}</Text></Button>}
         {tinyHistory && <Button key="toggle-jobs" plain hotkey="j" onPress={() => {
-          const index = state.jobs.findIndex(job => job.id === selected!.id);
-          return select(state.jobs[(index + 1) % state.jobs.length]!.id);
+          const index = jobs.findIndex(job => job.id === selected!.id);
+          return select(jobs[(index + 1) % jobs.length]!.id);
         }}><Text color="subtle" wrap="truncate-end">{historyText}</Text></Button>}
+        {tinyClear && columns >= width(clearText) + 2 && <Text>  </Text>}
+        {tinyClear && <Button key="clear-finished" plain onPress={clear}><Text color="subtle">{clearText}</Text></Button>}
       </Box>}
       <Box key="scroll-sentinel" height={1} flexShrink={0}><Text wrap="truncate-end"> </Text></Box>
     </Box>;

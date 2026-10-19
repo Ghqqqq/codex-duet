@@ -65,16 +65,39 @@ Emoji widths and cuts use whole grapheme clusters (code points as fallback when
 64,000 characters for visible feed text and the rest of the 100,000-character
 allowance for pinned rows and controls.
 
-Each drawing has exactly `scroll.offset + scroll.bodyRows + 1` rows. After
-`scroll.offset` blank rows, it contains:
-header, feed window, footer, then a blank sentinel. The 2.1.302 API says an exactly
+Each render budgets only its current `scroll.bodyRows`, never a previously
+cached larger height. Render, scroll and polling share the same row allocation;
+scroll uses its event's current height, and polling uses the latest measurement
+for that surface. The pane and transcript allow flex shrinking with a zero
+minimum height; the pinned rows do not shrink, and overflow in the transcript
+is clipped. With smaller render metrics, the feed loses rows before the job list
+is reduced. Growing the body restores the feed while preserving its content
+anchor or following the bottom.
+
+The requested tree height is `scroll.offset + scroll.bodyRows + 1`. After
+`scroll.offset` blank rows, it contains: job header,
+feed window, footer, then a blank sentinel. The footer is at the last visible
+body row; the sentinel is just beyond it. The 2.1.302 API says an exactly
 fitting tree has no scroll range and arrows dispatch only while rows can scroll.
 The sentinel supplies that range; the `ui.scroll` hook consumes every move
 without `next`. Leading padding compensates for any retained engine offset,
-keeping pinned rows aligned and the sentinel just below the visible window.
-Tests cover offsets 0, 1 and 5 and ensure scrolls never reach the engine; the kit validates trees and hooks, not actual
-terminal paint or physical key dispatch. Very short panes reduce the header to
-reserve the footer and a feed row; a one-row body shows only the footer.
+keeping pinned rows aligned. Tests redraw the same mount at 20, 14, then 20 rows
+on all four surfaces, docked and inline, with offsets 0, 1 and 5. They check the
+footer's position, unchanged job rows, following and stopped feeds, page and
+wheel scrolling, the footer's jump control and polling at the smaller height.
+Very short panes reduce the job list; a one-row body shows only the footer,
+and a two-row body shows one transcript row above the footer.
+
+Known limitation: while Claude Code's slash-command suggestions are open, they cover
+the lower rows of a docked pane, including its footer, until the menu closes. The
+engine does not redraw a pane for a height-only change and exposes no count of the
+rows actually showing (`reference.md` 140–142; `RenderPropsOf.Pane.scroll` in
+`types/claude-code.d.ts` 10759–10767 describes the room, not the visible rows), so
+the pane cannot move its footer out of the way.
+
+The test kit's `MountedMembers`
+(16300–16304; `redraw` at 16430–16442) checks descriptions and hooks, not terminal
+paint, so the tests cannot establish the engine's physical overlay behavior.
 
 The plugin reads session markers and job JSON written by the Duet companion in
 `CODEX_COMPANION_HOME` (default `~/.claude/codex-isolated`). It never writes job

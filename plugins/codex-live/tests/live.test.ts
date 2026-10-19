@@ -2,10 +2,10 @@ import { test, expect } from 'claude-code/testing';
 import type { On } from 'claude-code';
 import type { FoundElement } from 'claude-code/testing';
 import type { CodexLiveEvent, CodexLiveMarker, CodexLiveState } from '../types';
-import { boundState, collapseActivity, elapsed, glyph, jobView, markerView, statusLine } from '../hooks/model';
+import { boundState, clearFinished, isHiddenJob, visibleJobs, taskText, collapseActivity, elapsed, glyph, jobView, markerView, statusLine } from '../hooks/model';
 import { activityItems, eventItem, feedItems, fileResult, fit, headerItem, jobRow, jobState,
   relativePath, toolResult, toolUseCount, unwrapCommand, width, wrap, feedLines, feedWindow,
-  footerLayout, headerLayout, inlineSpans, messageLines, recentEndedJobIds, reconcileFeed, scrollFeed } from '../hooks/layout';
+  footerLayout, headerLayout, inlineSpans, messageLines, recentEndedJobIds, reconcileFeed, scrollFeed, selectedJob } from '../hooks/layout';
 
 const createdAt = '2026-10-18T00:00:00.000Z';
 const epoch = Date.parse(createdAt);
@@ -59,6 +59,8 @@ test('running view selects display fields and retains optional transcript data',
 
 test('marker validation stays compatible and workspace paths are display-only', () => {
   const raw = { v: 1, jobId: 'a', jobFile: '/jobs/a.json' };
+  expect(markerView(raw).name).toBe(undefined);
+  expect(jobView({ id: 'a', status: 'completed' }, markerView(raw)).agentName).toBe(undefined);
   expect(markerView(raw).workspaceRoot).toBe(undefined);
   expect(markerView({ ...raw, workspaceRoot: 'relative' }).workspaceRoot).toBe(undefined);
   expect(markerView({ ...raw, workspaceRoot: '/workspace' }).workspaceRoot).toBe('/workspace');
@@ -67,6 +69,89 @@ test('marker validation stays compatible and workspace paths are display-only', 
   expect(relativePath('/workspace/../outside/a.ts', '/workspace')).toBe('/workspace/../outside/a.ts');
   expect(relativePath('/workspace/src/a.ts')).toBe('/workspace/src/a.ts');
   expect(relativePath('src/a.ts', '/workspace')).toBe('src/a.ts');
+});
+
+test('names and first-sentence task labels strip dispatch prefixes in rows, header, footer and status', () => {
+  const summary = "Undo's ownership-marker save is fixed. Verify the rest.";
+  for (const prefix of ['OBJECTIVE: ', 'FOLLOW-UP on task-123: ', 'REWORK task-123: ', 'REWORK: OBJECTIVE: ']) {
+    const m = markerView({ ...marker(), v: 1, name: 'Hopper', summary: prefix + summary });
+    const job = jobView({ id: m.jobId, status: 'running' }, m);
+    expect(job.agentName).toBe('Hopper');
+    expect(job.label).toBe("Undo's ownership-marker save is fixed.");
+    expect(headerItem(job, epoch)).toMatchObject({ title: "Hopper(Undo's ownership-marker save is fixed.)", bold: 'Hopper' });
+    const row = jobRow(job, true, 90, epoch);
+    expect(row.label).toBe('Hopper');
+    expect(row.summary).toContain("Undo's ownership-marker save is fixed.");
+    const state = { jobs: [job], selectedId: job.id, nowMs: epoch };
+    expect(footerLayout(job, state, 100, true, 0).left).toContain('Hopper');
+    expect(statusLine([job])).toBe('Hopper · 1 running');
+    expect(JSON.stringify(feedLines(job, epoch, 90))).not.toContain('OBJECTIVE:');
+    const legacy = jobView({ id: m.jobId, status: 'running' }, { ...m, name: undefined });
+    expect(headerItem(legacy, epoch).title).toBe(job.label);
+    expect(jobRow(legacy, false, 90, epoch).label).toBe(job.label);
+    expect(jobView({ id: m.jobId, status: 'running', agentName: 'Ada' }, m).agentName).toBe('Ada');
+    for (const columns of [0, 1, 4, 12, 25, 40, 56]) {
+      const narrow = jobRow(job, true, columns, epoch);
+      expect(width(Object.values(narrow).join('')) <= columns).toBe(true);
+    }
+  }
+  expect(taskText('OBJECTIVE: Fix version 1.2 and file.js. Then test.')).toBe('Fix version 1.2 and file.js.');
+});
+
+test('clearing includes all terminal states, keeps active jobs and chooses the newest visible fallback', () => {
+  const jobs = ['completed', 'failed', 'cancelled', 'interrupted', 'stopped', 'blocked', 'needs_input', 'running', 'queued', 'waiting']
+    .map((status, i) => jobView({ id: status, status }, { ...marker(status), createdAt: new Date(epoch + (i - 10) * 1000).toISOString() }));
+  const state = { jobs, selectedId: 'failed', nowMs: epoch };
+  const cleared = clearFinished(state, epoch);
+  expect(cleared.hiddenJobIds).toEqual(jobs.slice(0, 7).map(job => job.id));
+  expect(visibleJobs(cleared).map(job => job.id)).toEqual(['running', 'queued', 'waiting']);
+  expect(cleared.selectedId).toBe('waiting');
+  expect(cleared.jobs).toEqual(jobs);
+  expect(state).not.toHaveProperty('hiddenJobIds');
+  const unknown = jobView({ id: 'unknown', status: 'unknown' }, marker('unknown'));
+  expect(clearFinished({ ...state, jobs: [jobs[0]!, unknown], selectedId: 'completed' }, epoch).selectedId).toBe('unknown');
+});
+
+test('hidden jobs use completion, first observed end, then creation time and honor legacy IDs', () => {
+  const jobs = [
+    ['boundary', 'completed', epoch, epoch + 1000],
+    ['later-completion', 'completed', epoch + 1, epoch - 1000],
+    ['observed-before', 'blocked', undefined, epoch - 1],
+    ['observed-after', 'interrupted', undefined, epoch + 1],
+    ['creation-only', 'stopped', undefined, undefined],
+    ['running', 'running', undefined, undefined],
+    ['queued', 'queued', undefined, undefined],
+    ['waiting', 'waiting', undefined, undefined],
+    ['legacy', 'completed', epoch + 1000, undefined],
+  ] as const;
+  const state: CodexLiveState = {
+    jobs: jobs.map(([id, status, end]) => jobView({ id, status,
+      completedAt: end === undefined ? 'invalid' : new Date(end).toISOString(),
+    }, { ...marker(id), createdAt: new Date(epoch - 5000).toISOString() })),
+    selectedId: 'boundary', nowMs: 0, hiddenFinishedBefore: epoch, hiddenJobIds: ['legacy'],
+    firstEndedAtMs: Object.fromEntries(jobs.filter(([, , , end]) => end !== undefined).map(([id, , , end]) => [id, end!])),
+  };
+  expect(state.jobs.filter(job => isHiddenJob(state, job)).map(job => job.id))
+    .toEqual(['boundary', 'observed-before', 'creation-only', 'legacy']);
+  expect(visibleJobs(state).map(job => job.id)).toEqual(['later-completion', 'observed-after', 'running', 'queued', 'waiting']);
+  expect(selectedJob(state)?.id).toBe('waiting');
+  const clearedAgain = clearFinished(state, epoch + 2000);
+  expect(clearedAgain.hiddenFinishedBefore).toBe(epoch + 2000);
+  expect(clearedAgain.hiddenJobIds).toEqual(['legacy', 'later-completion', 'observed-after']);
+  expect(visibleJobs(clearedAgain).map(job => job.id)).toEqual(['running', 'queued', 'waiting']);
+  expect(clearFinished(clearedAgain, epoch).hiddenFinishedBefore).toBe(epoch + 2000);
+});
+
+test('clearing against newer state preserves jobs that ended after the click timestamp', () => {
+  const jobs = ['before', 'after', 'observed-after', 'new'].map(id => jobView({ id, status: 'completed',
+    completedAt: id === 'observed-after' ? undefined : new Date(epoch + (id === 'before' ? -1 : 2)).toISOString(),
+  }, { ...marker(id), createdAt: new Date(epoch + (id === 'new' ? 1 : -5000)).toISOString() }));
+  const cleared = clearFinished({ jobs, selectedId: 'before', nowMs: epoch + 5000,
+    firstEndedAtMs: { 'observed-after': epoch + 2 },
+  }, epoch);
+  expect(cleared.hiddenJobIds).toEqual(['before']);
+  expect(visibleJobs(cleared).map(job => job.id)).toEqual(['after', 'observed-after', 'new']);
+  expect(cleared.selectedId).toBe('new');
 });
 
 test('unanswered question is active even outside running status and appears last', () => {
@@ -231,7 +316,7 @@ test('width helpers cap headers at two lines and keep job rows on one line', () 
   for (const columns of [1, 2, 4, 12, 40, 60, 80]) {
     const job = { ...running(), label: '修复代码 🧪 '.repeat(8) };
     const row = jobRow(job, true, columns, epoch);
-    expect(width(row.selector + row.bullet + row.label + row.gap + row.meta) <= columns).toBe(true);
+    expect(width(row.selector + row.bullet + row.label + row.summary + row.gap + row.meta) <= columns).toBe(true);
     const lines = wrap(`Codex(${job.label})`, columns, 2);
     expect(lines.length <= 2).toBe(true);
     expect(lines.every(line => width(line) <= columns)).toBe(true);
@@ -256,6 +341,7 @@ const props = { title: 'Codex', isFocused: true, bodyColumns: 60,
 
 // Seed only an unset read; writes still reach the real state bottom and redraw.
 function seed(on: On, initial: CodexLiveState) {
+  on('clock.now', () => ({ value: epoch }));
   on('state.get', async ($, e, next) => {
     const result = await next(e);
     if (!('value' in result)) return result;
@@ -321,7 +407,7 @@ test('flattened items preserve body/result indents, blank separators and capped 
   const lines = feedLines(job, epoch + 38000, 30);
   const header = lines.filter(line => line.key.startsWith('job-header-body'));
   expect(header.length).toBe(2);
-  expect(textOf(header[0]!.spans).startsWith('⏺ Codex(')).toBe(true);
+  expect(textOf(header[0]!.spans).startsWith('⏺ ' + job.label.slice(0, 10))).toBe(true);
   expect(textOf(header[1]!.spans).startsWith('  ')).toBe(true);
   expect(textOf(header[1]!.spans).endsWith('…')).toBe(true);
   const command = lines.filter(line => line.key.startsWith('event-3-body'));
@@ -378,7 +464,7 @@ for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const tall = { ...props, scroll: { offset: 0, bodyRows: 60 } };
     const ui = await $.ui.mount({ plugin: 'codex-live', surface, component: 'Pane', requestId: 'codex-live', props: tall });
     for (const text of ['Bash(git status --short)', 'Done (', 'Running… (38s)', 'Error: exit 1', 'Update(',
-      'with 3 additions and 1 removal', 'server - tool (MCP)', 'Update Todos', '☒', 'Codex(', 'Waiting for Claude']) {
+      'with 3 additions and 1 removal', 'server - tool (MCP)', 'Update Todos', '☒', 'Task job-a', 'Waiting for Claude']) {
       expect(await ui.find({ type: 'Text', text })).toBeDefined();
     }
     const transcript = await ui.find({ key: 'transcript' });
@@ -409,7 +495,7 @@ for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const before = rowBoxes(await ui.findAll({ type: 'Box' }));
     expect(before.length).toBe(15);
     expect(before.slice(0, 3).map(row => row.key)).toEqual(['header-job-0', 'header-job-1', 'header-job-2']);
-    expect(before[3]?.text).toBe('+1 more');
+    expect(before[3]?.text).toBe('+1 more  Clear finished');
     expect(before[4]?.text).toBe('─'.repeat(56));
     expect(before[13]?.key).toBe('footer');
     expect(before[13]?.text).toContain('Running… 3m 12s');
@@ -465,7 +551,7 @@ test('scroll intercepts wheel, arrows, pages, Home/End and ignores wheel over pi
   expect(writes.at(-1)?.feeds?.['job-0']?.feedOffset).toBe(bottom - 2);
   await $.ui.scroll(move(-15));
   expect(writes.at(-1)?.feeds?.['job-0']?.feedOffset).toBe(0);
-  expect((await ui.find({ key: 'transcript' }))?.text).toContain('Codex(Task job-0)');
+  expect((await ui.find({ key: 'transcript' }))?.text).toContain('⏺ Task job-0');
   await $.ui.scroll(move(15));
   expect(writes.at(-1)?.feeds?.['job-0']?.following).toBe(true);
   await $.ui.scroll(move(-1));
@@ -496,7 +582,7 @@ for (const [status, word, color] of [['running', 'Running', 'claude'], ['waiting
     expect((await ui.find({ key: 'footer' }))?.text).toContain('Task job-a');
     expect((await ui.find({ key: 'footer' }))?.text).toContain(word);
     expect(await ui.find({ type: 'Text', text: 'gpt-6-astra · xhigh · fast · read-only' })).toBeDefined();
-    expect(await ui.find({ key: 'header-rule' })).toBe(undefined);
+    expect(!!await ui.find({ key: 'clear-finished' })).toBe(job.finished);
     await ui.unmount();
   });
 }
@@ -514,8 +600,8 @@ test('tiny heights reserve the footer and resize maintains an exact tree without
   seed(on, { jobs: fourJobs(), selectedId: 'job-0', nowMs: epoch });
   const writes = track(on);
   const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: inlineProps });
-  for (const rows of [0, 1, 2, 3, 4, 5, 6, 14]) {
-    await ui.redraw({ ...inlineProps, bodyColumns: 12, scroll: { offset: 0, bodyRows: rows } });
+  for (const placement of ['dock', 'inline'] as const) for (const rows of [0, 1, 2, 3, 4, 5, 6, 14]) {
+    await ui.redraw({ ...inlineProps, placement, bodyColumns: 12, scroll: { offset: 0, bodyRows: rows } });
     const boxes = rowBoxes(await ui.findAll({ type: 'Box' })).filter(box => box.key !== 'pane' && box.key !== 'transcript');
     expect(boxes.length).toBe(rows + 1);
     expect(boxes.every(box => width(box.text) <= 12)).toBe(true);
@@ -524,6 +610,108 @@ test('tiny heights reserve the footer and resize maintains an exact tree without
   expect(writes.length).toBe(0);
   await ui.unmount();
 });
+
+for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
+  for (const placement of ['dock', 'inline'] as const) {
+    test(`Pane resizes 20 → 14 → 20 with pinned rows and working scroll on ${surface} ${placement}`, async ($, on) => {
+      const jobs = fourJobs();
+      seed(on, { jobs, selectedId: 'job-0', nowMs: epoch });
+      on('session.surface', () => ({ value: surface }));
+      const writes = track(on);
+      let delegated = 0;
+      on('ui.scroll', () => { delegated++; return {}; });
+      const pinnedRows = 5;
+      const lines = feedLines(jobs[0]!, epoch, 56);
+      for (const offset of [0, 1, 5]) {
+        const sized = (bodyRows: number) => ({ ...inlineProps, placement, scroll: { offset, bodyRows } });
+        const ui = await $.ui.mount({ plugin: 'codex-live', surface, component: 'Pane', requestId: 'codex-live', props: sized(20) });
+        const transcript = async () => (await ui.find({ key: 'transcript' }))!;
+        const feed = () => writes.at(-1)?.feeds?.['job-0'];
+        const scroll = (by: number, bodyRows: number, pointer?: { row: number; column: number }) =>
+          $.ui.scroll({ ...move(by, bodyRows), offset, contentRows: offset + bodyRows + 1, pointer });
+        const headers = async () => (await ui.findAll({ type: 'Box' }))
+          .filter(box => /^header-job-|^header-toggle$|^header-rule$/.test(box.key ?? '')).map(box => box.text);
+        const originalHeader = await headers();
+        const check = async (bodyRows: number) => {
+          const pane = (await ui.find({ key: 'pane' }))!;
+          expect(pane.props).toMatchObject({ height: offset + bodyRows + 1, minHeight: 0, flexShrink: 1 });
+          const children = pane.children.filter(child => typeof child !== 'string') as FoundElement[];
+          let position = 0;
+          const positions = new Map<string, number>();
+          for (const child of children) {
+            positions.set(child.props.key as string, position);
+            position += Number(child.props.height);
+          }
+          expect(position).toBe(offset + bodyRows + 1);
+          expect(positions.get('header-job-0')).toBe(offset);
+          expect(positions.get('transcript')).toBe(offset + pinnedRows);
+          expect(positions.get('footer')).toBe(offset + bodyRows - 1);
+          expect(positions.get('scroll-sentinel')).toBe(offset + bodyRows);
+          expect(children.at(-2)?.props.key).toBe('footer');
+          expect(await headers()).toEqual(originalHeader);
+          expect((await transcript()).props).toMatchObject({ height: bodyRows - pinnedRows - 1, flexShrink: 1, minHeight: 0, overflow: 'hidden' });
+          expect((await transcript()).children.length).toBe(bodyRows - pinnedRows - 1);
+          expect((await ui.find({ key: 'footer' }))?.text).toContain('Running');
+        };
+        await check(20);
+        const initialRows = (await transcript()).children;
+        // Changed metrics on the same mounted instance: no cached taller body,
+        // no render writes, six fewer feed rows, then the identical tail back.
+        const beforeResize = writes.length;
+        await ui.redraw(sized(14));
+        await check(14);
+        expect((await transcript()).children).toEqual(initialRows.slice(6));
+        await ui.redraw(sized(20));
+        await check(20);
+        expect((await transcript()).children).toEqual(initialRows);
+        expect(writes.length).toBe(beforeResize);
+
+        await scroll(-20, 20);
+        expect(feed()?.feedOffset).toBe(lines.length - 2 * (20 - pinnedRows - 1));
+        expect(feed()?.following).toBe(false);
+        const anchor = feed()?.anchor;
+        const stoppedRows = (await transcript()).children;
+        const beforeStoppedResize = writes.length;
+        await ui.redraw(sized(14));
+        await check(14);
+        expect((await transcript()).children).toEqual(stoppedRows.slice(0, 14 - pinnedRows - 1));
+        expect((await ui.find({ key: 'jump-bottom' }))?.text).toBe('↓ Jump to bottom');
+        await ui.redraw(sized(20));
+        await check(20);
+        expect((await transcript()).children).toEqual(stoppedRows);
+        expect(feed()?.anchor).toEqual(anchor);
+        expect(writes.length).toBe(beforeStoppedResize);
+
+        await ui.redraw(sized(14));
+        const beforeWheel = feed()?.feedOffset;
+        for (let row = 0; row < pinnedRows; row++) await scroll(-1, 14, { row, column: 0 });
+        await scroll(-1, 14, { row: 13, column: 0 });
+        expect(feed()?.feedOffset).toBe(beforeWheel);
+        await scroll(-1, 14, { row: pinnedRows, column: 0 });
+        expect(feed()?.feedOffset).toBe(beforeWheel! - 1);
+        await scroll(-14, 14);
+        expect(feed()?.feedOffset).toBe(Math.max(0, beforeWheel! - 1 - (14 - pinnedRows - 1)));
+        expect(feed()?.rows).toBe(14 - pinnedRows - 1);
+        await scroll(-(offset + 15), 14);
+        expect(feed()?.feedOffset).toBe(0);
+        await ui.press({ key: 'jump-bottom' });
+        expect(feed()?.following).toBe(true);
+        expect(await ui.find({ key: 'jump-bottom' })).toBe(undefined);
+        expect((await transcript()).text).toContain('Line 34');
+        await scroll(-1, 14);
+        await ui.press({ key: 'jump-bottom' });
+        expect(feed()?.following).toBe(true);
+        await scroll(-1, 14);
+        await scroll(offset + 15, 14);
+        expect(feed()?.following).toBe(true);
+        await ui.redraw(sized(20));
+        expect((await transcript()).children).toEqual(initialRows);
+        expect(delegated).toBe(0);
+        await ui.unmount();
+      }
+    });
+  }
+}
 
 test('Pane windows retained items and keeps older long bodies intact within the drawing budget', async ($, on) => {
   const job = jobView({ id: 'job-a', status: 'running', activity: Array.from({ length: 100 }, (_, seq) => ({
@@ -620,6 +808,8 @@ test('history toggle appears only for omitted jobs, including sessions with fewe
   const state = { jobs: [selected, jobs[3]!], selectedId: selected.id, nowMs: epoch };
   expect(headerLayout(state, selected, 14)).toMatchObject({ more: 1, toggle: true });
   expect(headerLayout({ ...state, jobsExpanded: true }, selected, 14)).toMatchObject({ more: 0, toggle: true });
+  // The clear row can displace a job at small heights; it must remain reachable.
+  expect(headerLayout({ ...state, jobs: jobs.slice(0, 3) }, selected, 6)).toMatchObject({ more: 1, toggle: true, clear: true, rows: 4 });
 });
 
 for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
@@ -628,7 +818,7 @@ for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     seed(on, { jobs, selectedId: 'running', nowMs: epoch });
     const writes = track(on);
     const ui = await $.ui.mount({ plugin: 'codex-live', surface, component: 'Pane', requestId: 'codex-live', props: inlineProps });
-    const headerIds = async () => (await ui.findAll({ type: 'Button' })).map(button => button.key).filter(key => key !== 'toggle-jobs');
+    const headerIds = async () => (await ui.findAll({ type: 'Button' })).map(button => button.key).filter(key => key !== 'toggle-jobs' && key !== 'clear-finished');
     expect(await headerIds()).toEqual(['running', 'recent-done', 'recent-stopped']);
     expect((await ui.find({ key: 'toggle-jobs' }))?.text).toBe('+2 more');
     await ui.press({ key: 'toggle-jobs' });
@@ -666,7 +856,7 @@ test('D5: stale details remain visible in the pinned footer while reading the bo
   const job = { ...fourJobs()[0]!, detailsUnavailable: true, lastUpdateMs: epoch - 65000 };
   seed(on, { jobs: [job], selectedId: job.id, nowMs: epoch });
   const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live',
-    props: { ...inlineProps, bodyColumns: 120 } });
+    props: { ...inlineProps, placement: 'dock', bodyColumns: 120 } });
   expect((await ui.find({ key: 'footer' }))?.text).toContain('⚠ stale · last update 65s ago');
   expect((await ui.find({ key: 'live-status' }))?.children[0]).toMatchObject({ props: { color: 'warning' } });
   expect((await ui.find({ key: 'transcript' }))?.text).not.toContain('Details unavailable');
@@ -819,5 +1009,110 @@ test('history pagination makes all twenty retained jobs reachable and then colla
   await ui.redraw({ ...inlineProps, scroll: { offset: 0, bodyRows: 2 } });
   await ui.press({ key: 'toggle-jobs' });
   expect(writes.at(-1)?.selectedId).toBe('h-0');
+  await ui.unmount();
+});
+
+test('watermark-only hiding applies to history counts, paging and tiny cycling', async ($, on) => {
+  const jobs = Array.from({ length: 20 }, (_, n) => jobView({ id: `visible-${n}`, status: n ? 'completed' : 'running',
+    completedAt: n ? new Date(epoch - 500000).toISOString() : undefined,
+  }, { ...marker(`visible-${n}`), createdAt: new Date(epoch - 900000 - n * 1000).toISOString() }));
+  const hidden = Array.from({ length: 5 }, (_, n) => jobView({ id: `hidden-${n}`, status: 'blocked',
+    completedAt: new Date(epoch - 600000).toISOString(),
+  }, { ...marker(`hidden-${n}`), createdAt: new Date(epoch - 700000 - n * 1000).toISOString() }));
+  seed(on, { jobs: [...hidden, ...jobs], selectedId: 'visible-0', nowMs: epoch, hiddenFinishedBefore: epoch - 600000 });
+  const writes = track(on);
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: inlineProps });
+  expect((await ui.find({ key: 'toggle-jobs' }))?.text).toBe('+19 more');
+  await ui.press({ key: 'toggle-jobs' });
+  const reached: string[] = [];
+  for (let page = 0; page < 2; page++) {
+    const buttons = await ui.findAll({ type: 'Button' });
+    expect(buttons.some(button => button.key?.startsWith('hidden-'))).toBe(false);
+    reached.push(...buttons.filter(button => button.key?.startsWith('visible-')).map(button => button.key!));
+    expect((await ui.find({ key: 'toggle-jobs' }))?.text).toBe('+10 more');
+    await ui.press({ key: 'toggle-jobs' });
+  }
+  expect(reached).toEqual(jobs.map(job => job.id));
+  expect(writes.at(-1)?.jobsExpanded).toBe(false);
+  await ui.redraw({ ...inlineProps, scroll: { offset: 0, bodyRows: 2 } });
+  expect((await ui.find({ key: 'toggle-jobs' }))?.text).toBe('+19 more');
+  await ui.press({ key: 'toggle-jobs' });
+  expect(writes.at(-1)?.selectedId).toBe('visible-1');
+  await ui.unmount();
+});
+
+test('an empty watermark-only view keeps the retention notice after hidden jobs are evicted', async ($, on) => {
+  seed(on, { jobs: [], selectedId: null, nowMs: 0, hiddenFinishedBefore: epoch });
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live',
+    props: { ...props, bodyColumns: 100 } });
+  expect((await ui.find({ key: 'transcript' }))?.text).toContain('No Codex jobs in this session yet.');
+  expect((await ui.find({ key: 'hidden-notice' }))?.text).toBe('Finished jobs are hidden. Their records stay for 30 days.');
+  expect(await ui.find({ key: 'clear-finished' })).toBe(undefined);
+  expect(await ui.find({ key: 'toggle-jobs' })).toBe(undefined);
+  await ui.unmount();
+});
+
+for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
+  test(`named rows and Clear finished preserve selection and records on ${surface}`, async ($, on) => {
+    const jobs = historyJobs().map(job => ({ ...job, agentName: job.id === 'running' ? 'Hopper' : 'Ada',
+      label: 'OBJECTIVE: Repair ownership saves. Run verification.' }));
+    seed(on, { jobs, selectedId: 'recent-done', nowMs: epoch });
+    const writes = track(on);
+    const ui = await $.ui.mount({ plugin: 'codex-live', surface, component: 'Pane', requestId: 'codex-live', props: {
+      ...inlineProps, bodyColumns: 100, scroll: { offset: 0, bodyRows: 24 },
+    } });
+    expect((await ui.find({ key: 'running' }))?.text).toContain('Hopper  Repair ownership saves.');
+    expect((await ui.find({ key: 'recent-done' }))?.text).not.toContain('OBJECTIVE:');
+    expect((await ui.find({ key: 'job-header-body-0' }))?.text).toBe('⏺ Ada(Repair ownership saves.)');
+    expect((await ui.find({ type: 'Text', text: /^Ada$/ }))?.props.bold).toBe(true);
+    expect((await ui.find({ type: 'Text', text: /^\(Repair ownership saves\.\)$/ }))?.props.color).toBe('subtle');
+    expect((await ui.find({ type: 'Text', text: /^  Repair ownership saves\.$/ }))?.props.color).toBe('subtle');
+    expect((await ui.find({ key: 'clear-finished' }))?.props.plain).toBe(true);
+    await ui.press({ key: 'clear-finished' });
+    expect(writes.at(-1)?.hiddenJobIds).toEqual(jobs.slice(1).map(job => job.id));
+    expect(writes.at(-1)?.selectedId).toBe('running');
+    expect(writes.at(-1)?.jobs.length).toBe(jobs.length);
+    expect((await ui.find({ key: 'job-header-body-0' }))?.text).toBe('⏺ Hopper(Repair ownership saves.)');
+    expect((await ui.find({ key: 'footer' }))?.text).toContain('Hopper');
+    expect(await ui.find({ key: 'toggle-jobs' })).toBe(undefined);
+    expect(await ui.find({ key: 'clear-finished' })).toBe(undefined);
+    await ui.unmount();
+  });
+}
+
+test('clearing the final job shows the empty state and the dim retention notice', async ($, on) => {
+  const job = { ...running(), status: 'completed', completedAt: createdAt };
+  seed(on, { jobs: [job], selectedId: job.id, nowMs: epoch });
+  const writes = track(on);
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live',
+    props: { ...props, bodyColumns: 100 } });
+  await ui.press({ key: 'clear-finished' });
+  expect(writes.at(-1)?.selectedId).toBe(null);
+  expect((await ui.find({ key: 'transcript' }))?.text).toContain('No Codex jobs in this session yet.');
+  const notice = await ui.find({ key: 'hidden-notice' });
+  expect(notice?.text).toBe('Finished jobs are hidden. Their records stay for 30 days.');
+  expect((await ui.findAll({ type: 'Text', text: /^Finished jobs are hidden/ })).some(text => text.props.color === 'subtle')).toBe(true);
+  expect(rowBoxes(await ui.findAll({ type: 'Box' })).length).toBe(props.scroll.bodyRows + 1);
+  await ui.unmount();
+});
+
+test('tiny heights put whole Clear finished and history controls in the footer', async ($, on) => {
+  seed(on, { jobs: historyJobs(), selectedId: 'recent-done', nowMs: epoch });
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live',
+    props: { ...inlineProps, scroll: { offset: 0, bodyRows: 3 } } });
+  expect((await ui.find({ key: 'footer' }))?.text).toContain('Clear finished');
+  expect((await ui.find({ key: 'toggle-jobs' }))?.text).toBe('+4 more');
+  for (const columns of [14, 25, 56]) {
+    await ui.redraw({ ...inlineProps, bodyColumns: columns, scroll: { offset: 0, bodyRows: 3 } });
+    expect((await ui.find({ key: 'clear-finished' }))?.text).toBe('Clear finished');
+    expect(width((await ui.find({ key: 'footer' }))?.text ?? '') <= columns).toBe(true);
+  }
+  await ui.redraw({ ...inlineProps, bodyColumns: 12, scroll: { offset: 0, bodyRows: 3 } });
+  expect(await ui.find({ key: 'clear-finished' })).toBe(undefined);
+  expect((await ui.find({ key: 'toggle-jobs' }))?.text).toBe('+4 more');
+  await ui.redraw({ ...inlineProps, scroll: { offset: 0, bodyRows: 3 } });
+  await ui.press({ key: 'clear-finished' });
+  expect(await ui.find({ key: 'clear-finished' })).toBe(undefined);
+  expect(await ui.find({ key: 'toggle-jobs' })).toBe(undefined);
   await ui.unmount();
 });
