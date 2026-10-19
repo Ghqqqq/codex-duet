@@ -29,6 +29,127 @@ async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
   throw new Error("Timed out waiting for condition.");
 }
 
+const HELP_COMMANDS = ["task", "setup", "review", "adversarial-review", "transfer", "status", "result", "wait", "adopt", "answer", "cancel", "cleanup", "ultra-codex", "task-worker", "task-resume-candidate"];
+
+function helpFixture() {
+  const dir = makeTempDir(), repo = path.join(dir, "repo");
+  fs.mkdirSync(repo);
+  installFakeCodex(dir, "slow-task");
+  const env = { ...buildEnv(dir), CODEX_COMPANION_HOME: path.join(dir, "isolated"),
+    CLAUDE_PLUGIN_DATA: path.join(dir, "data"), CODEX_COMPANION_SESSION_ID: "help-session" };
+  const before = fs.readdirSync(dir, { recursive: true }).sort();
+  return { dir, repo, env,
+    call: (...args) => run(process.execPath, [SCRIPT, ...args], { cwd: repo, env }),
+    unchanged: () => assert.deepEqual(fs.readdirSync(dir, { recursive: true }).sort(), before,
+      "no runtime home, state/job file, marker, or fake Codex thread/startup record created") };
+}
+
+for (const command of HELP_COMMANDS) {
+  test(`${command} help exits before validation or side effects`, () => {
+    const f = helpFixture();
+    for (const args of [["--help"], ["-h"], ["--frobnicate", "--help"], ["-h", "--cwd", "missing"]]) {
+      const result = f.call(command, ...args);
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(result.stdout.startsWith(`Usage: node "$CODEX_COMPANION" ${command} `));
+      assert.equal(result.stderr, "");
+      f.unchanged();
+    }
+  });
+}
+
+test("top-level help and task help take precedence over direct conflicts and malformed values", () => {
+  const f = helpFixture();
+  for (const args of [[], ["help"], ["--help"], ["-h"]]) {
+    const result = f.call(...args);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /<subcommand> \[options\]/);
+    for (const command of HELP_COMMANDS) assert.ok(result.stdout.includes(`"$CODEX_COMPANION" ${command} `));
+  }
+  const usage = f.call("task", "--help").stdout;
+  assert.ok(usage.trimEnd().split("\n").length <= 40, "task help stays compact");
+  for (const args of [
+    ["--direct", "--fresh", "--model", "gpt-6-astra", "--effort", "xhigh", "--fast", "--cwd", "missing", "--help"],
+    ["--direct", "--json", "-h"], ["--help", "--direct", "--follow"],
+    ["--model", "--help"], ["--approve-browser-origin", "-h"],
+    ["--frobnicate", "x", "--help"], ["--help", "--", "--frobnicate"],
+    ["--fresh --direct --json --help"]
+  ]) {
+    const result = f.call("task", ...args);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, usage, "help is plain usage, even in direct mode");
+    assert.equal(result.stderr, "");
+    f.unchanged();
+  }
+});
+
+for (const command of HELP_COMMANDS.filter(command => command !== "adversarial-review")) {
+  test(`${command} rejects unknown options with its usage before side effects`, () => {
+    const f = helpFixture();
+    for (const option of ["--frobnicate", "-x", "--frobnicate=x"]) {
+      const result = f.call(command, option, "x");
+      assert.equal(result.status, 1);
+      assert.ok(result.stderr.includes(`Unknown option: ${option}`));
+      assert.ok(result.stderr.includes(`Usage: node "$CODEX_COMPANION" ${command} `));
+      assert.equal(result.stdout, "");
+      f.unchanged();
+    }
+  });
+}
+
+test("task unknown options retain direct JSON errors and cannot hide as option values", () => {
+  const f = helpFixture();
+  for (const args of [
+    ["--direct", "--frobnicate"], ["--frobnicate", "--direct"], ["--direct=true", "-x"],
+    ["--direct --frobnicate"], ["--direct", "--model", "--frobnicate", "x"]
+  ]) {
+    const result = f.call("task", ...args);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout.split("\n").length, 2, "one compact JSON line");
+    const payload = JSON.parse(result.stdout);
+    assert.deepEqual(Object.keys(payload).sort(), ["error", "status"]);
+    assert.equal(payload.status, "error");
+    assert.match(payload.error, /Unknown option: (?:--frobnicate|-x)/);
+    assert.ok(payload.error.includes('Usage: node "$CODEX_COMPANION" task '));
+    assert.equal(result.stderr, `${payload.error}\n`);
+    f.unchanged();
+  }
+  for (const args of [["--model", "--frobnicate"], ["--frobnicate", "--", "--direct"], ["--direct=false", "--frobnicate"]]) {
+    const result = f.call("task", ...args);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Unknown option: --frobnicate/);
+    assert.equal(result.stdout, "", "literal or disabled direct does not select JSON errors");
+    f.unchanged();
+  }
+});
+
+test("task passes help and unknown flags after -- as literal prompt text", () => {
+  const f = helpFixture();
+  initGitRepo(f.repo);
+  for (const literal of [["--help"], ["-h", "--frobnicate", "-x"], ["--direct", "--json"], ["text --help"]]) {
+    const result = f.call("task", "--", ...literal);
+    assert.equal(result.status, 0, result.stderr);
+    const state = JSON.parse(fs.readFileSync(path.join(f.dir, "fake-codex-state.json"), "utf8"));
+    assert.equal(state.lastTurnStart.prompt, literal.join(" "));
+  }
+  const direct = f.call("task", "--direct", "--", "--help", "--json", "--follow", "-x");
+  assert.equal(direct.status, 0, direct.stderr);
+  assert.equal(JSON.parse(direct.stdout).status, "completed");
+  const state = JSON.parse(fs.readFileSync(path.join(f.dir, "fake-codex-state.json"), "utf8"));
+  assert.ok(state.lastTurnStart.prompt.startsWith("--help --json --follow -x\n"));
+});
+
+test("adversarial-review preserves unknown focus flags and literal help", () => {
+  const f = helpFixture();
+  initGitRepo(f.repo);
+  fs.writeFileSync(path.join(f.repo, "README.md"), "fixture\n");
+  for (const focus of [["--frobnicate", "-x"], ["--", "--help"]]) {
+    const result = f.call("adversarial-review", "--scope", "working-tree", ...focus);
+    assert.equal(result.status, 0, result.stderr);
+    const state = JSON.parse(fs.readFileSync(path.join(f.dir, "fake-codex-state.json"), "utf8"));
+    assert.ok(state.lastTurnStart.prompt.includes(focus.filter(token => token !== "--").join(" ")));
+  }
+});
+
 test("setup reports ready when fake codex is installed and authenticated", () => {
   const binDir = makeTempDir();
   installFakeCodex(binDir);
@@ -670,7 +791,7 @@ test("task --resume-last ignores running tasks from other Claude sessions", () =
   assert.match(resume.stderr, /No previous Codex task thread was found for this repository\./);
 });
 
-test("session start hook exports the Claude session id, transcript path, and plugin data dir", () => {
+test("session start hook exports unchanged environment and adds compact dispatch context", () => {
   const repo = makeTempDir();
   const envFile = path.join(makeTempDir(), "claude-env.sh");
   fs.writeFileSync(envFile, "", "utf8");
@@ -698,6 +819,24 @@ test("session start hook exports the Claude session id, transcript path, and plu
     fs.readFileSync(envFile, "utf8"),
     `export CODEX_COMPANION='${SCRIPT}'\nexport CODEX_COMPANION_SESSION_ID='sess-current'\nexport CODEX_COMPANION_TRANSCRIPT_PATH='${transcriptPath}'\nexport CLAUDE_PLUGIN_DATA='${pluginDataDir}'\nexport CODEX_COMPANION_HOME='${path.join(repo,"isolated")}'\n`
   );
+  const output = JSON.parse(result.stdout);
+  assert.deepEqual(Object.keys(output), ["hookSpecificOutput"]);
+  assert.equal(output.hookSpecificOutput.hookEventName, "SessionStart");
+  const context = output.hookSpecificOutput.additionalContext;
+  assert.equal(context.split("\n").length, 4);
+  assert.ok(context.includes('node "$CODEX_COMPANION" task --fresh --direct --model gpt-6-astra --effort xhigh --normal --cwd <dir>'));
+  assert.ok(context.includes('node "$CODEX_COMPANION" task --help'));
+  assert.match(context, /run_in_background: true/);
+  assert.match(context, /single-quoted heredoc/);
+  // The event can also come from stdin, with no environment file available.
+  const stdinEvent = run(process.execPath, [SESSION_HOOK], { cwd: repo,
+    env: { ...process.env, CLAUDE_ENV_FILE: "", CODEX_COMPANION_HOME: path.join(repo, "isolated") },
+    input: JSON.stringify({ hook_event_name: "SessionStart", cwd: repo }) });
+  assert.equal(stdinEvent.status, 0, stdinEvent.stderr);
+  assert.deepEqual(JSON.parse(stdinEvent.stdout), output);
+  const otherEvent = run(process.execPath, [SESSION_HOOK, "SessionEnd"], { cwd: repo,
+    env: { ...process.env, CODEX_COMPANION_SESSION_ID: "" }, input: "{}" });
+  assert.equal(otherEvent.stdout, "", "context is emitted only for SessionStart");
 });
 
 test("write task output focuses on the Codex result without generic follow-up hints", () => {

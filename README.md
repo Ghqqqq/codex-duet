@@ -115,6 +115,8 @@ another Codex worker review the retry logic in src/net/.
 
 ### Direct mode (default)
 
+Run `node "$CODEX_COMPANION" task --help` (or `-h`) for all task flags, copy-paste dispatch examples and JSON result handling; help starts no job, and unknown task flags are rejected before dispatch. SessionStart adds a short command template and help pointer alongside the existing environment exports.
+
 Claude makes one Bash call per job, with `run_in_background: true` and
 `description: "Codex: <label>"`. When Claude's Bash sandbox is on, it sets
 `dangerouslyDisableSandbox: true` because the runtime needs network and local
@@ -170,6 +172,8 @@ returns. Direct mode rejects `--follow`, `--detached`, `--background`, `--json`,
 `--feed-limit` and `--min-interval-sec`. It supports `--fresh`, `--thread`,
 `--continue`, model/effort/speed, sandbox and approval flags, `--cwd` and stdin.
 
+Each dispatched task gets a random historical scientist or computing pioneer name (`agentName` in JSON), reused by `--thread` and `--continue` follow-ups.
+
 Follow-ups and rework start a new job on the same thread with
 `task --thread <threadId> --direct`, the same `--cwd`, and the relevant criteria
 restated. Never select a worker by "the latest thread". Verify claims with the
@@ -185,6 +189,7 @@ file changes, tool calls, plan and pending question. It is read-only: it never
 starts, answers or cancels a job, and costs no Claude tokens. The pane reads
 companion-written markers under
 `<isolated home>/duet/sessions/<claudeSessionId>/`.
+The pane shows each agent name beside its short task summary; **Clear finished** hides ended jobs for this session without deleting their records or changing the default 30-day retention.
 
 ### Haiku fallback
 

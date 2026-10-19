@@ -67,7 +67,7 @@ export function continuationReport(job) {
 // Direct callers get the same report, without the feed or verbose progress.
 // Filter a copy so the existing JSON/feed and status shapes remain unchanged.
 export function directReport(payload, job) {
-  const report = { ...payload };
+  const report = { ...payload, ...(job.agentName ? { agentName: job.agentName } : {}) };
   for (const key of ["activity", "activityOmitted", "cursor", "startupTimings", "currentItem", "completedItems", "questionMessage"]) delete report[key];
   if (report.startupWarning == null) delete report.startupWarning;
   if (ACTIVE.has(report.status) || report.status === "needs_answer") {
@@ -98,6 +98,7 @@ const DIRECT_SUMMARY_LIMIT = 8000;
 export function ownershipNotice(job, owner) {
   if (!owner || job.ownerId === owner || !job.retiredOwnerIds?.includes(owner)) return null;
   return { status: "ownership_moved", jobStatus: job.status, jobId: job.id, ownerId: job.ownerId,
+    ...(job.agentName ? { agentName: job.agentName } : {}),
     threadId: job.threadId ?? null, turnId: job.turnId ?? null,
     message: "Ownership moved to a replacement worker. Stop polling; do not reuse its ownerId or adopt again." };
 }
@@ -294,6 +295,7 @@ export function progressSnapshot(job) {
   const seconds = Math.floor(elapsedMs / 1000), elapsed = `${Math.floor(seconds / 60)}m${seconds % 60}s`;
   const phase = pending ? "needs_answer" : job.phase === "needs_answer" ? "running" : job.phase ?? job.status;
   return { status: pending ? "needs_answer" : job.status, jobId: job.id, threadId: job.threadId ?? null, turnId: job.turnId ?? null,
+    ...(job.agentName ? { agentName: job.agentName } : {}),
     ownerId: job.ownerId ?? null, sessionId: job.sessionId ?? null, ownerAttached: Boolean(job.ownerAttached), ...leaseSnapshot(job),
     headline: `${pending ? "waiting for parent" : job.currentItem?.summary ?? phase} · ${elapsed}`.slice(0, 60), phase, elapsed, elapsedMs,
     startupTimings: { mcpReady: null, ...job.startupTimings }, startupWarning: job.startupWarning ?? null,

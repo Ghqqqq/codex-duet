@@ -11,6 +11,7 @@ import { writeJobFile, upsertJob, updateJob, readJobFile, resolveJobFile, resolv
 import { JobRuntime, pauseAdjustment, renewLease, markOwnerAttachment, leaseSnapshot, questionMessage, adoptJob, ownershipNotice, answerQuestion, askParentQuestion, ownerLost, directReport, progressSnapshot, PARENT_BRIDGE_ENV } from "../plugins/codex/scripts/lib/job-runtime.mjs";
 import { buildWorkerReport } from "../plugins/codex/scripts/lib/worker-report.mjs";
 import { resolveSessionMarkersRoot } from "../plugins/codex/scripts/lib/session-markers.mjs";
+import { AGENT_NAMES, pickAgentName } from "../plugins/codex/scripts/lib/agent-names.mjs";
 import { splitRawArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
 const bridgeScript = new URL("../plugins/codex/scripts/parent-bridge-mcp.mjs", import.meta.url).pathname;
 import { spawnOwned } from "../plugins/codex/scripts/lib/process.mjs";
@@ -42,6 +43,88 @@ function directError(result) {
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function waitUntil(fn) { for (const end = Date.now() + 12000; Date.now() < end;) { const result = fn(); if (result) return result; await delay(80); } throw new Error("Fixture deadline expired"); }
 function job(f, id) { return json(f.call("status", id, "--json")).job; }
+
+test("agent names are frozen ASCII pioneers, avoid used names and suffix exhausted pools", () => {
+  assert.equal(AGENT_NAMES.length, 60);
+  assert.ok(Object.isFrozen(AGENT_NAMES));
+  assert.equal(new Set(AGENT_NAMES).size, AGENT_NAMES.length);
+  assert.ok(AGENT_NAMES.every(name => /^[A-Za-z]+$/.test(name)));
+  assert.equal(pickAgentName([], () => 0), "Ada");
+  assert.equal(pickAgentName(new Set(["Ada"]), () => 0), "Turing");
+  assert.equal(pickAgentName(AGENT_NAMES.slice(0, -1), () => 0.99), AGENT_NAMES.at(-1));
+  assert.equal(pickAgentName(AGENT_NAMES, () => 0), "Ada-2");
+  assert.equal(pickAgentName([...AGENT_NAMES, "Ada-2", "Ada-3"], () => 0), "Ada-4");
+});
+
+test("simultaneous dispatches reserve different names while both jobs are active", async () => {
+  const f = fixture();
+  const preload = path.join(f.dir, "fixed-name-choice.mjs");
+  fs.writeFileSync(preload, 'const random = Math.random; Math.random = () => new Error().stack.includes("pickAgentName") ? 0 : random();');
+  const dispatch = () => new Promise((resolve, reject) => {
+    const child = spawnOwned(process.execPath, ["--import", preload, script, "task", "--fresh", "--detached", "--json", "fixture"],
+      { cwd: f.repo, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", data => { stdout += data; });
+    child.stderr.on("data", data => { stderr += data; });
+    child.on("error", reject);
+    child.on("close", status => { try { resolve(json({ status, stdout, stderr })); } catch (error) { reject(error); } });
+  });
+  const launches = await Promise.all([dispatch(), dispatch()]);
+  try {
+    assert.deepEqual(launches.map(launch => launch.agentName).sort(), ["Ada", "Turing"]);
+    for (const launch of launches) {
+      const saved = job(f, launch.jobId);
+      assert.ok(["queued", "running"].includes(saved.status));
+      assert.equal(saved.agentName, launch.agentName);
+    }
+  } finally {
+    for (const launch of launches) json(f.call("cancel", launch.jobId, "--json"));
+  }
+});
+
+test("names avoid active and recent jobs, use newest thread identity, and never backfill legacy records", () => {
+  const f = fixture("slow-task"), now = Date.now();
+  const stateModule = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
+  const markerModule = new URL("../plugins/codex/scripts/lib/session-markers.mjs", import.meta.url).href;
+  const records = [
+    { id: "active-old", status: "running", agentName: "Ada", age: 48 },
+    { id: "recent", status: "completed", agentName: "Turing", age: 1 },
+    { id: "expired", status: "completed", agentName: "Hopper", age: 25 },
+    { id: "thread-old", status: "completed", agentName: "Curie", threadId: "known-thread", age: 30 },
+    { id: "thread-new", status: "completed", agentName: "Noether", threadId: "known-thread", age: 26 },
+    { id: "legacy", status: "completed", threadId: "legacy-thread", age: 20 },
+  ].map(({ age, ...record }) => ({ ...record, createdAt: new Date(now - age * 3600000).toISOString(),
+    jobClass: "task", workspaceRoot: f.repo, sessionId: "fixture-session" }));
+  const seeded = run(process.execPath, ["--input-type=module", "-e", `
+    import { writeJobFile, upsertJob, resolveJobFile } from ${JSON.stringify(stateModule)};
+    import { writeSessionMarker } from ${JSON.stringify(markerModule)};
+    const records = ${JSON.stringify(records)};
+    for (const record of records) {
+      writeJobFile(process.cwd(), record.id, record); upsertJob(process.cwd(), record); writeSessionMarker(record);
+    }
+    console.log(JSON.stringify(records.map(record => resolveJobFile(process.cwd(), record.id))));
+  `], { cwd: f.repo, env: f.env });
+  const files = json(seeded), originals = files.map(file => fs.readFileSync(file, "utf8"));
+  const legacyMarker = path.join(resolveSessionMarkersRoot(f.env), "fixture-session", "legacy.json");
+  const markerText = fs.readFileSync(legacyMarker, "utf8");
+  assert.equal(Object.hasOwn(JSON.parse(markerText), "name"), false);
+  assert.equal(job(f, "legacy").agentName, undefined);
+  const preload = path.join(f.dir, "fixed-name-choice.mjs");
+  fs.writeFileSync(preload, 'const random = Math.random; Math.random = () => new Error().stack.includes("pickAgentName") ? 0 : random();');
+  const fresh = direct(run(process.execPath, ["--import", preload, script, "task", "--fresh", "--direct", "fixture"], { cwd: f.repo, env: f.env }));
+  assert.equal(fresh.agentName, "Hopper", "old ended names are reusable; old active and recent names are reserved");
+  const fake = f.state();
+  fake.threads.push(...["known-thread", "legacy-thread"].map(id => ({ ...fake.threads[0], id, turns: [] })));
+  fs.writeFileSync(path.join(f.dir, "fake-codex-state.json"), JSON.stringify(fake));
+  const threaded = direct(f.call("task", "--thread", "known-thread", "--direct", "fixture"));
+  assert.equal(threaded.agentName, "Noether");
+  const continued = direct(f.call("task", "--continue", "thread-old", "--direct", "fixture"));
+  assert.equal(continued.agentName, "Curie", "continue names the specified job, not the newest job on its thread");
+  const legacy = direct(f.call("task", "--continue", "legacy", "--direct", "fixture"));
+  assert.ok(AGENT_NAMES.includes(legacy.agentName));
+  assert.deepEqual(files.map(file => fs.readFileSync(file, "utf8")), originals);
+  assert.equal(fs.readFileSync(legacyMarker, "utf8"), markerText);
+});
 
 test("detached wait returns bounded safe progress, startup phases and confirmed cancellation", () => {
   const f = fixture(); const launch = json(f.call("task", "--detached", "--report", "--json", "fixture work"));
@@ -685,7 +768,7 @@ test("a signalled owner wait stops the worker immediately; only a silent owner g
   assert.equal(code, 130);
   assert.equal(stdout.split("\n").length, 2); assert.equal(stderr, "");
   const stopped = JSON.parse(stdout);
-  assert.deepEqual(stopped, { status: "owner_stopped", jobId: launch.jobId, ownerId: launch.ownerId,
+  assert.deepEqual(stopped, { status: "owner_stopped", jobId: launch.jobId, agentName: launch.agentName, ownerId: launch.ownerId,
     threadId: job(f, launch.jobId).threadId, turnId: job(f, launch.jobId).turnId,
     interruptionReason: "owner_stopped", continuationCommand: stopped.continuationCommand });
   assert.deepEqual(splitRawArgumentString(stopped.continuationCommand), ["node", script, "task", "--continue", launch.jobId, "--cwd", f.repo, "--direct"]);
@@ -894,15 +977,19 @@ test("direct tasks preserve lease precedence, input forms, run settings and cont
   const f = fixture("slow-task"); f.env.CODEX_COMPANION_LEASE_SEC = "27";
   const promptFile = path.join(f.repo, "prompt.txt"); fs.writeFileSync(promptFile, "fixture from prompt file");
   const first = direct(f.call("task", "--direct", "--fresh", "--prompt-file", promptFile, "--model", "spark", "--effort", "high", "--fast", "--write", "--sandbox", "workspace-write", "--approve-browser-origin", "https://example.com", "--approve-computer-app", "com.apple.TextEdit", "--owner", "explicit-owner", "--question-timeout-sec", "42", "--cwd", f.repo));
+  assert.ok(AGENT_NAMES.includes(first.agentName));
+  assert.equal(job(f, first.jobId).agentName, first.agentName);
   assert.equal(job(f, first.jobId).leaseSec, 27); assert.equal(first.ownerId, "explicit-owner");
   assert.equal(first.model, "gpt-5.3-codex-spark"); assert.equal(first.effort, "high"); assert.equal(first.serviceTier, "priority");
   assert.equal(job(f, first.jobId).questionTimeoutSec, 42);
   assert.match(f.state().lastTurnStart.prompt, /fixture from prompt file/);
   const continued = direct(run(process.execPath, [script, "task", "--continue", first.jobId, "--direct", "--report", "--lease-sec", "39"], { cwd: f.repo, env: f.env, input: "fixture from stdin" }));
   assert.equal(job(f, continued.jobId).leaseSec, 39); assert.equal(continued.threadId, first.threadId);
-  for (const key of ["sandbox", "model", "effort", "serviceTier", "approvedBrowserOrigins", "approvedComputerApps"]) assert.deepEqual(continued[key], first[key], key);
+  for (const key of ["agentName", "sandbox", "model", "effort", "serviceTier", "approvedBrowserOrigins", "approvedComputerApps"]) assert.deepEqual(continued[key], first[key], key);
   assert.match(f.state().lastTurnStart.prompt, /fixture from stdin/);
   const threaded = direct(f.call("task", "--direct", "--thread", first.threadId, "--normal", "fixture next turn"));
+  assert.equal(threaded.agentName, first.agentName);
+  assert.equal(job(f, threaded.jobId).agentName, first.agentName);
   assert.equal(threaded.threadId, first.threadId); assert.equal(threaded.serviceTier, null);
 });
 
@@ -942,7 +1029,10 @@ test("every task launch mode writes a private atomic session marker in the canon
     const launched = json(f.call("task", ...args, ...extra, "marker fixture"));
     const saved = job(f, launched.jobId), markerFile = path.join(root, "fixture-session", `${launched.jobId}.json`);
     const marker = JSON.parse(fs.readFileSync(markerFile, "utf8"));
-    assert.deepEqual(marker, { v: 1, jobId: launched.jobId, jobFile: saved.logFile.replace(/\.log$/, ".json"), logFile: saved.logFile, title: saved.title, summary: "marker fixture", workspaceRoot: f.repo, createdAt: saved.createdAt });
+    assert.deepEqual(marker, { v: 1, jobId: launched.jobId, jobFile: saved.logFile.replace(/\.log$/, ".json"), logFile: saved.logFile, title: saved.title, name: saved.agentName, summary: "marker fixture", workspaceRoot: f.repo, createdAt: saved.createdAt });
+    assert.ok(AGENT_NAMES.includes(saved.agentName));
+    assert.equal(launched.agentName, saved.agentName);
+    if (extra.length) assert.equal(saved.agentName, previous.agentName);
     assert.equal(fs.statSync(markerFile).mode & 0o777, 0o600);
     assert.equal(fs.statSync(path.dirname(markerFile)).mode & 0o777, 0o700);
     assert.ok(fs.existsSync(marker.jobFile)); assert.ok(fs.existsSync(marker.logFile));

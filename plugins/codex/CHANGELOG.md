@@ -2,6 +2,12 @@
 
 ## 1.0.6-isolated.20
 
+- Every companion subcommand now has side-effect-free `--help`/`-h`; task help includes direct/parallel/follow-up examples and result handling, unknown options fail with usage (adversarial-review retains free-form focus flags), and SessionStart adds a short dispatch template while preserving environment exports.
+
+- Tasks get random names from 60 historical scientists and computing pioneers, preserved on thread follow-ups and exposed in JSON and session markers; codex-live shows the name and cleaned task summary, and its session-persisted **Clear finished** control hides ended jobs without deleting records or changing retention.
+
+- codex-live: Clear finished records the time it was pressed, so every job that had ended by then stays hidden, including ones outside the 20 kept in view and ones rediscovered later; hidden or unchanged job files are no longer re-read every 10 seconds; each render budgets only the rows it is given. Known limitation: while Claude Code's slash-command suggestions are open they cover the bottom of a docked pane, which the pane cannot detect.
+
 - Mac sleep no longer consumes a running job's owner heartbeat grace or lease: delayed worker ticks shift both timestamps under the state lock, record pause diagnostics, and let the owner resume renewing without reviving cancelled or ended jobs.
 
 - Retention now follows Claude Code’s `cleanupPeriodDays` (default 30, environment override available): detached SessionStart prewarm cleans eligible ended jobs, markers (replacing the former 7-day period), and unreferenced old Codex threads through `thread/delete`, at most every 12 hours. `cleanup [--dry-run] [--days N] [--json]` previews or applies it on demand; active jobs, attached owners and live PIDs are protected.

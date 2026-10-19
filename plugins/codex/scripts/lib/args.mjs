@@ -4,6 +4,21 @@ export function parseArgs(argv, config = {}) {
   for (const key of repeatableOptions) valueOptions.add(key);
   const booleanOptions = new Set(config.booleanOptions ?? []);
   const aliasMap = config.aliasMap ?? {};
+  // Opt in: other callers may intentionally forward option-like positionals.
+  // Check before consuming values so a misspelled flag cannot become a value.
+  if (config.rejectUnknown) {
+    for (const token of argv) {
+      if (token === "--") break;
+      if (!token.startsWith("-") || token === "-") continue;
+      const rawKey = token.startsWith("--") ? token.slice(2).split("=", 1)[0] : token.slice(1);
+      const key = aliasMap[rawKey] ?? rawKey;
+      if (!booleanOptions.has(key) && !valueOptions.has(key)) {
+        const error = new Error(`Unknown option: ${token}`);
+        error.code = "UNKNOWN_OPTION";
+        throw error;
+      }
+    }
+  }
   const options = {};
   const positionals = [];
   let passthrough = false;
@@ -39,7 +54,8 @@ export function parseArgs(argv, config = {}) {
 
       if (valueOptions.has(key)) {
         const nextValue = inlineValue ?? argv[index + 1];
-        if (nextValue === undefined || (repeatableOptions.has(key) && nextValue.startsWith("-"))) {
+        if (nextValue === undefined || (repeatableOptions.has(key) && nextValue.startsWith("-")) ||
+            (config.rejectUnknown && inlineValue === undefined && nextValue === "--")) {
           throw new Error(`Missing value for --${rawKey}`);
         }
         if (repeatableOptions.has(key)) (options[key] ??= []).push(nextValue);
@@ -64,7 +80,7 @@ export function parseArgs(argv, config = {}) {
 
     if (valueOptions.has(key)) {
       const nextValue = argv[index + 1];
-      if (nextValue === undefined) {
+      if (nextValue === undefined || (config.rejectUnknown && nextValue === "--")) {
         throw new Error(`Missing value for -${shortKey}`);
       }
       if (repeatableOptions.has(key)) (options[key] ??= []).push(nextValue);

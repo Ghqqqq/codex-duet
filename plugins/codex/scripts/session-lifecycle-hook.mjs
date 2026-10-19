@@ -11,6 +11,12 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { clearMode, pruneModes } from "./lib/ultra-codex-mode.mjs";
 import { runAutomaticRetention } from "./lib/retention.mjs";
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
+const SESSION_START_CONTEXT = [
+  'Codex jobs: node "$CODEX_COMPANION" task --fresh --direct --model gpt-6-astra --effort xhigh --normal --cwd <dir>',
+  "Run with Bash run_in_background: true; pass the brief on stdin through a single-quoted heredoc.",
+  "Use a fresh thread per independent job; follow up with task --thread <threadId> --direct in the same cwd.",
+  'Run node "$CODEX_COMPANION" task --help for flags, examples and JSON result handling.'
+].join("\n");
 const shellEscape = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 function appendEnvVar(name, value) {
   if (process.env.CLAUDE_ENV_FILE && value != null && value !== "") fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export ${name}=${shellEscape(value)}\n`);
@@ -42,6 +48,7 @@ async function main() {
       });
       child.on("error", () => {}); child.unref();
     } catch { /* Missing prerequisites are reported by setup/task, not a login prompt. */ }
+    process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: SESSION_START_CONTEXT } })}\n`);
     return;
   }
   if ((event || input.hook_event_name) !== "SessionEnd") return;

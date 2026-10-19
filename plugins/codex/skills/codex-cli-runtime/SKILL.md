@@ -10,6 +10,7 @@ Use this skill only inside the `codex:codex-rescue` subagent. Its restrictions a
 
 Primary helper:
 - `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task "<raw arguments>"`
+- `node "$CODEX_COMPANION" task --help` (or `-h`) lists every task flag and examples without starting a job. Unknown task flags before `--` are errors; pass literal option-like task text after `--` or on stdin.
 
 Execution rules:
 - Set Bash `dangerouslyDisableSandbox: true` for every companion call. Add `--report --json` so stdout is a concise report with rawOutputFile/resultFile paths. The companion injects a conservative-assumptions, finish-this-turn contract; preserve needs_input and its question as incomplete work. No AskUserQuestion or confirmations in the wrapper.

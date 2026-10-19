@@ -40,6 +40,7 @@ export function writeSessionMarker(job) {
       logFile: job.logFile ? path.resolve(job.logFile) : null,
       title: job.title,
       summary: job.summary,
+      ...(job.agentName ? { name: job.agentName } : {}),
       workspaceRoot: path.resolve(job.workspaceRoot),
       createdAt: job.createdAt
     };
