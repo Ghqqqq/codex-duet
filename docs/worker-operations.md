@@ -3,8 +3,9 @@
 Use direct mode by default: the main Claude agent runs `task --direct` in
 background Bash. Supply the objective, owned paths, constraints and acceptance
 criteria using the [brief template](../plugins/codex/prompts/ultra-codex-protocol.md#writing-a-brief-every-codex-assignment).
-Claude reads a compact report on notification; it does not pay for a Haiku relay
-re-reading a growing transcript during long jobs.
+Claude reads only the last line starting with `{` in the output file
+(`grep '^{' <output file> | tail -n 1`) on notification; it does not pay for a
+Haiku relay re-reading a growing transcript during long jobs.
 
 ## Direct mode
 
@@ -31,8 +32,10 @@ jobs require disjoint OWNED PATHS or separate worktrees the orchestrator creates
 with `git worktree add` and passes as `--cwd`.
 
 `task --direct` starts the same detached job as `--follow`, with this process
-attached as its owner wait. It prints no feed and exactly one compact JSON line
-when the job ends, a question is pending, or the timeout passes. The default
+attached as its owner wait. It prints compact progress lines visible in /tasks,
+then the JSON payload as the last stdout line when the job ends, a question is
+pending, or the timeout passes. Add `--quiet` to `task --direct` or `wait --direct` for
+exactly one JSON line without progress; `--quiet` requires `--direct`. The default
 `--timeout-sec` is 3600 (maximum 3600), and default `--lease-sec` is 1800 rather
 than the 180 used outside direct mode. It accepts `--fresh`, `--thread <id>`,
 `--continue <job-id>`, `--model`, `--effort`, `--fast|--normal`, `--sandbox`,
@@ -40,8 +43,10 @@ than the 180 used outside direct mode. It accepts `--fresh`, `--thread <id>`,
 `--background`, `--json`, `--feed-limit` and `--min-interval-sec`.
 
 Wait for Claude Code's completion notification, which carries no output. Read
-one JSON line from the output file it names. Never poll, sleep or tail. Retain
-the job/owner/thread handles and the original cwd. Never run two waits for one job.
+only the last line starting with `{` in the output file it names
+(`grep '^{' <output file> | tail -n 1`), the JSON payload. Claude Code may append
+`[exited with code N]`; never read the whole output file. Never poll, sleep or use `tail -f`.
+Retain the job/owner/thread handles and the original cwd. Never run two waits for one job.
 
 - Terminal: apply the [acceptance protocol](../plugins/codex/prompts/ultra-codex-protocol.md#accepting-a-result-every-worker-report-no-exceptions),
   even after a nonzero exit. The report has the structured fields described
@@ -66,7 +71,8 @@ the job/owner/thread handles and the original cwd. Never run two waits for one j
   submit a replacement task.
 
 Exit codes are 0 for `completed`, 2 for `blocked`/`needs_input`, 1 for other
-terminal states, and 0 for non-terminal returns. Follow-ups and rework start a
+terminal states, 0 for `running`/`needs_answer`, 2 for `ownership_moved`, and 130
+for a stopped owner wait. Follow-ups and rework start a
 new job on the same thread with `task --thread <threadId> --direct`, the same
 `--cwd`, and the relevant criteria restated. Stop the background task in Claude
 Code to interrupt the owner wait (`owner_stopped`), or run
@@ -76,9 +82,9 @@ the report's `continuationCommand`:
 leases, adoption and orphan detection remain as described below.
 
 For live activity, install the separate read-only pane with
-`/plugin install codex-live@duet`. It opens automatically when a Codex job starts
-in the session on terminals at least 144 columns wide; otherwise the user opens
-it with its `codex-live` slash command. It shows session jobs and the selected
+`/plugin install codex-live@duet`. New active jobs ask Claude Code to open the pane;
+Claude Code decides whether it is shown at the current width. `/codex-live` opens
+it at any width. It shows session jobs and the selected
 job's messages, commands, file changes, tool calls, plan and pending question.
 It never starts, answers or cancels jobs and costs no Claude tokens. It reads
 companion-written markers under
@@ -106,12 +112,13 @@ app request becomes a question for the parent. A plain foreground `task` keeps
 reviewers with `--sandbox read-only`, or use `--sandbox workspace-write` when the
 assignment requires it. Never elevate after a denial.
 
-Project instructions: Codex discovers `AGENTS.md` itself. Before every task the
-helper sets Codex's `project_doc_fallback_filenames = ["CLAUDE.md"]` in the
-isolated home's `config.toml` (once; `setup --project-docs agents-only` turns it
-off), so a worker also reads the project's `CLAUDE.md` wherever no `AGENTS.md`
-exists, under Codex's own discovery rules and size limit. The user-level
-`~/.claude/CLAUDE.md` is not involved.
+Project instructions: Codex discovers `AGENTS.md` itself. By default, before every
+task the helper adds `project_doc_fallback_filenames = ["CLAUDE.md"]` to the isolated
+home's `config.toml` only when no custom list exists. `setup --project-docs agents-only`
+removes only Duet's exact default list; custom lists remain unchanged. The fallback
+lets a worker read the project's `CLAUDE.md` wherever no `AGENTS.md` exists, under
+Codex's own discovery rules and size limit. The user-level `~/.claude/CLAUDE.md`
+is not involved.
 
 Parallel workers need disjoint write ownership or separate worktrees. Direct
 mode handles questions in the main agent; the fallback relays them with
@@ -132,10 +139,10 @@ reported as blockers. The interactive `/codex:setup` install offer and
 `/codex:rescue` continuation chooser are separate user-facing paths; dynamic
 workflows should use `task --direct`, with `codex:codex-worker` only as fallback,
 not those choosers.
-Codex server requests for approval/input are logged safely and receive an
-unsupported-request error unless they meet the explicit origin policy or registered
-ask_parent contract. Unsupported MCP elicitations instead receive nonpersistent cancel.
-The runtime does not open an interactive confirmation flow.
+Codex server requests for approval/input are logged safely. Supported Computer Use
+approvals reach the parent on owned jobs; the explicit origin policy and registered
+ask_parent contract also apply. Other requests receive an unsupported-request error;
+unsupported MCP elicitations receive nonpersistent cancel.
 
 ## Browser assignments and origin approvals
 
@@ -153,19 +160,21 @@ could not inspect or close because of `Debugger unattached` is reported as
 The browser is unrestricted by default (`approval_mode = "never_ask"` mirrored
 into the isolated browser runtime before every task) and every sandbox mode keeps
 `networkAccess: true`, so browser assignments normally need no origin flag. For
-the rare case where the user chose `setup --browser-approval ask`, the parent may
-supply repeated `task --approve-browser-origin https://example.com` flags. The
-worker forwards them exactly as supplied. The CLI normalizes scheme/host case and default ports,
+the rare case where the user chose `setup --browser-approval ask`, a browser-tool
+origin needs `setup --allow-browser-origin https://example.com`, an explicit persistent
+grant. `task --approve-browser-origin` covers only supported network-egress approvals.
+The worker forwards supplied flags exactly. The CLI normalizes scheme/host case and default ports,
 deduplicates, and rejects paths (even `/`), queries, fragments, userinfo,
 wildcards and malformed values before starting the runtime. There is no implicit
-subdomain or redirect grant. Each invocation, including `--thread`, starts with
-only its own flags; the flag is never added automatically after denial.
+subdomain or redirect grant. Fresh tasks and `--thread` follow-ups use only their own
+approval flags; `--continue` inherits the original job's recorded origin and app
+approvals. The flag is never added automatically after denial.
 
 Normalized `approvedBrowserOrigins` are stored with foreground/background jobs,
 task/status/result JSON and text reports, and interrupted-result recovery.
 Compact reports show up to three origins with an omitted count; job metadata and
 the full result retain every origin. The option does not change sandbox policy
-or `approvalPolicy: never`, and never grants session-wide authority.
+or the job's approval policy, and never grants session-wide authority.
 
 ## Computer Use app approvals
 
@@ -302,8 +311,9 @@ Adoption after expiry or completion returns `lease_expired` or `job_ended`
 progress also refuses adoption. Wait for pending interruption to finish before
 continuing. Thread context and on-disk edits persist; missing thread handles
 preclude a continuation command. `/codex:status` shows orphaned running jobs,
-remaining seconds and an exact adopt instruction after no renewal for min(65
-seconds, half the lease). See [stop actions and recovery](../README.md#if-a-worker-is-stopped).
+remaining seconds and an exact adopt instruction after no renewal for half the
+lease in direct mode (900 s with the default 1800 s lease), or the smaller of
+65 s and half the lease for other jobs. See [stop actions and recovery](direct-mode.md#if-a-worker-is-stopped).
 
 The lease is lifecycle coordination, not authentication against local processes.
 Expiry, cancel, SessionEnd and SIGTERM/SIGHUP/SIGINT resolve pending questions,
@@ -352,8 +362,8 @@ If policy forbids that parameter, the worker returns the permission blocker.
 Persist a default for all workspaces sharing this isolated home:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --default-sandbox workspace-write --dry-run --json
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --default-sandbox workspace-write --json
+node "$CODEX_COMPANION" setup --default-sandbox workspace-write --dry-run --json
+node "$CODEX_COMPANION" setup --default-sandbox workspace-write --json
 ```
 
 The accepted values are `read-only`, `workspace-write`, and `danger-full-access`.
@@ -372,7 +382,7 @@ Review commands keep their separate read-only behavior.
 For an assignment that must not touch anything, the parent narrows one call:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task --fresh --sandbox read-only --report --json 'Investigate and report; change nothing.'
+node "$CODEX_COMPANION" task --fresh --sandbox read-only --report --json 'Investigate and report; change nothing.'
 ```
 
 Never choose elevation automatically on an EPERM or browser failure when the
@@ -388,7 +398,8 @@ The local generated v2 protocol supports `ThreadStartParams.sandbox`,
 `readOnly`, `workspaceWrite`, and `dangerFullAccess`. The companion sets the thread
 policy, verifies the returned mode, and forwards the acknowledged policy to
 `turn/start` for explicit opt-ins, retaining the runtime's roots/network defaults.
-Approval policy is fixed to `never`; no new approval prompt is introduced.
+Owned jobs use `never+elicitations` to forward supported Computer Use approvals
+to the parent; a plain foreground task uses `never`.
 
 Full access removes Codex's own filesystem sandbox for that task. Isolated home
 routing and overlap checks remain active, but this option does not restrict the
@@ -429,8 +440,8 @@ or managed policy can still prevent unattended execution. Do not add broad
 Run these commands outside the Bash sandbox (or through `/codex:setup`):
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --sync-tools --dry-run --json
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --sync-tools --json
+node "$CODEX_COMPANION" setup --sync-tools --dry-run --json
+node "$CODEX_COMPANION" setup --sync-tools --json
 ```
 
 The preview is offline and makes no writes or Codex calls. It returns toolSync,
@@ -496,8 +507,8 @@ session/shared Codex runtime after a sync to load the configuration.
 ### Codex App profile
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --sync-tools --profile codex-app --dry-run --json
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --sync-tools --profile codex-app --replace-cua --json
+node "$CODEX_COMPANION" setup --sync-tools --profile codex-app --dry-run --json
+node "$CODEX_COMPANION" setup --sync-tools --profile codex-app --replace-cua --json
 ```
 
 This explicit profile reads the newest numeric version with a `.mcp.json` under
@@ -608,7 +619,7 @@ need extending is rejected, since appending a child table would be invalid TOML.
 
 The recorded 120-second pre-tool delay was primarily inference WebSocket retries,
 not MCP startup. See [the measurements and transport workaround](cua-delay-investigation.md)
-and the [README](../README.md#troubleshooting).
+and the [troubleshooting guide](troubleshooting.md#troubleshooting).
 
 ## Results, progress and recovery
 
@@ -625,7 +636,8 @@ result artifact, and builds the report from it: the declared status (a captured
 runtime refusal still forces `blocked`; a `completed` whose summary is a plan or
 a question becomes `needs_input`), `keyFindings`, `assumptions`,
 `claimedVerification` (Codex's list, distinct from the captured `verification`
-command events), `blockers` (captured first, then declared) and `question`.
+command events), `blockers` (captured/detected when present, otherwise Codex's
+declared entries) and `question`. The saved structured result keeps any additional declarations.
 `reportFormat: "structured"` marks such a report; when the final message is not
 a valid report (interrupted turn, older runtime) the fields are inferred from
 the prose as before. The compact report includes
@@ -653,8 +665,8 @@ The full final text is in `<job-id>.output.txt`; the raw result, command events
 and reasoning summaries are in `<job-id>.result.json`. Progress/messages are in
 `<job-id>.log`. These live beside the job record in the isolated home,
 `<isolated-home>/duet/state/<workspace-slug>-<hash>/jobs/`
-(`~/.claude/codex-isolated/duet/state/…` by default; directories `0700`, files
-`0600`), the same place for a terminal, a Claude session and the SessionEnd
+(`~/.claude/codex-isolated/duet/state/…` by default; directories `0700`, job/result JSON
+files `0600`, logs and `broker.json` follow the process umask), the same place for a terminal, a Claude session and the SessionEnd
 hook. `CLAUDE_PLUGIN_DATA` and the temp dir no longer decide the location. The
 latest 50 finished jobs per workspace are retained.
 
@@ -663,8 +675,8 @@ Releases before 1.0.6-isolated.15 wrote the same layout under
 or `…/codex-duet`, depending on the plugin ID at the time) or, outside Claude,
 under `$TMPDIR/codex-companion-isolated`. The first command touching a workspace
 merges whatever exists there into the new directory, under the new directory's
-lock: existing jobs are not overwritten, the newer `updatedAt` wins for an ID
-present on both sides, the index is deduplicated, recorded absolute artifact
+lock: the newer `updatedAt` record wins per job ID, the normal history cap applies,
+the index is deduplicated, recorded absolute artifact
 paths stay as they are (readable in place), the legacy directories are left
 alone, and a marker (`.legacy-migration.json`, listing each merged source) makes
 the merge idempotent across concurrent first commands. A legacy job whose
@@ -682,15 +694,18 @@ for task/result JSON remains a single final JSON document; wait in fallback feed
 mode streams lines before its final JSON line (`--json` suppresses them). A
 fallback Bash output file may combine stdout with stderr, so use
 `result --report --json` for clean retrieval if needed. Direct mode's output file
-contains one compact JSON line and no feed; read it on the completion notification.
+contains progress lines visible in /tasks, then the JSON payload, possibly
+followed by a Claude Code exit trailer (`--quiet` suppresses progress).
+On the completion notification, read only the last line starting with `{`
+(`grep '^{' <output file> | tail -n 1`); never read the whole output file.
 
 After interruption, retrieve in the original workspace:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status '<job-id>' --json
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status '<job-id>' --wait --timeout-ms 30000 --json
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result '<job-id>' --report --json
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" result --thread '<thread-id>' --report --json
+node "$CODEX_COMPANION" status '<job-id>' --json
+node "$CODEX_COMPANION" status '<job-id>' --wait --timeout-ms 30000 --json
+node "$CODEX_COMPANION" result '<job-id>' --report --json
+node "$CODEX_COMPANION" result --thread '<thread-id>' --report --json
 ```
 
 Explicit references work across Claude session IDs. `--thread` selects the most

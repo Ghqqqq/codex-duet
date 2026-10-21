@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.0
+
+- Versioning: Duet now uses its own semantic versions, starting with 1.1.0. Earlier releases were labelled `1.0.6-isolated.N`; those headings below keep their original names.
+
+- Run journal: an orchestrated task can keep a durable journal in the isolated home (`journal start|add|close|show|list`). It records the goal and acceptance criteria, Claude's per-worker verdicts (criterion → evidence → result) and decisions, and the final judgment. Tasks dispatched by the same Claude session link automatically, including tasks in other worktrees: the exact brief and the final compact report are copied into the run, so they survive job-record pruning. After compaction or on resume, `journal show` recovers criteria, verdicts and open items, and SessionStart adds a one-line reminder while a run is open. `cleanup` and automatic retention prune inactive runs. The ultra-codex protocol now records every verdict and decision in the journal.
+
+- `/tasks` progress for direct mode: `task --direct` and `wait --direct` print compact, terminal-sanitized (not credential-redacted), single-line progress (at most 200 characters, never starting with `{`) while they wait, so a running job is visible in Claude Code's `/tasks` view. The JSON payload is unchanged and is still the last line of the helper's output; Claude reads it with `grep '^{' <output file> | tail -n 1` because Claude Code appends its own `[exited with code N]` trailer. A re-wait prints only new events. `--quiet` restores the single-line output.
+
+- README rewritten as a short overview with a hero image, a how-it-works diagram and a codex-live demo rendered by the pane's own layout code from jobs on a small demo repository. Detailed reference moved to `docs/direct-mode.md`, `docs/commands.md`, `docs/configuration.md`, `docs/state-and-retention.md` and `docs/troubleshooting.md`.
+
 ## 1.0.6-isolated.20
 
 - Every companion subcommand now has side-effect-free `--help`/`-h`; task help includes direct/parallel/follow-up examples and result handling, unknown options fail with usage (adversarial-review retains free-form focus flags), and SessionStart adds a short dispatch template while preserving environment exports.

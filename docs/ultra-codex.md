@@ -4,8 +4,12 @@
 task the way Claude Code's own Ultracode mode does, with Codex workers in place
 of Claude subagents. Claude scouts, assigns, judges and integrates; Codex
 investigates, implements and reviews. Direct mode is the default: Claude runs
-`task --direct` in background Bash and reads one compact JSON line on the
-completion notification. This saves the Claude cost of a Haiku relay repeatedly
+`task --direct` in background Bash. Progress lines appear in /tasks, then the
+JSON payload as the last stdout line. On the completion notification, Claude
+reads only the last line starting with `{` in the output file
+(`grep '^{' <output file> | tail -n 1`), never the whole output file.
+Claude Code may append `[exited with code N]` after the JSON.
+This saves the Claude cost of a Haiku relay repeatedly
 reading its growing transcript; the heavy lifting spends Codex quota.
 `/codex:ultra-codex on` makes that the session's default (see "Mode" below);
 `off` ends it.
@@ -83,10 +87,10 @@ and direct Codex jobs, so it works at any effort level without the Workflow tool
 | Ultracode element | /codex:ultra-codex equivalent |
 | --- | --- |
 | `agent()` with `schema` | Bash → `task --direct`; the report is schema-enforced (`schemas/worker-report.schema.json`) |
-| `parallel()` fan-out | one Bash call per job with `run_in_background: true`, then read one JSON line from each output file on its completion notification |
+| `parallel()` fan-out | one Bash call per job with `run_in_background: true`, then read only the last line starting with `{` in each output file on its completion notification (grep recipe below) |
 | `phase()` | the seven phases below, tracked with `TodoWrite`; a phase starts when the previous one's reports are in |
 | `isolation: "worktree"` | Claude creates worktrees with `git worktree add`, passes each as `--cwd` and merges the branches; a shared checkout requires disjoint OWNED PATHS |
-| journal cache / resume | job records: `/codex:status`, `/codex:result <jobId>`, `task --continue <jobId> --cwd <cwd> --direct` |
+| journal cache / resume | `journal show` recovers criteria, verdicts, decisions and saved worker artifacts; `task --continue <jobId> --cwd <cwd> --direct` starts an explicitly requested continuation while its job record is retained |
 | adversarial verify, judge, loop-until-dry | the Verify phase: read-only reviewer workers, findings routed to the owning implementer, at most the configured fix rounds |
 
 Use the [direct-mode recipe](worker-operations.md#direct-mode): a quoted stdin
@@ -95,8 +99,11 @@ Claude's Bash sandbox is on, and `--sandbox read-only` for investigators and
 reviewers. SessionStart exports `CODEX_COMPANION`; older sessions resolve
 `../scripts/codex-companion.mjs` relative to the protocol's `prompts/` folder.
 The default timeout is 3600 s (maximum 3600), the direct owner lease 1800 s.
-Never poll, sleep or tail. The completion notification carries no output; read
-its output file. For `running`, background the returned `waitCommand`; for
+Add `--quiet` to `task --direct` or `wait --direct` for exactly one JSON line
+without progress; `--quiet` requires `--direct`. Never poll, sleep or use `tail -f`.
+The completion notification carries no output; read only the last line starting
+with `{` in its output file (`grep '^{' <output file> | tail -n 1`), never the whole output file.
+For `running`, background the returned `waitCommand`; for
 `needs_answer`, FIRST background its `waitCommand` with `--after-question`,
 then use `answerCommand` with the answer on stdin through a single-quoted
 heredoc. Never run two waits for one job; the answer continues the same turn.
@@ -109,11 +116,11 @@ Run the reported `continuationCommand` after a user stop only with consent.
 
 The separate read-only `codex-live` plugin (`/plugin install codex-live@duet`)
 shows session jobs and the selected job's messages, commands, file changes,
-tool calls, plan and pending question, at no Claude token cost. It opens on job
-start when the terminal is at least 144 columns wide; otherwise use its
-`codex-live` slash command. It reads companion-written markers under
-`<isolated home>/duet/sessions/<claudeSessionId>/` and never starts, answers or
-cancels a job.
+tool calls, plan and pending question, at no Claude token cost. New jobs ask Claude
+Code to open the pane; Claude Code decides whether to show it at the current width.
+Its `codex-live` slash command opens it at any width. It reads companion-written
+markers under `<isolated home>/duet/sessions/<claudeSessionId>/` and never starts,
+answers or cancels a job.
 
 Fallback only: `Agent(subagent_type: "codex:codex-worker")` when background Bash
 is unavailable or the user asks for an agent transcript view. Never pass `model`
@@ -165,6 +172,22 @@ are written by Claude before any dispatch and organise the final report
 (criterion → evidence → verdict); "done" appears only beside criteria backed by
 Claude's own evidence.
 
+## Run journal
+
+After writing task-level criteria, Claude runs `node "$CODEX_COMPANION" journal
+start` with stdin JSON containing `goal` and `criteria`. Tasks in that Claude
+session link automatically across workspaces and worktrees, preserving the exact
+worker brief and final compact report. Claude records each acceptance with `journal add verdict`,
+consequential decisions and accepted assumptions with `journal add decision`,
+and finishes with `journal close` (`passed`, `blocked` or `abandoned`).
+
+After compaction or a resumed session, `journal show` recovers the goal,
+criteria, latest worker verdicts, decisions and open items. SessionStart adds a
+one-line reminder when a run is active. Journals live only in Duet's isolated
+home, survive job-record pruning, and follow the retention window; they neither
+verify claims nor restart work. See [Run journal](run-journal.md) for schemas,
+commands and limits.
+
 ## Phases
 
 1. **Scout** (Claude, inline): entry points and the exact lines the briefs will
@@ -191,9 +214,11 @@ Every direct or `--report` worker turn runs with the worker-report output schema
 so the final message is a JSON object Codex must fill: `status` (`completed`,
 `needs_input`, `blocked`), `summary`, `key_findings`, `assumptions`,
 `verification`, `blockers`, `question`. The helper merges it with what it
-observed itself and returns one compact JSON line in direct mode (no `activity`
-list, only `activityCount`; terminal reports also carry the final `summary`, cut
-at 8000 characters), including:
+observed itself. In direct mode it returns compact JSON as the last stdout line
+after progress in /tasks. Read only the last line starting with `{`
+(`grep '^{' <output file> | tail -n 1`), never the whole output file. The payload
+has no `activity` list, only `activityCount`; terminal reports also carry the
+final `summary`, cut at 8000 characters. Fields include:
 
 - `status` — the declared status, except that a captured runtime refusal (for
   example a Computer Use denial) makes the turn `blocked`, and a `completed`
@@ -203,7 +228,7 @@ at 8000 characters), including:
 - `keyFindings`, `assumptions`, `claimedVerification` — Codex's declarations.
 - `verification` — command events the helper captured; `touchedFiles` and
   `fileTrackingStatus` — from workspace snapshots and file-change events.
-- `blockers` — captured refusals first, then Codex's own entries.
+- `blockers` — captured/detected blockers when present, otherwise Codex's own entries.
 - `question` — the exact missing input when `status` is `needs_input`.
 
 The summary is stored as the raw output (`rawOutputFile`), so `/codex:result`
@@ -221,9 +246,10 @@ through `AskUserQuestion` unless the user pre-authorised the app.
 
 ## Project instructions
 
-Codex reads `AGENTS.md` on its own. Before each task the helper also sets
+Codex reads `AGENTS.md` on its own. Before each task the helper also adds
 Codex's `project_doc_fallback_filenames = ["CLAUDE.md"]` in the isolated home's
-`config.toml`, so a worker reads the project's `CLAUDE.md` wherever an
-`AGENTS.md` is missing (same discovery rules and size limit as Codex applies to
-`AGENTS.md`). `setup --project-docs agents-only` turns this off; the user-level
+`config.toml` unless a custom fallback list exists. This default lets a worker read
+the project's `CLAUDE.md` wherever an `AGENTS.md` is missing (same discovery rules
+and size limit as Codex applies to `AGENTS.md`). `setup --project-docs agents-only`
+removes only Duet's exact default list; custom lists are unchanged. The user-level
 `~/.claude/CLAUDE.md` is never involved.

@@ -1,0 +1,98 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Duet hero</title>
+<style>
+  :root {
+    --bg: #0d0f14; --panel: #151922; --line: #262c3a;
+    --ink: #f3f1ec; --muted: #8f98a8; --claude: #e8805f; --codex: #48d6b4;
+    --mono: "SF Mono", Menlo, ui-monospace, monospace;
+    --sans: "Avenir Next", "SF Pro Display", -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1280px; height: 440px; background: var(--bg); }
+  body {
+    position: relative; overflow: hidden; font-family: var(--sans); color: var(--ink);
+    background:
+      radial-gradient(620px 340px at 8% 0%, rgba(232,128,95,.16), transparent 70%),
+      radial-gradient(620px 360px at 100% 100%, rgba(72,214,180,.14), transparent 70%),
+      var(--bg);
+  }
+  .grid {
+    position: absolute; inset: 0; opacity: .35;
+    background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 40px 40px;
+    mask-image: radial-gradient(800px 380px at 70% 50%, #000 0%, transparent 75%);
+  }
+  .left { position: absolute; left: 72px; top: 78px; width: 580px; }
+  .eyebrow { font: 600 13px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  .eyebrow b { color: var(--claude); font-weight: 600; } .eyebrow i { color: var(--codex); font-style: normal; }
+  h1 { margin-top: 18px; font-size: 104px; line-height: .9; font-weight: 700; letter-spacing: -.035em; }
+  h1 span { background: linear-gradient(90deg, var(--claude), #f2b48f 45%, var(--codex)); -webkit-background-clip: text; color: transparent; }
+  .tag { margin-top: 24px; font-size: 25px; line-height: 1.32; font-weight: 500; }
+  .tag em { font-style: normal; color: var(--claude); } .tag strong { font-weight: 500; color: var(--codex); }
+  .pills { margin-top: 28px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill { font: 500 12px/1 var(--mono); color: var(--muted); border: 1px solid var(--line); background: rgba(21,25,34,.8); padding: 7px 10px; border-radius: 999px; }
+
+  .stage { position: absolute; left: 640px; top: 46px; width: 580px; height: 350px; }
+  svg.waves { position: absolute; inset: 0; }
+  .card {
+    position: absolute; width: 250px; padding: 13px 14px 12px; border-radius: 12px;
+    background: rgba(21,25,34,.92); border: 1px solid var(--line);
+    box-shadow: 0 18px 40px rgba(0,0,0,.35);
+    font: 12.5px/1.45 var(--mono); color: var(--muted);
+  }
+  .card .hd { display: flex; align-items: center; gap: 8px; color: var(--ink); font-weight: 600; font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .card .st { margin-left: auto; font-weight: 500; font-size: 11.5px; }
+  .card .ln { margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card .ln b { color: var(--ink); font-weight: 500; }
+  .claude { left: 0; top: 118px; border-color: rgba(232,128,95,.55); width: 220px; }
+  .claude .hd { color: var(--claude); }
+  .w1 { left: 318px; top: 0; } .w2 { left: 330px; top: 122px; } .w3 { left: 318px; top: 244px; }
+  .ok { color: var(--codex); } .run { color: #e9c46a; } .ask { color: var(--claude); }
+</style>
+<div class="grid"></div>
+
+<div class="left">
+  <div class="eyebrow"><b>Claude Code</b> &nbsp;×&nbsp; <i>Codex</i> &nbsp;·&nbsp; plugin</div>
+  <h1><span>Duet</span></h1>
+  <p class="tag"><em>Claude</em> plans, briefs and accepts.<br><strong>Codex workers</strong> build and review in parallel.</p>
+  <div class="pills">
+    <span class="pill">direct mode</span><span class="pill">ask_parent</span><span class="pill">codex-live</span><span class="pill">run journal</span><span class="pill">isolated home</span>
+  </div>
+</div>
+
+<div class="stage">
+  <svg class="waves" viewBox="0 0 580 350" fill="none">
+    <defs>
+      <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="220" y1="0" x2="330" y2="0"><stop offset="0" stop-color="#e8805f"/><stop offset="1" stop-color="#48d6b4"/></linearGradient>
+    </defs>
+    <path d="M220 175 C 268 175, 270 52, 318 52" stroke="url(#g)" stroke-width="2" stroke-dasharray="5 6"/>
+    <path d="M220 175 C 270 175, 290 175, 330 175" stroke="url(#g)" stroke-width="2"/>
+    <path d="M220 175 C 268 175, 270 298, 318 298" stroke="url(#g)" stroke-width="2" stroke-dasharray="5 6"/>
+    <circle cx="220" cy="175" r="4" fill="#e8805f"/>
+  </svg>
+
+  <div class="card claude">
+    <div class="hd"><span class="dot" style="background:var(--claude)"></span>Claude</div>
+    <div class="ln">criteria → <b>3 briefs</b></div>
+    <div class="ln">verdicts → <b>run journal</b></div>
+    <div class="ln">tokens while waiting: <b>0</b></div>
+  </div>
+
+  <div class="card w1">
+    <div class="hd"><span class="dot" style="background:var(--codex)"></span>Ada<span class="st run">● running</span></div>
+    <div class="ln"><b>Update</b>(retry.ts)</div>
+    <div class="ln">⎿ 24 additions, 9 removals</div>
+  </div>
+  <div class="card w2">
+    <div class="hd"><span class="dot" style="background:var(--codex)"></span>Noether<span class="st ask">? ask_parent</span></div>
+    <div class="ln">“Keep the v1 header?”</div>
+    <div class="ln">⎿ reply → same turn</div>
+  </div>
+  <div class="card w3">
+    <div class="hd"><span class="dot" style="background:var(--codex)"></span>Turing<span class="st ok">✓ completed</span></div>
+    <div class="ln">review · <b>2 findings</b></div>
+    <div class="ln">⎿ 1 JSON line → Claude</div>
+  </div>
+</div>

@@ -8,6 +8,8 @@ user-invocable: false
 
 Use this skill only inside the `codex:codex-rescue` subagent. Its restrictions apply to that wrapper. The parent Claude agent owns planning, parallel task assignments, integration, verification, and user-facing summaries. The self-contained `codex:codex-worker` agent uses its own instructions for native parallel delegation and explicit-thread follow-ups; do not load this rescue-only skill there.
 
+For the parent's background `task --direct` and `wait --direct` calls, compact progress lines appear in /tasks, then the JSON payload as the last stdout line. On completion, read only the last line starting with `{` in the output file (`grep '^{' <output file> | tail -n 1`). Claude Code may append `[exited with code N]`; never read the whole output file. Add `--quiet` for exactly one JSON line without progress; it requires `--direct`. The rescue wrapper's foreground invocation below is unchanged.
+
 Primary helper:
 - `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task "<raw arguments>"`
 - `node "$CODEX_COMPANION" task --help` (or `-h`) lists every task flag and examples without starting a job. Unknown task flags before `--` are errors; pass literal option-like task text after `--` or on stdin.

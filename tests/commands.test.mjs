@@ -103,7 +103,7 @@ test("ultra-codex is a mode switch plus one-shot orchestration; the protocol liv
 test("rescue command absorbs continue semantics", () => {
   const rescue = read("commands/rescue.md");
   const agent = read("agents/codex-rescue.md");
-  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  const readme = fs.readFileSync(path.join(ROOT, "docs/commands.md"), "utf8");
   const runtimeSkill = read("skills/codex-cli-runtime/SKILL.md");
 
   assert.match(rescue, /The rescue subagent returns Codex's output to the parent unchanged/i);
@@ -282,7 +282,7 @@ test("fallback Codex worker preserves identity, native lifecycle, and parallel o
 });
 
 test("stopped-worker docs require consent and replacement adoption", () => {
-  const readme = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const readme = fs.readFileSync(new URL("../docs/direct-mode.md", import.meta.url), "utf8");
   assert.match(readme, /### If a worker is stopped\n/);
   assert.match(readme, /Stop the background task in Claude Code/);
   assert.match(readme, /interruptionReason: owner_stopped/);
@@ -309,7 +309,7 @@ test("stopped-worker docs require consent and replacement adoption", () => {
 });
 
 test("direct-mode docs share the dispatch, wait, answer, fallback and live-pane contract", () => {
-  for (const file of ["README.md", "docs/worker-operations.md", "plugins/codex/prompts/ultra-codex-protocol.md"]) {
+  for (const file of ["docs/direct-mode.md", "docs/worker-operations.md", "plugins/codex/prompts/ultra-codex-protocol.md"]) {
     const source = fs.readFileSync(path.join(ROOT, file), "utf8");
     const text = source.replace(/\s+/g, " ");
     assert.match(source, /node "\$CODEX_COMPANION" task --fresh --direct --model gpt-6-astra --effort xhigh --normal <<'CODEX_TASK'\n[^]*\nCODEX_TASK\n/, file);
@@ -320,7 +320,7 @@ test("direct-mode docs share the dispatch, wait, answer, fallback and live-pane 
     assert.match(text, /Never pass `model` or `effort` to that agent/, file);
     assert.match(text, /\/plugin install codex-live@duet/, file);
   }
-  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  const readme = fs.readFileSync(path.join(ROOT, "docs/direct-mode.md"), "utf8");
   assert.match(readme, /\| Direct-mode timeout \| 3600 s \|/);
   assert.match(readme, /\| Owner lease \| 1800 s in direct mode; 180 s otherwise \|/);
   assert.match(readme, /\| Fallback feed limit \| 60 lines per call \|/);
@@ -372,7 +372,7 @@ test("hooks keep session-end cleanup and stop gating enabled", () => {
 
 test("setup command can offer Codex install and still points users to codex login", () => {
   const setup = read("commands/setup.md");
-  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8") + fs.readFileSync(path.join(ROOT, "docs/commands.md"), "utf8");
 
   assert.match(setup, /argument-hint:.*--sync-tools.*--dry-run.*--enable-review-gate\|--disable-review-gate/);
   assert.match(setup, /auth.status.*unreachable/);

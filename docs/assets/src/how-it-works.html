@@ -1,0 +1,105 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Duet how it works</title>
+<style>
+  :root {
+    --bg: #0d0f14; --panel: #151922; --panel2: #1a1f2b; --line: #262c3a;
+    --ink: #f3f1ec; --muted: #8f98a8; --claude: #e8805f; --codex: #48d6b4; --amber: #e9c46a;
+    --mono: "SF Mono", Menlo, ui-monospace, monospace;
+    --sans: "Avenir Next", "SF Pro Display", -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1280px; height: 628px; background: var(--bg); }
+  body {
+    position: relative; overflow: hidden; font-family: var(--sans); color: var(--ink);
+    background:
+      radial-gradient(560px 320px at 0% 0%, rgba(232,128,95,.12), transparent 70%),
+      radial-gradient(560px 320px at 100% 100%, rgba(72,214,180,.11), transparent 70%),
+      var(--bg);
+    padding: 44px 56px;
+  }
+  .cols { display: grid; grid-template-columns: 320px 1fr 290px; gap: 64px; position: relative; }
+  .card { background: rgba(21,25,34,.94); border: 1px solid var(--line); border-radius: 16px; padding: 20px 22px; position: relative; }
+  .kicker { font: 600 11.5px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  h2 { margin-top: 8px; font-size: 25px; font-weight: 700; letter-spacing: -.01em; }
+  .claude { border-color: rgba(232,128,95,.5); } .claude h2 { color: var(--claude); }
+  .duet { border-image: none; }
+  .duet h2 span { background: linear-gradient(90deg, var(--claude), var(--codex)); -webkit-background-clip: text; color: transparent; }
+  ol { list-style: none; padding: 0; margin-top: 16px; counter-reset: s; }
+  ol li { counter-increment: s; display: grid; grid-template-columns: 26px 1fr; gap: 10px; padding: 8px 0; border-top: 1px dashed var(--line); font-size: 15px; line-height: 1.35; }
+  ol li:first-child { border-top: 0; }
+  ol li::before { content: counter(s); font: 600 12px/22px var(--mono); text-align: center; width: 22px; height: 22px; border-radius: 50%; background: rgba(232,128,95,.15); color: var(--claude); }
+  code { white-space: nowrap; font: 500 13px var(--mono); color: var(--ink); background: var(--panel2); padding: 1px 6px; border-radius: 5px; }
+  .muted { color: var(--muted); }
+
+  .rows { margin-top: 16px; display: grid; gap: 10px; }
+  .row { display: grid; grid-template-columns: 136px 1fr; gap: 14px; align-items: baseline; padding: 10px 12px; border-radius: 10px; background: var(--panel2); font-size: 14.5px; line-height: 1.35; }
+  .row b { font: 600 12.5px var(--mono); color: var(--codex); }
+  .row b.c { color: var(--claude); } .row b.a { color: var(--amber); }
+
+  .workers { display: grid; gap: 14px; margin-top: 16px; }
+  .w { background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; font: 13px/1.5 var(--mono); color: var(--muted); }
+  .w .hd { display: flex; align-items: center; gap: 8px; color: var(--ink); font-weight: 600; font-size: 14px; }
+  .w .hd i { margin-left: auto; font-style: normal; font-weight: 500; font-size: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--codex); }
+  .codex h2 { color: var(--codex); }
+
+  .arrow { position: absolute; font: 600 12px/1 var(--mono); color: var(--muted); text-align: center; width: 64px; }
+  .arrow svg { display: block; margin: 6px auto 0; }
+  .a1 { left: 320px; top: 110px; } .a2 { left: 320px; top: 210px; }
+  .a3 { right: 290px; top: 110px; } .a4 { right: 290px; top: 210px; }
+
+  .bands { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 22px; }
+  .band { border: 1px solid var(--line); border-radius: 14px; padding: 16px 20px; background: rgba(21,25,34,.8); font-size: 15px; line-height: 1.45; }
+  .band .kicker { margin-bottom: 8px; }
+  .band.home { border-color: rgba(72,214,180,.35); }
+  .band.watch { border-color: rgba(233,196,106,.35); }
+</style>
+
+<div class="cols">
+  <div class="card claude">
+    <div class="kicker">orchestrator</div>
+    <h2>Claude Code</h2>
+    <ol>
+      <li><span>Scout; write <b>acceptance criteria</b></span></li>
+      <li><span>Brief each worker precisely</span></li>
+      <li><span>Background Bash: <code>task --direct</code></span></li>
+      <li><span>Wake once; read <b>1 JSON line</b></span></li>
+      <li><span>Criterion → evidence → <b>verdict</b></span></li>
+      <li><span>Log it in the <b>run journal</b></span></li>
+    </ol>
+  </div>
+
+  <div class="card duet">
+    <div class="kicker">runtime</div>
+    <h2><span>Duet companion</span></h2>
+    <div class="rows">
+      <div class="row"><b>owner + lease</b><span>Stop the Bash task → the turn stops</span></div>
+      <div class="row"><b class="c">ask_parent</b><span>Codex asks; the answer resumes the <b>same</b> turn</span></div>
+      <div class="row"><b>schema report</b><span>Findings, assumptions, claimed vs. captured checks</span></div>
+      <div class="row"><b>file snapshot</b><span>Touched files, before vs. after</span></div>
+      <div class="row"><b class="a">recover</b><span>continue · adopt · follow up on a thread</span></div>
+    </div>
+  </div>
+
+  <div class="card codex">
+    <div class="kicker">parallel workers</div>
+    <h2>Codex</h2>
+    <div class="workers">
+      <div class="w"><div class="hd"><span class="dot"></span>Ada<i style="color:var(--amber)">implement</i></div>own thread · owned paths</div>
+      <div class="w"><div class="hd"><span class="dot"></span>Noether<i style="color:var(--claude)">investigate</i></div>own thread · read-only</div>
+      <div class="w"><div class="hd"><span class="dot"></span>Turing<i style="color:var(--codex)">review</i></div>own thread · adversarial</div>
+      <div class="w" style="background:transparent;border-style:dashed;text-align:center">+ more, in parallel</div>
+    </div>
+  </div>
+
+  <div class="arrow a1">brief<svg width="52" height="12" viewBox="0 0 52 12"><path d="M2 6h44M40 1l7 5-7 5" stroke="#e8805f" stroke-width="2" fill="none"/></svg></div>
+  <div class="arrow a2"><svg width="52" height="12" viewBox="0 0 52 12"><path d="M50 6H6M12 1L5 6l7 5" stroke="#48d6b4" stroke-width="2" fill="none"/></svg><div style="margin-top:6px">1 line</div></div>
+  <div class="arrow a3">turn<svg width="52" height="12" viewBox="0 0 52 12"><path d="M2 6h44M40 1l7 5-7 5" stroke="#e8805f" stroke-width="2" fill="none"/></svg></div>
+  <div class="arrow a4"><svg width="52" height="12" viewBox="0 0 52 12"><path d="M50 6H6M12 1L5 6l7 5" stroke="#48d6b4" stroke-width="2" fill="none"/></svg><div style="margin-top:6px">report</div></div>
+</div>
+
+<div class="bands">
+  <div class="band home"><div class="kicker" style="color:var(--codex)">isolated home · ~/.claude/codex-isolated</div>Auth, threads, job state and run journals live apart from your everyday <code>~/.codex</code>, which Duet never writes.</div>
+  <div class="band watch"><div class="kicker" style="color:var(--amber)">watch live · 0 Claude tokens</div>The <b>codex-live</b> pane draws each worker like a Claude transcript; <code>/tasks</code> shows compact progress lines.</div>
+</div>

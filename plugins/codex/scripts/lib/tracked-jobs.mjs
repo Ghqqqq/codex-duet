@@ -2,6 +2,7 @@ import fs from "node:fs";
 import process from "node:process";
 
 import { readJobFile, resolveJobFile, resolveJobLogFile, upsertJob, writeJobFile, updateJob } from "./state.mjs";
+import { recordFinishedJob } from "./job-runtime.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 
@@ -159,7 +160,7 @@ export async function runTrackedJob(job, runner, options = {}) {
     const execution = await runner();
     const completionStatus = execution.jobStatus ?? (execution.exitStatus === 0 ? "completed" : "failed");
     const completedAt = nowIso();
-    updateJob(job.workspaceRoot, job.id, () => ({
+    recordFinishedJob(updateJob(job.workspaceRoot, job.id, () => ({
       status: completionStatus,
       summary: execution.summary,
       threadId: execution.threadId ?? null,
@@ -170,7 +171,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       result: execution.payload,
       report: execution.report ?? null,
       rendered: execution.rendered
-    }));
+    })));
     upsertJob(job.workspaceRoot, {
       id: job.id,
       status: completionStatus,
@@ -190,14 +191,14 @@ export async function runTrackedJob(job, runner, options = {}) {
     if (job.rawOutputFile && !fs.existsSync(job.rawOutputFile)) fs.writeFileSync(job.rawOutputFile, `${errorMessage}\n`, { mode: 0o600 });
     if (job.resultFile && !fs.existsSync(job.resultFile)) fs.writeFileSync(job.resultFile, `${JSON.stringify({ status: 1, error: errorMessage, threadId: existing.threadId ?? null, turnId: existing.turnId ?? null, approvedBrowserOrigins: existing.approvedBrowserOrigins ?? [], approvedComputerApps: existing.approvedComputerApps ?? [] })}\n`, { mode: 0o600 });
     const completedAt = nowIso();
-    updateJob(job.workspaceRoot, job.id, () => ({
+    recordFinishedJob(updateJob(job.workspaceRoot, job.id, () => ({
       status: "failed",
       phase: "failed",
       errorMessage,
       pid: null,
       completedAt,
       logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
-    }));
+    })));
     upsertJob(job.workspaceRoot, {
       id: job.id,
       status: "failed",

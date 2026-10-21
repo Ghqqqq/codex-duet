@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
 import { resolveStateRoot, removeJobsFromState } from "./state.mjs";
 import { planSessionMarkers, pruneSessionMarkers } from "./session-markers.mjs";
+import { planRuns, pruneRuns, RUN_SESSIONS_DIR } from "./run-journal.mjs";
 import { CodexAppServerClient } from "./app-server.mjs";
 import { ensureBrokerSession } from "./broker-lifecycle.mjs";
 
@@ -143,6 +144,7 @@ function inspectWorkspaces(env, cutoff, { retainAll = false } = {}) {
     const root = resolveStateRoot(env);
     realDirectory(root);
     for (const entry of fs.readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.name === RUN_SESSIONS_DIR) continue;
       const workspace = path.join(root, entry.name);
       if (!entry.isDirectory()) {
         if (entry.isSymbolicLink()) errors.push({ workspace, message: "Symlinked workspace; references are unknown." });
@@ -214,14 +216,15 @@ export function planRetention({ now = Date.now(), days, env = process.env } = {}
   resolveIsolatedCodexHome(env); // Enforce the test-home and normal-home guards before scanning.
   const state = inspectWorkspaces(env, cutoffMs);
   const markers = planSessionMarkers(cutoffMs, { env });
+  const runs = planRuns(cutoffMs, { env });
   const threads = state.errors.length ? { threads: [], errors: [] } : inspectThreads(env, cutoffMs, state.referenced);
-  const plan = { cutoff: new Date(cutoffMs).toISOString(), ...policy, jobs: state.jobs, markers: markers.markers, threads: threads.threads, retained: state.retained, errors: [...state.errors, ...markers.errors, ...threads.errors] };
+  const plan = { cutoff: new Date(cutoffMs).toISOString(), ...policy, jobs: state.jobs, runs: runs.runs, runSessions: runs.runSessions, markers: markers.markers, threads: threads.threads, retained: state.retained, errors: [...state.errors, ...markers.errors, ...runs.errors, ...threads.errors] };
   Object.defineProperty(plan, CONTEXT, { value: { env: { ...env } } });
   return plan;
 }
 
 export async function applyRetention(plan, { deleteThread } = {}) {
-  const report = { jobsDeleted: 0, markersDeleted: 0, threadsDeleted: 0, threadsSkipped: 0, bytesFreed: 0, retained: (plan?.retained ?? []).map(item => ({ ...item })), errors: [...(plan?.errors ?? [])], days: plan?.days, warnings: [...(plan?.warnings ?? [])] };
+  const report = { jobsDeleted: 0, runsDeleted: 0, runSessionsDeleted: 0, markersDeleted: 0, threadsDeleted: 0, threadsSkipped: 0, bytesFreed: 0, retained: (plan?.retained ?? []).map(item => ({ ...item })), errors: [...(plan?.errors ?? [])], days: plan?.days, warnings: [...(plan?.warnings ?? [])] };
   try {
     const env = plan[CONTEXT]?.env ?? process.env, cutoff = Date.parse(plan.cutoff);
     if (!Number.isFinite(cutoff)) throw new Error("Invalid retention cutoff.");
@@ -271,6 +274,11 @@ export async function applyRetention(plan, { deleteThread } = {}) {
       // Also account for partial artifact removal if commitState hit an I/O error.
       for (const file of files) if (!fs.existsSync(file.path)) report.bytesFreed += file.bytes;
     }
+    const runs = pruneRuns(plan.runs ?? [], cutoff, { env, runSessions: plan.runSessions ?? [] });
+    report.runsDeleted = runs.runsDeleted;
+    report.runSessionsDeleted = runs.runSessionsDeleted;
+    report.bytesFreed += runs.bytesFreed;
+    report.errors.push(...runs.errors);
     const markers = pruneSessionMarkers(0, { now: cutoff, env, files: plan.markers });
     report.markersDeleted = markers.markersDeleted;
     report.bytesFreed += markers.bytesFreed;
@@ -360,7 +368,7 @@ function acquireAutomaticLock(directory) {
 
 export async function runAutomaticRetention({ cwd = process.cwd(), now = Date.now(), env = process.env, broker, deleteThread } = {}) {
   let release;
-  const failed = error => ({ jobsDeleted: 0, markersDeleted: 0, threadsDeleted: 0, threadsSkipped: 0, bytesFreed: 0, retained: [], errors: [errorEntry({ scope: "automatic-retention" }, error)] });
+  const failed = error => ({ jobsDeleted: 0, runsDeleted: 0, runSessionsDeleted: 0, markersDeleted: 0, threadsDeleted: 0, threadsSkipped: 0, bytesFreed: 0, retained: [], errors: [errorEntry({ scope: "automatic-retention" }, error)] });
   try {
     const directory = path.join(resolveIsolatedCodexHome(env), "duet");
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });

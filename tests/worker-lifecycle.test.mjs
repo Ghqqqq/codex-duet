@@ -25,9 +25,19 @@ function fixture(behavior = "w5-working") {
   return { dir, repo, env, call: (...args) => run(process.execPath, [script, ...args], { cwd: repo, env }), state: () => JSON.parse(fs.readFileSync(path.join(dir, "fake-codex-state.json"))), answer: (job, id, text) => run(process.execPath, [script, "answer", job, "--question", id, "--json"], { cwd: repo, env, input: text }) };
 }
 function json(result, code = 0) { assert.equal(result.status, code, result.stderr + result.stdout); return JSON.parse(result.stdout); }
+function directLines(stdout) {
+  assert.ok(stdout.endsWith("\n"), "stdout ends with a newline");
+  const lines = stdout.slice(0, -1).split("\n");
+  assert.equal(lines.at(-1), JSON.stringify(JSON.parse(lines.at(-1))), "last line is compact JSON");
+  for (const line of lines.slice(0, -1)) {
+    assert.ok(line.length > 0 && line.length <= 200, "progress is compact and single-line");
+    assert.ok(!line.startsWith("{"), "progress cannot be mistaken for JSON");
+    assert.doesNotMatch(line, /[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/, "progress has no terminal controls or embedded newlines");
+  }
+  return lines;
+}
 function direct(result, code = 0) {
-  const payload = json(result, code);
-  assert.equal(result.stdout.split("\n").length, 2, "exactly one JSON line and its trailing newline");
+  const payload = json({ ...result, stdout: directLines(result.stdout).at(-1) }, code);
   for (const key of ["activity", "activityOmitted", "cursor", "startupTimings", "currentItem", "completedItems", "questionMessage"]) assert.equal(Object.hasOwn(payload, key), false, key);
   assert.equal(typeof payload.activityCount, "number");
   return payload;
@@ -761,13 +771,14 @@ test("a signalled owner wait stops the worker immediately; only a silent owner g
   let stdout = "", stderr = "";
   owner.stdout.on("data", chunk => { stdout += chunk; }); owner.stderr.on("data", chunk => { stderr += chunk; });
   const ownerClosed = new Promise(resolve => owner.on("close", resolve));
-  await waitUntil(() => job(f, launch.jobId).ownerAttached && job(f, launch.jobId).turnId);
+  await waitUntil(() => stdout.includes("\n") && job(f, launch.jobId).ownerAttached && job(f, launch.jobId).turnId);
   owner.kill("SIGTERM"); // Claude Code stopping the agent's Bash call, or Ctrl+C on a terminal --follow.
   const signalledAt = Date.now();
   const code = await ownerClosed;
   assert.equal(code, 130);
-  assert.equal(stdout.split("\n").length, 2); assert.equal(stderr, "");
-  const stopped = JSON.parse(stdout);
+  const lines = directLines(stdout);
+  assert.ok(lines.length > 1, "progress precedes the owner_stopped report"); assert.equal(stderr, "");
+  const stopped = JSON.parse(lines.at(-1));
   assert.deepEqual(stopped, { status: "owner_stopped", jobId: launch.jobId, agentName: launch.agentName, ownerId: launch.ownerId,
     threadId: job(f, launch.jobId).threadId, turnId: job(f, launch.jobId).turnId,
     interruptionReason: "owner_stopped", continuationCommand: stopped.continuationCommand });
@@ -796,16 +807,18 @@ test("a signalled owner wait stops the worker immediately; only a silent owner g
   assert.equal(json(f.call("cancel", second.jobId, "--json")).confirmation, "confirmed");
 });
 
-test("closed stdout on a final wait report records stdout_closed and stops the owner without an unhandled error", async () => {
-  for (const mode of ["--direct", "--json", "--report"]) {
+test("closed stdout on direct progress or a final wait report records stdout_closed without a crash", async () => {
+  for (const mode of ["progress", "--direct", "--json", "--report"]) {
     const f = fixture(), launch = json(f.call("task", "--detached", "--json", "fixture"));
     // Consume feed events first, so even feed mode fails on its final JSON write.
-    json(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--timeout-sec", "1", "--json"));
-    const owner = spawnOwned(process.execPath, [script, "wait", launch.jobId, "--owner", launch.ownerId, "--timeout-sec", "2", mode], { cwd: f.repo, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
+    if (mode !== "progress") json(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--timeout-sec", "1", "--json"));
+    const began = Date.now();
+    const owner = spawnOwned(process.execPath, [script, "wait", launch.jobId, "--owner", launch.ownerId, "--timeout-sec", mode === "progress" ? "60" : "2", mode === "progress" ? "--direct" : mode], { cwd: f.repo, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
     let stderr = ""; owner.stderr.on("data", chunk => { stderr += chunk; });
     const closed = new Promise(resolve => owner.on("close", resolve));
     owner.stdout.destroy();
     assert.equal(await closed, 130, stderr); assert.equal(stderr, "");
+    if (mode === "progress") assert.ok(Date.now() - began < 3000, "EPIPE happens during progress, before the final report is due");
     assert.equal(job(f, launch.jobId).ownerDetachReason, "stdout_closed");
     const result = json(f.call("wait", launch.jobId, "--timeout-sec", "10", "--json"), 1);
     assert.equal(result.status, "interrupted"); assert.equal(result.interruptionReason, "owner_stopped"); assert.equal(result.interruptionConfirmed, true);
@@ -826,8 +839,8 @@ test("a direct wait whose parent exits prints one owner_stopped report and stops
   await waitUntil(() => job(f, launch.jobId).ownerAttached && job(f, launch.jobId).turnId);
   wrapper.kill("SIGTERM");
   await closed;
-  assert.equal(stdout.split("\n").length, 2); assert.equal(stderr, "");
-  const stopped = JSON.parse(stdout);
+  const lines = directLines(stdout); assert.equal(stderr, "");
+  const stopped = JSON.parse(lines.at(-1));
   assert.equal(stopped.status, "owner_stopped"); assert.equal(stopped.jobId, launch.jobId); assert.equal(stopped.ownerId, launch.ownerId);
   assert.ok(stopped.threadId); assert.ok(stopped.turnId); assert.equal(stopped.interruptionReason, "owner_stopped");
   assert.match(stopped.continuationCommand, / --direct$/);
@@ -848,9 +861,20 @@ test("task --follow submits and waits in one call as the owner", () => {
   json(f.call("cancel", followed.jobId, "--json"));
 });
 
-test("task --direct submits and waits silently as owner, then resumes with a direct wait", () => {
+test("task --direct streams progress as owner, then resumes without replaying activity", async t => {
   const f = fixture("w9-feed"), began = Date.now();
-  const running = direct(f.call("task", "--direct", "--timeout-sec", "2", "fixture"));
+  const owner = spawnOwned(process.execPath, [script, "task", "--direct", "--timeout-sec", "2", "fixture"], { cwd: f.repo, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", stderr = "";
+  owner.stdout.on("data", chunk => { stdout += chunk; }); owner.stderr.on("data", chunk => { stderr += chunk; });
+  const closed = new Promise(resolve => owner.on("close", resolve));
+  await waitUntil(() => stdout.includes("\n"));
+  assert.equal(owner.exitCode, null, "progress arrives while the owner is still waiting");
+  assert.ok(!stdout.includes('\n{"'), "the final report has not been written yet");
+  const running = direct({ status: await closed, stdout, stderr });
+  const lines = directLines(stdout);
+  assert.equal(lines.length - 1, running.activityCount, "each event gets one progress line");
+  assert.ok(lines.some(line => line.endsWith("…")), "long activity is truncated with an ellipsis");
+  t.diagnostic(`Direct progress sample:\n${lines.slice(0, 9).join("\n")}`);
   assert.ok(Date.now() - began >= 1900);
   assert.equal(running.status, "running"); assert.ok(running.jobId); assert.ok(running.ownerId); assert.ok(running.turnId);
   assert.ok(running.activityCount > 0);
@@ -861,7 +885,9 @@ test("task --direct submits and waits silently as owner, then resumes with a dir
   assert.equal(stored.request.report, true); assert.equal(stored.request.detached, true);
   assert.equal(Object.hasOwn(running, "startupWarning"), false);
   assert.doesNotMatch(JSON.stringify(running), /PRIVATE_FIXTURE/);
-  const next = direct(f.call(...splitRawArgumentString(running.waitCommand).slice(2), "--timeout-sec", "1"));
+  const nextOutput = f.call(...splitRawArgumentString(running.waitCommand).slice(2), "--timeout-sec", "1");
+  const next = direct(nextOutput);
+  assert.equal(directLines(nextOutput.stdout).length, 1, "a re-wait does not replay earlier progress");
   assert.equal(next.status, "running");
   assert.equal(next.activityCount, 0, "direct waits advance the existing owner cursor");
   json(f.call("cancel", running.jobId, "--json"));
@@ -870,7 +896,7 @@ test("task --direct submits and waits silently as owner, then resumes with a dir
   assert.deepEqual(splitRawArgumentString(done.continuationCommand), ["node", script, "task", "--continue", running.jobId, "--cwd", f.repo, "--direct"]);
 });
 
-test("direct questions provide executable re-wait and stdin-answer commands and preserve adoption", () => {
+test("direct questions provide executable re-wait and stdin-answer commands and preserve adoption", async () => {
   const f = fixture("w5-parent"), launch = json(f.call("task", "--detached", "--json", "--owner", "parent's owner", "fixture"));
   const pending = direct(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--direct"));
   assert.equal(pending.status, "needs_answer"); assert.ok(pending.question.id);
@@ -880,7 +906,9 @@ test("direct questions provide executable re-wait and stdin-answer commands and 
   const before = job(f, launch.jobId);
   assert.equal(before.direct, true); assert.equal(before.leaseSec, 180, "direct wait preserves the original lease duration");
   const began = Date.now();
-  const stillPending = direct(f.call(...splitRawArgumentString(pending.waitCommand).slice(2), "--timeout-sec", "1"));
+  const stillPendingOutput = f.call(...splitRawArgumentString(pending.waitCommand).slice(2), "--timeout-sec", "1");
+  const stillPending = direct(stillPendingOutput);
+  assert.equal(directLines(stillPendingOutput.stdout).length, 1, "--after-question does not replay progress");
   assert.ok(Date.now() - began >= 900); assert.equal(stillPending.question.id, pending.question.id);
   assert.ok(job(f, launch.jobId).leaseExpiresAt > before.leaseExpiresAt);
   const adopted = json(f.call("adopt", launch.jobId, "--json"));
@@ -889,16 +917,32 @@ test("direct questions provide executable re-wait and stdin-answer commands and 
   assert.equal(moved.status, "ownership_moved"); assert.equal(moved.ownerId, adopted.ownerId);
   assert.equal(moved.waitCommand, undefined); assert.equal(moved.answerCommand, undefined);
   const replacement = direct(f.call(...splitRawArgumentString(adopted.waitCommand).slice(2)));
+  const cursor = job(f, launch.jobId).activityCursors[activityReader(adopted.ownerId)];
+  const owner = spawnOwned(process.execPath, splitRawArgumentString(replacement.waitCommand).slice(1), { cwd: f.repo, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", stderr = "";
+  owner.stdout.on("data", chunk => { stdout += chunk; }); owner.stderr.on("data", chunk => { stderr += chunk; });
+  const closed = new Promise(resolve => owner.on("close", resolve));
+  await waitUntil(() => job(f, launch.jobId).ownerAttached);
   const answer = run(process.execPath, splitRawArgumentString(replacement.answerCommand).slice(1), { cwd: f.repo, env: f.env, input: "Small PRIVATE_FIXTURE_ANSWER" });
   assert.equal(json(answer).status, "answer_submitted");
-  const done = direct(f.call("wait", launch.jobId, "--owner", adopted.ownerId, "--direct"));
+  const done = direct({ status: await closed, stdout, stderr });
+  const progress = directLines(stdout).slice(0, -1);
+  assert.ok(progress.length > 0, "answering produces new progress before the final report");
+  assert.equal(progress.length, done.activityCount);
+  for (const line of progress) assert.ok(Number(/^\[(\d+)\]/.exec(line)?.[1]) > cursor, "only new events are streamed");
   assert.equal(done.status, "completed"); assert.equal(done.turnId, pending.turnId);
 });
 
 test("direct terminal waits retain structured report fields and existing outcome exit codes", () => {
   for (const [behavior, status, code] of [["slow-task", "completed", 0], ["structured-blocked", "blocked", 2], ["question-only", "needs_input", 2]]) {
-    const f = fixture(behavior), launch = json(f.call("task", "--detached", "--json", "fixture"));
-    const result = direct(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--direct"), code);
+    const f = fixture(behavior), output = f.call("task", "--direct", "fixture");
+    const result = direct(output, code), launch = result;
+    assert.ok(directLines(output.stdout).length > 1, "task streams progress before its terminal report");
+    // An independent observer reads the same completed job from cursor zero,
+    // avoiding different job IDs/timestamps while comparing exact payload bytes.
+    const quiet = f.call("wait", launch.jobId, "--direct", "--quiet");
+    assert.deepEqual(direct(quiet, code), result);
+    assert.equal(quiet.stdout, `${directLines(output.stdout).at(-1)}\n`);
     assert.equal(result.status, status); assert.equal(result.reportFormat, "structured");
     assert.equal(result.summary, fs.readFileSync(result.rawOutputFile, "utf8").trim(), "the final summary travels in the direct payload");
     const legacy = json(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--json"), code);
@@ -917,9 +961,13 @@ test("direct terminal waits retain structured report fields and existing outcome
   const structured = { status: "completed", summary: "Completed the work.", keyFindings: entries, assumptions: entries, verification: entries, blockers: [], question: null };
   const result = { status: 0, structured, rawOutput: structured.summary };
   const report = buildWorkerReport(result, { jobId: id });
-  const record = { id, workspaceRoot: cwd, jobClass: "task", status: "completed", createdAt, result, report };
+  const record = { id, workspaceRoot: cwd, jobClass: "task", status: "completed", createdAt, result, report,
+    activity: Array.from({ length: 75 }, (_, i) => ({ seq: i + 1, type: "agentMessage", text: "\x1b[31mFixture\x1b[0m\n\r\u202e " + "details ".repeat(40) })) };
   writeJobFile(cwd, id, record); upsertJob(cwd, record);
-  const full = direct(run(process.execPath, [script, "wait", id, "--direct"], { cwd }));
+  const output = run(process.execPath, [script, "wait", id, "--direct"], { cwd });
+  const full = direct(output);
+  assert.equal(directLines(output.stdout).length, 76, "direct progress has no feed cap");
+  assert.equal(full.activityCount, 75);
   const legacy = json(run(process.execPath, [script, "wait", id, "--json"], { cwd }));
   for (const key of ["keyFindings", "assumptions", "claimedVerification"]) {
     assert.deepEqual(full[key], entries.slice(0, 20).map(value => redactActivity(value).slice(0, 2000)), key);
@@ -945,6 +993,12 @@ test("a direct wait replaces a previously stored follow continuation after cance
 
 test("direct mode rejects conflicting flags and excessive timeouts before task creation", () => {
   const f = fixture();
+  for (const command of [["task", "fixture"], ["wait", "missing-job"]]) {
+    for (const flags of [["--quiet"], ["--quiet=false"], ["--direct=false", "--quiet"], ["--direct", "--direct=false", "--quiet"]]) {
+      const rejected = f.call(...command, ...flags);
+      assert.equal(rejected.status, 1); assert.match(rejected.stderr, /--quiet requires --direct/);
+    }
+  }
   for (const flag of ["json", "follow", "detached", "background", "feed-limit", "min-interval-sec"]) {
     const extra = ["feed-limit", "min-interval-sec"].includes(flag) ? ["5"] : [];
     const rejected = f.call("task", "--direct", `--${flag}`, ...extra, "fixture");
@@ -976,7 +1030,12 @@ test("direct mode rejects conflicting flags and excessive timeouts before task c
 test("direct tasks preserve lease precedence, input forms, run settings and continuation inheritance", () => {
   const f = fixture("slow-task"); f.env.CODEX_COMPANION_LEASE_SEC = "27";
   const promptFile = path.join(f.repo, "prompt.txt"); fs.writeFileSync(promptFile, "fixture from prompt file");
-  const first = direct(f.call("task", "--direct", "--fresh", "--prompt-file", promptFile, "--model", "spark", "--effort", "high", "--fast", "--write", "--sandbox", "workspace-write", "--approve-browser-origin", "https://example.com", "--approve-computer-app", "com.apple.TextEdit", "--owner", "explicit-owner", "--question-timeout-sec", "42", "--cwd", f.repo));
+  const firstOutput = f.call("task", "--direct", "--quiet", "--fresh", "--prompt-file", promptFile, "--model", "spark", "--effort", "high", "--fast", "--write", "--sandbox", "workspace-write", "--approve-browser-origin", "https://example.com", "--approve-computer-app", "com.apple.TextEdit", "--owner", "explicit-owner", "--question-timeout-sec", "42", "--cwd", f.repo);
+  const first = direct(firstOutput);
+  assert.equal(directLines(firstOutput.stdout).length, 1, "task --direct --quiet prints just its JSON");
+  const observed = f.call("wait", first.jobId, "--direct");
+  assert.deepEqual(direct(observed), first);
+  assert.equal(`${directLines(observed.stdout).at(-1)}\n`, firstOutput.stdout, "quiet and streaming task payloads are byte-identical for the same job");
   assert.ok(AGENT_NAMES.includes(first.agentName));
   assert.equal(job(f, first.jobId).agentName, first.agentName);
   assert.equal(job(f, first.jobId).leaseSec, 27); assert.equal(first.ownerId, "explicit-owner");
@@ -1026,7 +1085,8 @@ test("every task launch mode writes a private atomic session marker in the canon
   const ids = [];
   for (const args of cases) {
     const extra = args.includes("--thread") ? [previous.threadId] : args.includes("--continue") ? [previous.jobId] : [];
-    const launched = json(f.call("task", ...args, ...extra, "marker fixture"));
+    const output = f.call("task", ...args, ...extra, "marker fixture");
+    const launched = args.includes("--direct") ? direct(output) : json(output);
     const saved = job(f, launched.jobId), markerFile = path.join(root, "fixture-session", `${launched.jobId}.json`);
     const marker = JSON.parse(fs.readFileSync(markerFile, "utf8"));
     assert.deepEqual(marker, { v: 1, jobId: launched.jobId, jobFile: saved.logFile.replace(/\.log$/, ".json"), logFile: saved.logFile, title: saved.title, name: saved.agentName, summary: "marker fixture", workspaceRoot: f.repo, createdAt: saved.createdAt });

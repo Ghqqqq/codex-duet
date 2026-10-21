@@ -1,8 +1,9 @@
 # Native worker lifecycle and protocol evidence
 
 Duet defaults to direct mode: the main Claude agent runs `task --fresh --direct`
-in background Bash and reads one compact JSON line after Claude Code's
-completion notification. The Haiku `codex:codex-worker` is a fallback for a
+in background Bash and reads only the last line starting with `{` in the output
+file (`grep '^{' <output file> | tail -n 1`), the compact JSON payload, after
+Claude Code's completion notification. The Haiku `codex:codex-worker` is a fallback for a
 surface without background Bash or a user-requested agent transcript view.
 
 ## Direct mode
@@ -17,8 +18,11 @@ absolute path as `CODEX_COMPANION`; for older sessions use
 folder](../plugins/codex/prompts/ultra-codex-protocol.md). See the
 [dispatch recipe](worker-operations.md#direct-mode).
 
-Direct mode prints no feed and exactly one compact JSON line when the job ends,
-a question is pending or the timeout passes. The default `--timeout-sec` is
+Direct mode prints compact progress lines visible in /tasks, then the JSON
+payload as the last stdout line when the job ends, a question is pending or the
+timeout passes. Add `--quiet` to `task --direct` or `wait --direct` for exactly one JSON
+line without progress; `--quiet` requires `--direct`. A re-wait prints only
+activity after the reader's stored cursor. The default `--timeout-sec` is
 3600 (maximum 3600); the default `--lease-sec` is 1800, versus 180 otherwise.
 The process heartbeats and renews the lease while attached. A normal return
 leaves the lease protecting the job; an observer never renews it.
@@ -31,8 +35,11 @@ the pause for diagnostics. An owner renewal refused before the worker wakes is
 retried within one second; a silent owner still gets only the five-second grace
 in awake time. Cancellation and terminal jobs are never revived.
 
-The completion notification carries no output. Read the output file it names;
-never poll, sleep or tail. Act on its `status`:
+The completion notification carries no output. Read only the last line starting
+with `{` in the output file it names (`grep '^{' <output file> | tail -n 1`), the
+JSON payload; never read the whole output file. Progress lines never start with `{`, so this filter skips
+them and any Claude Code trailer such as `[exited with code N]`.
+Never poll, sleep or use `tail -f`. Act on its `status`:
 
 - Terminal: run the acceptance protocol even after a nonzero exit. The report
   preserves handles, runtime settings, touchedFiles/preExistingChanges,
@@ -53,7 +60,8 @@ never poll, sleep or tail. Act on its `status`:
 - `ownership_moved`: report it and stop using that owner; never re-adopt.
 
 Never run two waits for one job. Exit codes are completed 0, blocked/needs_input
-2, other terminal states 1; non-terminal returns exit 0. `--direct` rejects
+2, other terminal states 1, running/needs_answer 0, ownership_moved 2,
+and stopped owner wait 130. `--direct` rejects
 `--follow`, `--detached`, `--background`, `--json`, `--feed-limit` and
 `--min-interval-sec`. Follow-ups and rework start a new job with
 `task --thread <threadId> --direct`, the same `--cwd` and restated criteria.
@@ -70,9 +78,10 @@ The companion writes per-session markers under
 `<isolated home>/duet/sessions/<claudeSessionId>/`. The separate `codex-live`
 plugin (`/plugin install codex-live@duet`) reads those markers and shows session
 jobs and the selected job's live messages, commands, file changes, tool calls,
-plan and pending question. It opens automatically on job start in terminals at
-least 144 columns wide; otherwise use its `codex-live` slash command. It is
-read-only: it never starts, answers or cancels a job and costs no Claude tokens.
+plan and pending question. New jobs ask Claude Code to open the pane; Claude
+Code decides whether to show it at the current width. Its `codex-live` slash
+command opens it at any width. It is read-only: it never starts, answers or
+cancels a job and costs no Claude tokens.
 
 ## Fallback feed mode
 
@@ -265,11 +274,12 @@ in the original working directory; it is never run automatically. Wait for
 pending interruption to finish before continuing. No thread handle means no
 continuation command. Thread context and on-disk edits survive interruption.
 
-Status marks running jobs orphaned after no renewal for min(65 seconds, half the
-lease), with `leaseRemainingSec` and an exact `adoptCommand`. This is a stale
-renewal heuristic, not proof that the native agent stopped; adoption need not
+Status marks running jobs orphaned after no renewal for half the lease in direct
+mode (900 seconds with the default 1800-second lease), or min(65 seconds, half the
+lease) otherwise, with `leaseRemainingSec` and an exact `adoptCommand`. This is a
+stale renewal heuristic, not proof that the native agent stopped; adoption need not
 wait for this threshold. An in-flight wait can renew until it exits (at most its
-configured timeout). See [stop actions and recovery](../README.md#if-a-worker-is-stopped).
+configured timeout). See [stop actions and recovery](direct-mode.md#if-a-worker-is-stopped).
 
 This is lifecycle coordination, not an authentication boundary for local users.
 Lease expiry, cancel, signals and SessionEnd trigger the worker's AbortSignal,
@@ -291,8 +301,9 @@ every entry point of one machine shares one set of records. Directories from
 releases before 1.0.6-isolated.15 (`~/.claude/plugins/data/codex-*/state`,
 `$TMPDIR/codex-companion-isolated`) are merged lazily per workspace, once, under
 the new directory's lock, with a marker (`.legacy-migration.json`) and an
-in-process memo so the steady-state cost is a map lookup. The merge never
-overwrites a newer record, never deletes or rewrites legacy files, and respects a
+in-process memo so the steady-state cost is a map lookup. The merge keeps the
+newer `updatedAt` record per job ID and leaves legacy directories in place, but
+the history cap can prune records and their recorded artifacts. It respects a
 legacy directory's own `.state-lock` (a busy one is retried later). A legacy job
 whose recorded `pid` is alive is *pending*: it stays in its legacy directory, is
 listed and waited on from there, receives `cancel`/SessionEnd controls there,
@@ -435,11 +446,11 @@ timestamps. Launch a second fresh smoke job in the same Claude session: ownerIds
 must differ; passing the first owner to the second job's status must not renew it.
 Cancel only that extra smoke job after recording the evidence.
 
-For native stop acceptance, stop the smoke agent with `x` in its detail view,
-wait for any in-flight wait to exit, then use `/codex:status`. After 65 seconds
-without renewal it should show orphaned, decreasing lease seconds and an exact
-adopt command. Before expiry, and with explicit user consent, launch a replacement
-`codex:codex-worker` with this assignment (substitute handles and workspace):
+For adoption acceptance, let the owner wait return normally while the smoke job
+is still active, then use `/codex:status`. Stopping the attached owner interrupts
+the turn and requires `task --continue` instead. Before lease expiry, and with
+explicit user consent, launch a replacement `codex:codex-worker` with this
+assignment (substitute handles and workspace):
 
 ```text
 Adopt existing job <jobId> in <workspace>. The user explicitly consented to this

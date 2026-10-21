@@ -26,8 +26,12 @@ then carries the exact
 starts ONE new turn on the same Codex thread with the job's recorded settings.
 With the user's explicit consent, run it in background Bash with `run_in_background: true`
 (append any extra instructions on stdin through a single-quoted heredoc); never start it automatically.
-Read one JSON line from the output file when the completion notification arrives;
-handle `running` via `waitCommand`, and `needs_answer` by first starting its
+Progress lines appear in /tasks, then the JSON payload as the last stdout line. Add
+`--quiet` to `task --direct` or `wait --direct` to suppress progress. When the
+completion notification arrives, read only the last line starting with `{` in
+the output file (`grep '^{' <output file> | tail -n 1`). Claude Code may append
+`[exited with code N]`; never read the whole output file.
+Handle `running` via `waitCommand`, and `needs_answer` by first starting its
 `waitCommand` in the background, then sending the answer via `answerCommand`.
 Never run two waits for one job. See the [direct-mode protocol](../prompts/ultra-codex-protocol.md#dispatch).
 Use a new `codex:codex-worker` only as fallback when background Bash is unavailable

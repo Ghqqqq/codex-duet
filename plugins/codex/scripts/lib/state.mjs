@@ -230,6 +230,12 @@ function withStateLock(cwd, action, options = {}) {
   }, options);
 }
 
+// Journal callers validate/create their private directory first. Reuse the
+// state lock without migration, index writes or job-count pruning.
+export function withJournalLock(stateDir, action, options = {}) {
+  return lockStateDir(stateDir, action, { ...options, create: false });
+}
+
 function writeJsonAtomically(filePath, value) {
   const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
   try {

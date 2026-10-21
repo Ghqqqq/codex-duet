@@ -3,8 +3,20 @@ import { snippet, activityReader, redactActivity } from "./activity.mjs";
 import { randomUUID } from "node:crypto";
 import { listJobs, updateJob, readJobFile, resolveJobFile } from "./state.mjs";
 import { APPROVAL_OPTIONS, parseApprovalAnswer } from "./server-requests.mjs";
+import { finishJournalJob } from "./run-journal.mjs";
+import { buildWorkerReport } from "./worker-report.mjs";
 
 export const ACTIVE = new Set(["queued", "running"]);
+export function recordFinishedJob(job) {
+  if (!job?.runId || ACTIVE.has(job.status) || job.journalFinishedStatus === job.status) return;
+  try {
+    const report = job.report ?? buildWorkerReport(job.result ?? { status: 1, error: job.errorMessage ?? "No stored result." }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile });
+    if (finishJournalJob(job, directReport({ ...report, status: job.status, ...leaseExpiryReport(job) }, job))) {
+      // The journal lock has been released before acquiring the job-state lock.
+      updateJob(job.workspaceRoot, job.id, () => ({ journalFinishedStatus: job.status }));
+    }
+  } catch { /* terminal journaling never changes the job outcome */ }
+}
 export function seconds(value, fallback, name, maximum = 86400) {
   if (value === undefined) return fallback;
   if (!/^\d+$/.test(String(value)) || Number(value) < 1 || Number(value) > maximum) throw new Error(`${name} must be an integer from 1 to ${maximum}.`);
@@ -44,13 +56,15 @@ export function renewLease(cwd, id, owner) {
 // reason: null (attach) | "returned" (clean exit: timeout/terminal/question) |
 // "signal" | "parent_exit" | "stdout_closed" (the owner was stopped: interrupt now).
 export function markOwnerAttachment(cwd, id, owner, reason = null) {
-  return updateJob(cwd, id, job => {
+  const result = updateJob(cwd, id, job => {
     if (!owner || job.ownerId !== owner) return null;
     const now = Date.now();
     if (reason !== null) return job.ownerAttached || ACTIVE.has(job.status) ? { ownerAttached: false, ownerDetachedAt: now, ownerDetachReason: reason } : null;
     if (!ACTIVE.has(job.status) || (job.leaseExpiresAt && job.leaseExpiresAt <= now)) return null;
     return { ownerAttached: true, ownerAttachedAt: now, ownerDetachedAt: null, ownerDetachReason: null, leaseRenewedAt: now, leaseExpiresAt: now + (job.leaseSec ?? 180) * 1000 };
   });
+  recordFinishedJob(result);
+  return result;
 }
 export function ownerLost(job, now = Date.now()) {
   if (!ACTIVE.has(job.status)) return false;

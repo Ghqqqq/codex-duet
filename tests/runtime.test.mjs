@@ -133,7 +133,8 @@ test("task passes help and unknown flags after -- as literal prompt text", () =>
   }
   const direct = f.call("task", "--direct", "--", "--help", "--json", "--follow", "-x");
   assert.equal(direct.status, 0, direct.stderr);
-  assert.equal(JSON.parse(direct.stdout).status, "completed");
+  // Direct mode prints /tasks progress first; the payload is the last line starting with "{".
+  assert.equal(JSON.parse(direct.stdout.trimEnd().split("\n").filter(line => line.startsWith("{")).at(-1)).status, "completed");
   const state = JSON.parse(fs.readFileSync(path.join(f.dir, "fake-codex-state.json"), "utf8"));
   assert.ok(state.lastTurnStart.prompt.startsWith("--help --json --follow -x\n"));
 });
