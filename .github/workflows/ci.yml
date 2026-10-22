@@ -42,8 +42,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      # The local plugin test harness needs no account or API credentials.
-      CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-plugin-test
       DISABLE_AUTOUPDATER: "1"
 
     steps:
@@ -59,4 +57,8 @@ jobs:
         run: npm install -g "@anthropic-ai/claude-code@$(cat .claude-code-version)"
 
       - name: Run live-pane tests
+        env:
+          # The local plugin test harness needs no account or API credentials.
+          # The runner context is only available at step level.
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-plugin-test
         run: npm run test:live
