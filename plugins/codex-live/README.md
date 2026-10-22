@@ -30,6 +30,8 @@ invalid, the poller caches the time it first observed the job ended. That fallba
 time is cached and persisted with session identity so reloads preserve the grace period. Eligibility updates on poll ticks, including when
 no jobs are active. At two minutes an unselected ended job moves into history;
 selection, its transcript and the retained jobs are unchanged.
+Unanswered questions/approvals and uncleared blocked/needs-input results override this recency order with `?`/`!` markers and status-line attention while preserving selection; active rows show the pending question or current operation and quiet time after one minute.
+New workers preserve the selected conversation and its scroll position, showing `• new` until selected; returning to a viewed conversation restores its saved scroll position.
 
 `+N more` counts omitted sessions. Its first press expands up to ten rows: active
 sessions first, the collapsed rows, then the remaining history newest first. Further
@@ -47,7 +49,8 @@ The plugin scrolls the feed itself. Wheel/arrows move by rows, page keys by the
 feed window's height, and Home/End go to its start/end. Wheels over the pinned
 header or footer leave the feed alone. Scrolling up stops following; the footer's
 `↓ N new · Jump to bottom` button (hotkey `b` while focused) resumes it. Selecting
-a session also resumes following. A plain hotkey button has the engine's `b: ` prefix;
+a previously viewed session restores its saved scroll position; a new selection
+starts following. A plain hotkey button has the engine's `b: ` prefix;
 the layout reserves those cells. Narrow footers shorten status before shortening
 the button, down to `↓ Jump`.
 

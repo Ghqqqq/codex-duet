@@ -98,11 +98,15 @@ overrides the transcript path supplied by the SessionStart hook.
 Shows running and recent Codex jobs from this Claude session in the current
 repository, or one job with `/codex:status <job-id>`. `/codex:status --all` adds
 jobs from other sessions in the same workspace, each labelled with its session.
+A pending question shows its text, choices and remaining answer time without
+answering or renewing the lease; JSON output is unchanged.
 
 ### `/codex:result`
 
-Shows the stored output of a finished job, including the Codex session ID for
-resuming it in Codex.
+Starts with the outcome and stored summary, followed by nonempty findings,
+captured verification, unverified claims, assumptions and blockers (including
+app/tab/session identifiers), plus the Codex session ID and next action.
+JSON output and exit codes are unchanged.
 
 ### `/codex:cancel`
 
@@ -129,5 +133,6 @@ while you are watching the session.
 
 Workers call `node "$CODEX_COMPANION"` in a Claude session (or
 `node plugins/codex/scripts/codex-companion.mjs` from the repository root):
-`task`, `wait`, `answer`, `status`, `result`, `cancel` and `setup`. Run it without
-arguments for full usage.
+`task`, `wait`, `answer`, `status`, `result`, `cancel`, `setup` and
+`journal <start|add|validate|close|show|list>`. Run it without arguments for full
+usage.

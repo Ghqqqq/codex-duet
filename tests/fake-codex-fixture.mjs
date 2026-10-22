@@ -26,7 +26,9 @@ const readline = require("node:readline");
 	}
 
 function saveState(state) {
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+  const temporary = STATE_PATH + "." + process.pid + ".tmp";
+  fs.writeFileSync(temporary, JSON.stringify(state, null, 2));
+  fs.renameSync(temporary, STATE_PATH);
 }
 
 function requiresExperimental(field, message, state) {
@@ -316,7 +318,7 @@ function readComputerUse(home, threadId) {
 saveState(bootState);
 
 const rl = readline.createInterface({ input: process.stdin });
-rl.on("line", (line) => {
+rl.on("line", async (line) => {
   if (!line.trim()) {
     return;
   }
@@ -359,6 +361,11 @@ rl.on("line", (line) => {
         break;
 
       case "thread/read": {
+        if (BEHAVIOR.startsWith("lost-turn:")) {
+          state.turnReads = [...(state.turnReads || []), message.params];
+          saveState(state);
+          if (BEHAVIOR === "lost-turn:unreadable") throw new Error("Recorded turn unavailable in fixture");
+        }
         const thread = ensureThread(state, message.params.threadId);
         send({ id: message.id, result: { thread: { ...buildThread(thread), turns: thread.turns || [] } } });
         break;
@@ -554,22 +561,28 @@ rl.on("line", (line) => {
           send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
           const event = (method, item) => send({ method, params: { threadId: thread.id, turnId, item } });
           const command = { id: "feed-command", type: "commandExecution", command: "npm test TOKEN=SHOWN_FIXTURE_TOKEN https://user:SHOWN_FIXTURE_PASSWORD@example.com?token=SHOWN_FIXTURE_QUERY", status: "inProgress" };
-          setTimeout(() => event("item/started", command), 250);
-          setTimeout(() => {
+          event("item/started", command);
+          {
             event("item/completed", { ...command, status: "completed", exitCode: 0, durationMs: 425, aggregatedOutput: "PRIVATE_FIXTURE_OUTPUT" });
             event("item/completed", { id: "feed-message", type: "agentMessage", text: "Inspecting the fixture. PASSWORD=SHOWN_FIXTURE_MESSAGE " + "x".repeat(350), phase: "commentary" });
             event("item/completed", { id: "feed-file", type: "fileChange", changes: [{ path: "src/example.mjs", kind: { type: "update" }, diff: "PRIVATE_FIXTURE_DIFF" }] });
-          }, 700);
-          setTimeout(() => {
+          }
+          {
             for (const type of ["mcpToolCall", "dynamicToolCall"]) {
               const tool = { id: type, type, server: "fixture", tool: "inspect", status: "inProgress", arguments: { page: "PRIVATE_FIXTURE_ARGUMENTS" } };
               event("item/started", tool);
               event("item/completed", { ...tool, status: "completed", durationMs: 10, result: { text: "PRIVATE_FIXTURE_PAGE" }, contentItems: [{ text: "PRIVATE_FIXTURE_CONTENT" }] });
             }
             send({ method: "turn/plan/updated", params: { threadId: thread.id, turnId, plan: [{ step: "Inspect fixture", status: "completed" }, { step: "Verify " + "long title ".repeat(20), status: "pending" }] } });
-          }, 1000);
-          const timer = setTimeout(() => emitTurnCompleted(thread.id, turnId, { completed: { type: "agentMessage", id: "fixture-done", text: "Completed fixture work.", phase: "final_answer" } }), 30000);
+          }
+          const timer = null; // Held open until an explicit fixture release or turn/interrupt.
           interruptibleTurns.set(turnId, { threadId: thread.id, timer });
+          if (process.env.CODEX_FIXTURE_TURN_GATE) {
+            while (!fs.existsSync(process.env.CODEX_FIXTURE_TURN_GATE)) await new Promise(resolve => setTimeout(resolve, 25));
+            clearTimeout(timer);
+            interruptibleTurns.delete(turnId);
+            emitTurnCompleted(thread.id, turnId, { completed: { type: "agentMessage", id: "fixture-done", text: "Completed fixture work.", phase: "final_answer" } });
+          }
           break;
         }
 
@@ -585,7 +598,7 @@ rl.on("line", (line) => {
             serverRequests.set(id, { threadId: thread.id, turnId });
             send({ id, method: "item/tool/call", params: { threadId: thread.id, turnId, callId: "fixture-call", tool: "ask_parent", arguments: { question: "Which fixture approach?", options: ["Small", "Broad"] } } });
           }
-          const timer = setTimeout(() => emitTurnCompleted(thread.id, turnId, { completed: { type: "agentMessage", id: "fixture-done", text: "Completed fixture work.", phase: "final_answer" } }), 30000);
+          const timer = null; // Held open until an explicit fixture release or turn/interrupt.
           interruptibleTurns.set(turnId, { threadId: thread.id, timer });
           break;
         }
@@ -749,24 +762,28 @@ rl.on("line", (line) => {
           }
         ];
 
+	        if (BEHAVIOR.startsWith("lost-turn:") && turnId === "turn_1") {
+            send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+            // Persist completion, then lose delivery to the admitted client.
+            const saved = loadState();
+            const persisted = ensureThread(saved, thread.id).turns.find(turn => turn.id === turnId);
+            Object.assign(persisted, { status: "completed", completedAt: now(),
+              items: items.map(entry => entry.completed).filter(Boolean), error: null });
+            saveState(saved);
+            setTimeout(() => process.exit(0), 60);
+            break;
+          }
+
 	        if (BEHAVIOR === "interruptible-slow-task") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
-	          const timer = setTimeout(() => {
-	            if (!interruptibleTurns.has(turnId)) {
-	              return;
-	            }
-	            interruptibleTurns.delete(turnId);
-	            for (const entry of items) {
-	              if (entry && entry.completed) {
-	                send({ method: "item/completed", params: { threadId: thread.id, turnId, item: entry.completed } });
-	              }
-	            }
-	            send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
-	          }, 5000);
-	          interruptibleTurns.set(turnId, { threadId: thread.id, timer });
+	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
 	        } else if (BEHAVIOR === "slow-recovery-task") {
             send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
-            emitTurnCompletedLater(thread.id, turnId, items, 2000);
+            const gate = process.env.CODEX_FIXTURE_TURN_GATE;
+            if (gate) {
+              while (!fs.existsSync(gate)) await new Promise(resolve => setTimeout(resolve, 25));
+              emitTurnCompleted(thread.id, turnId, items);
+            } else emitTurnCompletedLater(thread.id, turnId, items, 2000);
 	        } else if (BEHAVIOR === "slow-task") {
 	          emitTurnCompletedLater(thread.id, turnId, items, 400);
 	        } else {
@@ -834,4 +851,71 @@ export function buildEnv(binDir) {
     CODEX_COMPANION_SESSION_ID: "",
     PATH: `${binDir}${sep}${process.env.PATH}`
   };
+}
+
+// Shared process/CLI fixture for lifecycle contracts across existing modules.
+export async function lifecycleHarness() {
+  const { default: assert } = await import("node:assert/strict");
+const { default: fs } = await import("node:fs");
+const { default: path } = await import("node:path");
+
+
+const { makeTempDir, initGitRepo, run, requireLocalSockets } = await import("./helpers.mjs");
+
+const { browserOriginSetup, transportSetup } = await import("../plugins/codex/scripts/lib/setup-config.mjs");
+const { resolveIsolatedCodexHome } = await import("../plugins/codex/scripts/lib/codex-home.mjs");
+const { redactActivity, itemActivity, planActivity, activityReader, formatActivity } = await import("../plugins/codex/scripts/lib/activity.mjs");
+const { writeJobFile, upsertJob, updateJob, readJobFile, resolveJobFile, resolveStateDir } = await import("../plugins/codex/scripts/lib/state.mjs");
+const { JobRuntime, pauseAdjustment, renewLease, markOwnerAttachment, leaseSnapshot, questionMessage, adoptJob, ownershipNotice, answerQuestion, askParentQuestion, ownerLost, directReport, progressSnapshot, PARENT_BRIDGE_ENV } = await import("../plugins/codex/scripts/lib/job-runtime.mjs");
+const { buildWorkerReport } = await import("../plugins/codex/scripts/lib/worker-report.mjs");
+const { resolveSessionMarkersRoot } = await import("../plugins/codex/scripts/lib/session-markers.mjs");
+const { AGENT_NAMES, pickAgentName } = await import("../plugins/codex/scripts/lib/agent-names.mjs");
+const { splitRawArgumentString } = await import("../plugins/codex/scripts/lib/args.mjs");
+const bridgeScript = new URL("../plugins/codex/scripts/parent-bridge-mcp.mjs", import.meta.url).pathname;
+const { spawnOwned } = await import("../plugins/codex/scripts/lib/process.mjs");
+const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
+const hook = new URL("../plugins/codex/scripts/session-lifecycle-hook.mjs", import.meta.url).pathname;
+const brokerScript = new URL("../plugins/codex/scripts/app-server-broker.mjs", import.meta.url).pathname;
+const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === "ESRCH") return false; throw error; } };
+function fixture(behavior = "w5-working") {
+  const dir = makeTempDir(), repo = path.join(dir, "repo"); fs.mkdirSync(repo); initGitRepo(repo); installFakeCodex(dir, behavior);
+  const env = { ...buildEnv(dir), CLAUDE_PLUGIN_DATA: path.join(dir, "data"), CODEX_COMPANION_SESSION_ID: "fixture-session", CODEX_COMPANION_HOME: path.join(dir, "isolated") };
+  return { dir, repo, env, call: (...args) => run(process.execPath, [script, ...args], { cwd: repo, env }), state: () => JSON.parse(fs.readFileSync(path.join(dir, "fake-codex-state.json"))), answer: (job, id, text) => run(process.execPath, [script, "answer", job, "--question", id, "--json"], { cwd: repo, env, input: text }) };
+}
+function json(result, code = 0) { assert.equal(result.status, code, result.stderr + result.stdout); return JSON.parse(result.stdout); }
+function directLines(stdout) {
+  assert.ok(stdout.endsWith("\n"), "stdout ends with a newline");
+  const lines = stdout.slice(0, -1).split("\n");
+  assert.equal(lines.at(-1), JSON.stringify(JSON.parse(lines.at(-1))), "last line is compact JSON");
+  for (const line of lines.slice(0, -1)) {
+    assert.ok(line.length > 0 && line.length <= 200, "progress is compact and single-line");
+    assert.ok(!line.startsWith("{"), "progress cannot be mistaken for JSON");
+    assert.doesNotMatch(line, /[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/, "progress has no terminal controls or embedded newlines");
+  }
+  return lines;
+}
+function direct(result, code = 0) {
+  const payload = json({ ...result, stdout: directLines(result.stdout).at(-1) }, code);
+  for (const key of ["activity", "activityOmitted", "cursor", "startupTimings", "currentItem", "completedItems", "questionMessage"]) assert.equal(Object.hasOwn(payload, key), false, key);
+  assert.equal(typeof payload.activityCount, "number");
+  return payload;
+}
+function directError(result) {
+  const payload = json(result, 1);
+  assert.equal(result.stdout.split("\n").length, 2, "exactly one error JSON line");
+  assert.deepEqual(Object.keys(payload).sort(), ["error", "status"]);
+  assert.equal(payload.status, "error"); assert.equal(typeof payload.error, "string"); assert.ok(payload.error.length);
+  assert.equal(result.stderr, `${payload.error}\n`);
+  return payload;
+}
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function waitUntil(fn) { for (const end = Date.now() + 60000; Date.now() < end;) { const result = fn(); if (result) return result; await delay(80); } throw new Error("Fixture deadline expired"); }
+function patchJob(f, id, patch) {
+  const module = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
+  const result = run(process.execPath, ["--input-type=module", "-e", `import { updateJob } from ${JSON.stringify(module)}; updateJob(process.cwd(), ${JSON.stringify(id)}, () => (${JSON.stringify(patch)}));`], { cwd: f.repo, env: f.env });
+  assert.equal(result.status, 0, result.stderr);
+}
+function job(f, id) { return json(f.call("status", id, "--json")).job; }
+
+return { fs, path, makeTempDir, initGitRepo, run, requireLocalSockets, buildEnv, installFakeCodex, browserOriginSetup, transportSetup, resolveIsolatedCodexHome, redactActivity, itemActivity, planActivity, activityReader, formatActivity, writeJobFile, upsertJob, updateJob, readJobFile, resolveJobFile, resolveStateDir, JobRuntime, pauseAdjustment, renewLease, markOwnerAttachment, leaseSnapshot, questionMessage, adoptJob, ownershipNotice, answerQuestion, askParentQuestion, ownerLost, directReport, progressSnapshot, PARENT_BRIDGE_ENV, buildWorkerReport, resolveSessionMarkersRoot, AGENT_NAMES, pickAgentName, splitRawArgumentString, bridgeScript, spawnOwned, script, hook, brokerScript, alive, fixture, json, directLines, direct, directError, delay, waitUntil, patchJob, job };
 }

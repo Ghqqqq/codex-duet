@@ -22,19 +22,19 @@ JSON record to `<isolated home>/duet/state/<workspace>/ultra-codex/<session
 id>.json`, keyed by the Claude session id that the SessionStart hook exports as
 `CODEX_COMPANION_SESSION_ID`. While the record exists, the plugin's
 `UserPromptSubmit` hook (`scripts/ultra-codex-hook.mjs`, about 70 ms) appends a
-one-line reminder to every prompt:
+one-line versioned reminder to every prompt (shown with the repository-relative
+protocol path):
 
-> [Duet] Ultra-codex mode is on for this session (scale: thorough; max
-> workers: 4; turn it off with /codex:ultra-codex off). If this prompt is a
-> substantive task — anything beyond a conversational reply, a one-line fix or
-> a question answerable from one file — Read <protocol path> first and
-> orchestrate the task with Codex workers exactly as that protocol says; your
-> own effort goes into the briefs and the acceptance. Otherwise answer normally.
+> Ultra-codex mode on (thorough, max 4 workers). Apply protocol vb24e94e3 to
+> substantive tasks; re-read plugins/codex/prompts/ultra-codex-protocol.md only if
+> vb24e94e3 is not in your context.
 
-The protocol itself (`prompts/ultra-codex-protocol.md`) is
-read only when a task calls for it, so the per-prompt cost is the reminder. The
-hook is silent for other sessions in the same repository, for prompts that are
-the command itself, when no session id is present, and on any error.
+Control-only invocations (`on`, `off`, `status` or no arguments) do not load the
+protocol; task invocations, including `on` with task text, use Read on its path.
+The reminder requests a re-read only when that content version is absent from
+context, so the per-prompt cost is the reminder. The hook is silent for other
+sessions in the same repository, for prompts that are the command itself, when
+no session id is present, and on any error.
 
 Three things turn the mode off:
 
@@ -103,16 +103,24 @@ Add `--quiet` to `task --direct` or `wait --direct` for exactly one JSON line
 without progress; `--quiet` requires `--direct`. Never poll, sleep or use `tail -f`.
 The completion notification carries no output; read only the last line starting
 with `{` in its output file (`grep '^{' <output file> | tail -n 1`), never the whole output file.
-For `running`, background the returned `waitCommand`; for
-`needs_answer`, FIRST background its `waitCommand` with `--after-question`,
-then use `answerCommand` with the answer on stdin through a single-quoted
-heredoc. Never run two waits for one job; the answer continues the same turn.
+For `running`, background the returned `waitCommand`; for `needs_answer`, run
+its `answerAndWaitCommand` in ONE background Bash call (`run_in_background: true`,
+`timeout: 600000`), putting the answer on stdin through a single-quoted heredoc.
+Compatibility fallback for `needs_answer`: FIRST run its `waitCommand` in
+background Bash; it includes `--after-question <id>` and keeps the lease alive.
+Then answer with the returned `answerCommand`, putting the answer on stdin
+through a single-quoted heredoc; do not start another wait after answering.
+Never run two waits for one job; the answer continues the same turn.
 Report `ownership_moved` and stop using that owner. Terminal reports go through
 the acceptance protocol; read `rawOutputFile` only if a report field is
 insufficient. Follow-ups and rework use `task --thread <threadId> --direct` with
 the same `--cwd` and restated criteria. Stop the background task in Claude Code
 (`owner_stopped`) or use `cancel <jobId> --json`; thread context and edits persist.
 Run the reported `continuationCommand` after a user stop only with consent.
+When several completion notifications are already pending, batch their labelled
+final-JSON reads and, after accepting each job, their separate verdict writes in
+one Bash call each; stop on a failed read or submission (`set -euo pipefail`).
+Never delay pending questions to build a batch or prewrite verdicts.
 
 The separate read-only `codex-live` plugin (`/plugin install codex-live@duet`)
 shows session jobs and the selected job's messages, commands, file changes,
@@ -179,7 +187,9 @@ start` with stdin JSON containing `goal` and `criteria`. Tasks in that Claude
 session link automatically across workspaces and worktrees, preserving the exact
 worker brief and final compact report. Claude records each acceptance with `journal add verdict`,
 consequential decisions and accepted assumptions with `journal add decision`,
-and finishes with `journal close` (`passed`, `blocked` or `abandoned`).
+then runs `journal validate` before `journal close` (`passed`, `blocked` or
+`abandoned`). A passed close refuses unresolved issues with exit 2 and leaves
+the journal and active pointer unchanged; blocked/abandoned closes record them.
 
 After compaction or a resumed session, `journal show` recovers the goal,
 criteria, latest worker verdicts, decisions and open items. SessionStart adds a
@@ -231,8 +241,8 @@ final `summary`, cut at 8000 characters. Fields include:
 - `blockers` — captured/detected blockers when present, otherwise Codex's own entries.
 - `question` — the exact missing input when `status` is `needs_input`.
 
-The summary is stored as the raw output (`rawOutputFile`), so `/codex:result`
-and the stop-gate hook keep reading prose.
+The summary remains in `rawOutputFile` for the stop-gate hook; human
+`/codex:result` adds the outcome, evidence and blockers around that prose.
 
 ## Approvals during orchestration
 

@@ -88,7 +88,10 @@ export function directReport(payload, job) {
     const target = `${quote(job.id)} --cwd ${quote(job.request?.cwd ?? job.workspaceRoot)} --owner ${quote(job.ownerId)}`;
     const question = report.status === "needs_answer" ? report.question : null;
     report.waitCommand = companionCommand(`wait ${target} --direct${question ? ` --after-question ${quote(question.id)}` : ""}`);
-    if (question) report.answerCommand = companionCommand(`answer ${target} --question ${quote(question.id)} --json`);
+    if (question) {
+      report.answerCommand = companionCommand(`answer ${target} --question ${quote(question.id)} --json`);
+      report.answerAndWaitCommand = companionCommand(`answer ${target} --question ${quote(question.id)} --direct`);
+    }
   } else if (report.status !== "completed" && report.status !== "ownership_moved" && job.threadId) {
     Object.assign(report, continuationReport({ ...job, direct: true }));
   }

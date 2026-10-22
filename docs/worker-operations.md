@@ -58,15 +58,21 @@ Retain the job/owner/thread handles and the original cwd. Never run two waits fo
   read `rawOutputFile` unless a report field is insufficient.
 - `running`: run its `waitCommand` (`wait <job-id> --owner <owner-id> --direct`)
   in background Bash again, then wait for its notification.
-- `needs_answer`: FIRST run its `waitCommand` in background Bash; it carries
-  `--after-question <id>` and keeps the lease alive. Then use `answerCommand`
-  (`answer '<job>' --cwd ... --owner ... --question '<id>' --json`) with the
-  answer text on stdin through a single-quoted heredoc. The payload's
-  `question` has `id`, `kind`, `text`, `options` and `expiresAt`. Answer from the
-  brief/context when possible; otherwise collect the missing decision for the
-  user. Forward a Computer Use `question.kind` of `approval` through
-  `AskUserQuestion` unless the user pre-authorised the app. The reply continues
-  the same turn; do not start another wait after answering.
+- `needs_answer`: run its `answerAndWaitCommand` in ONE background Bash call
+  (`run_in_background: true`, `timeout: 600000`), putting the answer on stdin
+  through a single-quoted heredoc. The command includes `--owner`, `--question`
+  and `--direct`; it attaches the sole owner wait, submits once, then keeps the
+  lease alive while waiting past that question. `question` supplies `id`,
+  `kind`, `text`, `options` and `expiresAt`. A `question.kind` of `approval` is a
+  Computer Use app request with four fixed options; forward it with
+  `AskUserQuestion` unless the user pre-authorised the app. The answer continues
+  the same turn. Compatibility fallback for `needs_answer`: FIRST run its
+  `waitCommand` in background Bash; it includes `--after-question <id>` and keeps
+  the lease alive. Then answer with the returned `answerCommand`, putting the
+  answer on stdin through a single-quoted heredoc; do not start another wait
+  after answering.
+  Answer from your context when the brief should have covered it (and note the
+  brief defect), otherwise collect it for the user.
 - `ownership_moved`: report it; do not reuse the retired owner, re-adopt or
   submit a replacement task.
 
@@ -196,11 +202,12 @@ inherits. On an owned job, an app that no list or flag covers pauses the tool
 call and reaches the parent as a pending question (`question.kind: "approval"`,
 options `Allow this call` / `Allow for this task` / `Allow always (isolated
 Codex home)` / `Deny`); in direct mode the main agent handles it via
-`waitCommand`/`answerCommand`; the fallback relays it and delivers the parent's
-choice with `answer`. "This task" writes the thread's session file for
-the rest of the turn; "always" adds an explicit entry to the isolated home's
-allow list; everything else cancels the request. An unapproved app is reported
-as `status: blocked` with `computer_use_app_not_approved` and the app name,
+`answerAndWaitCommand` (or the compatibility `waitCommand`/`answerCommand`
+flow); the fallback relays it and delivers the parent's choice with `answer`.
+"This task" writes the thread's session file for the rest of the turn; "always"
+adds an explicit entry to the isolated home's allow list; everything else
+cancels the request. An unapproved app is reported as `status: blocked` with
+`computer_use_app_not_approved` and the app name,
 never as `completed`. Details: [Computer Use approvals](computer-use-approvals.md).
 
 Only schema-defined **network-only** `item/commandExecution/requestApproval`
@@ -286,9 +293,12 @@ stdout. When the user stops the background task in Claude Code (or the fallback
 agent), the task-worker sees that mark at its next 250 ms tick and interrupts the turn immediately with
 `interruptionReason: owner_stopped`. An owner that dies without a mark (SIGKILL,
 crash) is detected by its silent heartbeat after the grace period (5 s,
-`CODEX_COMPANION_OWNER_GRACE_SEC`) as `owner_lost`. Both are confirmed like any
-other interruption. A normal return followed by silence still falls back to
-lease expiry.
+`CODEX_COMPANION_OWNER_GRACE_SEC`) as `owner_lost` unless a replacement attaches
+first. A dead wait can be replaced immediately with the same owner while the job
+is active and its lease unexpired; a second live, recently heartbeating wait is
+refused, and a replaced wait cannot renew or detach its replacement. Both
+interruptions are confirmed like any other interruption. A normal return
+followed by silence still falls back to lease expiry.
 
 A stopped native agent cannot resume in Claude Code 2.1.301. Every interrupted or
 failed report carries `continuationCommand`:
@@ -624,8 +634,9 @@ and the [troubleshooting guide](troubleshooting.md#troubleshooting).
 ## Results, progress and recovery
 
 Direct mode uses `task --direct`; the fallback uses `task --follow --report`.
-Legacy full-output task and result behavior remains when neither `--direct` nor
-`--report` is selected. Both direct and report turns run with the
+Without `--direct` or `--report`, task output remains full; human `result` starts
+with the outcome and adds nonempty evidence and blocker sections to the stored
+summary. Both direct and report turns run with the
 worker-report output schema (`schemas/worker-report.schema.json`): Codex's final
 message is a JSON object with `status` (`completed`/`needs_input`/`blocked`),
 `summary`, `key_findings`, `assumptions`, `verification`, `blockers` and
@@ -710,12 +721,18 @@ node "$CODEX_COMPANION" result --thread '<thread-id>' --report --json
 
 Explicit references work across Claude session IDs. `--thread` selects the most
 recently created tracked job on that thread, so prefer the job ID for an older
-turn. A dead wrapper with a complete thread/turn handle is recovered through
-read-only `thread/read`, never `thread/resume` or `turn/start`. Finished results
-are saved locally; a running direct turn is handled by its background
-`waitCommand`, not polling. A missing turn handle, unavailable runtime or absent server history is reported as
-unknown/unreachable. No automatic rerun is safe in that case. `task --thread`
-starts another turn; reserve it for an explicit follow-up after recovery.
+turn. When a dead wrapper has no saved result, status/result and the direct wait
+reconcile its exact recorded turn through read-only `thread/read`, never
+`thread/resume` or `turn/start`. Recovered terminal outcomes are saved once with
+`recovered`, `recoveredAt`, `completedAt` and `recovery` (including `originalError`
+and `turnStatus`); structured `blocked`/`needs_input` outcomes still exit 2 in
+direct/report mode. A follow-up on a still-running or unresolved thread becomes
+a blocked job with a typed `thread_busy` blocker whose `recoveryCommand` observes
+status without attaching another wait. A running direct turn is handled by its
+background `waitCommand`, not polling. A missing turn handle, unavailable runtime
+or absent server history is reported as unknown/unreachable. No automatic rerun
+is safe in that case. `task --thread` starts another turn; reserve it for an
+explicit follow-up after recovery.
 If interruption lost the end-of-turn snapshot, recovery uses only the exact
 turn's persisted file-change events and marks file coverage partial. It preserves
 the saved pre-existing path list and policy, and never compares an old baseline

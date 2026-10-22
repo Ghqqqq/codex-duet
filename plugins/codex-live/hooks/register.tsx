@@ -1,7 +1,7 @@
 import { atom, read } from 'claude-code';
 import type { Register, Timer } from 'claude-code';
 import type { CodexLiveState } from '../types';
-import { feedLines, feedWindow, fit, footerLayout, paneLayout, jobRow, jobState,
+import { feedLines, feedWindow, fit, footerLayout, paneLayout, jobRow, jobRowColor,
   messageLines, scrollFeed, selectedJob, width } from './layout';
 import type { Span } from './layout';
 import { clearFinished, jobLifecycle, normalizeSessions, visibleSessions } from './model';
@@ -89,8 +89,8 @@ export const register: Register = on => {
     };
     const select = async (id: string) => {
       await writeView($, latest => visibleSessions(latest).some(job => job.id === id)
-        ? { ...latest, selectedId: id, feeds: { ...latest.feeds,
-          [id]: { feedOffset: 0, following: true, seenLines: 0 } } } : latest);
+        ? normalizeSessions({ ...latest, selectedId: id, feeds: { ...latest.feeds,
+          [id]: latest.feeds?.[id] ?? { feedOffset: 0, following: true, seenLines: 0 } } }) : latest);
       await poll?.(true);
     };
     // Budget the drawn rows, not the retained messages. Reserve 36k for the
@@ -112,11 +112,11 @@ export const register: Register = on => {
       {engineOffset > 0 && <Box key="engine-offset-pad" height={engineOffset} flexShrink={0} />}
       {header.jobs.map(job => {
         const isSelected = selected?.id === job.id;
-        const row = jobRow(job, isSelected, columns, state.nowMs);
+        const row = jobRow(job, isSelected, columns, state.nowMs, state.newSessionIds?.includes(job.id));
         return <Box key={`header-${job.id}`} height={1} flexShrink={0} overflow="hidden">
           <Button key={job.id} plain onPress={() => select(job.id)}><Text wrap="truncate-end"><Text color="suggestion">{row.selector}</Text><Text
-            color={jobState(job).color}>{row.bullet}</Text><Text bold={isSelected} color="text">{row.label}</Text>
-            <Text color="subtle">{row.summary}</Text>{row.gap}<Text color="subtle">{row.meta}</Text></Text></Button>
+            color={jobRowColor(job)}>{row.bullet}</Text><Text bold={isSelected} color="text">{row.label}</Text>
+            <Text color="subtle">{row.summary}</Text><Text color="suggestion">{row.marker}</Text>{row.gap}<Text color="subtle">{row.meta}</Text></Text></Button>
         </Box>;
       })}
       {(header.toggle || header.clear) && <Box key="header-toggle" flexDirection="row" height={1} flexShrink={0} overflow="hidden">

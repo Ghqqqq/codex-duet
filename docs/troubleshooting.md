@@ -34,9 +34,12 @@ names a tab (`tabId`, `sessionId`, `closed`) the worker could not inspect or
 close; close it manually if `closed` is `false`. `reported_blocked` means Codex's
 own final answer declared itself blocked. Blocked tasks exit 2, like `needs_input`.
 
-**Interrupted worker.** Recover with `status <job> --json` and
-`result <job> --report --json` in the original workspace. Do not resubmit the task;
-that starts a new turn.
+**Interrupted worker or lost connection.** Inspect `status <job> --json` and
+`result <job> --report --json` in the original workspace: an eligible lost turn
+is reconciled against its exact server record without resubmission, preserving
+its real outcome and recovery provenance. A follow-up on a busy or unresolved
+thread is blocked with `thread_busy`; use its observational status
+`recoveryCommand`. Do not resubmit blindly; that starts a new turn.
 
 More: [worker operations](worker-operations.md) and
 [worker lifecycle](worker-lifecycle.md).
@@ -48,7 +51,9 @@ More: [worker operations](worker-operations.md) and
   per-thread MCP bridge, owner loss (`owner_stopped`/`owner_lost`) and
   `--continue` were also exercised live against the real app-server
   (`codex-cli 0.162.0-alpha.17.2`), including back-to-back `ask_parent` round
-  trips on one resumed thread; that live smoke is still a manual step, not CI.
+  trips on one resumed thread; that real app-server smoke remains manual.
+  `npm run verify` checks versions, builds, and runs runtime and live-pane fixture
+  tests; CI runs those checks on pull requests and pushes to main.
 - `ask_parent` uses the app-server's experimental dynamic-tool API on new threads
   and a per-thread MCP server override on resumed threads. Runtimes that reject
   either registration fall back to a final `needs_input` report.
@@ -58,8 +63,9 @@ More: [worker operations](worker-operations.md) and
   also check new commits and the report's touched-file evidence, with the limits
   below for ignored files, submodules and concurrent writers. Claude's own rewind
   does not cover worker edits. An owner that is killed outright
-  (SIGKILL) is detected by heartbeat with a 5 s grace; a signalled stop is
-  immediate.
+  (SIGKILL) can be replaced immediately by a wait with the same owner while the
+  job is active and its lease unexpired; otherwise heartbeat detection interrupts
+  it after the 5 s grace. A signalled stop is immediate.
 - The owner lease is lifecycle coordination between local processes, not an
   authentication boundary.
 - Browser origin persistence and Computer Use app approvals follow the file

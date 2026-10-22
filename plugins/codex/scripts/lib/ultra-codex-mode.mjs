@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolveStateDir } from "./state.mjs";
 
@@ -69,14 +70,17 @@ export function isModeCommandPrompt(prompt) {
   return COMMAND_PROMPT.test(String(prompt ?? ""));
 }
 
+// Exclude only the version line to avoid a self-referential hash. Tests pin the
+// checked-in header to the body; runtime callers always hash the current text.
+export function protocolVersion(text = fs.readFileSync(PROTOCOL_PATH, "utf8")) {
+  const body = text.replace(/^<!-- Ultra-codex protocol v[0-9a-f]{8} -->\r?\n/, "");
+  return createHash("sha256").update(body).digest("hex").slice(0, 8);
+}
+
 // What the UserPromptSubmit hook adds to the prompt while the mode is on.
 // Short on purpose: it is paid on every prompt. The protocol itself is read
-// from disk only when a task calls for it.
+// only when its current version is absent (including after compaction).
 export function reminderText(mode, protocolPath = PROTOCOL_PATH) {
-  const scale = mode.scale === "auto" ? "auto" : mode.scale;
-  return [
-    `[Duet] Ultra-codex mode is on for this session (scale: ${scale}; max workers: ${mode.maxWorkers}; turn it off with /codex:ultra-codex off).`,
-    `If this prompt is a substantive task — anything beyond a conversational reply, a one-line fix or a question answerable from one file — Read ${protocolPath} first and orchestrate the task with Codex workers exactly as that protocol says; your own effort goes into the briefs and the acceptance.`,
-    "Otherwise answer normally."
-  ].join(" ");
+  const version = protocolVersion(fs.readFileSync(protocolPath, "utf8"));
+  return `Ultra-codex mode on (${mode.scale}, max ${mode.maxWorkers} workers). Apply protocol v${version} to substantive tasks; re-read ${protocolPath} only if v${version} is not in your context.`;
 }

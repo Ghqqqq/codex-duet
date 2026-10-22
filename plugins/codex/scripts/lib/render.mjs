@@ -108,6 +108,27 @@ function formatCodexResumeCommand(job) {
   return isolatedCodexCommand(["resume", job.threadId]);
 }
 
+function unansweredQuestion(job) {
+  return (job.status === "queued" || job.status === "running") && job.pendingQuestion?.answer === undefined
+    ? job.pendingQuestion
+    : null;
+}
+
+function appendPendingQuestion(lines, job) {
+  const question = unansweredQuestion(job);
+  if (!question) return;
+  lines.push("  Waiting for an answer:", `    ${question.text}`);
+  for (const [index, option] of (question.options ?? []).entries()) {
+    lines.push(`    ${index + 1}. ${option}`);
+  }
+  if (Number.isFinite(question.expiresAt)) {
+    const seconds = Math.max(0, Math.ceil((question.expiresAt - Date.now()) / 1000));
+    const remaining = seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
+    lines.push(`    Time left: ${remaining}${seconds === 0 ? " (expired)" : ""}.`);
+  }
+  lines.push("    Answer it in the Claude conversation that owns this worker.");
+}
+
 function appendActiveJobsTable(lines, jobs) {
   const showSession = jobs.some(job => job.sessionLabel);
   lines.push("Active jobs:");
@@ -119,8 +140,9 @@ function appendActiveJobsTable(lines, jobs) {
       actions.push(`/codex:cancel ${job.id}`);
     }
     if (job.adoptCommand) actions.push(job.adoptCommand);
+    const status = job.orphaned ? `${job.status} (orphaned; ${job.leaseRemainingSec}s lease)` : job.status;
     lines.push(
-      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.orphaned ? `${job.status} (orphaned; ${job.leaseRemainingSec}s lease)` : job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |${showSession ? ` ${escapeMarkdownCell(job.sessionLabel)} |` : ""}`
+      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(`${status}${unansweredQuestion(job) ? " (Waiting for an answer)" : ""}`)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |${showSession ? ` ${escapeMarkdownCell(job.sessionLabel)} |` : ""}`
     );
   }
 }
@@ -136,6 +158,7 @@ function pushJobDetails(lines, job, options = {}) {
   if (job.phase) {
     lines.push(`  Phase: ${job.phase}`);
   }
+  appendPendingQuestion(lines, job);
   if (job.approvedBrowserOrigins) lines.push(`  Approved browser origins (this job): ${job.approvedBrowserOrigins.join(", ") || "none"}`);
   if (job.approvedComputerApps?.length) lines.push(`  Approved Computer Use apps (this job): ${job.approvedComputerApps.join(", ")}`);
   if (options.showElapsed && job.elapsed) {
@@ -408,65 +431,71 @@ export function renderJobStatusReport(job) {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
+function appendResultSection(lines, title, entries, format = String, omitted = 0) {
+  if (!Array.isArray(entries) || !entries.length) return;
+  lines.push("", `${title}:`);
+  for (const entry of entries.slice(0, 8)) lines.push(`- ${format(entry)}`);
+  const remaining = Math.max(0, entries.length - 8) + omitted;
+  if (remaining > 0) lines.push(`+${remaining} more`);
+}
+
+function formatBlocker(blocker) {
+  const identifiers = [
+    ["app", blocker.app],
+    ["tab", blocker.tabId ?? blocker.tab_id],
+    ["session", blocker.sessionId ?? blocker.session_id]
+  ].filter(([, value]) => value != null && value !== "");
+  return `[${blocker.code}]${blocker.message ? ` ${blocker.message}` : ""}${identifiers.length ? ` (${identifiers.map(([key, value]) => `${key}: ${value}`).join(", ")})` : ""}`;
+}
+
+function resultNextAction(status, resumeCommand) {
+  switch (status) {
+    case "needs_input":
+      return "Next: Answer the question in the Claude conversation that owns this worker.";
+    case "blocked":
+      return resumeCommand ? `Next: Resolve the blockers, then resume: ${resumeCommand}` : "Next: Resolve the blockers, then retry the task in the Claude conversation that owns this worker.";
+    case "failed":
+      return resumeCommand ? `Next: Address the failure, then resume: ${resumeCommand}` : "Next: Address the failure, then retry the task in the Claude conversation that owns this worker.";
+    case "cancelled":
+    case "interrupted":
+      return resumeCommand ? `Next: Resume if you want to continue: ${resumeCommand}` : "Next: Start a new task in the Claude conversation if you want to continue.";
+    default:
+      return "Next: Review the result and evidence above.";
+  }
+}
+
 export function renderStoredJobResult(job, storedJob) {
+  const result = storedJob?.result ?? {};
+  const report = storedJob?.report ?? {};
+  const structured = result.structured;
+  const status = report.status ?? storedJob?.status ?? job.status ?? "unknown";
   const threadId = storedJob?.threadId ?? job.threadId ?? null;
   const resumeCommand = threadId ? isolatedCodexCommand(["resume", threadId]) : null;
-  if (isStructuredReviewStoredResult(storedJob) && storedJob?.rendered) {
-    const output = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}\n`;
-    if (!threadId) {
-      return output;
-    }
-    return `${output}\nCodex session ID: ${threadId}\nResume in Codex: ${resumeCommand}\n`;
-  }
+  // Keep the final summary (or the existing formatted review) verbatim.
+  const summary = isStructuredReviewStoredResult(storedJob) && storedJob?.rendered
+    ? storedJob.rendered
+    : result.rawOutput || result.codex?.stdout || structured?.summary || report.summary || storedJob?.rendered || job.summary || "";
+  const lines = [`Outcome: ${status}`, "", summary];
+  const errorMessage = job.errorMessage || storedJob?.errorMessage;
+  if (errorMessage && !result.rawOutput && !result.codex?.stdout && !storedJob?.rendered) lines.push("", errorMessage);
+  else if (!summary) lines.push("No captured result payload was stored for this job.");
 
-  const rawOutput =
-    (typeof storedJob?.result?.rawOutput === "string" && storedJob.result.rawOutput) ||
-    (typeof storedJob?.result?.codex?.stdout === "string" && storedJob.result.codex.stdout) ||
-    "";
-  if (rawOutput) {
-    const origins = storedJob?.result?.approvedBrowserOrigins ?? job.approvedBrowserOrigins ?? [];
-    const apps = storedJob?.result?.approvedComputerApps ?? job.approvedComputerApps ?? [];
-    const header = `${origins.length ? `Approved browser origins (this job): ${origins.join(", ")}\n` : ""}${apps.length ? `Approved Computer Use apps (this job): ${apps.join(", ")}\n` : ""}`.replace(/\n$/, "\n\n");
-    const output = `${header}${rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`}`;
-    if (!threadId) {
-      return output;
-    }
-    return `${output}\nCodex session ID: ${threadId}\nResume in Codex: ${resumeCommand}\n`;
-  }
+  appendResultSection(lines, "Findings", structured?.keyFindings ?? report.keyFindings);
+  appendResultSection(lines, "Verification (captured commands)", report.verification);
+  if (report.verification?.length) lines.push(report.verificationBasis || "Captured command events; not independently verified.");
+  appendResultSection(lines, "Claims not independently verified", structured?.verification ?? report.claimedVerification);
+  appendResultSection(lines, "Assumptions", structured?.assumptions ?? report.assumptions);
+  appendResultSection(lines, "Blockers", report.blockers, formatBlocker, report.blockersOmitted ?? 0);
 
-  if (storedJob?.rendered) {
-    const output = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}\n`;
-    if (!threadId) {
-      return output;
-    }
-    return `${output}\nCodex session ID: ${threadId}\nResume in Codex: ${resumeCommand}\n`;
-  }
-
-  const lines = [
-    `# ${job.title ?? "Codex Result"}`,
-    "",
-    `Job: ${job.id}`,
-    `Status: ${job.status}`
-  ];
-
-  if (threadId) {
-    lines.push(`Codex session ID: ${threadId}`);
-    lines.push(`Resume in Codex: ${resumeCommand}`);
-  }
-
-  if (job.summary) {
-    lines.push(`Summary: ${job.summary}`);
-  }
-
-  if (job.errorMessage) {
-    lines.push("", job.errorMessage);
-  } else if (storedJob?.errorMessage) {
-    lines.push("", storedJob.errorMessage);
-  } else {
-    lines.push("", "No captured result payload was stored for this job.");
-  }
-
-  return `${lines.join("\n").trimEnd()}\n`;
+  const question = structured?.question ?? report.question;
+  if (status === "needs_input" && question && !summary.includes(question)) lines.push("", `Question: ${question}`);
+  const origins = result.approvedBrowserOrigins ?? job.approvedBrowserOrigins ?? [];
+  const apps = result.approvedComputerApps ?? job.approvedComputerApps ?? [];
+  if (origins.length) lines.push("", `Approved browser origins (this job): ${origins.join(", ")}`);
+  if (apps.length) lines.push("", `Approved Computer Use apps (this job): ${apps.join(", ")}`);
+  if (threadId) lines.push("", `Codex session ID: ${threadId}`, `Resume in Codex: ${resumeCommand}`);
+  lines.push("", resultNextAction(status, report.continuationCommand ?? job.continuationCommand ?? resumeCommand));
+  return `${lines.join("\n")}\n`;
 }
 
 export function renderCancelReport(job) {

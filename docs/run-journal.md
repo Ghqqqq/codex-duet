@@ -19,12 +19,13 @@ node "$CODEX_COMPANION" journal add criteria <<'JSON'
 {"criteria":["Keep all journal files in the isolated home"]}
 JSON
 node "$CODEX_COMPANION" journal add verdict <<'JSON'
-{"jobId":"task-...","verdict":"ACCEPT","criteria":[{"criterion":"Criteria and verdicts survive compaction","evidence":"Ran journal show in a new process and observed the stored criteria","result":"met"}],"reason":"Observed evidence meets the criterion"}
+{"jobId":"task-...","verdict":"ACCEPT","criteria":[{"criterion":"Criteria and verdicts survive compaction","evidence":"Ran journal show in a new process and observed the stored criteria","result":"met"},{"criterion":"Keep all journal files in the isolated home","evidence":"Checked run and artifact paths in the isolated home","result":"met"}],"reason":"Observed evidence meets the criterion"}
 JSON
 node "$CODEX_COMPANION" journal add decision <<'JSON'
 {"summary":"Use a workspace journal","basis":"Keep acceptance evidence after job pruning","risk":"History still expires under retention"}
 JSON
 node "$CODEX_COMPANION" journal show
+node "$CODEX_COMPANION" journal validate
 node "$CODEX_COMPANION" journal close <<'JSON'
 {"judgment":"passed","summary":"Acceptance criteria verified","openRisks":[]}
 JSON
@@ -34,10 +35,10 @@ node "$CODEX_COMPANION" journal list --json
 All commands accept `--cwd <dir>`, `--json`, `--help` and `-h`. Help exits
 before reading stdin, creating files or starting a runtime. Start prints
 `{"runId":"run-..."}`. A second start with an open run is an error naming that
-run, even when the second start uses another workspace. Add, close and show
+run, even when the second start uses another workspace. Add, close, show and validate
 default to the session's active run regardless of the current cwd. `--run <id>`
 selects an existing run in the current workspace explicitly. Without an active
-run, show falls back to the newest run in the current workspace. List returns
+run, show and validate fall back to the newest run in the current workspace. List returns
 that workspace's runs newest first. Invalid JSON, missing fields, invalid enum
 values and unknown entry types fail before journal writes.
 
@@ -53,11 +54,59 @@ values and unknown entry types fail before journal writes.
 Empty criteria arrays are allowed when no criterion applies. Verdicts can name
 jobs whose ordinary records have expired. The latest verdict supersedes earlier
 verdicts in the recovery view; all entries remain in the journal. Jobs without a
-verdict and jobs whose latest verdict is `REWORK` or `REASSIGN` are open items.
+verdict and jobs whose latest verdict is unresolved `REWORK` or `REASSIGN` are
+open items. A later `ACCEPT` or `ACCEPT_WITH_GLUE` on an explicitly linked
+follow-up/continuation (including a descendant) resolves earlier rework. Sharing
+a thread alone does not resolve it. The accepting job's latest verdict must still
+be acceptance, and must follow the ancestor's latest rejection in journal order.
 Close records the judgment and clears pointers to that run; closing twice or
 adding manual entries after close is an error. It does not cancel workers. A
 worker already linked to a run may still record its terminal report after close.
 SessionEnd does not close a run.
+
+## Validate before closing
+
+`journal validate [--run <id>] [--json]` checks **record completeness**, not
+whether the work is correct. It reads the journal, retained reports and available
+live job records without writing, locking, refreshing retention or starting a
+worker. Exit status is 0 with no issues, 2 with issues, or 1 for an invalid request
+or unreadable journal. Text lists every issue and its next safe action. JSON is:
+
+```json
+{"runId":"run-...","ok":false,"issues":[{"kind":"unchecked_criterion","criterion":"Keep all journal files in the isolated home","detail":"Task criterion appears in no verdict.","nextAction":"Check this exact criterion and record its evidence and result in a journal verdict."}]}
+```
+
+| Issue kind | What remains open | Next step |
+| --- | --- | --- |
+| `unfinished_job` | Linked job has no `job_finished` and its readable record is queued/running | Check status and the existing owner wait; wait for completion |
+| `no_verdict` | Finished job has no verdict | Inspect its report, verify criteria and record a verdict |
+| `open_rework` | Latest rejection has no later acceptance on that job or linked follow-up | Verify a correction before accepting; continuing a stopped job requires consent |
+| `unmet_criterion` | Latest result for exact criterion text is `not_met` or `cannot_verify` | Resolve and recheck it, then record observed evidence with `met` |
+| `unchecked_criterion` | Task-level criterion appears in no verdict | Check and record that exact criterion text |
+| `missing_artifact` | Latest finish's report path or file is missing/empty, unreadable or unsafe | Recover available report evidence, or explain its absence in a blocked/abandoned close |
+
+Criteria match by **exact text**, including case and whitespace. The latest
+result for that text across all jobs wins; a newer verdict that omits the text
+does not erase its previous result. Additional criteria introduced in verdicts
+also produce `unmet_criterion` when their latest result is negative. Duplicate
+task criteria produce one unchecked issue. A verdict labeled `ACCEPT` with a
+negative criterion result still blocks a passed close.
+
+`journal close` rechecks completeness under the run lock. With `passed`, any
+issue refuses closure with exit 2 and leaves the journal and active pointer
+unchanged. With `--json`, refusal returns the validation JSON above. `blocked`
+and `abandoned` can close despite issues; all successful closes store the
+computed `openIssues` array in `run_closed` (empty for `passed`). A caller cannot
+override that snapshot. Existing `openRisks` remain the orchestrator's explanation.
+The snapshot is fixed at the close row; `validate` and `show` reflect current
+observations, including any later worker finish or missing artifact.
+
+If an unfinished job's record has expired, is unreadable or no longer says
+queued/running, validation cannot establish that it is live and does not emit
+`unfinished_job`. Unknown job references are not a separate issue kind. Empty
+criteria and no linked jobs can pass. These checks do not establish that all
+intended workers were linked, judge the substance of evidence, resume workers,
+or replace the orchestrator's acceptance checks.
 
 ## Storage and format
 
@@ -106,10 +155,16 @@ is recorded, repeated observations of that status skip journal locking and reads
 
 `journal show` is a compact view with relative artifact paths beneath the
 printed run directory; it does not inline briefs or reports. The latest finish
-for each job supplies its status and report path. Jobs without a saved report
-are supplemented with live status and thread handles when available. Text fields
-are shortened for context recovery; `--json` preserves the full criteria, verdict
-evidence and decisions. Read a saved brief or report only when needed.
+for each job supplies its status and report path. Jobs without a recorded finish
+are supplemented with live status and thread handles when available. The text
+`Criteria` section shows each task criterion's latest result and evidence, or
+`unchecked`; `Open` lists each validation issue and its next action. Text fields
+are shortened with an ellipsis for context recovery; `--json` preserves the full
+criteria, verdict evidence and decisions. Existing JSON fields remain, including
+the legacy job-only `openItems` list; `criterionResults` and `issues` add the
+criterion and validation views. Use `issues` for completeness (unlike
+`openItems`, `no_verdict` applies only to finished jobs). Job views also retain
+explicit follow-up/continuation links. Read a saved brief or report only when needed.
 SessionStart appends exactly one recovery reminder for an active open run,
 including when the session starts from another workspace or worktree.
 

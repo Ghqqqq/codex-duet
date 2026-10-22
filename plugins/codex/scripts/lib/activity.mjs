@@ -64,16 +64,48 @@ export function itemActivity(item, lifecycle, starts, key, now = Date.now()) {
 export function planActivity(plan = []) {
   return [{ type: "plan", steps: plan.map(step => snippet(step.step, 80)), statuses: plan.map(step => ["pending", "inProgress", "completed"].includes(step.status) ? step.status : "pending") }];
 }
+// Match the pane's unwrapCommand: remove only a recognized shell wrapper,
+// including its outer quotes, even when the stored excerpt was truncated.
+function commandExcerpt(command) {
+  let result = snippet(command, Infinity);
+  const wrapper = /^(?:\/bin\/)?(?:zsh|bash|sh)\s+-(?:lc|c)\s+/;
+  if (!wrapper.test(result)) return result;
+  result = result.replace(wrapper, "");
+  const quote = result[0];
+  if (quote === "'" || quote === '"') {
+    result = result.slice(1);
+    if (result.endsWith(quote)) result = result.slice(0, -1);
+  }
+  return result.replace(/'"'"'/g, "'");
+}
 export function formatActivity(event) {
   const duration = event.durationMs == null ? "duration unknown" : `${event.durationMs}ms`;
   let detail;
   switch (event.type) {
     case "agentMessage": detail = `Codex: ${event.text}`; break;
-    case "commandExecution": detail = `Command ${event.status}: ${event.command} (exit ${event.exitCode ?? "pending/unknown"}; ${duration})`; break;
-    case "fileChange": detail = `File ${event.kind}: ${event.path}`; break;
+    case "commandExecution": {
+      const command = commandExcerpt(event.command);
+      if (["cancelled", "declined", "interrupted"].includes(event.status)) detail = `■ ${event.status} · ${command}`;
+      else if (event.lifecycle === "started" || ["started", "inProgress", "running", "queued"].includes(event.status)) detail = `▸ ${command}`;
+      else if (!Number.isInteger(event.exitCode)) detail = `? exit unknown · ${command}`;
+      else {
+        const result = event.exitCode !== 0 || ["failed", "error"].includes(event.status) ? "✗" : "✓";
+        const elapsed = Number.isFinite(event.durationMs) && event.durationMs >= 0 ? ` · ${(event.durationMs / 1000).toFixed(1)}s` : "";
+        detail = `${result} exit ${event.exitCode}${elapsed} · ${command}`;
+      }
+      break;
+    }
+    case "fileChange": detail = `edit ${event.path} +${event.added ?? (event.kind === "delete" ? 0 : "?")} −${event.removed ?? (event.kind === "add" ? 0 : "?")}`; break;
     case "mcpToolCall":
     case "dynamicToolCall": detail = `Tool ${event.server}/${event.tool}: ${event.status} (${duration})`; break;
-    case "plan": detail = `Plan: ${event.steps.join("; ")}`; break;
+    case "plan": {
+      const steps = event.steps ?? [], statuses = event.statuses ?? [];
+      const done = steps.filter((_, i) => statuses[i] === "completed").length;
+      const active = steps.findIndex((_, i) => statuses[i] === "inProgress");
+      const current = active < 0 ? steps.findIndex((_, i) => statuses[i] !== "completed") : active;
+      detail = `plan ${done}/${steps.length}${current < 0 ? "" : ` · ${steps[current]}`}`;
+      break;
+    }
     default: detail = "Activity";
   }
   return `[${event.seq}] ${detail}`;

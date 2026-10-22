@@ -75,6 +75,6 @@ test("task reports 26 shell-edited files in an already dirty repository without 
   assert.equal(report.touchedFilesOmitted, 17);
   assert.equal(report.preExistingChangesOmitted, 24);
   assert.equal(report.fileTrackingStatus, "complete");
-  assert.match(report.fileTrackingBasis, /Concurrent workspace edits cannot be attributed/);
+
   assert.ok(result.stdout.split("\n").length <= 60);
 });

@@ -195,10 +195,20 @@ export function closeRun(cwd, sessionId, input, runId, env = process.env) {
     const selected = target(resolveStateDir(cwd, env), sessionId, runId, env), stateDir = selected.stateDir;
     runId = selected.runId;
     return locked(stateDir, env, () => {
-      requireOpen(entries(stateDir, runId, env), runId);
-      append(stateDir, runId, "run_closed", data);
+      const rows = entries(stateDir, runId, env);
+      requireOpen(rows, runId);
+      // Check the same snapshot we close, while terminal observers and verdict
+      // writers are excluded by the run lock. Validation itself only reads.
+      const issues = viewAt(stateDir, runId, rows, env).issues;
+      if ("judgment" in data && data.judgment === "passed" && issues.length) {
+        throw Object.assign(new Error("Run has open issues; passed close refused."), {
+          code: "RUN_HAS_OPEN_ISSUES", validation: { runId, ok: false, issues }
+        });
+      }
+      const closed = { ...data, openIssues: issues };
+      append(stateDir, runId, "run_closed", closed);
       clearPointers(stateDir, runId, env);
-      return { runId, ...data };
+      return { runId, ...closed };
     });
   }, true);
 }
@@ -213,41 +223,121 @@ export function listRuns(cwd, env = process.env) { return listAt(resolveStateDir
 export function showRun(cwd, sessionId, runId, env = process.env) {
   const selected = target(resolveStateDir(cwd, env), sessionId, runId, env, true), stateDir = selected.stateDir;
   runId = selected.runId;
-  const rows = entries(stateDir, runId, env), jobs = new Map(), criteria = [...rows[0].criteria], decisions = [];
+  return viewAt(stateDir, runId, entries(stateDir, runId, env), env);
+}
+function viewAt(stateDir, runId, rows, env) {
+  const jobs = new Map(), criteria = [...rows[0].criteria], decisions = [];
+  const started = new Set(), finished = new Set(), liveStatus = new Map();
+  const criterionResults = new Map(), verdictOrder = new Map();
   let closed = null;
-  for (const row of rows.slice(1)) {
+  for (const [index, row] of rows.entries()) {
     if (row.type === "criteria") criteria.push(...row.criteria);
-    if (row.type === "job_started") jobs.set(row.jobId, { agentName: row.agentName ?? null, jobId: row.jobId, workspaceRoot: row.workspaceRoot ?? rows[0].cwd, cwd: row.cwd ?? row.workspaceRoot ?? rows[0].cwd, threadId: row.threadId ?? null, status: "queued", brief: row.brief, report: null, latestVerdict: null });
-    if (row.type === "job_finished" && jobs.has(row.jobId)) Object.assign(jobs.get(row.jobId), { status: row.status, report: row.report, threadId: row.threadId ?? jobs.get(row.jobId).threadId });
+    if (row.type === "job_started") {
+      started.add(row.jobId);
+      jobs.set(row.jobId, { agentName: row.agentName ?? null, jobId: row.jobId, workspaceRoot: row.workspaceRoot ?? rows[0].cwd, cwd: row.cwd ?? row.workspaceRoot ?? rows[0].cwd, threadId: row.threadId ?? null, status: "queued", brief: row.brief, report: null, latestVerdict: jobs.get(row.jobId)?.latestVerdict ?? null,
+        ...(row.followUpOf ? { followUpOf: row.followUpOf } : {}), ...(row.continuationOf ? { continuationOf: row.continuationOf } : {}) });
+    }
+    if (row.type === "job_finished" && jobs.has(row.jobId)) {
+      finished.add(row.jobId);
+      Object.assign(jobs.get(row.jobId), { status: row.status, report: row.report, threadId: row.threadId ?? jobs.get(row.jobId).threadId });
+    }
     if (row.type === "verdict") {
       if (!jobs.has(row.jobId)) jobs.set(row.jobId, { agentName: null, jobId: row.jobId, threadId: null, status: "unknown", brief: null, report: null });
       jobs.get(row.jobId).latestVerdict = row;
+      verdictOrder.set(row.jobId, index);
+      for (const item of row.criteria) criterionResults.set(item.criterion, { ...item, jobId: row.jobId });
     }
     if (row.type === "decision") decisions.push(row);
     if (row.type === "run_closed") closed = row;
   }
   // Supplement live handles, but recovery never depends on retained job records.
   for (const job of jobs.values()) {
-    if (job.report) continue;
+    if (finished.has(job.jobId)) continue;
     try {
       const jobStateDir = job.workspaceRoot ? resolveStateDir(job.workspaceRoot, env) : stateDir;
       directory(path.join(jobStateDir, "jobs"), env);
       const live = JSON.parse(read(path.join(jobStateDir, "jobs", `${id(job.jobId, "jobId")}.json`)));
-      if (live.runId === runId && (live.runStateDir ?? jobStateDir) === stateDir) Object.assign(job, { status: live.status, threadId: live.threadId ?? job.threadId });
+      if (live.runId === runId && (live.runStateDir ?? jobStateDir) === stateDir) {
+        liveStatus.set(job.jobId, live.status);
+        Object.assign(job, { status: live.status, threadId: live.threadId ?? job.threadId });
+      }
     } catch { /* pruned or unavailable */ }
   }
   const linked = [...jobs.values()];
+  // Only explicit lineage resolves rework, never a shared thread. A later
+  // rejection reopens it; a previously accepted descendant cannot erase that.
+  const resolved = new Set();
+  for (const job of linked) {
+    if (!started.has(job.jobId) || !["ACCEPT", "ACCEPT_WITH_GLUE"].includes(job.latestVerdict?.verdict)) continue;
+    const pending = [job.followUpOf, job.continuationOf], seen = new Set([job.jobId]);
+    while (pending.length) {
+      const parentId = pending.pop(), parent = jobs.get(parentId);
+      if (!parent || !started.has(parentId) || seen.has(parentId)) continue;
+      seen.add(parentId);
+      if (verdictOrder.get(job.jobId) > verdictOrder.get(parentId)) resolved.add(parentId);
+      pending.push(parent.followUpOf, parent.continuationOf);
+    }
+  }
+  const issues = [];
+  for (const job of linked) {
+    const jobId = job.jobId;
+    if (started.has(jobId) && !finished.has(jobId) && ["queued", "running"].includes(liveStatus.get(jobId))) issues.push({
+      kind: "unfinished_job", jobId, detail: `Linked job is ${job.status} without a recorded finish.`,
+      nextAction: "Check job status and its existing owner wait; wait for completion before judging it."
+    });
+    if (finished.has(jobId) && !job.latestVerdict) issues.push({
+      kind: "no_verdict", jobId, detail: "Finished job has no orchestrator verdict.",
+      nextAction: "Inspect the saved report and verify its criteria, then record a journal verdict."
+    });
+    if (["REWORK", "REASSIGN"].includes(job.latestVerdict?.verdict) && !resolved.has(jobId)) issues.push({
+      kind: "open_rework", jobId, detail: `Latest verdict is ${job.latestVerdict.verdict}: ${job.latestVerdict.reason}`,
+      nextAction: "Review the findings and verify a correction before recording acceptance; obtain user consent before continuing a stopped job."
+    });
+    if (finished.has(jobId)) {
+      const problem = reportProblem(runDir(stateDir, runId), job.report, env);
+      if (problem) issues.push({ kind: "missing_artifact", jobId, detail: problem,
+        nextAction: "Inspect the retained job result and recover its report copy if available; otherwise explain the missing evidence and close blocked or abandoned." });
+    }
+  }
+  for (const result of criterionResults.values()) {
+    if (result.result !== "met") issues.push({ kind: "unmet_criterion", jobId: result.jobId, criterion: result.criterion,
+      detail: `Latest result is ${result.result}: ${result.evidence}`,
+      nextAction: "Resolve the finding and verify this exact criterion, then record a met result with observed evidence." });
+  }
+  for (const criterion of new Set(criteria)) {
+    if (!criterionResults.has(criterion)) issues.push({ kind: "unchecked_criterion", criterion, detail: "Task criterion appears in no verdict.",
+      nextAction: "Check this exact criterion and record its evidence and result in a journal verdict." });
+  }
   return { runId, directory: runDir(stateDir, runId), goal: rows[0].goal, criteria, jobs: linked, decisions,
-    openItems: linked.filter(job => !job.latestVerdict || ["REWORK", "REASSIGN"].includes(job.latestVerdict.verdict)).map(job => ({ jobId: job.jobId, reason: job.latestVerdict?.verdict ?? "no_verdict" })),
+    openItems: linked.filter(job => !job.latestVerdict || (["REWORK", "REASSIGN"].includes(job.latestVerdict.verdict) && !resolved.has(job.jobId))).map(job => ({ jobId: job.jobId, reason: job.latestVerdict?.verdict ?? "no_verdict" })),
+    criterionResults: criteria.map(criterion => criterionResults.get(criterion) ?? { criterion, result: "unchecked", evidence: null }), issues,
     state: closed ? "closed" : "open", closed };
 }
+function reportProblem(dir, report, env) {
+  if (typeof report !== "string" || !report.trim()) return "Finished job has no report path.";
+  const file = path.resolve(dir, report), relative = path.relative(dir, file);
+  if (path.isAbsolute(report) || !relative || relative === ".." || relative.startsWith(`..${path.sep}`)) return "Finished job report path is outside the run directory.";
+  try {
+    directory(path.dirname(file), env);
+    if (!read(file).trim()) return `Report artifact is empty: ${report}`;
+  } catch { return `Report artifact is missing, unreadable or not a regular file: ${report}`; }
+  return null;
+}
+export function validateRun(cwd, sessionId, runId, env = process.env) {
+  const view = showRun(cwd, sessionId, runId, env);
+  return { runId: view.runId, ok: view.issues.length === 0, issues: view.issues };
+}
 const short = (text, limit = 180) => { const flat = String(text ?? "").replace(/\s+/g, " "); return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat; };
+const renderIssue = issue => `  ${issue.kind}${issue.jobId ? ` ${issue.jobId}` : ""}${issue.criterion ? ` [${short(issue.criterion)}]` : ""}: ${short(issue.detail)} Next: ${issue.nextAction}`;
+export function renderValidation(result) {
+  return [`Run ${result.runId}: ${result.ok ? "no open issues" : `${result.issues.length} open issue(s)`} (record completeness).`, ...result.issues.map(renderIssue)].join("\n") + "\n";
+}
 export function renderRun(view) {
   const lines = [`Run ${view.runId} (${view.state}${view.closed ? `: ${view.closed.judgment}` : ""}): ${short(view.goal, 240)}`, `Files: ${view.directory}`, "Criteria:",
-    ...view.criteria.map((item, index) => `  ${index + 1}. ${short(item)}`), "Jobs:",
+    ...view.criterionResults.map((item, index) => `  ${index + 1}. ${short(item.criterion)} — ${item.result}${item.evidence ? `; evidence: ${short(item.evidence)}` : ""}`), "Jobs:",
     ...view.jobs.map(job => `  ${job.agentName ?? "worker"} ${job.jobId} thread=${job.threadId ?? "?"} ${job.status} verdict=${job.latestVerdict?.verdict ?? "none"}; brief=${job.brief ?? "?"} report=${job.report ?? "pending"}`),
     "Decisions:", ...view.decisions.map(item => `  ${short(item.summary)}; basis: ${short(item.basis)}${item.risk ? `; risk: ${short(item.risk)}` : ""}`),
-    `Open items: ${view.openItems.map(item => `${item.jobId} (${item.reason})`).join(", ") || "none"}`,
+    "Open:", ...(view.issues.length ? view.issues.map(renderIssue) : ["  none"]),
     ...(view.closed ? [`Close: ${short(view.closed.summary)}; open risks: ${(view.closed.openRisks ?? []).map(item => short(item)).join("; ") || "none"}`] : [])];
   return `${lines.join("\n")}\n`;
 }

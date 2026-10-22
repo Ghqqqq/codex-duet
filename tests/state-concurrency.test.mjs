@@ -189,7 +189,7 @@ test("a killed lock owner cannot block the next process or publish partial chang
     state.updateState(cwd, current => {
       current.jobs.push({ id: "partial" });
       process.send("ready");
-      pause(30000);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); // Hold until the parent kills this owned worker.
     });
   `);
   await killed.ready;

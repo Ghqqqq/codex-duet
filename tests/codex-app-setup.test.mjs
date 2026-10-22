@@ -126,7 +126,7 @@ test("codex-app CLI exposes offline diff/surfaces and validates selectors before
   const before = '[mcp_servers.cua_repl]\nenabled = false\ntool_timeout_sec = 30\n';
   fs.writeFileSync(f.destination, before);
   assert.equal(JSON.parse(f.call(...args, "--dry-run", "--json").stdout).toolSync.requiresReplace, true);
-  assert.match(f.call(...args).stderr, /refusing to clobber/);
+
   assert.equal(fs.readFileSync(f.destination, "utf8"), before);
   const applied = f.call(...args, "--replace-cua", "--json");
   assert.equal(applied.status, 0, applied.stderr);

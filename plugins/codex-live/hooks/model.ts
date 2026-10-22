@@ -19,6 +19,12 @@ export function clean(value: unknown): string {
   return cleanBody(value).replace(/\s+/g, ' ').trim();
 }
 
+// Keep the row's "asks: " prefix plus excerpt within 60 characters.
+export function questionExcerpt(value: unknown): string {
+  const text = clean(value);
+  return text.length <= 54 ? text : `${limitChars(text, 53)}…`;
+}
+
 export function taskText(value: unknown): string {
   let text = clean(value);
   const prefix = /^(?:OBJECTIVE\s*:|FOLLOW[- ]UP(?:\s+on\b[^:]*)?\s*:|REWORK\b[^:]*:)\s*/i;
@@ -42,7 +48,7 @@ export function markerView(value: unknown): CodexLiveMarker {
 
 // Keep the completion at its own sequence number. Interleaved unrelated events
 // stay in order; repeated invocations of an identical command stay separate.
-export function collapseActivity<T extends CodexLiveEvent>(events: readonly T[]): T[] {
+export function collapseActivity<T extends CodexLiveEvent>(events: readonly T[], limit = 200): T[] {
   const sorted = [...events].sort((a, b) => a.seq - b.seq);
   const outstanding = new Map<string, number[]>();
   const removed = new Set<number>();
@@ -60,7 +66,7 @@ export function collapseActivity<T extends CodexLiveEvent>(events: readonly T[])
     }
     outstanding.set(key, queue);
   });
-  return sorted.filter((_, index) => !removed.has(index)).slice(-200);
+  return sorted.filter((_, index) => !removed.has(index)).slice(-limit);
 }
 
 function eventView(value: unknown, index: number): CodexLiveEvent {
@@ -96,6 +102,29 @@ export function jobLifecycle(job: { status: string; completedAt: string; finalSt
   return { status, finished, active: !finished && ['running', 'queued', 'waiting'].includes(status) };
 }
 
+export function unwrapCommand(command: string): string {
+  let result = clean(command);
+  const wrapper = /^(?:\/bin\/)?(?:zsh|bash|sh)\s+-(?:lc|c)\s+/;
+  if (!wrapper.test(result)) return result;
+  result = result.replace(wrapper, '');
+  const quote = result[0];
+  if (quote === "'" || quote === '"') {
+    result = result.slice(1);
+    if (result.endsWith(quote)) result = result.slice(0, -1);
+  }
+  return result.replace(/'"'"'/g, "'");
+}
+
+function isoTime(value: unknown): string | undefined {
+  const ms = typeof value === 'number' ? value : Date.parse(string(value));
+  const date = new Date(ms);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+}
+
+function summaryFields(job: Pick<CodexLiveJob, 'currentOperation' | 'lastActivityAt'>) {
+  return { currentOperation: limitChars(clean(job.currentOperation), 60), lastActivityAt: isoTime(job.lastActivityAt) };
+}
+
 export function jobView(value: unknown, marker: CodexLiveMarker, details = true): CodexLiveJob {
   const job = object(value);
   if (job.id !== marker.jobId || !string(job.status)) throw new Error('Invalid job');
@@ -104,17 +133,28 @@ export function jobView(value: unknown, marker: CodexLiveMarker, details = true)
   const pending = object(job.pendingQuestion);
   const { status, finished, active } = jobLifecycle({ status: clean(job.status),
     completedAt: string(job.completedAt), finalStatus: clean(report.status) });
+  // Companion questions carry expiry + timeout rather than a creation timestamp.
+  const questionTime = isoTime(pending.createdAt) ?? (number(pending.expiresAt) === undefined ? undefined
+    : isoTime(number(pending.expiresAt)! - (number(job.questionTimeoutSec) ?? 900) * 1000));
   const question = active && typeof pending.text === 'string' && pending.answer === undefined
-    ? { text: limitChars(clean(pending.text), 2000), options: Array.isArray(pending.options)
+    ? { ...(questionTime ? { createdAt: questionTime } : {}), text: limitChars(clean(pending.text), 2000), options: Array.isArray(pending.options)
       ? pending.options.map(option => limitChars(clean(typeof option === 'string' ? option :
         object(option).label ?? object(option).text), 300)).slice(0, 20) : [] } : null;
   const activity = Array.isArray(job.activity) ? job.activity : [];
   // Pair lifecycles on lightweight metadata before cleaning retained bodies.
-  const paired = collapseActivity(activity.map((value, index) => {
+  const allPaired = collapseActivity(activity.map((value, index) => {
     const e = object(value);
     return { seq: number(e.seq) ?? index, type: string(e.type), command: string(e.command),
       server: string(e.server), tool: string(e.tool), lifecycle: string(e.lifecycle), status: string(e.status), index };
-  }));
+  }), Infinity);
+  const paired = allPaired.slice(-200);
+  const latest = object(activity[allPaired.at(-1)?.index ?? -1]);
+  const operation = [...allPaired].reverse().find(event =>
+    ['commandExecution', 'mcpToolCall', 'dynamicToolCall'].includes(event.type) &&
+    event.lifecycle !== 'completed' && !['completed', 'failed', 'error', 'cancelled', 'declined'].includes(event.status) &&
+    (event.lifecycle === 'started' || ['inProgress', 'running', 'queued'].includes(event.status)));
+  const currentOperation = operation?.type === 'commandExecution' ? unwrapCommand(operation.command)
+    : operation ? [operation.server, operation.tool].filter(Boolean).join('.') : clean(latest.text);
   const events = details ? paired.map(event => {
     const projected = eventView(activity[event.index], event.seq);
     return { ...projected, command: limitChars(clean(projected.command), 2000) };
@@ -129,6 +169,7 @@ export function jobView(value: unknown, marker: CodexLiveMarker, details = true)
     completedAt: string(job.completedAt), model: limitChars(clean(request.model), 100),
     effort: limitChars(clean(request.effort), 40), fast: request.serviceTier === 'priority',
     sandbox: limitChars(clean(job.sandbox), 100), workspaceRoot: marker.workspaceRoot,
+    ...summaryFields({ currentOperation, lastActivityAt: string(latest.at) }),
     question, finalStatus: clean(report.status) || status,
     fileCount: Array.isArray(report.touchedFiles) ? report.touchedFiles.length : null,
     events: details ? events : [], detailsLoaded: details,
@@ -153,20 +194,40 @@ export function elapsed(job: CodexLiveJob, now: number): string {
 
 export function glyph(job: CodexLiveJob): string {
   const { status, active } = jobLifecycle(job);
-  if (active && (job.question || status === 'waiting') || status === 'needs_input') return '?';
+  if (attention(job) === 'blocked') return '!';
+  if (active && (job.question || status === 'waiting')) return '?';
   return ({ running: '●', queued: '…', completed: '✓', failed: '✗', blocked: '!',
     cancelled: '■', interrupted: '■', stopped: '■' } as Record<string, string>)[status] ?? '·';
 }
 
+// Attention is independent of recency, and always belongs to the latest turn.
+export function attention(job: CodexLiveJob): 'question' | 'blocked' | undefined {
+  const { status, active } = jobLifecycle(job);
+  if (active && job.question) return 'question';
+  if (status === 'blocked' || status === 'needs_input') return 'blocked';
+  return undefined;
+}
+
+export function attentionOrder(a: CodexLiveJob, b: CodexLiveJob): number {
+  const kindA = attention(a), kindB = attention(b);
+  if (kindA !== kindB) return kindA === 'question' ? -1 : 1;
+  const time = (job: CodexLiveJob) => [job.question?.createdAt, job.completedAt, job.createdAt]
+    .map(value => Date.parse(value ?? '')).find(Number.isFinite) ?? 0;
+  return time(a) - time(b) || a.id.localeCompare(b.id);
+}
+
 export function statusLine(jobs: readonly CodexLiveJob[]): string | undefined {
   jobs = groupedSessions(jobs);
-  // A job waiting for Claude's answer is counted once, as waiting.
-  const waiting = jobs.filter(job => jobLifecycle(job).active && (job.question !== null || job.status === 'waiting')).length;
-  const running = jobs.filter(job => jobLifecycle(job).active && job.status === 'running' && job.question === null).length;
-  const queued = jobs.filter(job => jobLifecycle(job).active && job.status === 'queued' && job.question === null).length;
-  const parts = [running ? `${running} running` : '', queued ? `${queued} queued` : '', waiting ? `${waiting} waiting for answer` : ''].filter(Boolean);
+  const waiting = jobs.filter(job => attention(job));
+  const running = jobs.filter(job => jobLifecycle(job).active && job.status === 'running' && !job.question).length;
+  const queued = jobs.filter(job => jobLifecycle(job).active && job.status === 'queued' && !job.question).length;
+  const otherWaiting = jobs.filter(job => jobLifecycle(job).active && job.status === 'waiting' && !job.question).length;
+  const needsYou = waiting.length === 1 ? `${waiting[0]!.agentName || '1'} waiting for you`
+    : waiting.length ? `${waiting.length} waiting for you` : '';
+  const parts = [needsYou, running ? `${running} running` : '', queued ? `${queued} queued` : '',
+    otherWaiting ? `${otherWaiting} waiting for answer` : ''].filter(Boolean);
   const active = jobs.filter(job => jobLifecycle(job).active);
-  const name = active.length === 1 ? active[0]?.agentName : undefined;
+  const name = !waiting.length && active.length === 1 ? active[0]?.agentName : undefined;
   return parts.length ? `${name || 'Codex'} · ${parts.join(' · ')}` : undefined;
 }
 
@@ -226,6 +287,13 @@ export function turnKey(key: string, jobId: string): string {
 export function normalizeSessions(state: CodexLiveState): CodexLiveState {
   const sessions = groupedSessions(state.jobs);
   const selectedId = sessionForId(sessions, state.selectedId)?.id ?? state.selectedId;
+  const viewedSessionIds = [...new Set([
+    ...(state.viewedSessionIds ?? Object.keys(state.feeds ?? {})),
+    ...(selectedId ? [selectedId] : []),
+  ].map(id => sessionForId(sessions, id)?.id ?? id))];
+  const newSessionIds = [...new Set((state.newSessionIds ?? []).map(id => sessionForId(sessions, id)?.id ?? id))]
+    .filter(id => !viewedSessionIds.includes(id));
+  state = { ...state, viewedSessionIds, newSessionIds };
   if (!state.feeds) return { ...state, selectedId };
   const feeds: NonNullable<CodexLiveState['feeds']> = {};
   // When an unthreaded selected job joins an existing session, its current
@@ -281,9 +349,10 @@ export function clearFinished(state: CodexLiveState, nowMs: number): CodexLiveSt
 // Header-only summaries are the only information retained for unselected jobs.
 export function jobSummary(job: CodexLiveJob): CodexLiveJob {
   const lifecycle = jobLifecycle(job);
-  return { ...job, ...lifecycle, events: [], detailsLoaded: false,
+  return { ...job, ...lifecycle, ...summaryFields(job), events: [], detailsLoaded: false,
     toolUses: job.toolUses ?? job.events.filter(event => ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall'].includes(event.type)).length,
-    question: lifecycle.active && job.question ? { text: '', options: [] } : null };
+    question: lifecycle.active && job.question ? { text: questionExcerpt(job.question.text), options: [],
+      createdAt: isoTime(job.question.createdAt) } : null };
 }
 
 export function boundState(state: CodexLiveState): CodexLiveState {
@@ -295,7 +364,8 @@ export function boundState(state: CodexLiveState): CodexLiveState {
   const turnCounts = { ...state.turnCounts, ...Object.fromEntries(sessions.map(session => [session.id, session.turnCount])) };
   const jobs = state.jobs.filter(job => retained.has(job.id)).map(previous => {
     const lifecycle = jobLifecycle(previous);
-    const job = { ...previous, ...lifecycle, question: lifecycle.active ? previous.question : null };
+    const job = { ...previous, ...lifecycle, ...summaryFields(previous),
+      question: lifecycle.active && previous.question ? { ...previous.question, createdAt: isoTime(previous.question.createdAt) } : null };
     if (sessionId(job) !== state.selectedId) return jobSummary(job);
     if (!detailed.has(job.id)) return { ...jobSummary(job), detailsOmitted: true };
     return { ...job, detailsOmitted: undefined, events: job.events.slice(-200).map(event => ({ ...event })) };
@@ -322,6 +392,9 @@ export function boundState(state: CodexLiveState): CodexLiveState {
 // Measure once and subtract removed jobs; do not reserialize the entire state
 // for every eviction. Active turns and the selected conversation are protected.
 export function fitState(state: CodexLiveState): CodexLiveState {
+  // Bound read acknowledgements before measuring and again after budget eviction.
+  const retainedSessionIds = new Set(state.jobs.map(sessionId));
+  state = { ...state, viewedSessionIds: state.viewedSessionIds?.filter(id => retainedSessionIds.has(id)) };
   let size = JSON.stringify(state).length;
   if (size < 900_000) return state;
   const sessions = groupedSessions(state.jobs, state.turnCounts);
@@ -348,6 +421,7 @@ export function fitState(state: CodexLiveState): CodexLiveState {
   const jobs = state.jobs.filter(job => !removed.has(job.id));
   const ids = new Set(jobs.map(sessionId));
   const result = { ...state, jobs,
+    viewedSessionIds: state.viewedSessionIds?.filter(id => ids.has(id)),
     feeds: state.feeds && Object.fromEntries(Object.entries(state.feeds).filter(([id]) => ids.has(id))),
     recentEndedIds: state.recentEndedIds?.filter(id => ids.has(id)),
   };

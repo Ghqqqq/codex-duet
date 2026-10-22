@@ -97,7 +97,7 @@ test("task rejects unknown, missing and conflicting sandbox flags before startin
 test("background task persists and reports the deliberately requested sandbox", async () => {
   const f = fixture();
   assert.equal(f.call("setup", "--default-sandbox", "read-only", "--json").status, 0);
-  const launched = f.call("task", "--background", "--sandbox", "danger-full-access", "--json", "investigate");
+  const launched = f.call("task", "--background", "--sandbox", "danger-full-access", "--fast", "--effort", "max", "--json", "investigate");
   assert.equal(launched.status, 0, launched.stderr);
   const queued = JSON.parse(launched.stdout);
   assert.equal(queued.sandbox, "danger-full-access");
@@ -116,4 +116,7 @@ test("background task persists and reports the deliberately requested sandbox", 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).sandbox, "danger-full-access");
   assert.deepEqual(f.state().lastTurnStart.sandboxPolicy, { type: "dangerFullAccess" });
+  assert.equal(f.state().lastTurnStart.serviceTier, "priority");
+  assert.equal(f.state().lastTurnStart.effort, "max");
+  for (const launch of f.state().launches) assert.equal(fs.realpathSync(launch.home), fs.realpathSync(f.env.CODEX_COMPANION_HOME));
 });

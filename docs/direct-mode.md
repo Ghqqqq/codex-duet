@@ -38,9 +38,12 @@ disjoint OWNED PATHS, or separate worktrees Claude creates with `git worktree ad
 and passes as `--cwd`.
 
 The helper starts a detached job with this process attached as its owner wait.
-While it waits it prints compact progress lines, which show up in `/tasks`. When
-the job ends, a question is pending, or the timeout passes, it prints the compact
-JSON payload as its last line of output (`--quiet` prints only that line).
+While it waits it prints compact progress lines, which show up in `/tasks`.
+After the sequence prefix, finished commands lead with exit status and seconds
+when available, with shell wrappers removed; plans show completed/total steps
+and file edits show added/removed line counts. When the job ends, a question is
+pending, or the timeout passes, it prints the compact JSON payload as its last
+line of output (`--quiet` prints only that line).
 Claude Code's completion notification carries no output: Claude reads the last
 line starting with `{` from the output file it names
 (`grep '^{' <output file> | tail -n 1`). Progress lines never start with `{`,
@@ -60,14 +63,19 @@ is capped at 200 lines and the overflow is reported as one
   insufficient.
 - `running`: run its `waitCommand` (`wait <job-id> --owner <owner-id> --direct`)
   in the background again, then wait for the next notification.
-- `needs_answer`: FIRST run its `waitCommand` in the background; its
-  `--after-question <id>` keeps the lease alive without returning that question
-  again. Then use `answerCommand` (`answer '<job>' --cwd ... --owner ...
-  --question '<id>' --json`), with the answer text on stdin through a
-  single-quoted heredoc. `question` supplies `id`, `kind`, `text`, `options` and
-  `expiresAt`. Forward a Computer Use `question.kind` of `approval` with
+- `needs_answer`: run its `answerAndWaitCommand` in ONE background Bash call
+  (`run_in_background: true`, `timeout: 600000`), putting the answer on stdin
+  through a single-quoted heredoc. The command includes `--owner`, `--question`
+  and `--direct`; it attaches the sole owner wait, submits once, then keeps the
+  lease alive while waiting past that question. `question` supplies `id`,
+  `kind`, `text`, `options` and `expiresAt`. A `question.kind` of `approval` is a
+  Computer Use app request with four fixed options; forward it with
   `AskUserQuestion` unless the user pre-authorised the app. The answer continues
-  the same turn; never start a second wait after answering.
+  the same turn. Compatibility fallback for `needs_answer`: FIRST run its
+  `waitCommand` in background Bash; it includes `--after-question <id>` and keeps
+  the lease alive. Then answer with the returned `answerCommand`, putting the
+  answer on stdin through a single-quoted heredoc; do not start another wait
+  after answering.
 - `ownership_moved`: report it; do not reuse the retired owner or re-adopt.
 - `error`: validation errors occur before dispatch, but runtime or wait errors
   can occur after launch; check `status` for an existing job before resubmitting.
@@ -100,7 +108,13 @@ shows every turn in order. It is read-only: it never
 starts, answers or cancels a job, and costs no Claude tokens. The pane reads
 companion-written markers under
 `<isolated home>/duet/sessions/<claudeSessionId>/`.
-The pane shows each agent name beside its short task summary; **Clear finished** hides ended jobs for this session without deleting their records or changing the default 30-day retention.
+Active rows show a pending question or current operation when available, with
+quiet time after a minute; unanswered questions and blocked/needs-input results
+take priority. New workers preserve the selected conversation and its
+scroll position, showing `• new` until selected; returning to a viewed
+conversation restores its saved scroll position. **Clear finished** hides ended
+jobs for this session without deleting their records or changing the default
+30-day retention.
 
 ### Haiku fallback
 
@@ -132,10 +146,14 @@ still-running job can be adopted by a replacement owner without a new turn.
 
 Stop the background task in Claude Code, or run `cancel <jobId> --json`.
 Stopping its attached owner wait signals the helper, interrupting the Codex turn
-as `interruptionReason: owner_stopped`. An owner killed outright is detected
-within about 5 s (`CODEX_COMPANION_OWNER_GRACE_SEC`) as `owner_lost`. Thread context and on-disk edits
-persist. A normal wait return (timeout, question, terminal state) leaves the job
-protected by its lease. A stopped fallback agent cannot resume via SendMessage.
+as `interruptionReason: owner_stopped`. A dead owner wait can be replaced
+immediately with the same owner while the job is still active and its lease
+unexpired; a second live, recently heartbeating wait is refused. Without a
+replacement, an owner killed outright is detected within about 5 s
+(`CODEX_COMPANION_OWNER_GRACE_SEC`) as `owner_lost`. Thread context and on-disk
+edits persist. A normal wait return (timeout, question, terminal state) leaves
+the job protected by its lease. A stopped fallback agent cannot resume via
+SendMessage.
 
 The direct report carries the exact `continuationCommand`:
 `node '<companion>' task --continue '<job>' --cwd '<cwd>' --direct`. It starts

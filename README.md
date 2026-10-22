@@ -119,9 +119,9 @@ CODEX_TASK
 
 While the job runs, the call prints compact progress lines for `/tasks`. When the
 job ends, asks a question or reaches its time budget, the last JSON line is the
-report, with ready-to-run `waitCommand`, `answerCommand` and
-`continuationCommand` handles. Each worker gets a name (Ada, Noether,
-Turing, …) that its follow-ups keep. →
+report, with ready-to-run `waitCommand`, one-call `answerAndWaitCommand`, fallback
+`answerCommand` and `continuationCommand` handles. Each worker gets a name (Ada,
+Noether, Turing, …) that its follow-ups keep. →
 [Direct mode and worker lifecycle](docs/direct-mode.md)
 
 ### Live view: `codex-live` and `/tasks`
@@ -131,8 +131,8 @@ draws its own transcript: `⏺` rows, tool headers, file changes, plans and
 pending questions. New jobs ask Claude Code to open the pane; Claude Code decides
 whether it is shown at the current width. `/codex-live` opens and focuses it at any width.
 Follow-ups on the same Codex thread stay in one row, with every turn in one
-continuous transcript. `/tasks` shows the same jobs as compact progress lines
-anywhere. Neither costs Claude tokens.
+continuous transcript; new jobs preserve your selection and scroll position.
+`/tasks` shows compact progress with outcomes first. Neither costs Claude tokens.
 
 <p align="center">
   <img src="docs/assets/codex-live-demo.png" alt="codex-live pane showing three Codex workers on a demo repository: one reviewing, one finished implementing compound durations with file updates and test runs, one finished investigating" width="88%">
@@ -152,7 +152,8 @@ then `ACCEPT` / `ACCEPT WITH GLUE` / `REWORK` / `REASSIGN`). →
 Each orchestrated task keeps a journal in the isolated home. It records the goal
 and acceptance criteria, every worker's brief and report, Claude's verdicts and
 decisions, and the final judgment. After compaction or on resume, Claude runs
-`journal show` and picks up exactly where it was. → [docs/run-journal.md](docs/run-journal.md)
+`journal show` to recover it; `journal validate` must pass before a passed close.
+→ [docs/run-journal.md](docs/run-journal.md)
 
 ### Browser and desktop work
 
@@ -203,11 +204,24 @@ More: [docs/troubleshooting.md](docs/troubleshooting.md#known-limitations).
 
 ## Development
 
+After `npm ci`, install the CLI versions in `.codex-version` and
+`.claude-code-version` with
+`npm install -g "@openai/codex@$(cat .codex-version)" "@anthropic-ai/claude-code@$(cat .claude-code-version)"`.
+Before pushing a release to main, run:
+
 ```bash
-npm test
+npm run verify
 ```
 
-The suite runs against temporary Codex homes only. It refuses to touch
+This checks version metadata, builds and checks TypeScript, runs the runtime
+tests, then runs the live-pane tests, stopping at the first failure. `npm test`
+still runs only the runtime suite (`npm run test:runtime`). CI runs the same
+checks in `runtime` and `live` jobs for pull requests and pushes to main, using
+the pinned CLI versions. The live test harness runs without an account or API
+credentials; CI gives it an isolated `CLAUDE_CONFIG_DIR` under the runner's
+temporary directory and disables automatic updates.
+
+The runtime suite runs against temporary Codex homes only. It refuses to touch
 `~/.claude/codex-isolated` or `~/.codex` and checks that no spawned process
 survives. Local-socket tests are skipped inside a sandbox, so run the suite
 outside one for full coverage. Release notes: [CHANGELOG](plugins/codex/CHANGELOG.md).

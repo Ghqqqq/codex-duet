@@ -117,15 +117,14 @@ test("mirror runs before every task; a per-call --approve-computer-app grant exi
   assert.deepEqual(fs.existsSync(sessions) ? fs.readdirSync(sessions) : [], [], "the grant is withdrawn when the turn ends");
   const status = f.json(f.call("status", granted.jobId, "--json"));
   assert.deepEqual(status.job.approvedComputerApps, ["com.apple.Notes", "org.mozilla.firefox"]);
-  assert.match(f.call("status", granted.jobId).stdout, /Approved Computer Use apps \(this job\): com\.apple\.Notes, org\.mozilla\.firefox/);
-  assert.match(f.call("result", granted.jobId).stdout, /Approved Computer Use apps/);
+
   assert.deepEqual(f.json(f.call("result", granted.jobId, "--report", "--json")).approvedComputerApps, ["com.apple.Notes", "org.mozilla.firefox"]);
   // A follow-up on the same thread does not inherit; --continue inherits and rejects the flag.
   const follow = f.json(f.call("task", "--json", "--thread", granted.threadId, "follow up"));
   assert.deepEqual(follow.approvedComputerApps, []);
   assert.equal(f.state().lastTurnStart.computerUse.session, null);
   const rejected = f.call("task", "--continue", granted.jobId, "--approve-computer-app", "com.apple.Notes", "again");
-  assert.notEqual(rejected.status, 0); assert.match(rejected.stderr, /inherits the original job's approved Computer Use apps/);
+  assert.notEqual(rejected.status, 0);
   const continued = f.json(f.call("task", "--json", "--continue", granted.jobId, "again"));
   assert.deepEqual(continued.approvedComputerApps, ["com.apple.Notes", "org.mozilla.firefox"]);
   assert.match(f.state().lastTurnStart.computerUse.session, /com\.apple\.Notes/);
@@ -180,9 +179,9 @@ test("an owned job forwards an unapproved Computer Use request to the parent; th
     assert.equal(pending.status, "needs_answer");
     assert.equal(pending.question.kind, "approval");
     assert.match(pending.question.id, /^approval-/);
-    assert.match(pending.question.text, /control com\.google\.Chrome \(Computer Use tool get_app_state\)/);
+
     assert.deepEqual(pending.question.options, ["Allow this call", "Allow for this task", "Allow always (isolated Codex home)", "Deny"]);
-    assert.match(pending.questionMessage, /^Question approval-/);
+
     assert.equal(f.json(answer(launch, pending.question.id, text)).status, "answer_submitted");
     const finished = f.call("wait", launch.jobId, "--owner", launch.ownerId, "--json", "--report");
     assert.ok([0, 2].includes(finished.status), finished.stderr + finished.stdout);

@@ -60,3 +60,32 @@ export function initGitRepo(cwd) {
   run("git", ["config", "commit.gpgsign", "false"], { cwd });
   run("git", ["config", "tag.gpgsign", "false"], { cwd });
 }
+
+// Establish a real listener before a transport assertion. A live socket pins the
+// broker until release, so a slow test runner cannot trigger its idle policy.
+export async function readyBroker(cwd, env) {
+  const module = new URL('../plugins/codex/scripts/lib/broker-lifecycle.mjs', import.meta.url).href;
+  const result = run(process.execPath, ['--input-type=module', '-e', `
+    import { ensureBrokerSession } from ${JSON.stringify(module)};
+    const session = await ensureBrokerSession(process.cwd(), { timeoutMs: 60000 });
+    if (!session) throw new Error('Fixture broker never became ready');
+    console.log(JSON.stringify(session));
+  `], { cwd, env });
+  if (result.status !== 0) throw new Error(result.stderr);
+  const session = JSON.parse(result.stdout);
+  const { parseBrokerEndpoint } = await import('../plugins/codex/scripts/lib/broker-endpoint.mjs');
+  const target = parseBrokerEndpoint(session.endpoint).path;
+  const keeper = net.createConnection(target);
+  await new Promise((resolve, reject) => { keeper.once('connect', resolve); keeper.once('error', reject); });
+  return { ...session, close: () => keeper.destroy() };
+}
+
+export async function waitForCondition(predicate, label = 'fixture state', timeoutMs = 60000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await predicate();
+    if (value) return value;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}

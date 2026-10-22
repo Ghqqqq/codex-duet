@@ -1,6 +1,6 @@
 {
   "name": "codex-duet",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "private": true,
   "type": "module",
   "description": "Duet: delegate coding, research and review from Claude Code to parallel Codex workers.",
@@ -13,7 +13,10 @@
     "check-version": "node scripts/bump-version.mjs --check",
     "prebuild": "mkdir -p plugins/codex/.generated/app-server-types && codex app-server generate-ts --out plugins/codex/.generated/app-server-types",
     "build": "tsc -p tsconfig.app-server.json",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "test:runtime": "node --test tests/*.test.mjs",
+    "test:live": "claude plugin test plugins/codex-live",
+    "verify": "npm run check-version && npm run build && npm run test:runtime && npm run test:live"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

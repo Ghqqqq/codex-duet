@@ -1,9 +1,10 @@
 import type { ThemeKey } from 'claude-code';
 import type { CodexLiveEvent, CodexLiveFeedView, CodexLiveJob, CodexLiveSession, CodexLiveState } from '../types';
-import { clean, cleanBody, DETAIL_TURN_LIMIT, elapsed, jobLifecycle, sessionForId, taskText, turnKey, visibleSessions } from './model';
+import { attention, attentionOrder, clean, cleanBody, DETAIL_TURN_LIMIT, elapsed, jobLifecycle, questionExcerpt, sessionForId, taskText, turnKey, unwrapCommand, visibleSessions } from './model';
 
 import { cells, clusters, fit, width } from './text';
 export { fit, width } from './text';
+export { unwrapCommand } from './model';
 
 // Explicitly break capped headers so word wrapping on either surface cannot
 // turn a two-line header into three. Indentation belongs to the surrounding Box.
@@ -45,22 +46,36 @@ export function jobState(job: CodexLiveJob): { word: string; color: ThemeKey } {
   }
 }
 
-export function jobRow(job: CodexLiveJob | CodexLiveSession, selected: boolean, columns: number, now: number) {
+export function jobRowColor(job: CodexLiveJob): ThemeKey {
+  return attention(job) === 'blocked' ? 'error' : jobState(job).color;
+}
+
+export function jobRow(job: CodexLiveJob | CodexLiveSession, selected: boolean, columns: number, now: number, isNew = false) {
   const selector = fit(`${selected ? '❯' : ' '} `, columns);
   const { word } = jobState(job);
-  const glyph = ({ Running: '⏺', Queued: '…', 'Needs input': '?', 'Waiting for Claude': '?', Done: '✓', Failed: '✗',
+  const { active } = jobLifecycle(job);
+  const glyph = attention(job) === 'blocked' ? '!' : ({ Running: '⏺', Queued: '…', 'Needs input': '?', 'Waiting for Claude': '?', Done: '✓', Failed: '✗',
     Blocked: '✗', Stopped: '■' } as Record<string, string>)[word] ?? '·';
   const bullet = fit(`${glyph} `, Math.max(0, columns - width(selector)));
   const available = Math.max(0, columns - width(selector + bullet));
-  const metaColumns = Math.max(0, available - Math.min(12, Math.ceil(available / 2)));
+  const marker = isNew && !selected && available >= 7 ? ' • new' : '';
+  const contentColumns = available - width(marker);
+  const metaColumns = Math.max(0, contentColumns - Math.min(12, Math.ceil(contentColumns / 2)));
   const age = ` ${elapsed(job, now)}`;
-  const count = 'turns' in job && job.turnCount > 1 ? ` ${job.turnCount} turns ·${age}` : age;
-  const meta = fit(width(count) <= metaColumns ? count : age, metaColumns);
-  const labelColumns = available - width(meta);
+  const count = 'turns' in job && job.turnCount > 1 ? ` ${job.turnCount} turns ·` : '';
+  const quietMinutes = active ? Math.floor((now - Date.parse(job.lastActivityAt ?? '')) / 60_000) : 0;
+  const quiet = quietMinutes >= 1 ? `${quietMinutes}m` : '';
+  // Keep the quiet age after dropping its word, then sacrifice turn count.
+  const choices = quiet ? [`${count}${age} · quiet ${quiet}`, `${count}${age} · ${quiet}`, `${age} · ${quiet}`, age]
+    : [`${count}${age}`, age];
+  const meta = fit(choices.find(text => width(text) <= metaColumns) ?? age, metaColumns);
+  const labelColumns = contentColumns - width(meta);
   const label = fit(job.agentName || taskText(job.label), labelColumns);
-  const summary = job.agentName && labelColumns > width(label) + 2
-    ? `  ${fit(taskText(job.label), labelColumns - width(label) - 2)}` : '';
-  return { selector, bullet, label, summary, gap: ' '.repeat(Math.max(0, labelColumns - width(label + summary))), meta };
+  const description = active && job.question ? `asks: ${questionExcerpt(job.question.text) || '…'}`
+    : active && job.currentOperation ? job.currentOperation : taskText(job.label);
+  const summary = (job.agentName || description !== taskText(job.label)) && labelColumns > width(label) + 2
+    ? `  ${fit(description, labelColumns - width(label) - 2)}` : '';
+  return { selector, bullet, label, summary, marker, gap: ' '.repeat(Math.max(0, labelColumns - width(label + summary))), meta };
 }
 
 export type ResultLine = { text: string; color: ThemeKey; bold?: boolean; strikethrough?: boolean };
@@ -74,19 +89,6 @@ export type FeedItem = {
   color: ThemeKey;
   results: ResultLine[];
 };
-
-export function unwrapCommand(command: string): string {
-  let result = clean(command);
-  const wrapper = /^(?:\/bin\/)?(?:zsh|bash|sh)\s+-(?:lc|c)\s+/;
-  if (!wrapper.test(result)) return result;
-  result = result.replace(wrapper, '');
-  const quote = result[0];
-  if (quote === "'" || quote === '"') {
-    result = result.slice(1);
-    if (result.endsWith(quote)) result = result.slice(0, -1);
-  }
-  return result.replace(/'"'"'/g, "'");
-}
 
 function failed(event: CodexLiveEvent): boolean {
   return ['failed', 'error'].includes(event.status ?? '') ||
@@ -402,7 +404,8 @@ export function headerLayout(state: CodexLiveState, selected: CodexLiveJob, body
     .map(id => sessionForId(sessions, id)).filter((job): job is CodexLiveSession => !!job && jobLifecycle(job).finished);
   const active = newest.filter(job => jobLifecycle(job).active);
   const unique = (jobs: CodexLiveJob[]) => jobs.filter((job, i) => jobs.findIndex(other => other.id === job.id) === i);
-  const priority = unique([...active, selected, ...recent]);
+  const needingAttention = newest.filter(job => attention(job)).sort(attentionOrder);
+  const priority = unique([...needingAttention, ...active, selected, ...recent]);
   const take = (candidates: CodexLiveJob[], limit: number) => {
     if (limit < 1) return [];
     const jobs = candidates.slice(0, limit);
@@ -416,7 +419,7 @@ export function headerLayout(state: CodexLiveState, selected: CodexLiveJob, body
   const collapsed = take(priority, 3);
   // Expand the collapsed prefix, then remaining history by creation time.
   // Extra active jobs still lead when they exceeded the collapsed row limit.
-  const candidates = state.jobsExpanded ? unique([...active, ...collapsed, ...newest]) : priority;
+  const candidates = state.jobsExpanded ? unique([...needingAttention, ...active, ...collapsed, ...newest]) : priority;
   const limit = state.jobsExpanded ? 10 : 3;
   let jobs = take(candidates, Math.min(limit, room - (clear ? 2 : 1)));
   // In expanded mode keep "Show fewer" when all history is visible, never +0.

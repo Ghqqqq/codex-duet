@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -23,7 +24,7 @@ function readJson(filePath) {
 }
 
 function makeVersionFixture() {
-  const root = fs.mkdtempSync(path.join(ROOT, "plugins", "codex-live", ".bump-version-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "duet-bump-version-"));
   fixtures.push(root);
 
   writeJson(path.join(root, "package.json"), {
@@ -87,6 +88,8 @@ test("bump-version updates every release manifest", () => {
 });
 
 test("bump-version check mode reports stale metadata", () => {
+  const current = run(process.execPath, [SCRIPT, "--check"], { cwd: ROOT });
+  assert.equal(current.status, 0, current.stderr);
   const root = makeVersionFixture();
   writeJson(path.join(root, "package.json"), {
     name: "@openai/codex-plugin-cc",

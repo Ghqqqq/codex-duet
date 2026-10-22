@@ -45,7 +45,10 @@ export type CodexLiveJob = {
   fast: boolean;
   sandbox: string;
   workspaceRoot?: string;
-  question: { text: string; options: string[] } | null;
+  question: { text: string; options: string[]; createdAt?: string } | null;
+  // Bounded display summaries survive when transcript details are omitted.
+  currentOperation?: string;
+  lastActivityAt?: string;
   finalStatus: string;
   fileCount: number | null;
   events: CodexLiveEvent[];
@@ -76,6 +79,9 @@ export type CodexLiveState = {
   jobs: CodexLiveJob[];
   // Thread session ID, or a legacy/unthreaded job ID.
   selectedId: string | null;
+  // Conversation discovery is separate from selection/read acknowledgement.
+  newSessionIds?: string[];
+  viewedSessionIds?: string[];
   nowMs: number;
   // Total observed turns, including turns omitted from the bounded view.
   turnCounts?: Record<string, number>;

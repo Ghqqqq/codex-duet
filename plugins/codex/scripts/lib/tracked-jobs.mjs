@@ -199,14 +199,8 @@ export async function runTrackedJob(job, runner, options = {}) {
       completedAt,
       logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
     })));
-    upsertJob(job.workspaceRoot, {
-      id: job.id,
-      status: "failed",
-      phase: "failed",
-      pid: null,
-      errorMessage,
-      completedAt
-    });
+    // updateJob already publishes the record and index under one lock. A
+    // second, stale index write could undo a concurrent exact-turn recovery.
     throw error;
   }
 }

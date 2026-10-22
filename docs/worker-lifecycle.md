@@ -49,14 +49,19 @@ Never poll, sleep or use `tail -f`. Act on its `status`:
   `activity` list; read `rawOutputFile` only if a report field is insufficient.
 - `running`: run `waitCommand` (`wait <job-id> --owner <owner-id> --direct`)
   in background Bash again and wait for its notification.
-- `needs_answer`: first run its `waitCommand` in the background. Its
-  `--after-question <id>` keeps the lease alive while suppressing a repeat return
-  for that question. Then use `answerCommand` (`answer '<job>' --cwd ...
-  --owner ... --question '<id>' --json`) with the answer on stdin through a
-  single-quoted heredoc. `question` includes `id`, `kind`, `text`, `options` and
-  `expiresAt`. Forward Computer Use `question.kind: approval` to the user with
+- `needs_answer`: run its `answerAndWaitCommand` in ONE background Bash call
+  (`run_in_background: true`, `timeout: 600000`), putting the answer on stdin
+  through a single-quoted heredoc. The command includes `--owner`, `--question`
+  and `--direct`; it attaches the sole owner wait, submits once, then keeps the
+  lease alive while waiting past that question. `question` supplies `id`,
+  `kind`, `text`, `options` and `expiresAt`. A `question.kind` of `approval` is a
+  Computer Use app request with four fixed options; forward it with
   `AskUserQuestion` unless the user pre-authorised the app. The answer continues
-  the same turn; do not start a second wait after answering.
+  the same turn. Compatibility fallback for `needs_answer`: FIRST run its
+  `waitCommand` in background Bash; it includes `--after-question <id>` and keeps
+  the lease alive. Then answer with the returned `answerCommand`, putting the
+  answer on stdin through a single-quoted heredoc; do not start another wait
+  after answering.
 - `ownership_moved`: report it and stop using that owner; never re-adopt.
 
 Never run two waits for one job. Exit codes are completed 0, blocked/needs_input
@@ -228,10 +233,12 @@ task-worker's 250 ms tick stops the turn with `owner_stopped` as soon as it sees
 an abnormal detach mark (a user stop is treated like killing a native subagent),
 and with `owner_lost` when an attached owner's heartbeat is older than the grace
 period (5 s, `CODEX_COMPANION_OWNER_GRACE_SEC`, 1–600), which only happens to an
-owner that could not mark its exit (SIGKILL, crash). Claude Code moves a Bash
-call that hits its timeout to the background instead of killing it, so no grace
-is needed for that case. A `returned` owner that never comes back still falls
-back to lease expiry.
+owner that could not mark its exit (SIGKILL, crash). A dead wait can be replaced
+immediately with the same owner before that interruption, while the job is
+active and its lease unexpired; a second live, recently heartbeating wait is
+refused. Claude Code moves a Bash call that hits its timeout to the background
+instead of killing it, so no grace is needed for that case. A `returned` owner
+that never comes back still falls back to lease expiry.
 
 Task-workers and shared brokers start through a short-lived launcher that exits
 before returning their real PIDs. They are therefore outside the calling shell's
@@ -278,8 +285,8 @@ Status marks running jobs orphaned after no renewal for half the lease in direct
 mode (900 seconds with the default 1800-second lease), or min(65 seconds, half the
 lease) otherwise, with `leaseRemainingSec` and an exact `adoptCommand`. This is a
 stale renewal heuristic, not proof that the native agent stopped; adoption need not
-wait for this threshold. An in-flight wait can renew until it exits (at most its
-configured timeout). See [stop actions and recovery](direct-mode.md#if-a-worker-is-stopped).
+wait for this threshold. A retired or replaced wait stops renewing and cannot
+detach its replacement. See [stop actions and recovery](direct-mode.md#if-a-worker-is-stopped).
 
 This is lifecycle coordination, not an authentication boundary for local users.
 Lease expiry, cancel, signals and SessionEnd trigger the worker's AbortSignal,
@@ -378,8 +385,7 @@ evidence; no web snippet or unverified protocol field was substituted.
 Run from staging, with the native Bash outer sandbox disabled and sockets enabled:
 
 ```sh
-env TMPDIR=/private/tmp npm test
-npm run check-version
+env TMPDIR=/private/tmp npm run verify
 ```
 
 The suite uses its own fixture homes even outside the sandbox. Do not run archived

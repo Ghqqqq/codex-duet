@@ -26,19 +26,25 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 after(async () => {
   const directory = process.env.CODEX_COMPANION_TEST_PROCESSES;
   const records = () => fs.existsSync(directory) ? fs.readdirSync(directory).filter(n => n.endsWith(".json")).map(n => JSON.parse(fs.readFileSync(path.join(directory, n)))) : [];
-  // Only this fixture ledger's freshly spawned processes, never a ps/name scan.
-  for (const signal of ["SIGTERM", "SIGKILL"]) {
-    for (const record of records()) {
-      if (record.exited || !alive(record.pid)) continue;
-      try { process.kill(record.detached && process.platform !== "win32" ? -record.pid : record.pid, signal); }
-      catch (e) {
-        if (e.code === "ESRCH" || !alive(record.pid)) continue;
-        // macOS can deny process-group signals while permitting the owned PID.
-        if (e.code !== "EPERM") throw e;
-        try { process.kill(record.pid, signal); } catch (inner) { if (inner.code !== "ESRCH" && alive(record.pid)) throw inner; }
+  const survivors = () => records().filter(record => !record.exited && alive(record.pid));
+  // Signal only ledger-owned PIDs. Poll process disappearance and include any
+  // children published during shutdown; never assume they exit after a sleep.
+  for (const [signal, ceiling] of [["SIGTERM", 1000], ["SIGKILL", 60000]]) {
+    const deadline = Date.now() + ceiling;
+    do {
+      const pending = survivors();
+      if (!pending.length) return;
+      for (const record of pending) {
+        try { process.kill(record.detached && process.platform !== "win32" ? -record.pid : record.pid, signal); }
+        catch (error) {
+          if (error.code === "ESRCH" || !alive(record.pid)) continue;
+          if (error.code !== "EPERM") throw error;
+          try { process.kill(record.pid, signal); }
+          catch (inner) { if (inner.code !== "ESRCH" && alive(record.pid)) throw inner; }
+        }
       }
-    }
-    await delay(signal === "SIGTERM" ? 700 : 300);
+      await delay(25);
+    } while (Date.now() < deadline);
   }
-  assert.deepEqual(records().filter(record => !record.exited && alive(record.pid)).map(r => r.pid), [], "No suite-spawned process may survive teardown");
+  assert.deepEqual(survivors().map(record => record.pid), [], "No suite-spawned process may survive teardown");
 });

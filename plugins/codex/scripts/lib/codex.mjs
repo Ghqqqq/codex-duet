@@ -1403,8 +1403,11 @@ export async function runAppServerTurn(cwd, options = {}) {
 
 // Recovery is read-only: never resume a thread or submit another turn.
 export async function readAppServerTurn(cwd, { threadId, turnId }) {
-  const client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true });
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(), 10000);
+  let client;
   try {
+    client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true, signal: abort.signal });
     const response = await client.request("thread/read", { threadId, includeTurns: true });
     const turn = response.thread?.turns?.find(candidate => candidate.id === turnId);
     if (!turn) return null;
@@ -1413,6 +1416,8 @@ export async function readAppServerTurn(cwd, { threadId, turnId }) {
     return {
       status: turn.status === "completed" ? 0 : 1,
       turnStatus: turn.status,
+      turnEnded: ["completed", "failed", "interrupted"].includes(turn.status),
+      turnEndedAt: typeof turn.completedAt === "number" && Number.isFinite(turn.completedAt) ? new Date(turn.completedAt * 1000).toISOString() : null,
       threadId,
       turnId: turn.id,
       finalMessage: items.filter(item => item.type === "agentMessage").at(-1)?.text ?? "",
@@ -1422,7 +1427,7 @@ export async function readAppServerTurn(cwd, { threadId, turnId }) {
       touchedFiles: collectTouchedFiles(fileChanges),
       commandExecutions: items.filter(item => item.type === "commandExecution")
     };
-  } finally { await client.close(); }
+  } finally { clearTimeout(timeout); await client?.close(); }
 }
 
 export async function findLatestTaskThread(cwd) {

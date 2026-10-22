@@ -40,7 +40,6 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
       tick++;
       let current = await read($, view);
       const expected = JSON.stringify(current);
-      const selectedAtRead = current.selectedId;
       const paneOpen = (await $.ui.panes()).some(pane => pane.id === 'codex-live');
       if (!force && !groupedSessions(current.jobs).some(job => job.active) && !paneOpen && tick % 5 !== 1) return;
       const now = await $.clock.now();
@@ -151,10 +150,10 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
         const visible = visibleSessions(visibility);
         const selectedSession = sessionForId(visible, visibility.selectedId);
         const activated = visible.filter(session => session.turns.some(job => newlyActive.includes(job.id)));
-        const preferred = activated.find(session => session.id === selectedSession?.id) ?? activated[0];
-        // A concurrent explicit selection wins over automatic focus for new jobs.
-        const selectedId = (latest.selectedId !== selectedAtRead ? selectedSession?.id : undefined)
-          ?? preferred?.id ?? selectedSession?.id
+        // Preserve the reader's conversation, including stopped feed anchors.
+        // Follow-ups already share its session ID; only an absent selection
+        // allows a newly activated conversation to take focus.
+        const selectedId = selectedSession?.id ?? activated[0]?.id
           ?? visible.find(session => session.active)?.id ?? visible[0]?.id ?? null;
         const retained = visible.filter((session, i) => i < 20 || session.active || session.id === selectedId);
         const retainedSessions = new Set(retained.map(session => session.id));
@@ -200,6 +199,11 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
         const candidate: CodexLiveState = boundState({ ...latest, jobs, selectedId, nowMs, sessionId: currentSession, turnCounts,
           spinnerTick: active && (paneOpen || newlyActive.length) ? Math.floor(now / 1000) : latest.spinnerTick,
           feeds: visibility.feeds && Object.fromEntries(Object.entries(visibility.feeds).filter(([id]) => retainedSessions.has(id))),
+          viewedSessionIds: visibility.viewedSessionIds,
+          newSessionIds: [...new Set([...(visibility.newSessionIds ?? []),
+            ...retained.filter(session => session.turns.some(job => newlyActive.includes(job.id)) &&
+              !visibility.viewedSessionIds?.includes(session.id)).map(session => session.id)])]
+            .filter(id => retainedSessions.has(id) && id !== selectedId),
           seenJobIds: [...seen], autoOpenedJobIds: [...opened], firstEndedAtMs,
           recentEndedIds: recentEndedJobIds(retained, now, job => {
             const end = Date.parse(job.completedAt);

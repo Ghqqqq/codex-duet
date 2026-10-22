@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install pinned Codex CLI
+        run: npm install -g "@openai/codex@$(cat .codex-version)"
+
+      - name: Check version metadata
+        run: npm run check-version
+
+      - name: Build and check TypeScript
+        run: npm run build
+
+      - name: Run runtime tests
+        run: npm run test:runtime
+
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # The local plugin test harness needs no account or API credentials.
+      CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-plugin-test
+      DISABLE_AUTOUPDATER: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 22
+
+      - name: Install pinned Claude Code CLI
+        run: npm install -g "@anthropic-ai/claude-code@$(cat .claude-code-version)"
+
+      - name: Run live-pane tests
+        run: npm run test:live

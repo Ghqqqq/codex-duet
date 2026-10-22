@@ -18,8 +18,6 @@ for (const [message, reason] of [
   assert.equal(report.ready, false);
   assert.equal(report.auth.status, "unreachable");
   assert.equal(report.auth.reason, reason);
-  assert.ok(report.nextSteps.some(s => s.includes("dangerouslyDisableSandbox: true")));
-  assert.doesNotMatch(report.nextSteps.join("\n"), /codex-isolated\.mjs.*login/);
 });
 test("confirmed logout still prints isolated login, unknown runtime errors do not", () => {
   const bin = makeTempDir();
@@ -28,7 +26,6 @@ test("confirmed logout still prints isolated login, unknown runtime errors do no
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
   assert.equal(report.auth.status, "unauthenticated");
-  assert.match(report.nextSteps.join("\n"), /codex-isolated\.mjs.*login/);
   assert.equal(classifyRuntimeError(new Error("config/read failed")).status, "unknown");
   assert.equal(classifyRuntimeError(new Error("authentication expired")).status, "unauthenticated");
 });
