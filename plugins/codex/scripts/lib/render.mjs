@@ -90,6 +90,7 @@ function formatJobLine(job) {
   if (job.title) {
     parts.push(job.title);
   }
+  if (job.sessionLabel) parts.push(`session: ${job.sessionLabel}`);
   return parts.join(" | ");
 }
 
@@ -108,9 +109,10 @@ function formatCodexResumeCommand(job) {
 }
 
 function appendActiveJobsTable(lines, jobs) {
+  const showSession = jobs.some(job => job.sessionLabel);
   lines.push("Active jobs:");
-  lines.push("| Job | Kind | Status | Phase | Elapsed | Codex Session ID | Summary | Actions |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  lines.push(`| Job | Kind | Status | Phase | Elapsed | Codex Session ID | Summary | Actions |${showSession ? " Claude session |" : ""}`);
+  lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- |${showSession ? " --- |" : ""}`);
   for (const job of jobs) {
     const actions = [`/codex:status ${job.id}`];
     if (job.status === "queued" || job.status === "running") {
@@ -118,7 +120,7 @@ function appendActiveJobsTable(lines, jobs) {
     }
     if (job.adoptCommand) actions.push(job.adoptCommand);
     lines.push(
-      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.orphaned ? `${job.status} (orphaned; ${job.leaseRemainingSec}s lease)` : job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |`
+      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(job.orphaned ? `${job.status} (orphaned; ${job.leaseRemainingSec}s lease)` : job.status)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |${showSession ? ` ${escapeMarkdownCell(job.sessionLabel)} |` : ""}`
     );
   }
 }
@@ -181,6 +183,14 @@ function appendReasoningSection(lines, reasoningSummary) {
   }
 }
 
+function browserPolicyForNewTasks({ approval, preference = approval }) {
+  if (approval === preference) return preference;
+  if (approval === "ask" && preference === "never-ask") {
+    return "never-ask (default; applied on first task)";
+  }
+  return `${approval} (file; preserved); preference: ${preference}`;
+}
+
 export function renderSetupReport(report) {
   const lines = [
     "# Codex Setup",
@@ -196,7 +206,7 @@ export function renderSetupReport(report) {
     `- session runtime: ${report.sessionRuntime.label}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     ...(report.defaultSandbox ? [`- default sandbox: ${report.defaultSandbox}`] : []),
-    ...(report.browserOrigins ? [`- browser approval: ${report.browserOrigins.approval}`] : []),
+    ...(report.browserOrigins ? [`- browser policy for new tasks: ${browserPolicyForNewTasks(report.browserOrigins)}`] : []),
     ""
   ];
 
@@ -333,7 +343,7 @@ export function renderTaskResult(parsedResult, meta) {
   return `${origins}${message}\n`;
 }
 
-export function renderStatusReport(report) {
+export function renderStatusReport(report, options = {}) {
   const lines = [
     "# Codex Status",
     "",
@@ -374,7 +384,7 @@ export function renderStatusReport(report) {
     }
     lines.push("");
   } else if (report.running.length === 0 && !report.latestFinished) {
-    lines.push("No jobs recorded yet.", "");
+    lines.push(options.all ? "No jobs recorded for this workspace." : "No jobs in this session. Run /codex:status --all to see jobs from other sessions in this workspace.", "");
   }
 
   if (report.needsReview) {

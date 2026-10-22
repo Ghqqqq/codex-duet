@@ -232,20 +232,29 @@ function matchJobReference(jobs, reference, predicate = () => true) {
 export function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
-  const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options));
+  const workspaceJobs = listJobs(workspaceRoot);
+  const jobs = sortJobsNewestFirst(options.all ? workspaceJobs : filterJobsForCurrentSession(workspaceJobs, options));
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
+  const statusJob = (job) => {
+    const enriched = enrichJob(job, { maxProgressLines });
+    if (options.all) {
+      const sessionId = (job.sessionId === undefined ? job.ownerId : job.sessionId) || "unknown";
+      enriched.sessionLabel = sessionId.length > 13 ? `${sessionId.slice(0, 8)}…${sessionId.slice(-4)}` : sessionId;
+    }
+    return enriched;
+  };
 
   const running = jobs
     .filter((job) => job.status === "queued" || job.status === "running")
-    .map((job) => enrichJob(job, { maxProgressLines }));
+    .map(statusJob);
 
   const latestFinishedRaw = jobs.find((job) => job.status !== "queued" && job.status !== "running") ?? null;
-  const latestFinished = latestFinishedRaw ? enrichJob(latestFinishedRaw, { maxProgressLines }) : null;
+  const latestFinished = latestFinishedRaw ? statusJob(latestFinishedRaw) : null;
 
   const recent = (options.all ? jobs : jobs.slice(0, maxJobs))
     .filter((job) => job.status !== "queued" && job.status !== "running" && job.id !== latestFinished?.id)
-    .map((job) => enrichJob(job, { maxProgressLines }));
+    .map(statusJob);
 
   return {
     workspaceRoot,
@@ -291,7 +300,7 @@ export function resolveResultJob(cwd, reference) {
     throw new Error(`No finished job found for "${reference}". Run /codex:status to inspect active jobs.`);
   }
 
-  throw new Error("No finished Codex jobs found for this repository yet.");
+  throw new Error("No finished Codex jobs in this session. Run /codex:status --all to see jobs from other sessions in this workspace.");
 }
 
 export function resolveCancelableJob(cwd, reference, options = {}) {

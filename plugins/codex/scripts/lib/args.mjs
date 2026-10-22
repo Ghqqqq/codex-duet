@@ -1,3 +1,19 @@
+function optionDistance(left, right) {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let row = 1; row <= left.length; row += 1) {
+    const current = [row];
+    for (let column = 1; column <= right.length; column += 1) {
+      current[column] = Math.min(
+        current[column - 1] + 1,
+        previous[column] + 1,
+        previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1)
+      );
+    }
+    previous = current;
+  }
+  return previous[right.length];
+}
+
 export function parseArgs(argv, config = {}) {
   const valueOptions = new Set(config.valueOptions ?? []);
   const repeatableOptions = new Set(config.repeatableOptions ?? []);
@@ -6,14 +22,21 @@ export function parseArgs(argv, config = {}) {
   const aliasMap = config.aliasMap ?? {};
   // Opt in: other callers may intentionally forward option-like positionals.
   // Check before consuming values so a misspelled flag cannot become a value.
-  if (config.rejectUnknown) {
+  if (config.rejectUnknown || config.rejectOptionTypos) {
     for (const token of argv) {
       if (token === "--") break;
       if (!token.startsWith("-") || token === "-") continue;
       const rawKey = token.startsWith("--") ? token.slice(2).split("=", 1)[0] : token.slice(1);
       const key = aliasMap[rawKey] ?? rawKey;
       if (!booleanOptions.has(key) && !valueOptions.has(key)) {
-        const error = new Error(`Unknown option: ${token}`);
+        const suggestion = config.rejectOptionTypos
+          ? [...valueOptions, ...booleanOptions]
+            .map(option => ({ option, distance: optionDistance(rawKey, option) }))
+            .filter(candidate => candidate.distance <= 2)
+            .sort((left, right) => left.distance - right.distance)[0]?.option
+          : null;
+        if (!config.rejectUnknown && !suggestion) continue;
+        const error = new Error(`Unknown option: ${token}${suggestion ? ` (did you mean --${suggestion}?)` : ""}`);
         error.code = "UNKNOWN_OPTION";
         throw error;
       }

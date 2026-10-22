@@ -43,6 +43,8 @@ Argument handling:
 - It supports working-tree review, branch review, and `--base <ref>`.
 - It does not support `--scope staged` or `--scope unstaged`.
 - Unlike `/codex:review`, it can still take extra focus text after the flags.
+- Unknown flags within two character edits of a supported option are rejected as likely typos, with a suggested option and usage. Other unknown flags (for example, `--focus-on-races`) remain focus text.
+- Use `--` before literal focus text that resembles an option: `-- --baes main` passes `--baes main` as focus without changing the review target.
 
 Foreground flow:
 - Run:

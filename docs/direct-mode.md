@@ -45,7 +45,10 @@ Claude Code's completion notification carries no output: Claude reads the last
 line starting with `{` from the output file it names
 (`grep '^{' <output file> | tail -n 1`). Progress lines never start with `{`,
 and Claude Code may append a trailer such as `[exited with code 0]`. Never read
-the whole file, poll or sleep.
+the whole file, poll or sleep. The owner lease renews on its own timer, so a
+reader that stops draining the output never interrupts the job; pending progress
+is capped at 200 lines and the overflow is reported as one
+"… N progress lines omitted" line before the payload.
 
 - Terminal: run the [acceptance protocol](../plugins/codex/prompts/ultra-codex-protocol.md#accepting-a-result-every-worker-report-no-exceptions),
   even after a nonzero exit. The structured report includes handles, runtime

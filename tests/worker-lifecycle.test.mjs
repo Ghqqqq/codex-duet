@@ -51,6 +51,108 @@ function directError(result) {
   return payload;
 }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// Direct-mode backpressure fixture: a fake Codex burst while the parent leaves stdout undrained.
+async function until(check, timeout = 15000) {
+  for (const end = Date.now() + timeout; Date.now() < end;) {
+    const result = check();
+    if (result) return result;
+    await delay(50);
+  }
+  throw new Error("Backpressure fixture deadline expired");
+}
+
+// Extend only the generated temporary binary, not the shared fake fixture. Each
+// fileChange notification adds 100 real activity events in one state update.
+// A file gate starts the burst only after the direct owner has attached.
+function installBurstCodex(dir) {
+  installFakeCodex(dir, "w5-working");
+  const binary = path.join(dir, "codex"), gate = path.join(dir, "burst-start");
+  const branch = 'if (BEHAVIOR === "w5-parent" || BEHAVIOR === "w5-working") {';
+  let source = fs.readFileSync(binary, "utf8");
+  assert.ok(source.includes(branch));
+  source = source.replace(branch, `${branch}
+          let burst = 0;
+          const burstTimer = setInterval(() => {
+            if (!fs.existsSync(${JSON.stringify(gate)})) return;
+            if (loadState().lastInterrupt || burst === 35) { clearInterval(burstTimer); return; }
+            burst += 1;
+            const changes = Array.from({ length: 100 }, (_, i) => ({
+              path: "synthetic/" + burst + "/" + i + "/" + "x".repeat(170), kind: { type: "update" }
+            }));
+            send({ method: "item/completed", params: { threadId: thread.id, turnId,
+              item: { id: "burst-" + burst, type: "fileChange", changes } } });
+          }, 100);
+  `);
+  source = source.replaceAll('}), 30000);', '}), 9000);');
+  fs.writeFileSync(binary, source);
+  return gate;
+}
+
+async function cleanupBackpressure(dir, env) {
+  const ledger = env.CODEX_COMPANION_TEST_PROCESSES;
+  const records = () => fs.existsSync(ledger) ? fs.readdirSync(ledger).filter(name => name.endsWith(".json")).map(name => JSON.parse(fs.readFileSync(path.join(ledger, name)))) : [];
+  for (const signal of ["SIGTERM", "SIGKILL"]) {
+    for (const record of records()) {
+      if (record.exited || !alive(record.pid)) continue;
+      try { process.kill(record.detached && process.platform !== "win32" ? -record.pid : record.pid, signal); }
+      catch (error) {
+        if (error.code === "ESRCH" || !alive(record.pid)) continue;
+        if (error.code !== "EPERM") throw error;
+        try { process.kill(record.pid, signal); } catch (inner) { if (inner.code !== "ESRCH") throw inner; }
+      }
+    }
+    await delay(signal === "SIGTERM" ? 700 : 300);
+  }
+  assert.deepEqual(records().filter(record => !record.exited && alive(record.pid)).map(record => record.pid), [], "fixture processes stopped");
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+async function backpressureScenario(script, { timeoutSec = 30 } = {}) {
+  const dir = makeTempDir("bp-"), repo = path.join(dir, "repo");
+  fs.mkdirSync(repo); initGitRepo(repo);
+  const gate = installBurstCodex(dir);
+  const env = { ...buildEnv(dir), CODEX_COMPANION_BIN: path.join(dir, "codex"),
+    CLAUDE_PLUGIN_DATA: path.join(dir, "data"), CODEX_COMPANION_HOME: path.join(dir, "isolated"),
+    CODEX_COMPANION_SESSION_ID: "d2-synthetic", CODEX_COMPANION_OWNER_GRACE_SEC: "2",
+    CODEX_COMPANION_TEST_MODE: "1", CODEX_COMPANION_TEST_PROCESSES: path.join(dir, "processes") };
+  const began = Date.now();
+  let owner;
+  try {
+    const launched = run(process.execPath, [script, "task", "--fresh", "--detached", "--json", "Synthetic backpressure fixture"], { cwd: repo, env });
+    assert.equal(launched.status, 0, launched.stderr);
+    const launch = JSON.parse(launched.stdout);
+    const file = path.join(resolveStateDir(repo, env), "jobs", `${launch.jobId}.json`);
+    const read = () => JSON.parse(fs.readFileSync(file, "utf8"));
+    owner = spawnOwned(process.execPath, [script, "wait", launch.jobId, "--owner", launch.ownerId, "--direct", "--timeout-sec", String(timeoutSec)], { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "", code;
+    const closed = new Promise((resolve, reject) => { owner.once("error", reject); owner.once("close", status => { code = status; resolve(); }); });
+    owner.stderr.on("data", chunk => { stderr += chunk; });
+    // No stdout data listener until after the grace. The read end stays open.
+    const attached = await until(() => { const current = read(); return current.ownerAttached && current.turnId && current; });
+    const pausedAt = Date.now();
+    fs.writeFileSync(gate, "start");
+    await delay(6500);
+    const beforeDrain = read(), undrainedMs = Date.now() - pausedAt;
+    const heartbeatAgeMs = Date.now() - beforeDrain.leaseRenewedAt;
+    owner.stdout.on("data", chunk => { stdout += chunk; });
+    let deadline;
+    try {
+      await Promise.race([closed, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("Owner did not finish after draining stdout")), 15000); })]);
+    } finally { clearTimeout(deadline); }
+    const saved = read(), lines = stdout.trimEnd().split("\n"), final = JSON.parse(lines.at(-1));
+    const omissionLines = lines.filter(line => /^… \d+ progress lines omitted$/.test(line));
+    return { code, stderr, stdout, final, saved, omissionLines,
+      measurements: { undrainedMs, graceMs: 2000, heartbeatAdvanceMs: beforeDrain.leaseRenewedAt - attached.leaseRenewedAt,
+        heartbeatAgeMs, statusBeforeDrain: beforeDrain.status, activityEvents: final.activityCount,
+        progressLines: lines.length - 1, omittedLines: omissionLines.reduce((sum, line) => sum + Number(line.split(" ")[1]), 0),
+        omissionNotices: omissionLines.length, elapsedMs: Date.now() - began } };
+  } finally {
+    owner?.stdout.resume();
+    await cleanupBackpressure(dir, env);
+  }
+}
+
 async function waitUntil(fn) { for (const end = Date.now() + 12000; Date.now() < end;) { const result = fn(); if (result) return result; await delay(80); } throw new Error("Fixture deadline expired"); }
 function job(f, id) { return json(f.call("status", id, "--json")).job; }
 
@@ -978,6 +1080,23 @@ test("direct terminal waits retain structured report fields and existing outcome
   assert.ok(legacy.assumptions.length <= 3); assert.ok(legacy.claimedVerification.length <= 3);
   const unstructured = { status: "completed", keyFindings: ["prose finding"], assumptions: ["prose assumption"], claimedVerification: ["prose check"] };
   assert.deepEqual(directReport(unstructured, { result: {} }), unstructured, "without structured data, keep the report's lists");
+});
+
+test("a direct owner renews while stdout is undrained longer than the owner grace", async t => {
+  const result = await backpressureScenario(script);
+  t.diagnostic(JSON.stringify(result.measurements));
+  const payload = direct({ status: result.code, stdout: result.stdout, stderr: result.stderr });
+  assert.equal(result.stderr, "");
+  assert.equal(payload.status, "completed");
+  assert.equal(result.saved.result.interruptionReason, null);
+  assert.equal(result.saved.ownerDetachReason, "returned");
+  assert.ok(result.measurements.undrainedMs > result.measurements.graceMs * 3);
+  assert.ok(result.measurements.heartbeatAdvanceMs >= 4000, "renewal continues before the reader resumes");
+  assert.ok(result.measurements.heartbeatAgeMs < result.measurements.graceMs);
+  assert.equal(result.measurements.statusBeforeDrain, "running");
+  assert.ok(result.omissionLines.length >= 1, "the undrained pipe overflows the progress queue");
+  assert.ok(result.measurements.omittedLines > 200, "the bounded queue sheds excess progress");
+  assert.equal(result.measurements.progressLines - result.omissionLines.length + result.measurements.omittedLines, payload.activityCount, "display omissions do not lose event accounting");
 });
 
 test("a direct wait replaces a previously stored follow continuation after cancellation", () => {

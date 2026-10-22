@@ -151,6 +151,38 @@ test("adversarial-review preserves unknown focus flags and literal help", () => 
   }
 });
 
+test("adversarial-review rejects target typos before startup and preserves compatible focus text", () => {
+  const f = helpFixture();
+  installFakeCodex(f.dir);
+  initGitRepo(f.repo);
+  fs.writeFileSync(path.join(f.repo, "README.md"), "fixture\n");
+  run("git", ["add", "README.md"], { cwd: f.repo });
+  run("git", ["commit", "-m", "fixture"], { cwd: f.repo });
+  fs.writeFileSync(path.join(f.repo, "untracked.txt"), "dirty fixture\n");
+  const before = fs.readdirSync(f.dir, { recursive: true }).sort();
+  for (const args of [["--baes", "main"], ["--baes main"], ["--baes=main"], ["--scpoe", "branch"]]) {
+    const result = f.call("adversarial-review", ...args);
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /Unknown option: --(?:baes(?:=main)? \(did you mean --base\?\)|scpoe \(did you mean --scope\?\))/);
+    assert.match(result.stderr, /Usage:.*adversarial-review/);
+    assert.equal(result.stdout, "");
+    assert.deepEqual(fs.readdirSync(f.dir, { recursive: true }).sort(), before,
+      "no job, review thread, or runtime startup for a typo");
+  }
+  for (const [args, focus, target] of [
+    [["--base", "main"], null, "branch diff against main"],
+    [["focus", "on", "race", "conditions"], "focus on race conditions", "working tree diff"],
+    [["--focus-on-races"], "--focus-on-races", "working tree diff"],
+    [["--", "--baes", "main"], "--baes main", "working tree diff"]
+  ]) {
+    const result = f.call("adversarial-review", ...args);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes(`Target: ${target}`), result.stdout);
+    const state = JSON.parse(fs.readFileSync(path.join(f.dir, "fake-codex-state.json"), "utf8"));
+    if (focus) assert.ok(state.lastTurnStart.prompt.includes(focus));
+  }
+});
+
 test("setup reports ready when fake codex is installed and authenticated", () => {
   const binDir = makeTempDir();
   installFakeCodex(binDir);
@@ -1362,6 +1394,41 @@ test("status without a job id only shows jobs from the current Claude session", 
     [...new Set(result.stdout.match(/review-(?:current|other)/g) ?? [])],
     ["review-current"]
   );
+});
+
+test("status --all recovers workspace sessions with labels and session-scoped empty hints", () => {
+  const f = helpFixture();
+  const stateDir = resolveStateDir(f.repo, f.env);
+  fs.mkdirSync(stateDir, { recursive: true });
+  const jobs = [
+    { id: "task-active", status: "running", sessionId: "session-a" },
+    { id: "task-finished", status: "completed", sessionId: "session-a" },
+    { id: "task-legacy", status: "completed", ownerId: "legacy-session-with-long-id" },
+    { id: "task-unowned", status: "completed", sessionId: null }
+  ].map((job, index) => ({ ...job, updatedAt: `2026-03-18T15:0${9 - index}:00.000Z` }));
+  fs.writeFileSync(path.join(stateDir, "state.json"), JSON.stringify({ version: 1, config: {}, jobs }));
+  const plain = f.call("status");
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.match(plain.stdout, /No jobs in this session.*\/codex:status --all/);
+  const emptyResult = f.call("result");
+  assert.equal(emptyResult.status, 1);
+  assert.match(emptyResult.stderr, /No finished Codex jobs in this session.*\/codex:status --all/);
+  const all = f.call("status", "--all", "--json");
+  assert.equal(all.status, 0, all.stderr);
+  const snapshot = JSON.parse(all.stdout);
+  const listed = [...snapshot.running, snapshot.latestFinished, ...snapshot.recent];
+  assert.deepEqual(listed.map(job => job.id), jobs.map(job => job.id));
+  assert.deepEqual(listed.map(job => job.sessionLabel), ["session-a", "session-a", "legacy-s…g-id", "unknown"]);
+  const human = f.call("status", "--all");
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(human.stdout, /Claude session/);
+  for (const job of listed) assert.ok(human.stdout.includes(`${job.id} | ${job.status}`) && human.stdout.includes(`session: ${job.sessionLabel}`));
+  const own = run(process.execPath, [SCRIPT, "status", "--json"], {
+    cwd: f.repo, env: { ...f.env, CODEX_COMPANION_SESSION_ID: "session-a" }
+  });
+  const scoped = JSON.parse(own.stdout);
+  assert.deepEqual([scoped.running[0].id, scoped.latestFinished.id], ["task-active", "task-finished"]);
+  assert.ok(!Object.hasOwn(scoped.running[0], "sessionLabel"), "ordinary status JSON shape is unchanged");
 });
 
 test("status preserves adversarial review kind labels", () => {

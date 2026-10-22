@@ -21,7 +21,10 @@ compared to a base such as `main` with `--base <ref>`. It supports `--wait` and
 A steerable review that challenges the chosen design: assumptions, tradeoffs,
 failure modes and safer alternatives.
 It uses the same review target selection as `/codex:review`, including `--base <ref>`,
-and accepts focus text after the flags. It is read-only.
+and accepts focus text after the flags. It is read-only. An unknown option that is
+within two character edits of a supported one (for example `--baes`) is rejected
+with a suggestion before any review starts; other dash-prefixed words stay focus
+text, and everything after `--` is always literal focus text.
 
 ```bash
 /codex:adversarial-review
@@ -92,8 +95,9 @@ overrides the transcript path supplied by the SessionStart hook.
 
 ### `/codex:status`
 
-Shows running and recent Codex jobs for the current repository, or one job with
-`/codex:status <job-id>`.
+Shows running and recent Codex jobs from this Claude session in the current
+repository, or one job with `/codex:status <job-id>`. `/codex:status --all` adds
+jobs from other sessions in the same workspace, each labelled with its session.
 
 ### `/codex:result`
 

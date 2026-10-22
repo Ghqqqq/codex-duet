@@ -174,7 +174,9 @@ Read-only native review; no focus text. --help, -h exits without starting a revi
   --model, -m <model>  Model; --cwd, -C <dir>  Workspace; --json  JSON output.
   --wait, --background  Accepted routing hints; this helper stays in the foreground.`,
   "adversarial-review": `Usage: node "$CODEX_COMPANION" adversarial-review [options] [focus text]
-Read-only adversarial review; unknown flags remain focus text. --help, -h shows help.
+Read-only adversarial review. --help, -h shows help.
+Unknown flags within 2 edits of a known option are rejected as likely typos;
+other unknown flags remain focus text. Use -- for literal typo-like focus text.
   --base <ref>  Base revision; --scope <auto|working-tree|branch>  Review target.
   --model, -m <model>  Model; --cwd, -C <dir>  Workspace; --json  JSON output.
   --wait, --background  Accepted routing hints; this helper stays in the foreground.
@@ -506,8 +508,8 @@ function validateNativeReviewRequest(target, focusText) {
   return nativeTarget;
 }
 
-function renderStatusPayload(report, asJson) {
-  return asJson ? report : renderStatusReport(report);
+function renderStatusPayload(report, asJson, options = {}) {
+  return asJson ? report : renderStatusReport(report, options);
 }
 
 function isActiveJobStatus(status) {
@@ -1087,6 +1089,7 @@ function enqueueBackgroundTask(cwd, job, request) {
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
     rejectUnknown: config.reviewName !== "Adversarial Review",
+    rejectOptionTypos: config.reviewName === "Adversarial Review",
     valueOptions: ["base", "scope", "model", "cwd"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
@@ -1437,7 +1440,7 @@ async function handleStatus(argv) {
   }
 
   const report = buildStatusSnapshot(cwd, { all: options.all });
-  outputResult(renderStatusPayload(report, options.json), options.json);
+  outputResult(renderStatusPayload(report, options.json, { all: options.all }), options.json);
 }
 
 async function handleResult(argv) {
@@ -1578,6 +1581,40 @@ function validateDirectOptions(argv, conflicts, options) {
   }
 }
 
+// At most 200 progress lines, including the write in flight. Only one stdout
+// callback is outstanding, so Node's writable buffer cannot grow with the job.
+// Once an overflow starts, count new lines until the backlog drains, then emit
+// one notice before accepting the next episode. Stored activity is unaffected.
+function directProgressQueue(writeLine, onError) {
+  const lines = [];
+  let draining = null, inFlight = false, omitted = 0, stopped = false, failure = null;
+  const drain = async () => {
+    try {
+      while (!stopped && (lines.length || omitted)) {
+        let line = lines.shift();
+        if (line === undefined) { line = `… ${omitted} progress lines omitted`; omitted = 0; }
+        inFlight = true;
+        await writeLine(line);
+        inFlight = false;
+      }
+    } catch (error) {
+      failure = error;
+      stopped = true; lines.length = 0; omitted = 0;
+      onError(error);
+    } finally { inFlight = false; draining = null; }
+  };
+  return {
+    push(line) {
+      if (stopped) return;
+      if (omitted || lines.length + Number(inFlight) >= 200) omitted += 1;
+      else lines.push(line);
+      draining ??= drain();
+    },
+    async flush() { await draining; if (failure) throw failure; },
+    stop() { stopped = true; lines.length = 0; omitted = 0; }
+  };
+}
+
 async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSec, afterQuestion, feedLimit, json, direct, quiet }) {
   const timeout = seconds(timeoutSec, direct ? WAIT_MAX_SEC : WAIT_DEFAULT_SEC, "--timeout-sec", WAIT_MAX_SEC);
   const feedMax = feedLimit === undefined ? FEED_LIMIT_DEFAULT : /^\d+$/.test(String(feedLimit)) ? Number(feedLimit) : (() => { throw new Error("--feed-limit must be a non-negative integer."); })();
@@ -1591,11 +1628,12 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
   }
   const reader = activityReader(owner), started = Date.now(), activity = [];
   let cursor = readStoredJob(workspaceRoot, job.id).activityCursors?.[reader] ?? 0;
-  let nextRenewal = 0, detachReason = null;
+  let renewalTimer = null, renewalError = null, outputError = null, detachReason = null;
+  const stopRenewal = () => { clearTimeout(renewalTimer); renewalTimer = null; };
   const startPpid = process.ppid;
   // An owner that leaves abnormally cannot tell the worker; mark the detach so the
   // worker interrupts after the grace period unless a replacement wait re-attaches.
-  const detach = reason => { if (owner && !detachReason) { detachReason = reason; try { markOwnerAttachment(workspaceRoot, job.id, owner, reason); } catch { /* best effort */ } } };
+  const detach = reason => { stopRenewal(); if (owner && !detachReason) { detachReason = reason; try { markOwnerAttachment(workspaceRoot, job.id, owner, reason); } catch { /* best effort */ } } };
   const reportOwnerStopped = () => {
     if (!direct) return;
     let current = job;
@@ -1612,13 +1650,20 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
       signalHandlers.set(signal, handler); process.on(signal, handler);
     }
   }
-  // Await each write callback: feed lines reach the pipe during the wait, never
-  // buffered until the final report. JSON mode uses the same cursor semantics.
+  // Feed and final writes retain their delivery callbacks. Direct progress is
+  // drained separately so neither polling nor owner renewal waits for stdout.
   const writeLine = line => new Promise((resolve, reject) => process.stdout.write(`${line}\n`, error => error ? reject(error) : resolve()));
+  const progress = direct && !quiet ? directProgressQueue(writeLine, error => {
+    outputError = error;
+    if (error.code === "EPIPE") { detach("stdout_closed"); process.exitCode = 130; }
+  }) : null;
   const finish = async (payload, exitCode = 0, current = job) => {
     const line = JSON.stringify(direct ? directReport(payload, current) : payload);
-    if (direct) directOutputStarted = true;
-    try { await writeLine(line); }
+    try {
+      await progress?.flush();
+      if (direct) directOutputStarted = true;
+      await writeLine(line);
+    }
     catch (error) {
       if (error.code !== "EPIPE") throw error;
       detach("stdout_closed"); process.exitCode = 130; return;
@@ -1630,13 +1675,26 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
     ? { activity: activity.slice(-REPORTED_ACTIVITY_LIMIT), activityCount: activity.length, activityOmitted: activity.length - REPORTED_ACTIVITY_LIMIT }
     : { activity, activityCount: activity.length };
   try {
+    // Keep the same immediate renewal and <= 1 s cadence, independent of output.
+    // Check the parent here too: a blocked final/feed write must never keep an
+    // orphaned owner's lease alive. Signals and every detach clear this timer.
+    const renew = () => {
+      if (detachReason) return;
+      if (process.ppid !== startPpid) { detach("parent_exit"); progress?.stop(); reportOwnerStopped(); process.exit(130); }
+      try {
+        const current = renewLease(workspaceRoot, job.id, owner);
+        if (current.ownerId !== owner) { stopRenewal(); return; }
+        renewalTimer = setTimeout(renew, Math.min(1000, (current.leaseSec ?? 180) * 250));
+      } catch (error) { renewalError = error; stopRenewal(); }
+    };
+    if (owner) renew();
     for (;;) {
+      if (renewalError) throw renewalError;
+      if (outputError) { if (outputError.code !== "EPIPE") throw outputError; return; }
       if (owner && process.ppid !== startPpid) { detach("parent_exit"); reportOwnerStopped(); process.exitCode = 130; return; }
-      const renew = owner && Date.now() >= nextRenewal;
-      const current = renew ? renewLease(workspaceRoot, job.id, owner) : readStoredJob(workspaceRoot, job.id);
-      if (renew) nextRenewal = Date.now() + Math.min(1000, (current.leaseSec ?? 180) * 250);
+      const current = readStoredJob(workspaceRoot, job.id);
       const moved = ownershipNotice(current, owner);
-      if (moved) { detachReason = "moved"; await finish({ ...moved, ...reported(), cursor }, 2); return; }
+      if (moved) { detachReason = "moved"; stopRenewal(); await finish({ ...moved, ...reported(), cursor }, 2); return; }
       const next = (current.activity ?? []).filter(event => event.seq > cursor);
       for (const event of next) {
         if (direct && !quiet) {
@@ -1644,8 +1702,7 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
           // Progress never marks directOutputStarted: a later signal must still
           // emit its owner_stopped JSON. The formatter prefixes every event.
           const line = text.length > 200 ? `${text.slice(0, 199)}…` : text;
-          try { await writeLine(line); }
-          catch (error) { if (error.code !== "EPIPE") throw error; detach("stdout_closed"); process.exitCode = 130; return; }
+          progress.push(line);
         } else if (!json && (feedMax === 0 || streamed < feedMax)) {
           streamed += 1;
           const line = streamed === feedMax ? `${formatActivity(event)}\n… feed paused after ${feedMax} lines; later events are counted in the final JSON (activityCount) and shown by /codex:status` : formatActivity(event);
@@ -1683,6 +1740,7 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
       await sleep(100);
     }
   } finally {
+    stopRenewal(); progress?.stop();
     for (const [signal, handler] of signalHandlers) process.off(signal, handler);
   }
 }
@@ -1748,7 +1806,8 @@ async function handleUltraCodex(argv) {
   const lines = [
     wasOn ? "Ultra-codex mode: off. Orchestration has ended for this session." : "Ultra-codex mode was already off for this session.",
     "Handle requests normally from here on; spawn Codex workers only when asked.",
-    running.length ? `Codex jobs from this session still running: ${running.map(job => `${job.jobId} (${job.status})`).join(", ")}. Cancel them only if the user asks: node scripts/codex-companion.mjs cancel <jobId>.` : "No Codex jobs from this session are still running."
+    running.length ? `Codex jobs from this session still running: ${running.map(job => `${job.jobId} (${job.status})`).join(", ")}. Cancel them only if the user asks:` : "No Codex jobs from this session are still running.",
+    ...running.map(job => `/codex:cancel ${job.jobId}`)
   ];
   outputCommandResult(payload, `${lines.join("\n")}\n`, options.json);
 }

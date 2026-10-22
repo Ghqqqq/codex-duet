@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1
+
+- Direct mode no longer interrupts a healthy job when its output is not being read: the owner lease renews on its own timer instead of waiting for progress lines to be written, pending progress is capped at 200 lines with one "… N progress lines omitted" line, and the JSON payload stays the last line. 1.1.0–1.2.0 could interrupt such a job as `owner_lost` after the 5-second owner grace.
+- `status --all` now lists jobs from every Claude session in the workspace, labelled by session; plain `status` and `result` say when they are limited to this session and point to `--all`.
+- `ultra-codex off` lists `/codex:cancel <jobId>` for each still-running job instead of a companion path that did not exist in user projects.
+- `adversarial-review` rejects likely option typos (within two character edits of a supported option, e.g. `--baes`) before starting a review; other dash-prefixed focus words and anything after `--` remain focus text.
+- `setup` shows the browser policy new tasks will use, including the default before the first task applies it.
+
 ## 1.2.0
 
 - codex-live groups follow-ups: jobs on the same Codex thread (`task --thread`, `task --continue`) now appear as one row, labelled with the turn count, and selecting it shows every turn in order, each under its own header. Status, footer and pending question follow the latest turn; Clear finished, retention and auto-open work per conversation. State stays bounded: at most 20 turns per conversation are kept and the latest 5 show full activity; unchanged polls compose the view once, and a concurrent click or scroll is merged instead of skipped.
