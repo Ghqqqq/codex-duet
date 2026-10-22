@@ -130,8 +130,9 @@ Turing, …) that its follow-ups keep. →
 draws its own transcript: `⏺` rows, tool headers, file changes, plans and
 pending questions. New jobs ask Claude Code to open the pane; Claude Code decides
 whether it is shown at the current width. `/codex-live` opens and focuses it at any width.
-`/tasks` shows the same jobs as compact progress lines anywhere. Neither costs
-Claude tokens.
+Follow-ups on the same Codex thread stay in one row, with every turn in one
+continuous transcript. `/tasks` shows the same jobs as compact progress lines
+anywhere. Neither costs Claude tokens.
 
 <p align="center">
   <img src="docs/assets/codex-live-demo.png" alt="codex-live pane showing three Codex workers on a demo repository: one reviewing, one finished implementing compound durations with file updates and test runs, one finished investigating" width="88%">

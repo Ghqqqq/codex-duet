@@ -1,9 +1,10 @@
 import { atom, read } from 'claude-code';
 import type { EngineInterface } from 'claude-code';
 import type { CodexLiveJob, CodexLiveMarker, CodexLiveState } from '../types';
-import { boundState, isHiddenJob, jobSummary, jobView, markerView, statusLine, unavailableJob } from './model';
-import { feedLines, paneLayout, normalizeFeed, recentEndedJobIds } from './layout';
-import { reportFailure, updateFailure, viewports, writeView } from './runtime';
+import { boundState, DETAIL_TURN_LIMIT, fitState, groupedSessions, jobSummary, jobView, markerView, normalizeSessions,
+  retainedTurns, sessionForId, sessionId, statusLine, unavailableJob, visibleSessions } from './model';
+import { feedLines, paneLayout, normalizeFeed, recentEndedJobIds, selectedJob } from './layout';
+import { publishView, reportFailure, updateFailure, viewports } from './runtime';
 
 const view = atom({ plugin: 'codex-live', key: 'view' } as const,
   { jobs: [], selectedId: null, nowMs: 0 } as CodexLiveState);
@@ -19,7 +20,7 @@ type Cached = {
   firstEnded?: number;
 };
 
-export function createPoller($: EngineInterface): (force?: boolean) => Promise<void> {
+export function createPoller($: EngineInterface, diagnostics?: { onCompose(): void }): (force?: boolean) => Promise<void> {
   let busy = false;
   let tick = 0;
   let session = '';
@@ -28,7 +29,7 @@ export function createPoller($: EngineInterface): (force?: boolean) => Promise<v
   let lastStatus: string | undefined;
   const cache = new Map<string, Cached>();
   // Evicted entries keep only a header summary and file identity, never raw/details.
-  const evicted = new Map<string, Pick<Cached, 'job' | 'processedMtime'> & { jobFile: string }>();
+  const evicted = new Map<string, Pick<Cached, 'job' | 'processedMtime' | 'marker'>>();
   const markerNames = new Set<string>();
   const retryMarker = new Map<string, number>();
 
@@ -38,8 +39,10 @@ export function createPoller($: EngineInterface): (force?: boolean) => Promise<v
     try {
       tick++;
       let current = await read($, view);
+      const expected = JSON.stringify(current);
+      const selectedAtRead = current.selectedId;
       const paneOpen = (await $.ui.panes()).some(pane => pane.id === 'codex-live');
-      if (!force && !current.jobs.some(job => job.active) && !paneOpen && tick % 5 !== 1) return;
+      if (!force && !groupedSessions(current.jobs).some(job => job.active) && !paneOpen && tick % 5 !== 1) return;
       const now = await $.clock.now();
       const currentSession = await $.session.id();
       const sessionChanged = !!current.sessionId && current.sessionId !== currentSession;
@@ -48,7 +51,10 @@ export function createPoller($: EngineInterface): (force?: boolean) => Promise<v
         cache.clear(); evicted.clear(); markerNames.clear(); retryMarker.clear();
       }
       if (sessionChanged) current = { jobs: [], selectedId: null, nowMs: 0 };
-      const seen = new Set(current.seenJobIds ?? current.jobs.map(job => job.id));
+      const previouslySeen = new Set(current.seenJobIds ?? current.jobs.map(job => job.id));
+      const previouslyKnown = new Set([...previouslySeen, ...current.jobs.map(job => job.id)]);
+      const seen = new Set(previouslySeen);
+      const joinedThreads = new Set<string>();
       const opened = new Set(current.autoOpenedJobIds ?? current.jobs.filter(job => job.active).map(job => job.id));
       const firstEndedAtMs = { ...current.firstEndedAtMs };
       if (!home) {
@@ -72,7 +78,7 @@ export function createPoller($: EngineInterface): (force?: boolean) => Promise<v
           const marker = markerView(JSON.parse(await $.fs.read(`${folder}/${entry.name}`)));
           const previous = current.jobs.find(job => job.id === marker.jobId);
           const remembered = evicted.get(entry.name);
-          const memo = remembered?.job.id === marker.jobId && remembered.jobFile === marker.jobFile ? remembered : undefined;
+          const memo = remembered?.job.id === marker.jobId && remembered.marker.jobFile === marker.jobFile ? remembered : undefined;
           if (!cache.has(marker.jobId)) cache.set(marker.jobId, {
             marker, markerName: entry.name, job: memo?.job ?? (previous ? jobSummary(previous) : unavailableJob(marker)),
             processedMtime: memo?.processedMtime,
@@ -92,6 +98,8 @@ export function createPoller($: EngineInterface): (force?: boolean) => Promise<v
           if (stat.mtimeMs !== entry.processedMtime) {
             const raw = JSON.parse(await $.fs.read(entry.marker.jobFile));
             const job = jobView(raw, entry.marker, false);
+            if ((entry.processedMtime !== undefined || current.jobs.some(previous => previous.id === job.id)) &&
+                sessionId(entry.job) !== sessionId(job)) joinedThreads.add(job.id);
             entry.raw = raw;
             entry.full = undefined;
             entry.job = { ...job, lastUpdateMs: now };
@@ -121,39 +129,87 @@ export function createPoller($: EngineInterface): (force?: boolean) => Promise<v
         markerName: '', job: { ...jobSummary(job), detailsUnavailable: true },
         full: job.detailsLoaded !== false ? job : undefined, nextCheck: Infinity,
       }));
-      const newest = [...cache.values(), ...restored].sort((a, b) => b.job.createdAt.localeCompare(a.job.createdAt) || b.job.id.localeCompare(a.job.id));
+      // Include evicted summaries when grouping: a follow-up can immediately
+      // restore its entire conversation before the marker's retry deadline.
+      const knownIds = new Set([...cache.keys(), ...restored.map(entry => entry.job.id)]);
+      const remembered: Cached[] = [...evicted.entries()].filter(([, entry]) => !knownIds.has(entry.job.id))
+        .map(([markerName, entry]) => ({ ...entry, markerName, nextCheck: now + 10000 }));
+      const newest = [...cache.values(), ...restored, ...remembered]
+        .sort((a, b) => b.job.createdAt.localeCompare(a.job.createdAt) || b.job.id.localeCompare(a.job.id));
+      const byId = new Map(newest.map(entry => [entry.job.id, entry]));
       for (const id of newlyActive) opened.add(id);
-      let retainedIds = new Set<string>();
-      const compose = (latest: CodexLiveState): CodexLiveState => {
-        if (sessionChanged) latest = current;
+      // Selection and hydration use lightweight summaries, before any event
+      // serialization or transcript layout. Replanning is cheap after hydration.
+      const plan = (latest: CodexLiveState) => {
+        const turnCounts = { ...latest.turnCounts };
+        for (const entry of newest) if ((!previouslyKnown.has(entry.job.id) && seen.has(entry.job.id)) || joinedThreads.has(entry.job.id)) {
+          const id = sessionId(entry.job);
+          turnCounts[id] = (turnCounts[id] ?? 0) + 1;
+        }
         // Include this tick's first end observations before deciding visibility.
-        const visibility = { ...latest, firstEndedAtMs };
-        const visible = newest.filter(entry => !isHiddenJob(visibility, entry.job));
-        const preferred = visible.find(entry => newlyActive.includes(entry.job.id))?.job.id;
-        const selectedId = preferred ?? (visible.some(entry => entry.job.id === latest.selectedId) ? latest.selectedId
-          : visible.find(entry => entry.job.active)?.job.id ?? visible[0]?.job.id ?? null);
-        const retained = visible.filter((entry, i) => i < 20 || entry.job.active || entry.job.id === selectedId);
-        retainedIds = new Set(retained.map(entry => entry.job.id));
-        const jobs = retained.map(entry => {
-          if (entry.job.id !== selectedId) return entry.job;
+        const visibility = normalizeSessions({ ...latest, jobs: newest.map(entry => entry.job), firstEndedAtMs, turnCounts });
+        const visible = visibleSessions(visibility);
+        const selectedSession = sessionForId(visible, visibility.selectedId);
+        const activated = visible.filter(session => session.turns.some(job => newlyActive.includes(job.id)));
+        const preferred = activated.find(session => session.id === selectedSession?.id) ?? activated[0];
+        // A concurrent explicit selection wins over automatic focus for new jobs.
+        const selectedId = (latest.selectedId !== selectedAtRead ? selectedSession?.id : undefined)
+          ?? preferred?.id ?? selectedSession?.id
+          ?? visible.find(session => session.active)?.id ?? visible[0]?.id ?? null;
+        const retained = visible.filter((session, i) => i < 20 || session.active || session.id === selectedId);
+        const retainedSessions = new Set(retained.map(session => session.id));
+        const retainedIds = new Set(retained.flatMap(session => retainedTurns(session).map(job => job.id)));
+        const selected = sessionForId(retained, selectedId);
+        const detailedIds = new Set(selected ? retainedTurns(selected).slice(-DETAIL_TURN_LIMIT).map(job => job.id) : []);
+        for (const session of visible) turnCounts[session.id] = session.turnCount;
+        return { visibility, selectedId, retained, retainedSessions, retainedIds, detailedIds, turnCounts };
+      };
+      let planned = plan(current);
+      let hydrated = false;
+      // An unchanged mtime cannot hydrate details discarded during eviction.
+      // Only the five newest selected turns may trigger these extra reads.
+      for (const id of planned.detailedIds) {
+        const entry = byId.get(id)!;
+        if (entry.raw || entry.full || !entry.marker.jobFile || entry.job.detailsUnavailable) continue;
+        hydrated = true;
+        try {
+          const stat = await $.fs.stat(entry.marker.jobFile);
+          const raw = JSON.parse(await $.fs.read(entry.marker.jobFile));
+          const summary = jobView(raw, entry.marker, false);
+          entry.raw = raw;
+          entry.job = { ...summary, lastUpdateMs: now };
+          entry.processedMtime = stat.mtimeMs;
+          entry.nextCheck = entry.job.finished ? now + 10000 : 0;
+          if (entry.job.finished) firstEndedAtMs[id] = entry.firstEnded ??= firstEndedAtMs[id] ?? now;
+          else if (entry.job.active) { delete firstEndedAtMs[id]; entry.firstEnded = undefined; }
+        } catch { entry.job = { ...entry.job, detailsUnavailable: true }; entry.nextCheck = now + 5000; }
+      }
+      if (hydrated) planned = plan(current);
+      const compose = (latest: CodexLiveState, selection?: ReturnType<typeof plan>): CodexLiveState => {
+        diagnostics?.onCompose();
+        if (sessionChanged && latest.sessionId !== currentSession) latest = current;
+        const { visibility, selectedId, retained, retainedSessions, retainedIds, detailedIds, turnCounts } = selection ?? plan(latest);
+        const jobs = newest.filter(entry => retainedIds.has(entry.job.id)).map(entry => {
+          if (!detailedIds.has(entry.job.id)) return entry.job;
           if (!entry.full && entry.raw) entry.full = jobView(entry.raw, entry.marker);
           return entry.full ? { ...entry.full, detailsUnavailable: entry.job.detailsUnavailable, lastUpdateMs: entry.job.lastUpdateMs } : entry.job;
         });
-        const active = jobs.some(job => job.active);
+        const active = retained.some(session => session.active);
         const stale = jobs.some(job => job.detailsUnavailable);
         const nowMs = active || stale ? Math.floor(now / 5000) * 5000 : latest.nowMs;
-        const candidate: CodexLiveState = boundState({ ...latest, jobs, selectedId, nowMs, sessionId: currentSession,
+        const candidate: CodexLiveState = boundState({ ...latest, jobs, selectedId, nowMs, sessionId: currentSession, turnCounts,
           spinnerTick: active && (paneOpen || newlyActive.length) ? Math.floor(now / 1000) : latest.spinnerTick,
-          feeds: latest.feeds && Object.fromEntries(Object.entries(latest.feeds).filter(([id]) => retainedIds.has(id))),
+          feeds: visibility.feeds && Object.fromEntries(Object.entries(visibility.feeds).filter(([id]) => retainedSessions.has(id))),
           seenJobIds: [...seen], autoOpenedJobIds: [...opened], firstEndedAtMs,
-          recentEndedIds: recentEndedJobIds(jobs, now, job => {
+          recentEndedIds: recentEndedJobIds(retained, now, job => {
             const end = Date.parse(job.completedAt);
-            return Number.isFinite(end) ? end : firstEndedAtMs[job.id] ?? NaN;
+            const latestId = sessionForId(retained, job.id)!.turns.at(-1)!.id;
+            return Number.isFinite(end) ? end : firstEndedAtMs[latestId] ?? NaN;
           }),
         });
         // Only the selected transcript is laid out. Other stopped windows keep
         // their small content anchors/snapshots until selected again.
-        const selected = candidate.jobs.find(job => job.id === selectedId);
+        const selected = selectedJob(candidate);
         const feed = selectedId ? candidate.feeds?.[selectedId] : undefined;
         if (selected && feed) {
           const measured = viewports.get(feed.surface ?? 'terminal');
@@ -161,15 +217,24 @@ export function createPoller($: EngineInterface): (force?: boolean) => Promise<v
           const rows = measured ? paneLayout(candidate, selected, measured.bodyRows).rows : feed.rows ?? 8;
           if (columns) candidate.feeds = { ...candidate.feeds, [selected.id]: normalizeFeed(feedLines(selected, nowMs, columns), rows, { ...feed, columns }) };
         }
-        return candidate;
+        return fitState(candidate);
       };
-      const candidate = compose(current);
-      let saved = true;
-      if (JSON.stringify(candidate) !== JSON.stringify(current) || updateFailure()) saved = await writeView($, compose);
-      if (!saved) return;
+      let candidate = compose(current, planned);
+      if (JSON.stringify(candidate) !== expected || updateFailure()) {
+        const published = await publishView($, expected, candidate, compose);
+        if (!published) return;
+        candidate = published; // Status and eviction must use the view actually saved.
+      }
+      const retainedIds = new Set(candidate.jobs.map(job => job.id));
+      for (const entry of remembered) if (retainedIds.has(entry.job.id)) {
+        cache.set(entry.job.id, entry);
+        evicted.delete(entry.markerName);
+        markerNames.add(entry.markerName);
+        retryMarker.delete(entry.markerName);
+      }
       for (const [id, entry] of cache) if (!retainedIds.has(id)) {
         if (!presentMarkers || presentMarkers.has(entry.markerName)) evicted.set(entry.markerName, {
-          job: jobSummary(entry.job), processedMtime: entry.processedMtime, jobFile: entry.marker.jobFile,
+          job: jobSummary(entry.job), processedMtime: entry.processedMtime, marker: entry.marker,
         });
         cache.delete(id);
         markerNames.delete(entry.markerName);

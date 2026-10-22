@@ -15,12 +15,29 @@ export function reportFailure($: EngineInterface, error: unknown) {
   try { $.ui.log(`codex-live: Pane update failed · ${failure}`, { to: 'debug' }); } catch { /* Logging cannot mask the original failure. */ }
   try { $.ui.invalidate('ui.render'); } catch { /* The next draw also reads failure. */ }
 }
-export async function writeView($: EngineInterface, change: (state: CodexLiveState) => CodexLiveState): Promise<boolean> {
+async function saveView($: EngineInterface, change: (state: CodexLiveState) => CodexLiveState, prepared = false): Promise<boolean> {
   try {
-    await update($, view, state => boundState(change(state)));
+    await update($, view, state => prepared ? change(state) : boundState(change(state)));
     const hadFailure = !!failure;
     failure = '';
     if (hadFailure) $.ui.invalidate('ui.render');
     return true;
   } catch (error) { reportFailure($, error); return false; }
+}
+
+export function writeView($: EngineInterface, change: (state: CodexLiveState) => CodexLiveState): Promise<boolean> {
+  return saveView($, change);
+}
+
+// Polling has already bounded and laid out this candidate. Reuse it during the
+// CAS update. Conflicts recompose from the latest interaction state in this
+// same update, so continuous scrolling cannot starve job/status publication.
+export async function publishView($: EngineInterface, expected: string, candidate: CodexLiveState,
+  compose: (latest: CodexLiveState) => CodexLiveState): Promise<CodexLiveState | undefined> {
+  let published = candidate;
+  const saved = await saveView($, latest => {
+    published = JSON.stringify(latest) === expected ? candidate : compose(latest);
+    return published;
+  }, true);
+  return saved ? published : undefined;
 }

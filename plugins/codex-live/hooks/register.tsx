@@ -4,7 +4,7 @@ import type { CodexLiveState } from '../types';
 import { feedLines, feedWindow, fit, footerLayout, paneLayout, jobRow, jobState,
   messageLines, scrollFeed, selectedJob, width } from './layout';
 import type { Span } from './layout';
-import { clearFinished, jobLifecycle, visibleJobs } from './model';
+import { clearFinished, jobLifecycle, normalizeSessions, visibleSessions } from './model';
 import { createPoller } from './poll';
 import { updateFailure, viewports, writeView } from './runtime';
 
@@ -34,6 +34,7 @@ export const register: Register = on => {
     const columns = measured?.columns ?? 0;
     if (!columns || !e.by) return {};
     await writeView($, state => {
+      state = normalizeSessions(state);
       const job = selectedJob(state);
       if (!job) return state;
       const { bodyRows, pinnedRows, rows } = paneLayout(state, job, e.bodyRows);
@@ -50,14 +51,14 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: 'codex-live' }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e);
-    const state = await read($, view);
+    const state = normalizeSessions(await read($, view));
     const columns = Math.max(0, Math.floor(e.props.bodyColumns));
     const failure = updateFailure();
     const selected = selectedJob(state);
     const { bodyRows, header, rows } = paneLayout(state, selected, e.props.scroll.bodyRows, !!failure);
     viewports.set(e.surface, { columns, bodyRows });
     const engineOffset = Math.max(0, Math.floor(e.props.scroll.offset));
-    const jobs = visibleJobs(state);
+    const jobs = visibleSessions(state);
     const lines = selected ? feedLines(selected, state.nowMs, columns)
       : messageLines('No Codex jobs in this session yet. They appear here when Claude starts one.', columns)
         .map((spans, i) => ({ key: `empty-${i}`, spans: spans.map(span => ({ ...span, color: 'subtle' as const })) }));
@@ -87,7 +88,7 @@ export const register: Register = on => {
         [selected!.id]: { feedOffset: 0, following: true, seenLines: 0 } } }));
     };
     const select = async (id: string) => {
-      await writeView($, latest => visibleJobs(latest).some(job => job.id === id)
+      await writeView($, latest => visibleSessions(latest).some(job => job.id === id)
         ? { ...latest, selectedId: id, feeds: { ...latest.feeds,
           [id]: { feedOffset: 0, following: true, seenLines: 0 } } } : latest);
       await poll?.(true);

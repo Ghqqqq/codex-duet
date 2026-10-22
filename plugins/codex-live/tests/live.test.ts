@@ -2,7 +2,7 @@ import { test, expect } from 'claude-code/testing';
 import type { On } from 'claude-code';
 import type { FoundElement } from 'claude-code/testing';
 import type { CodexLiveEvent, CodexLiveMarker, CodexLiveState } from '../types';
-import { boundState, clearFinished, isHiddenJob, visibleJobs, taskText, collapseActivity, elapsed, glyph, jobView, markerView, statusLine } from '../hooks/model';
+import { boundState, clearFinished, groupedSessions, isHiddenJob, normalizeSessions, visibleJobs, visibleSessions, taskText, collapseActivity, elapsed, glyph, jobView, markerView, statusLine } from '../hooks/model';
 import { activityItems, eventItem, feedItems, fileResult, fit, headerItem, jobRow, jobState,
   relativePath, toolResult, toolUseCount, unwrapCommand, width, wrap, feedLines, feedWindow,
   footerLayout, headerLayout, inlineSpans, messageLines, recentEndedJobIds, reconcileFeed, scrollFeed, selectedJob } from '../hooks/layout';
@@ -1115,4 +1115,193 @@ test('tiny heights put whole Clear finished and history controls in the footer',
   expect(await ui.find({ key: 'clear-finished' })).toBe(undefined);
   expect(await ui.find({ key: 'toggle-jobs' })).toBe(undefined);
   await ui.unmount();
+});
+
+function conversationTurn(id: string, n: number, status = 'running', threadId = 'shared') {
+  const time = new Date(epoch + n * 1000).toISOString();
+  return jobView({ id, threadId, agentName: 'Euclid', status, startedAt: time,
+    completedAt: status === 'completed' ? time : undefined,
+    activity: [{ seq: 1, type: 'agentMessage', body: `Activity from turn ${n}.` }],
+  }, { ...marker(id), createdAt: time, summary: `Turn ${n} task.` });
+}
+
+test('same-thread turns render one latest-status row and a chronological continuous transcript', async ($, on) => {
+  const first = conversationTurn('first', 0, 'completed');
+  const second = conversationTurn('second', 1);
+  const state = { jobs: [second, first], selectedId: 'thread:shared', nowMs: epoch + 96000 };
+  seed(on, state);
+  const writes = track(on);
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live',
+    props: { ...props, bodyColumns: 100, scroll: { offset: 0, bodyRows: 30 } } });
+  const headers = (await ui.findAll({ type: 'Box' })).filter(box => box.key?.startsWith('header-') && box.key !== 'header-rule');
+  expect(headers.map(box => box.key)).toEqual(['header-thread:shared']);
+  const row = await ui.find({ key: 'thread:shared' });
+  expect(row?.text).toContain('❯ ⏺ Euclid  Turn 1 task.');
+  expect(row?.text).toContain('2 turns · 1m 35s');
+  expect((await ui.findAll({ type: 'Text' })).some(text => text.text === '⏺ ' && text.props.color === 'claude')).toBe(true);
+  await ui.press({ key: 'thread:shared' });
+  expect(writes.at(-1)?.selectedId).toBe('thread:shared');
+  const transcript = (await ui.find({ key: 'transcript' }))!.text;
+  const parts = ['Euclid(Turn 0 task.)', 'Activity from turn 0.', 'Euclid(Turn 1 task.)', 'Activity from turn 1.'];
+  const positions = parts.map(part => transcript.indexOf(part));
+  expect(positions.every(index => index >= 0)).toBe(true);
+  expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  expect((await ui.find({ key: 'footer' }))?.text).toContain('Running… 1m 35s');
+  expect(await ui.find({ key: 'clear-finished' })).toBe(undefined);
+  const session = selectedJob(state)!;
+  expect(jobRow(session, true, 24, state.nowMs).meta).toBe(' 1m 35s');
+  for (const columns of [0, 1, 4, 12, 24, 40, 100]) {
+    expect(width(Object.values(jobRow(session, true, columns, state.nowMs)).join('')) <= columns).toBe(true);
+  }
+  await ui.unmount();
+});
+
+test('latest turn alone determines session lifecycle, questions, status counts and clearing', () => {
+  const old = { ...conversationTurn('old', 0), question: { text: 'Obsolete question', options: [] } };
+  const latest = { ...conversationTurn('latest', 1), status: 'waiting', question: { text: 'Latest question', options: ['Yes'] } };
+  const state = { jobs: [old, latest], selectedId: 'old', nowMs: epoch + 2000 };
+  const session = selectedJob(state)!;
+  expect(statusLine(state.jobs)).toBe('Euclid · 1 waiting for answer');
+  expect(statusLine([old, { ...latest, status: 'queued', question: null }])).toBe('Euclid · 1 queued');
+  expect(statusLine([old, { ...latest, status: 'running', question: null }])).toBe('Euclid · 1 running');
+  const items = feedItems(session, state.nowMs);
+  expect(JSON.stringify(items)).not.toContain('Obsolete question');
+  expect(items.at(-1)?.results[0]?.text).toBe('Latest question');
+  expect(footerLayout(session, state, 100, true, 0).left).toContain('Waiting for Claude');
+  expect(visibleSessions(clearFinished(state, state.nowMs)).length).toBe(1);
+  const done = { ...state, jobs: [old, conversationTurn('latest', 1, 'completed')] };
+  expect(statusLine(done.jobs)).toBe(undefined);
+  expect(selectedJob(done)?.finished).toBe(true);
+  expect(jobRow(selectedJob(done)!, true, 100, done.nowMs).bullet).toBe('✓ ');
+  const cleared = clearFinished(done, done.nowMs);
+  expect(visibleJobs(cleared)).toEqual([]);
+  expect(cleared.selectedId).toBe(null);
+  const resumed = { ...cleared, jobs: [...cleared.jobs, conversationTurn('follow-up', 3)] };
+  expect(visibleSessions(resumed).length).toBe(1);
+  expect(selectedJob(resumed)?.turns.map(job => job.id)).toEqual(['old', 'latest', 'follow-up']);
+});
+
+test('unthreaded jobs stay separate and equal creation times have deterministic turn order', () => {
+  const first = { ...conversationTurn('a', 0), threadId: undefined };
+  const second = { ...conversationTurn('b', 0), threadId: '' };
+  const third = { ...conversationTurn('c', 0), threadId: '   ' };
+  expect(groupedSessions([first, second, third]).map(session => session.id)).toEqual(['a', 'b', 'c']);
+  const sessions = groupedSessions([conversationTurn('z', 0), conversationTurn('a', 0)]);
+  expect(sessions[0]?.turns.map(job => job.id)).toEqual(['a', 'z']);
+  expect(sessions[0]?.label).toBe('Turn 0 task.');
+});
+
+test('legacy job selection and feed anchors render as their session before the first poll', async ($, on) => {
+  const first = conversationTurn('first', 0, 'completed');
+  first.events = [{ seq: 1, type: 'agentMessage', body: Array.from({ length: 40 }, (_, i) => `Old line ${i}`).join('\n') }];
+  const second = conversationTurn('second', 1);
+  const legacyLines = feedLines({ ...first, threadId: undefined }, epoch, 60);
+  const legacyFeed = scrollFeed(legacyLines, 8, undefined, -20, 16, legacyLines.length);
+  const state: CodexLiveState = { jobs: [conversationTurn('other', 2, 'running', 'other'), second, first],
+    selectedId: 'first', nowMs: epoch, feeds: { first: { ...legacyFeed, columns: 60, rows: 8 } } };
+  seed(on, state);
+  const writes = track(on);
+  const normalized = normalizeSessions(state);
+  expect(normalized.selectedId).toBe('thread:shared');
+  expect(normalized.feeds?.['thread:shared']?.anchor?.source).toBe('job:first:event-1-body');
+  expect(normalizeSessions(normalized)).toEqual(normalized);
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props });
+  expect((await ui.find({ key: 'thread:shared' }))?.text).toContain('❯ ⏺ Euclid');
+  expect((await ui.find({ key: 'transcript' }))?.text).toContain('Old line');
+  expect(await ui.find({ key: 'jump-bottom' })).not.toBe(undefined);
+  expect(writes.length).toBe(0);
+  await $.ui.scroll(move(-1, 16));
+  expect(writes.at(-1)?.selectedId).toBe('thread:shared');
+  expect(writes.at(-1)?.feeds?.['thread:shared']?.following).toBe(false);
+  expect(writes.at(-1)?.feeds?.first).toBe(undefined);
+  expect(selectedJob({ ...state, selectedId: 'removed' })?.id).toBe('thread:other');
+  await ui.unmount();
+});
+
+test('combined transcript anchors survive follow-ups, repeated sequence numbers and resizing', () => {
+  const first = conversationTurn('first', 0);
+  first.events = Array.from({ length: 30 }, (_, seq) => ({ seq, type: 'agentMessage', body: `First turn message ${seq}` }));
+  const before = groupedSessions([first])[0]!;
+  const lines = feedLines(before, epoch, 60);
+  const stopped = scrollFeed(lines, 8, undefined, -20, 16, lines.length);
+  const next = groupedSessions([conversationTurn('second', 1), first])[0]!;
+  const nextLines = feedLines(next, epoch, 60);
+  expect(new Set(nextLines.map(line => line.key)).size).toBe(nextLines.length);
+  const reconciled = reconcileFeed(before, next, stopped, epoch);
+  expect(reconciled.following).toBe(false);
+  expect(reconciled.anchor).toEqual(stopped.anchor);
+  expect(feedWindow(nextLines, 8, reconciled).newLines > 0).toBe(true);
+  expect(feedWindow(feedLines(next, epoch + 5000, 40), 8, reconciled).view.anchor?.source).toBe(stopped.anchor?.source);
+  const following = reconcileFeed(before, next, { feedOffset: 0, following: true, seenLines: 0 }, epoch);
+  expect(following.following).toBe(true);
+  expect(feedWindow(nextLines, 8, following).lines.at(-1)?.key).toBe(nextLines.at(-1)?.key);
+});
+
+test('selected-session turns share one serialized event budget and other sessions keep summaries', () => {
+  const jobs = Array.from({ length: 4 }, (_, n) => {
+    const job = conversationTurn(`turn-${n}`, n, 'running', n === 3 ? 'other' : 'shared');
+    job.events = Array.from({ length: 200 }, (_, seq) => ({ seq, type: 'agentMessage', body: 'x'.repeat(4000) }));
+    return job;
+  });
+  const state = boundState({ jobs: [...jobs].reverse(), selectedId: 'turn-0', nowMs: epoch });
+  expect(state.selectedId).toBe('thread:shared');
+  expect(state.jobs.filter(job => job.threadId === 'shared').every(job => job.detailsLoaded)).toBe(true);
+  expect(state.jobs.find(job => job.id === 'turn-3')).toMatchObject({ events: [], detailsLoaded: false });
+  expect(state.jobs.flatMap(job => job.events).reduce((size, event) => size + JSON.stringify(event).length, 0) <= 450000).toBe(true);
+  expect(JSON.stringify(state).length < 900000).toBe(true);
+  expect(state.jobs.find(job => job.id === 'turn-0')?.events[0]?.body).toBe('…');
+  expect(state.jobs.find(job => job.id === 'turn-2')?.events.at(-1)?.body?.length).toBe(4000);
+  expect(feedItems(selectedJob(state)!, epoch).filter(item => item.key.startsWith('job-header')).length).toBe(3);
+});
+
+test('23 turns retain twenty headers, five detailed turns and a subtle omission notice', async ($, on) => {
+  const jobs = Array.from({ length: 23 }, (_, n) => conversationTurn(`turn-${n}`, n, 'completed'));
+  const state = boundState({ jobs, selectedId: 'thread:shared', nowMs: epoch,
+    feeds: { 'thread:shared': { feedOffset: 0, following: false, seenLines: 1000 } } });
+  const selected = selectedJob(state)!;
+  expect(selected.turnCount).toBe(23);
+  expect(selected.turns.map(job => job.id)).toEqual(jobs.slice(3).map(job => job.id));
+  expect(selected.turns.filter(job => job.detailsLoaded).map(job => job.id)).toEqual(jobs.slice(-5).map(job => job.id));
+  expect(selected.turns.slice(0, 15).every(job => job.detailsOmitted && job.events.length === 0)).toBe(true);
+  expect(jobRow(selected, true, 100, epoch).meta).toContain('23 turns');
+  const items = feedItems(selected, epoch);
+  expect(items[0]).toMatchObject({ title: '3 earlier turns not shown', color: 'subtle', notice: true });
+  expect(items.filter(item => item.key.startsWith('job-header')).length).toBe(20);
+  expect(items.filter(item => item.markdown !== undefined).map(item => item.markdown))
+    .toEqual(jobs.slice(-5).map(job => job.events[0]!.body));
+  expect(items.some(item => item.title === 'Loading transcript…')).toBe(false);
+  expect(feedLines(selected, epoch, 100)[0]?.spans).toEqual([{ text: '3 earlier turns not shown', color: 'subtle' }]);
+  seed(on, state);
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live',
+    props: { ...props, bodyColumns: 100 } });
+  expect((await ui.find({ key: 'thread:shared' }))?.text).toContain('23 turns');
+  expect((await ui.find({ key: 'earlier-turns' }))?.text).toBe('3 earlier turns not shown');
+  await ui.unmount();
+});
+
+test('turn retention protects old active turns and the latest turn before applying its twenty-turn limit', () => {
+  const jobs = Array.from({ length: 30 }, (_, n) => conversationTurn(`turn-${n}`, n, n === 0 ? 'running' : 'completed'));
+  const state = boundState({ jobs, selectedId: 'thread:shared', nowMs: epoch });
+  expect(state.jobs.length).toBe(20);
+  expect(state.jobs.some(job => job.id === 'turn-0')).toBe(true);
+  expect(state.jobs.some(job => job.id === 'turn-29')).toBe(true);
+  expect(state.jobs.filter(job => job.detailsLoaded).length).toBe(5);
+  const active = jobs.map(job => ({ ...job, status: 'running', completedAt: '' }));
+  const protectedState = boundState({ jobs: active, selectedId: 'thread:shared', nowMs: epoch });
+  expect(protectedState.jobs.length).toBe(30);
+  expect(protectedState.jobs.every(job => job.active)).toBe(true);
+  expect(protectedState.jobs.filter(job => job.detailsLoaded).length).toBe(5);
+});
+
+test('global state safety evicts finished sessions after exhausting removable history and protects active jobs', () => {
+  const jobs = Array.from({ length: 900 }, (_, n) => ({
+    ...conversationTurn(`session-${n}`, n, 'completed', `thread-${n}`), label: 'x'.repeat(1000),
+  }));
+  const active = { ...conversationTurn('active', -1), threadId: 'active', label: 'y'.repeat(1000) };
+  const state = boundState({ jobs: [active, ...jobs], selectedId: 'thread:thread-899', nowMs: epoch });
+  expect(JSON.stringify(state).length < 900000).toBe(true);
+  expect(state.jobs.length < jobs.length).toBe(true);
+  expect(state.jobs.some(job => job.id === 'session-0')).toBe(false);
+  expect(state.jobs.some(job => job.id === 'session-899')).toBe(true);
+  expect(state.jobs.some(job => job.id === 'active' && job.active)).toBe(true);
 });

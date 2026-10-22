@@ -5,8 +5,16 @@ status, elapsed time, model/effort, messages, commands, file changes, tool calls
 plans and pending questions in Claude Code’s transcript style: a bullet, bold tool
 name and indented result. Messages use light inline styling for bold, code,
 headings, lists and links; fenced code and tables stay on one row per source line.
-Status colours follow your theme. Select a job row to view it when the session
-has multiple jobs.
+Status colours follow your theme. Select a session row to view its conversation.
+
+Jobs in this Claude session that share a Codex `threadId` appear as one session,
+including `task --thread` and `task --continue` follow-ups. Its row shows the
+latest turn's summary, status and elapsed time, plus a turn count when it fits.
+Selecting it shows each turn's header and activity in creation order; follow-ups
+preserve selection and following. The latest turn controls the footer, questions
+and lifecycle. Clear finished hides whole finished sessions, and a new follow-up
+reveals their history again. Jobs without a thread ID stay separate until one is
+known; saved job selections and scroll positions migrate to their session.
 
 Install from the Duet marketplace with `/plugin install codex-live@duet`, then
 use `/codex-live` to open and focus the pane at any terminal width. New active
@@ -14,8 +22,8 @@ jobs also request a pane automatically; Claude Code leaves it undrawn below
 its automatic-opening width threshold. Closing it keeps it closed until a new
 active job appears.
 
-The pane pins up to three job rows above the feed: newest active jobs first,
-then the selected job (even from older history), then jobs ended within the last
+The pane pins up to three session rows above the feed: newest active sessions first,
+then the selected session (even from older history), then sessions ended within the last
 two minutes, ordered by newest end. Done, failed, blocked, needs-input and stopped/cancelled
 jobs all use this grace period. Its end time is `completedAt`; if missing or
 invalid, the poller caches the time it first observed the job ended. That fallback
@@ -23,12 +31,12 @@ time is cached and persisted with session identity so reloads preserve the grace
 no jobs are active. At two minutes an unselected ended job moves into history;
 selection, its transcript and the retained jobs are unchanged.
 
-`+N more` counts omitted jobs. Its first press expands up to ten rows: active
-jobs first, the collapsed rows, then the remaining history newest first. Further
-presses page through every retained job, then collapse after the final page. When
-all jobs fit, `− Show fewer` collapses immediately. Very short panes put a
-`+N more` control in the footer (hotkey `j`) that cycles through all jobs. Selecting history keeps that job in the collapsed header. A rule
-separates the list from the feed; with one job its identity
+`+N more` counts omitted sessions. Its first press expands up to ten rows: active
+sessions first, the collapsed rows, then the remaining history newest first. Further
+presses page through every retained session, then collapse after the final page. When
+all sessions fit, `− Show fewer` collapses immediately. Very short panes put a
+`+N more` control in the footer (hotkey `j`) that cycles through all sessions. Selecting history keeps that session in the collapsed header. A rule
+separates the list from the feed; with one single-turn session its identity
 appears in the footer instead. The footer always shows the selected job's status,
 age and tool count (waiting jobs show who they await). Running jobs animate once
 per second while the pane is open. Queued jobs say `Queued` with a stationary
@@ -39,16 +47,24 @@ The plugin scrolls the feed itself. Wheel/arrows move by rows, page keys by the
 feed window's height, and Home/End go to its start/end. Wheels over the pinned
 header or footer leave the feed alone. Scrolling up stops following; the footer's
 `↓ N new · Jump to bottom` button (hotkey `b` while focused) resumes it. Selecting
-a job also resumes following. A plain hotkey button has the engine's `b: ` prefix;
+a session also resumes following. A plain hotkey button has the engine's `b: ` prefix;
 the layout reserves those cells. Narrow footers shorten status before shortening
 the button, down to `↓ Jump`.
 
-Retention keeps the newest 20 jobs plus any active or selected jobs outside
-that group. Evicted markers can be rediscovered. Only the selected job has a
-transcript in view state; other jobs keep header summaries. The selected view
-keeps up to 200 collapsed events and displays the last 80 items with only the
-latest todo plan. Serialized events have a 450,000-character budget, shortening
+Retention keeps the newest 20 sessions plus any active or selected sessions outside
+that group. Each session retains up to 20 turns (active turns and the latest turn
+are always protected), with full activity limited to the latest 5 turns of the
+selected session. Rows still show the total turn count, and capped transcripts
+start with an earlier-turns notice; older retained turns show only their headers.
+Evicted markers can be rediscovered. Each detailed turn keeps up to 200 collapsed events and displays the
+last 80 items with only its latest todo plan. Serialized events across all selected
+turns share a 450,000-character budget, shortening
 oldest message bodies first; the whole state has a 900,000-character ceiling.
+If needed, the pane drops the oldest finished, unselected turns, then finished
+unselected sessions, to fit that ceiling. Polling hydrates before composing a
+single candidate view and reuses it for state publication; a concurrent pane
+interaction triggers one extra composition from the latest view state in the same
+update, preserving the interaction without delaying new jobs or status updates.
 Full parsed job data stays in the private poll cache for selection. A rejected
 state update shows `Pane update failed · <reason>` in the pinned footer until a
 successful write and logs the failure at debug level.

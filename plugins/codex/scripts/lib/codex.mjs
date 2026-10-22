@@ -33,6 +33,8 @@ import { itemActivity, planActivity } from "./activity.mjs";
  *   messages: Array<{ lifecycle: string, phase: string | null, text: string }>,
  *   fileChanges: ThreadItem[],
  *   commandExecutions: ThreadItem[],
+ *   blockers: ReturnType<typeof toolCallBlockers>,
+ *   activityStarts: Map<string, number>,
  *   safeProgress: boolean,
  *   onProgress: ProgressReporter | null
  * }} TurnCaptureState

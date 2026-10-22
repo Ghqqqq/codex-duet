@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0
+
+- codex-live groups follow-ups: jobs on the same Codex thread (`task --thread`, `task --continue`) now appear as one row, labelled with the turn count, and selecting it shows every turn in order, each under its own header. Status, footer and pending question follow the latest turn; Clear finished, retention and auto-open work per conversation. State stays bounded: at most 20 turns per conversation are kept and the latest 5 show full activity; unchanged polls compose the view once, and a concurrent click or scroll is merged instead of skipped.
+
+- `npm run build` (the TypeScript check that pull-request CI runs) passes again. The fixes are JSDoc annotations only; runtime behaviour is unchanged.
+
 ## 1.1.0
 
 - Versioning: Duet now uses its own semantic versions, starting with 1.1.0. Earlier releases were labelled `1.0.6-isolated.N`; those headings below keep their original names.

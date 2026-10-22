@@ -31,6 +31,7 @@ export type CodexLiveEvent = {
 
 export type CodexLiveJob = {
   id: string;
+  threadId?: string;
   label: string;
   agentName?: string;
   status: string;
@@ -50,9 +51,14 @@ export type CodexLiveJob = {
   events: CodexLiveEvent[];
   detailsUnavailable: boolean;
   detailsLoaded?: boolean;
+  // An older retained turn intentionally has a header but no transcript.
+  detailsOmitted?: boolean;
   toolUses?: number;
   lastUpdateMs?: number;
 };
+
+// Derived from flat persisted jobs; all display fields belong to the latest turn.
+export type CodexLiveSession = CodexLiveJob & { turns: CodexLiveJob[]; turnCount: number };
 
 export type CodexLiveFeedView = {
   feedOffset: number;
@@ -68,8 +74,11 @@ export type CodexLiveFeedView = {
 
 export type CodexLiveState = {
   jobs: CodexLiveJob[];
+  // Thread session ID, or a legacy/unthreaded job ID.
   selectedId: string | null;
   nowMs: number;
+  // Total observed turns, including turns omitted from the bounded view.
+  turnCounts?: Record<string, number>;
   // Optional so a persisted view from an older plugin still follows the end.
   feeds?: Record<string, CodexLiveFeedView>;
   jobsExpanded?: boolean;

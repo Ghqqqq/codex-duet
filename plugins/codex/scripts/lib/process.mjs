@@ -26,6 +26,7 @@ export function spawnOwned(command, args, options = {}) {
 export function spawnDetached(command, args = [], options = {}) {
   if (process.env.CODEX_COMPANION_TEST_MODE === "1") options = { ...options, env: { ...process.env, ...options.env } };
   try {
+    /** @type {import("node:child_process").StdioOptions} */
     const launcherStdio = ["ignore", "pipe", "pipe"];
     const requestedStdio = options.stdio ?? "ignore";
     const targetStdio = (Array.isArray(requestedStdio) ? requestedStdio : [requestedStdio, requestedStdio, requestedStdio]).map((entry, index) => {

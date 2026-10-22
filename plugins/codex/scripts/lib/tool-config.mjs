@@ -204,6 +204,7 @@ function cuaDiff(before, after) {
   });
 }
 
+/** @param {{ env?: NodeJS.ProcessEnv, dryRun?: boolean, cuaTemplate?: string, chatgptResources?: string, profile?: string, replaceCua?: boolean }} [options] */
 export function syncToolConfig({ env = process.env, dryRun = false, cuaTemplate, chatgptResources, profile = "chrome", replaceCua = false } = {}) {
   if (!["chrome", "codex-app"].includes(profile)) throw new Error("--profile must be chrome or codex-app.");
   if (profile === "codex-app" && chatgptResources) throw new Error("--chatgpt-resources is only supported by the chrome profile.");
@@ -286,6 +287,7 @@ export function syncToolConfig({ env = process.env, dryRun = false, cuaTemplate,
   // partial) server without discovery. An explicit profile/replace opts in below.
   if (resultingCua !== undefined && profile === "chrome" && !replaceCua) present.push("mcp_servers.cua_repl");
   else {
+    /** @type {typeof buildCuaConfig} */
     const builder = profile === "codex-app" ? buildCodexAppCuaConfig : buildCuaConfig;
     const cua = builder({ ...paths, env, source, cuaTemplate, chatgptResources });
     const desired = { ...cua.settings, env: cua.env };

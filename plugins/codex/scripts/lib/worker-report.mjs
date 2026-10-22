@@ -63,6 +63,7 @@ export function taskArtifactPaths(workspaceRoot, jobId) {
 // Structured blocker: { code, app? | tabId?, sessionId?, closed?, message? }; null fields are dropped.
 const blockerEntry = blocker => Object.fromEntries(Object.entries({ ...blocker, ...(typeof blocker.message === "string" ? { message: shorten(blocker.message) } : {}) }).filter(([, v]) => v !== null && v !== undefined));
 export const REPORT_LINE_BUDGET = 60;
+/** @type {[string, string | null, number][]} */
 const BUDGET_LISTS = [["touchedFiles", "touchedFilesOmitted", 1], ["keyFindings", null, 1], ["verification", null, 1], ["claimedVerification", null, 1], ["preExistingChanges", "preExistingChangesOmitted", 1], ["assumptions", null, 0], ["blockers", "blockersOmitted", 1]];
 const reportLines = report => `${JSON.stringify(report, null, 2)}\n`.split("\n").length;
 // Trim lists (longest first, blockers last) until the pretty-printed report

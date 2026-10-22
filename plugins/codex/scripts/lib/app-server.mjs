@@ -62,6 +62,11 @@ function brokerClosedError() {
 }
 
 class AppServerClientBase {
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  abortTimer;
+  /** @type {{ appServerInitialize: number } | undefined} */
+  startupTimings;
+
   constructor(cwd, options = {}) {
     this.cwd = cwd;
     this.options = options;
@@ -76,7 +81,8 @@ class AppServerClientBase {
     this.transport = "unknown";
     this.serverRequestHandler = null;
     this.serverRequestPolicy = { approvedBrowserOrigins: normalizeBrowserOrigins(options.approvedBrowserOrigins ?? []), approvedComputerApps: normalizeBundleIds(options.approvedComputerApps ?? []), threadId: null, turnId: null };
-    this.abortHandler = () => { this.abortTimer ??= setTimeout(() => { void this.close(); }, 4500); };
+    // Concrete transports provide close().
+    this.abortHandler = () => { this.abortTimer ??= setTimeout(() => { void /** @type {any} */ (this).close(); }, 4500); };
     options.signal?.addEventListener("abort", this.abortHandler);
 
     this.exitPromise = new Promise((resolve) => {

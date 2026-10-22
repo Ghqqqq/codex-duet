@@ -1,6 +1,6 @@
 import type { ThemeKey } from 'claude-code';
-import type { CodexLiveEvent, CodexLiveFeedView, CodexLiveJob, CodexLiveState } from '../types';
-import { clean, cleanBody, elapsed, jobLifecycle, taskText, visibleJobs } from './model';
+import type { CodexLiveEvent, CodexLiveFeedView, CodexLiveJob, CodexLiveSession, CodexLiveState } from '../types';
+import { clean, cleanBody, DETAIL_TURN_LIMIT, elapsed, jobLifecycle, sessionForId, taskText, turnKey, visibleSessions } from './model';
 
 import { cells, clusters, fit, width } from './text';
 export { fit, width } from './text';
@@ -45,14 +45,17 @@ export function jobState(job: CodexLiveJob): { word: string; color: ThemeKey } {
   }
 }
 
-export function jobRow(job: CodexLiveJob, selected: boolean, columns: number, now: number) {
+export function jobRow(job: CodexLiveJob | CodexLiveSession, selected: boolean, columns: number, now: number) {
   const selector = fit(`${selected ? '❯' : ' '} `, columns);
   const { word } = jobState(job);
   const glyph = ({ Running: '⏺', Queued: '…', 'Needs input': '?', 'Waiting for Claude': '?', Done: '✓', Failed: '✗',
     Blocked: '✗', Stopped: '■' } as Record<string, string>)[word] ?? '·';
   const bullet = fit(`${glyph} `, Math.max(0, columns - width(selector)));
   const available = Math.max(0, columns - width(selector + bullet));
-  const meta = fit(` ${elapsed(job, now)}`, Math.max(0, available - Math.min(12, Math.ceil(available / 2))));
+  const metaColumns = Math.max(0, available - Math.min(12, Math.ceil(available / 2)));
+  const age = ` ${elapsed(job, now)}`;
+  const count = 'turns' in job && job.turnCount > 1 ? ` ${job.turnCount} turns ·${age}` : age;
+  const meta = fit(width(count) <= metaColumns ? count : age, metaColumns);
   const labelColumns = available - width(meta);
   const label = fit(job.agentName || taskText(job.label), labelColumns);
   const summary = job.agentName && labelColumns > width(label) + 2
@@ -63,6 +66,7 @@ export function jobRow(job: CodexLiveJob, selected: boolean, columns: number, no
 export type ResultLine = { text: string; color: ThemeKey; bold?: boolean; strikethrough?: boolean };
 export type FeedItem = {
   key: string;
+  notice?: boolean;
   title: string;
   bold?: string;
   maxRows?: number;
@@ -189,13 +193,20 @@ export function activityItems(job: CodexLiveJob): CodexLiveEvent[] {
   return events.filter(event => event.type !== 'plan' || event === latestPlan).slice(-80);
 }
 
-export function feedItems(job: CodexLiveJob, now: number): FeedItem[] {
-  const items = [headerItem(job, now), ...activityItems(job).map(event => eventItem(event, job, now))];
-  if (jobLifecycle(job).active && job.question) items.push({ key: 'pending-question', title: 'Waiting for Claude', color: 'warning',
-    results: [{ text: job.question.text, color: 'subtle' },
-      ...job.question.options.map((option, i): ResultLine => ({ text: `${i + 1}. ${option}`, color: 'subtle' }))] });
-  if (job.detailsLoaded === false) items.push({ key: 'loading', title: 'Loading transcript…', color: 'subtle', results: [] });
-  return items;
+export function feedItems(job: CodexLiveJob | CodexLiveSession, now: number): FeedItem[] {
+  const turns = 'turns' in job ? job.turns : [job];
+  const omitted = 'turns' in job ? Math.max(0, job.turnCount - turns.length) : 0;
+  const notice: FeedItem[] = omitted ? [{ key: 'earlier-turns', notice: true,
+    title: `${omitted} earlier ${omitted === 1 ? 'turn' : 'turns'} not shown`, color: 'subtle', results: [] }] : [];
+  return [...notice, ...turns.flatMap((turn, index) => {
+    const detailed = index >= turns.length - DETAIL_TURN_LIMIT && !turn.detailsOmitted;
+    const items = [headerItem(turn, now), ...(detailed ? activityItems(turn).map(event => eventItem(event, turn, now)) : [])];
+    if (index === turns.length - 1 && jobLifecycle(turn).active && turn.question) items.push({ key: 'pending-question', title: 'Waiting for Claude', color: 'warning',
+      results: [{ text: turn.question.text, color: 'subtle' },
+        ...turn.question.options.map((option, i): ResultLine => ({ text: `${i + 1}. ${option}`, color: 'subtle' }))] });
+    if (detailed && turn.detailsLoaded === false && !turn.detailsUnavailable) items.push({ key: 'loading', title: 'Loading transcript…', color: 'subtle', results: [] });
+    return turn.threadId?.trim() ? items.map(item => ({ ...item, key: turnKey(item.key, turn.id) })) : items;
+  })];
 }
 
 export type Span = { text: string; color?: ThemeKey; bold?: boolean; strikethrough?: boolean; start?: number; end?: number };
@@ -328,10 +339,15 @@ export function feedLines(job: CodexLiveJob, now: number, columns: number): Feed
   const lines: FeedLines = [];
   const sources: Record<string, string> = {};
   for (const item of feedItems(job, now)) {
+    if (item.notice) {
+      lines.push({ key: item.key, source: 'job-header-omitted', start: 0, end: item.title.length,
+        spans: [{ text: fit(item.title, columns), color: 'subtle' }] });
+      continue;
+    }
     const source = `${item.key}-body`;
     const titleSpans: Span[] = item.bold
-      ? [{ text: item.title.slice(0, item.bold.length), bold: true }, { text: item.title.slice(item.bold.length), color: item.key === 'job-header' ? 'subtle' : undefined }]
-      : [{ text: item.title, color: item.key === 'pending-question' ? 'warning' : 'text' }];
+      ? [{ text: item.title.slice(0, item.bold.length), bold: true }, { text: item.title.slice(item.bold.length), color: item.key.startsWith('job-header') ? 'subtle' : undefined }]
+      : [{ text: item.title, color: item.key.endsWith('pending-question') ? 'warning' : 'text' }];
     const message = item.markdown !== undefined ? messageLayout(item.markdown, Math.max(0, columns - 2)) : undefined;
     const body = message?.rows ?? laid(wrapSpans(titleSpans, Math.max(0, columns - 2), '', '', item.maxRows));
     sources[source] = message?.text ?? item.title;
@@ -358,9 +374,9 @@ export function feedLines(job: CodexLiveJob, now: number, columns: number): Feed
   return lines;
 }
 
-export function selectedJob(state: CodexLiveState): CodexLiveJob | undefined {
-  const jobs = visibleJobs(state).sort(newestJob);
-  return jobs.find(job => job.id === state.selectedId) ?? jobs.find(job => jobLifecycle(job).active) ?? jobs[0];
+export function selectedJob(state: CodexLiveState): CodexLiveSession | undefined {
+  const jobs = visibleSessions(state).sort(newestJob);
+  return sessionForId(jobs, state.selectedId) ?? jobs.find(job => jobLifecycle(job).active) ?? jobs[0];
 }
 
 const newestJob = (a: CodexLiveJob, b: CodexLiveJob) =>
@@ -374,15 +390,16 @@ export function recentEndedJobIds(jobs: readonly CodexLiveJob[], now: number,
 
 export function headerLayout(state: CodexLiveState, selected: CodexLiveJob, bodyRows: number) {
   // In tiny windows reserve the footer and one feed row before the list.
-  state = { ...state, jobs: visibleJobs(state) };
-  const clear = state.jobs.some(job => jobLifecycle(job).finished);
+  const sessions = visibleSessions(state);
+  selected = sessionForId(sessions, selected.id) ?? selected;
+  const clear = sessions.some(job => jobLifecycle(job).finished);
   const room = Math.max(0, bodyRows - 2);
-  if ((state.jobs.length < 2 && !clear) || room < 2) return { jobs: [], toggle: false, more: 0, rows: 0 };
-  const newest = [...state.jobs].sort(newestJob);
+  if ((sessions.length < 2 && !clear && (sessions[0]?.turnCount ?? 0) < 2) || room < 2) return { jobs: [], toggle: false, more: 0, rows: 0 };
+  const newest = [...sessions].sort(newestJob);
   // The poller computes this list against its actual tick, even when no jobs
   // remain active. Older persisted states can still use explicit completedAt.
-  const recent = (state.recentEndedIds ?? recentEndedJobIds(state.jobs, state.nowMs))
-    .map(id => state.jobs.find(job => job.id === id)).filter((job): job is CodexLiveJob => !!job);
+  const recent = (state.recentEndedIds ?? recentEndedJobIds(sessions, state.nowMs))
+    .map(id => sessionForId(sessions, id)).filter((job): job is CodexLiveSession => !!job && jobLifecycle(job).finished);
   const active = newest.filter(job => jobLifecycle(job).active);
   const unique = (jobs: CodexLiveJob[]) => jobs.filter((job, i) => jobs.findIndex(other => other.id === job.id) === i);
   const priority = unique([...active, selected, ...recent]);
@@ -403,14 +420,14 @@ export function headerLayout(state: CodexLiveState, selected: CodexLiveJob, body
   const limit = state.jobsExpanded ? 10 : 3;
   let jobs = take(candidates, Math.min(limit, room - (clear ? 2 : 1)));
   // In expanded mode keep "Show fewer" when all history is visible, never +0.
-  const showToggle = jobs.length < state.jobs.length || !!state.jobsExpanded && collapsed.length < state.jobs.length;
+  const showToggle = jobs.length < sessions.length || !!state.jobsExpanded && collapsed.length < sessions.length;
   if (showToggle || clear) jobs = take(candidates, Math.min(limit, room - 2));
   const capacity = Math.max(1, Math.min(10, room - 2));
   const pageCount = Math.ceil(candidates.length / capacity);
   const page = Math.min(Math.max(0, state.historyPage ?? 0), Math.max(0, pageCount - 1));
   if (state.jobsExpanded) jobs = candidates.slice(page * capacity, (page + 1) * capacity);
-  if (!jobs.length || room < 3 && (showToggle || clear)) return { jobs: [], toggle: false, more: state.jobs.length, rows: 0, pageCount: 0 };
-  return { jobs, toggle: showToggle, clear, more: state.jobs.length - jobs.length,
+  if (!jobs.length || room < 3 && (showToggle || clear)) return { jobs: [], toggle: false, more: sessions.length, rows: 0, pageCount: 0 };
+  return { jobs, toggle: showToggle, clear, more: sessions.length - jobs.length,
     rows: jobs.length + 1 + (showToggle || clear ? 1 : 0), pageCount, page };
 
 }
@@ -488,7 +505,7 @@ export function footerLayout(job: CodexLiveJob, state: CodexLiveState, columns: 
   const spinner = ['·', '✢', '✳', '✶', '✻', '✽'][(state.spinnerTick ?? 0) % 6];
   let status = word === 'Running' ? `${spinner} Running… ${age} · ${uses}`
     : word === 'Waiting for Claude' ? `? Waiting for Claude · ${age}` : `${word === 'Queued' ? '…' : word === 'Needs input' ? '?' : '⏺'} ${word} · ${uses} · ${age}`;
-  if (visibleJobs(state).length === 1) status += ` · ${job.agentName || taskText(job.label)}`;
+  if (visibleSessions(state).length === 1) status += ` · ${job.agentName || taskText(job.label)}`;
   const stale = job.detailsUnavailable ? `⚠ stale · last update ${job.lastUpdateMs === undefined ? 'unknown' : `${Math.max(0, Math.floor((state.nowMs - job.lastUpdateMs) / 1000))}s`} ago` : '';
   if (stale) status = `${stale} · ${status}`;
   const color = stale ? 'warning' : stateColor;

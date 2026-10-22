@@ -1,6 +1,7 @@
 import { test, expect, mock } from 'claude-code/testing';
 import type { EngineInterface, On, PaneOpenArgs, UiScrollArgs } from 'claude-code';
-import { clearFinished, visibleJobs } from '../hooks/model';
+import { boundState, clearFinished, visibleJobs, visibleSessions } from '../hooks/model';
+import { feedItems, feedLines, feedWindow, jobRow, normalizeFeed, scrollFeed, selectedJob } from '../hooks/layout';
 import { createPoller } from '../hooks/poll';
 import type { CodexLiveState } from '../types';
 
@@ -156,6 +157,14 @@ function scrollFixture() {
   const markers: string[] = [];
   const scrolls: UiScrollArgs[] = [];
   const opens: PaneOpenArgs[] = [];
+  const reads: string[] = [];
+  const logs: string[] = [];
+  const statuses: (string | undefined)[] = [];
+  const unreadable = new Set<string>();
+  let observeRead: ((path: string) => void) | undefined;
+  let observeStateGet: (() => void) | undefined;
+  let compositions = 0;
+  const diagnostics = { onCompose: () => { compositions++; } };
   let open = false;
   let focused = false;
   let now = epoch;
@@ -165,7 +174,9 @@ function scrollFixture() {
     ui: {
       panes: async () => open ? [{ id: 'codex-live', isFocused: focused }] : [],
       open: async (args: PaneOpenArgs) => { opens.push(args); open = true; return { isPlaced: true }; },
-      status: () => {},
+      status: (text: string | undefined) => { statuses.push(text); },
+      log: (message: string) => { logs.push(message); },
+      invalidate: () => {},
       scroll: async (args: UiScrollArgs) => { scrolls.push(args); return {}; },
     },
     session: { id: async () => 'session-a' },
@@ -174,15 +185,20 @@ function scrollFixture() {
     fs: {
       exists: async () => true,
       list: async () => markers.map(name => ({ name, kind: 'file' })),
-      read: async (path: string) => files.get(path)!.text,
+      read: async (path: string) => {
+        reads.push(path);
+        observeRead?.(path);
+        if (unreadable.has(path)) throw new Error('Simulated unreadable job');
+        return files.get(path)!.text;
+      },
       stat: async (path: string) => ({ mtimeMs: files.get(path)?.mtime ?? 0, realPath: path }),
     },
     state: {
-      get: async () => ({ value: state, version }),
+      get: async () => { observeStateGet?.(); return { value: state, version }; },
       set: async (_ref: unknown, value: CodexLiveState) => { state = value; return { isSet: true, version: ++version }; },
     },
   };
-  const poll = createPoller(engine as unknown as EngineInterface);
+  const poll = createPoller(engine as unknown as EngineInterface, diagnostics);
   function add(id: string, n = 0) {
     const createdAt = new Date(epoch + n * 1000).toISOString();
     markers.push(`${id}.json`);
@@ -193,7 +209,10 @@ function scrollFixture() {
       id, status: 'running', startedAt: createdAt, activity: [{ seq: 1, type: 'agentMessage', text: 'Working' }],
     }) });
   }
-  return { poll, add, files, scrolls, opens, reload: () => createPoller(engine as unknown as EngineInterface), latest: () => state,
+  return { poll, add, files, scrolls, opens, reads, logs, statuses, unreadable, compositions: () => compositions,
+    onRead: (observer?: (path: string) => void) => { observeRead = observer; },
+    onStateGet: (observer?: () => void) => { observeStateGet = observer; },
+    reload: () => createPoller(engine as unknown as EngineInterface, diagnostics), latest: () => state,
     focus: (value: boolean) => { focused = value; }, close: () => { open = false; },
     advance: (ms: number) => { now += ms; },
   };
@@ -808,4 +827,413 @@ test('evicted history reuses mtimes, drops missing marker memos and detects revi
   expect(jobReads().slice(27)).toEqual(['/jobs/old-1.json']);
   expect(f.latest()?.jobs.map(job => job.id)).toEqual(['old-1']);
   expect(f.latest()?.jobs[0]?.active).toBe(true);
+});
+
+function patchJob(files: Map<string, { text: string; mtime: number }>, id: string, fields: Record<string, unknown>) {
+  const file = files.get(`/jobs/${id}.json`)!;
+  files.set(`/jobs/${id}.json`, { mtime: file.mtime + 1, text: JSON.stringify({ ...JSON.parse(file.text), ...fields }) });
+}
+
+test('a selected following session stays selected and follows a newly auto-opened follow-up', async () => {
+  const f = scrollFixture();
+  f.add('first');
+  patchJob(f.files, 'first', { threadId: 'shared', status: 'completed', completedAt: created(epoch) });
+  await f.poll(true);
+  expect(f.latest().selectedId).toBe('thread:shared');
+  f.latest().feeds = { 'thread:shared': { feedOffset: 0, following: true, seenLines: 0, columns: 60, rows: 8 } };
+  f.close();
+  f.advance(1000);
+  f.add('second', 1);
+  patchJob(f.files, 'second', { threadId: 'shared', activity: [{ seq: 1, type: 'agentMessage', body: 'Follow-up result' }] });
+  await f.poll(true);
+  const state = f.latest();
+  expect(state.selectedId).toBe('thread:shared');
+  expect(visibleSessions(state).length).toBe(1);
+  expect(state.jobs.every(job => job.detailsLoaded && job.events.length === 1)).toBe(true);
+  const feed = state.feeds?.['thread:shared'];
+  expect(feed?.following).toBe(true);
+  const lines = feedLines(selectedJob(state)!, state.nowMs, feed!.columns!);
+  expect(feedWindow(lines, feed!.rows!, feed).lines.at(-1)?.spans.map(span => span.text).join('')).toContain('Follow-up result');
+  expect(f.opens.length).toBe(1);
+  expect(state.autoOpenedJobIds).toEqual(['second']);
+  expect(f.scrolls).toEqual([]);
+});
+
+for (const reload of [false, true]) {
+  test(`a follow-up restores all turns of a cleared session ${reload ? 'after reload' : 'before evicted marker retry'}`, async () => {
+    const f = scrollFixture();
+    for (const [n, id] of ['first', 'second'].entries()) {
+      f.add(id, n - 2);
+      patchJob(f.files, id, { threadId: 'shared', status: 'completed', completedAt: created(epoch) });
+    }
+    await f.poll(true);
+    Object.assign(f.latest(), clearFinished(f.latest(), epoch));
+    await f.poll(true); // Evict hidden turns and discard their raw/full cache.
+    expect(visibleSessions(f.latest())).toEqual([]);
+    const poll = reload ? f.reload() : f.poll;
+    f.advance(1000);
+    f.add('follow-up', 1);
+    patchJob(f.files, 'follow-up', { threadId: 'shared' });
+    await poll(true);
+    expect(f.latest().selectedId).toBe('thread:shared');
+    expect(visibleSessions(f.latest()).length).toBe(1);
+    expect(selectedJob(f.latest())?.turns.map(job => job.id)).toEqual(['first', 'second', 'follow-up']);
+    expect(f.latest().jobs.every(job => job.detailsLoaded && job.events[0]?.text === 'Working')).toBe(true);
+    expect(f.latest().hiddenJobIds).toEqual(['second']);
+    expect(f.opens.length).toBe(1);
+  });
+}
+
+test('polling keeps unthreaded jobs separate then migrates selection and feed when a thread appears', async () => {
+  const f = scrollFixture();
+  f.add('first'); f.add('second', 1); f.add('unthreaded', 2);
+  patchJob(f.files, 'first', { threadId: 'shared' });
+  patchJob(f.files, 'second', { threadId: '' });
+  patchJob(f.files, 'unthreaded', { threadId: '   ' });
+  await f.poll(true);
+  expect(visibleSessions(f.latest()).length).toBe(3);
+  f.latest().selectedId = 'second';
+  f.latest().feeds = {
+    'thread:shared': { feedOffset: 0, following: false, seenLines: 0 },
+    second: { feedOffset: 0, following: true, seenLines: 0, columns: 60, rows: 8 },
+  };
+  patchJob(f.files, 'second', { threadId: 'shared' });
+  await f.poll(true);
+  expect(visibleSessions(f.latest()).map(session => session.id)).toEqual(['unthreaded', 'thread:shared']);
+  expect(f.latest().selectedId).toBe('thread:shared');
+  expect(f.latest().feeds?.['thread:shared']?.following).toBe(true);
+  expect(f.latest().feeds?.second).toBe(undefined);
+  expect(selectedJob(f.latest())?.turns.map(job => job.id)).toEqual(['first', 'second']);
+  expect(f.latest().jobs.filter(job => job.threadId === 'shared').every(job => job.detailsLoaded)).toBe(true);
+  expect(f.opens.length).toBe(1); // Discovering an existing job's thread is not a new job.
+});
+
+test('polling hydrates every selected turn, strips other sessions, and adopts legacy job selection on reload', async () => {
+  const f = scrollFixture();
+  for (const [n, id] of ['a0', 'a1', 'b0', 'b1'].entries()) {
+    f.add(id, n);
+    patchJob(f.files, id, { threadId: id[0], status: 'completed', completedAt: created(epoch + n * 1000) });
+  }
+  await f.poll(true);
+  expect(f.latest().selectedId).toBe('thread:b');
+  expect(f.latest().jobs.filter(job => job.threadId === 'b').every(job => job.detailsLoaded && job.events.length === 1)).toBe(true);
+  expect(f.latest().jobs.filter(job => job.threadId === 'a').every(job => !job.detailsLoaded && !job.events.length)).toBe(true);
+  f.latest().selectedId = 'a0';
+  f.latest().feeds = { a0: { feedOffset: 0, following: true, seenLines: 0 } };
+  await f.reload()(true);
+  expect(f.latest().selectedId).toBe('thread:a');
+  expect(f.latest().feeds?.['thread:a']?.following).toBe(true);
+  expect(f.latest().jobs.filter(job => job.threadId === 'a').every(job => job.detailsLoaded && job.events.length === 1)).toBe(true);
+  expect(f.latest().jobs.filter(job => job.threadId === 'b').every(job => !job.detailsLoaded && !job.events.length)).toBe(true);
+});
+
+test('retention counts twenty sessions, protects active and selected sessions and restores evicted turns', async () => {
+  const f = scrollFixture();
+  const addTurn = (id: string, threadId: string, n: number, status = 'completed') => {
+    f.add(id, n);
+    patchJob(f.files, id, { threadId, status, completedAt: status === 'completed' ? created(epoch + n * 1000) : undefined });
+  };
+  addTurn('active-old', 'active', -100, 'running');
+  addTurn('selected-0', 'selected', -99);
+  addTurn('selected-1', 'selected', -98);
+  await f.poll(true);
+  f.latest().selectedId = 'thread:selected';
+  for (let n = 0; n < 21; n++) {
+    // An old turn still marked running must not protect a finished session.
+    addTurn(`turn-${n}-0`, `session-${n}`, n * 2, n === 0 ? 'running' : 'completed');
+    addTurn(`turn-${n}-1`, `session-${n}`, n * 2 + 1);
+  }
+  // Seed seen IDs to keep the deliberately stale running turn from auto-selecting.
+  f.latest().seenJobIds!.push('turn-0-0');
+  await f.poll(true);
+  expect(visibleSessions(f.latest()).length).toBe(22);
+  expect(f.latest().jobs.length).toBe(43);
+  expect(f.latest().selectedId).toBe('thread:selected');
+  expect(f.latest().jobs.some(job => job.threadId === 'session-0')).toBe(false);
+  expect(f.latest().jobs.some(job => job.id === 'active-old')).toBe(true);
+  expect(f.latest().jobs.filter(job => job.threadId === 'selected').every(job => job.detailsLoaded)).toBe(true);
+  addTurn('follow-up', 'session-0', 50, 'running');
+  await f.poll(true); // Still before the evicted marker retry deadline.
+  expect(f.latest().selectedId).toBe('thread:session-0');
+  expect(selectedJob(f.latest())?.turns.map(job => job.id)).toEqual(['turn-0-0', 'turn-0-1', 'follow-up']);
+  expect(selectedJob(f.latest())?.turns.every(job => job.detailsLoaded && job.events.length === 1)).toBe(true);
+});
+
+test('poll status and recent-end eligibility use the latest turn of each session', async ($, on) => {
+  const f = fixture(on);
+  f.add('old', 'running'); f.add('latest', 'waiting', 1);
+  patchJob(f.files, 'old', { threadId: 'shared', agentName: 'Euclid' });
+  patchJob(f.files, 'latest', { threadId: 'shared', agentName: 'Euclid', pendingQuestion: { text: 'Continue?' } });
+  await $.session.start(start);
+  await f.clock.advance(1000);
+  expect(f.statuses).toEqual(['Euclid · 1 waiting for answer']);
+  expect(f.latest()?.selectedId).toBe('thread:shared');
+  patchJob(f.files, 'latest', { status: 'completed', completedAt: created(epoch + 1000) });
+  await f.clock.advance(1000);
+  expect(f.statuses.at(-1)).toBe(undefined);
+  expect(f.latest()?.recentEndedIds).toEqual(['thread:shared']);
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
+  await ui.press({ key: 'clear-finished' });
+  expect(visibleSessions(f.latest()!)).toEqual([]);
+  expect(f.latest()?.selectedId).toBe(null);
+  await ui.unmount();
+});
+
+test('a selected session receiving a follow-up keeps focus when another worker starts in the same poll', async () => {
+  const f = scrollFixture();
+  f.add('first');
+  patchJob(f.files, 'first', { threadId: 'shared', status: 'completed', completedAt: created(epoch) });
+  await f.poll(true);
+  f.latest().feeds = { 'thread:shared': { feedOffset: 0, following: true, seenLines: 0, columns: 60, rows: 8 } };
+  f.add('follow-up', 1);
+  patchJob(f.files, 'follow-up', { threadId: 'shared' });
+  f.add('other-worker', 2);
+  await f.poll(true);
+  expect(f.latest().selectedId).toBe('thread:shared');
+  expect(f.latest().feeds?.['thread:shared']?.following).toBe(true);
+  expect(f.latest().jobs.find(job => job.id === 'other-worker')?.detailsLoaded).toBe(false);
+  expect(f.latest().autoOpenedJobIds?.length).toBe(2);
+  expect(f.opens.length).toBe(1);
+});
+
+test('twenty long-summary conversations stay below budget and publish an active follow-up with its full turn count', async () => {
+  const f = scrollFixture();
+  const activity = Array.from({ length: 200 }, (_, seq) => ({ seq, type: 'agentMessage', body: 'x'.repeat(4000) }));
+  for (let session = 0; session < 20; session++) for (let turn = 0; turn < 23; turn++) {
+    const id = `s${session}-t${turn}`;
+    f.add(id, session * 23 + turn - 500);
+    const markerPath = `/home/duet/sessions/session-a/${id}.json`;
+    const marker = f.files.get(markerPath)!;
+    f.files.set(markerPath, { ...marker, text: JSON.stringify({ ...JSON.parse(marker.text), summary: 'S'.repeat(1000) }) });
+    patchJob(f.files, id, { threadId: `session-${session}`, status: 'completed', completedAt: created(epoch),
+      activity: session === 19 && turn >= 18 ? activity : [{ seq: 1, type: 'agentMessage', body: `Turn ${turn}` }] });
+  }
+  await f.poll(true);
+  expect(f.logs).toEqual([]);
+  expect(visibleSessions(f.latest()).length).toBe(20);
+  expect(visibleSessions(f.latest()).every(session => session.turns.length <= 20 && session.turnCount === 23)).toBe(true);
+  expect(f.latest().jobs.length < 400).toBe(true); // The global fallback thinned finished history too.
+  expect(JSON.stringify(f.latest()).length < 900000).toBe(true);
+  const reloaded = f.reload();
+  await reloaded(true);
+  expect(visibleSessions(f.latest()).every(session => session.turnCount === 23)).toBe(true);
+  f.add('follow-up', 1);
+  patchJob(f.files, 'follow-up', { threadId: 'session-0', activity });
+  await reloaded(true);
+  const selected = selectedJob(f.latest())!;
+  expect(f.logs).toEqual([]);
+  expect(f.latest().selectedId).toBe('thread:session-0');
+  expect(selected.turns.at(-1)?.id).toBe('follow-up');
+  expect(selected.active).toBe(true);
+  expect(selected.turnCount).toBe(24);
+  expect(jobRow(selected, true, 100, epoch).meta).toContain('24 turns');
+  expect(selected.turns.filter(job => job.detailsLoaded).length).toBe(5);
+  expect(JSON.stringify(f.latest()).length < 900000).toBe(true);
+  expect(f.opens.length).toBe(1);
+  expect(f.latest().autoOpenedJobIds).toContain('follow-up');
+});
+
+test('an unchanged 200-turn poll composes once, including spinner writes, and reads no job files', async () => {
+  const f = scrollFixture();
+  const activity = Array.from({ length: 200 }, (_, seq) => ({ seq, type: 'agentMessage', body: 'x'.repeat(4000) }));
+  for (let n = 0; n < 200; n++) {
+    const id = `turn-${n}`;
+    f.add(id, n - 200);
+    patchJob(f.files, id, { threadId: 'shared', status: n === 199 ? 'running' : 'completed',
+      completedAt: n === 199 ? undefined : created(epoch), activity: n >= 195 ? activity : [] });
+  }
+  await f.poll(true);
+  f.latest().feeds = { 'thread:shared': { feedOffset: 0, following: true, seenLines: 0, columns: 60, rows: 8 } };
+  let before = f.compositions();
+  f.reads.length = 0;
+  const spinner = f.latest().spinnerTick;
+  f.advance(1000);
+  await f.poll(true);
+  expect(f.compositions() - before).toBe(1);
+  expect(f.reads.filter(path => path.startsWith('/jobs/'))).toEqual([]);
+  expect(f.latest().spinnerTick).not.toBe(spinner);
+  expect(f.latest().jobs.length).toBe(20);
+  expect(selectedJob(f.latest())?.turnCount).toBe(200);
+  expect(f.latest().jobs.filter(job => job.detailsLoaded).length).toBe(5);
+  before = f.compositions();
+  await f.poll(true); // No clock, file, or feed change at all.
+  expect(f.compositions() - before).toBe(1);
+  expect(f.reads.filter(path => path.startsWith('/jobs/'))).toEqual([]);
+  expect(f.logs).toEqual([]);
+});
+
+for (const arrival of ['follow-up', 'merge']) {
+  test(`polling preserves a stopped content anchor when a ${arrival} joins the selected conversation`, async () => {
+    const f = scrollFixture();
+    const body = Array.from({ length: 60 }, (_, n) => `Anchored line ${n}`).join('\n');
+    f.add('selected', 1);
+    patchJob(f.files, 'selected', { threadId: arrival === 'follow-up' ? 'shared' : undefined,
+      activity: [{ seq: 1, type: 'agentMessage', body }] });
+    if (arrival === 'merge') {
+      f.add('earlier');
+      patchJob(f.files, 'earlier', { threadId: 'shared', status: 'completed', completedAt: created(epoch) });
+    }
+    await f.poll(true);
+    const before = selectedJob(f.latest())!;
+    const lines = feedLines(before, epoch, 60);
+    const stopped = { ...scrollFeed(lines, 8, undefined, -25, 16, lines.length), columns: 60, rows: 8, surface: 'anchor-test' };
+    f.latest().feeds = { [before.id]: stopped };
+    const firstLine = feedWindow(lines, 8, stopped).lines[0]?.spans.map(span => span.text).join('');
+    if (arrival === 'follow-up') {
+      f.add('follow-up', 2);
+      patchJob(f.files, 'follow-up', { threadId: 'shared' });
+    } else patchJob(f.files, 'selected', { threadId: 'shared' });
+    await f.poll(true);
+    const feed = f.latest().feeds?.['thread:shared'];
+    expect(f.latest().selectedId).toBe('thread:shared');
+    expect(feed?.following).toBe(false);
+    expect(feed?.anchor?.offset).toBe(stopped.anchor?.offset);
+    expect(feed?.anchor?.source).toBe('job:selected:event-1-body');
+    const afterLines = feedLines(selectedJob(f.latest())!, epoch, 60);
+    expect(feedWindow(afterLines, 8, feed).lines[0]?.spans.map(span => span.text).join('')).toBe(firstLine);
+    expect(f.scrolls).toEqual([]);
+    expect(f.logs).toEqual([]);
+  });
+}
+
+test('failed hydration of an evicted turn publishes unavailable details and recovers after five seconds', async () => {
+  const f = scrollFixture();
+  f.add('earlier');
+  patchJob(f.files, 'earlier', { threadId: 'shared', status: 'completed', completedAt: created(epoch) });
+  await f.poll(true);
+  Object.assign(f.latest(), clearFinished(f.latest(), epoch));
+  await f.poll(true); // Discard the earlier turn's raw/full cache.
+  f.unreadable.add('/jobs/earlier.json');
+  f.add('follow-up', 1);
+  patchJob(f.files, 'follow-up', { threadId: 'shared' });
+  const reads = f.reads.filter(path => path === '/jobs/earlier.json').length;
+  await f.poll(true);
+  expect(f.reads.filter(path => path === '/jobs/earlier.json').length).toBe(reads + 1);
+  expect(f.latest().selectedId).toBe('thread:shared');
+  expect(f.latest().jobs.find(job => job.id === 'earlier')).toMatchObject({ detailsUnavailable: true, detailsLoaded: false });
+  expect(feedItems(selectedJob(f.latest())!, epoch).find(item => item.key === 'job-header:earlier')?.results.at(-1)?.text)
+    .toContain('Details unavailable');
+  expect(f.opens.length).toBe(1);
+  f.unreadable.clear();
+  f.advance(4000);
+  await f.poll(true);
+  expect(f.reads.filter(path => path === '/jobs/earlier.json').length).toBe(reads + 1);
+  expect(f.latest().jobs.find(job => job.id === 'earlier')?.detailsUnavailable).toBe(true);
+  f.advance(1000);
+  await f.poll(true);
+  expect(f.reads.filter(path => path === '/jobs/earlier.json').length).toBe(reads + 2);
+  expect(f.latest().jobs.find(job => job.id === 'earlier')).toMatchObject({ detailsUnavailable: false, detailsLoaded: true });
+  expect(f.latest().jobs.find(job => job.id === 'earlier')?.events[0]?.text).toBe('Working');
+  expect(f.logs).toEqual([]);
+});
+
+test('a poll publishes immediately while preserving a concurrent selection and history page', async () => {
+  const f = scrollFixture();
+  f.add('first'); f.add('other', 1);
+  await f.poll(true);
+  f.add('follow-up', 2);
+  let gets = 0;
+  f.onStateGet(() => {
+    if (++gets !== 2) return; // Change selection after the original candidate exists.
+    f.latest().selectedId = 'first';
+    f.latest().historyPage = 2;
+    f.latest().jobsExpanded = true;
+  });
+  const count = f.compositions();
+  await f.poll(true);
+  f.onStateGet(undefined);
+  expect(f.compositions() - count).toBe(2);
+  expect(f.latest().selectedId).toBe('first');
+  expect(f.latest().historyPage).toBe(2);
+  expect(f.latest().jobsExpanded).toBe(true);
+  expect(f.latest().jobs.some(job => job.id === 'follow-up')).toBe(true);
+  expect(f.opens.length).toBe(2);
+  expect(f.statuses.at(-1)).toBe('Codex · 3 running');
+  await f.poll(true);
+  expect(f.compositions() - count).toBe(3);
+  expect(f.latest().selectedId).toBe('first');
+  expect(f.latest().jobs.some(job => job.id === 'follow-up')).toBe(true);
+  expect(f.opens.length).toBe(2);
+});
+
+test('scroll conflicts on six consecutive polls never starve a waiting follow-up or its question', async () => {
+  const f = scrollFixture();
+  const body = Array.from({ length: 80 }, (_, n) => `Existing turn line ${n}`).join('\n');
+  f.add('earlier');
+  patchJob(f.files, 'earlier', { threadId: 'shared', status: 'completed', completedAt: created(epoch),
+    activity: [{ seq: 1, type: 'agentMessage', body }] });
+  await f.poll(true);
+  f.latest().feeds = { 'thread:shared': { feedOffset: 0, following: true, seenLines: 0,
+    columns: 60, rows: 8, surface: 'conflict-test' } };
+  f.add('follow-up', 1);
+  for (let tick = 0; tick < 6; tick++) {
+    const question = `Follow-up question ${tick}`;
+    patchJob(f.files, 'follow-up', { threadId: 'shared', status: 'waiting', pendingQuestion: { text: question } });
+    let gets = 0;
+    let scrolled: NonNullable<CodexLiveState['feeds']>[string] | undefined;
+    f.onStateGet(() => {
+      if (++gets !== 2) return; // The update's read, after the first candidate was composed.
+      const state = f.latest();
+      const selected = selectedJob(state)!;
+      scrolled = { ...scrollFeed(feedLines(selected, state.nowMs, 60), 8,
+        state.feeds?.[selected.id], -2, 16, 1000), columns: 60, rows: 8, surface: 'conflict-test' };
+      state.feeds = { ...state.feeds, [selected.id]: scrolled };
+      state.historyPage = tick + 1;
+      state.jobsExpanded = true;
+    });
+    const compositions = f.compositions();
+    f.advance(1000);
+    await f.poll(true);
+    f.onStateGet(undefined);
+    expect(gets >= 2).toBe(true);
+    expect(f.compositions() - compositions).toBe(2);
+    expect(scrolled?.following).toBe(false);
+    expect(f.latest().selectedId).toBe('thread:shared');
+    expect(f.latest().feeds?.['thread:shared']?.following).toBe(false);
+    expect(f.latest().feeds?.['thread:shared']?.anchor).toEqual(scrolled?.anchor);
+    expect(f.latest().historyPage).toBe(tick + 1);
+    expect(f.latest().jobsExpanded).toBe(true);
+    expect(f.latest().jobs.find(job => job.id === 'follow-up')?.question?.text).toBe(question);
+    expect(feedItems(selectedJob(f.latest())!, f.latest().nowMs).at(-1)?.results[0]?.text).toBe(question);
+    expect(f.statuses.at(-1)).toBe('Codex · 1 waiting for answer');
+    expect(f.opens.length).toBe(1);
+    expect(f.latest().autoOpenedJobIds).toEqual(['follow-up']);
+    expect(selectedJob(f.latest())?.turnCount).toBe(2);
+    expect(f.logs).toEqual([]);
+  }
+});
+
+test('the second state budget pass evicts history when a new feed snapshot crosses the ceiling', async () => {
+  const f = scrollFixture();
+  const activity = Array.from({ length: 200 }, (_, seq) => ({ seq, type: 'agentMessage', body: 'x'.repeat(4000) }));
+  for (let session = 0; session < 20; session++) for (let turn = 0; turn < 20; turn++) {
+    const id = `s${session}-t${turn}`;
+    f.add(id, session * 20 + turn - 500);
+    const markerPath = `/home/duet/sessions/session-a/${id}.json`;
+    const marker = f.files.get(markerPath)!;
+    f.files.set(markerPath, { ...marker, text: JSON.stringify({ ...JSON.parse(marker.text), summary: 'S'.repeat(1000) }) });
+    patchJob(f.files, id, { threadId: `session-${session}`, status: 'completed', completedAt: created(epoch),
+      activity: session === 19 && turn >= 15 ? activity : [] });
+  }
+  await f.poll(true);
+  const selectedId = f.latest().selectedId!;
+  const stopped = { feedOffset: 0, following: false, seenLines: 0, columns: 60, rows: 8, surface: 'snapshot-budget-test' };
+  f.latest().feeds = { [selectedId]: stopped };
+  const beforeLayout = boundState(f.latest());
+  expect(JSON.stringify(beforeLayout).length < 900000).toBe(true);
+  const selected = selectedJob(beforeLayout)!;
+  const normalized = normalizeFeed(feedLines(selected, beforeLayout.nowMs, 60), 8, stopped);
+  const afterLayout = { ...beforeLayout, feeds: { [selectedId]: normalized } };
+  expect(Object.keys(normalized.seenItems ?? {}).length).toBe(400);
+  expect(JSON.stringify(afterLayout).length >= 900000).toBe(true); // Only adding the snapshot caused overflow.
+  const previousIds = new Set(beforeLayout.jobs.map(job => job.id));
+  await f.poll(true);
+  expect(f.logs).toEqual([]);
+  expect(JSON.stringify(f.latest()).length < 900000).toBe(true);
+  expect(f.latest().selectedId).toBe(selectedId);
+  expect(selectedJob(f.latest())?.turns.map(job => job.id)).toEqual(selected.turns.map(job => job.id));
+  expect(f.latest().feeds?.[selectedId]?.following).toBe(false);
+  expect(Object.keys(f.latest().feeds?.[selectedId]?.seenItems ?? {}).length).toBe(400);
+  expect(f.latest().jobs.length < previousIds.size).toBe(true);
+  expect(f.latest().jobs.every(job => previousIds.has(job.id))).toBe(true);
 });

@@ -91,7 +91,9 @@ Install the separate pane plugin with `/plugin install codex-live@duet`. New job
 ask Claude Code to open the pane; Claude Code decides whether it is shown at the
 current width. `/codex-live` opens and focuses it at any width.
 It shows the session's jobs and the selected job's Codex messages, commands,
-file changes, tool calls, plan and pending question. It is read-only: it never
+file changes, tool calls, plan and pending question. Jobs on the same Codex
+thread (`--thread` and `--continue` follow-ups) form one row whose transcript
+shows every turn in order. It is read-only: it never
 starts, answers or cancels a job, and costs no Claude tokens. The pane reads
 companion-written markers under
 `<isolated home>/duet/sessions/<claudeSessionId>/`.

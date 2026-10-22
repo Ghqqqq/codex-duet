@@ -113,6 +113,7 @@ export function ensureBrowserApproval({ env = process.env } = {}) {
   const result = browserOriginSetup({ env, approval: "never-ask", remember: false });
   return { browserApproval: preference, approval: result.approval, changedFiles: result.changedFiles, backups: result.backups };
 }
+/** @param {{ allow?: string[], revoke?: string[], approval?: string, env?: NodeJS.ProcessEnv, dryRun?: boolean, remember?: boolean }} [options] */
 export function browserOriginSetup({ allow = [], revoke = [], approval, env = process.env, dryRun = false, remember = true } = {}) {
   if (approval !== undefined && !BROWSER_APPROVAL_MODES.includes(approval)) throw new Error("--browser-approval must be never-ask or ask.");
   allow = normalizeBrowserOrigins(allow); revoke = normalizeBrowserOrigins(revoke);
@@ -198,6 +199,7 @@ export function computerUseApprovalPreference(env = process.env) {
 // (current − previously mirrored − revoked) ∪ (mirror ? user's always-allowed − revoked : ∅) ∪ allow.
 // Explicit and hand-written entries persist; mirrored ones follow the source;
 // everything else in the file (denied list, other tables) is left alone.
+/** @param {{ allow?: string[], revoke?: string[], approval?: string, env?: NodeJS.ProcessEnv, dryRun?: boolean }} [options] */
 export function computerUseSetup({ allow = [], revoke = [], approval, env = process.env, dryRun = false } = {}) {
   if (approval !== undefined && !COMPUTER_USE_APPROVAL_MODES.includes(approval)) throw new Error("--computer-use-approval must be mirror or ask.");
   allow = normalizeBundleIds(allow); revoke = normalizeBundleIds(revoke);
@@ -261,6 +263,7 @@ export function grantComputerAppsForThread(threadId, apps, env = process.env) {
 export const PROJECT_DOC_MODES = ["claude-md", "agents-only"];
 export const BUILTIN_PROJECT_DOCS = "claude-md";
 export const CLAUDE_MD_FALLBACKS = ["CLAUDE.md"];
+/** @param {{ mode?: string, env?: NodeJS.ProcessEnv, dryRun?: boolean }} [options] */
 export function projectDocsSetup({ mode, env = process.env, dryRun = false } = {}) {
   if (mode !== undefined && !PROJECT_DOC_MODES.includes(mode)) throw new Error("--project-docs must be claude-md or agents-only.");
   const home = resolveIsolatedCodexHome(env), file = path.join(home, "config.toml"), before = read(home, file);
@@ -288,6 +291,7 @@ export const SANDBOX_MODES = ["read-only", "workspace-write", "danger-full-acces
 // Workers run like the user's own Codex app in full-access mode unless the user
 // lowers the default here or the parent narrows one call with --sandbox.
 export const BUILTIN_DEFAULT_SANDBOX = "danger-full-access";
+/** @param {{ mode?: string, env?: NodeJS.ProcessEnv, dryRun?: boolean }} [options] */
 export function defaultSandboxSetup({ mode, env = process.env, dryRun = false } = {}) {
   if (mode !== undefined && !SANDBOX_MODES.includes(mode)) throw new Error("--default-sandbox must be read-only, workspace-write, or danger-full-access.");
   const { root, file } = duetConfig(env), before = read(root, file);

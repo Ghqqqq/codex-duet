@@ -166,12 +166,12 @@ export function buildCuaConfig({ normal, isolated, env, source, cuaTemplate, cha
     CODEX_CLI_PATH: assets.cli
   };
   const templateEnv = template.env ?? {};
-  for (const [key, pattern] of [
+  for (const [key, pattern] of /** @type {[string, RegExp][]} */ ([
     ["NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS", /^(?:[1-9]\d{0,3}|10000)$/],
     ["BROWSER_USE_TINYSKY_ENABLED", /^[01]$/],
     ["BROWSER_USE_CODEX_APP_BUILD_FLAVOR", /^(?:prod|beta|alpha|dev)$/],
     ["BROWSER_USE_CODEX_APP_VERSION", /^\d{1,6}(?:\.\d{1,6}){2,3}$/]
-  ]) {
+  ])) {
     if (typeof templateEnv[key] === "string" && pattern.test(templateEnv[key])) safeEnv[key] = templateEnv[key];
   }
   // XML app metadata is optional; never guess a channel/version for another app.
