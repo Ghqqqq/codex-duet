@@ -5,13 +5,14 @@ import { listJobs, updateJob, readJobFile, resolveJobFile } from "./state.mjs";
 import { APPROVAL_OPTIONS, parseApprovalAnswer } from "./server-requests.mjs";
 import { finishJournalJob } from "./run-journal.mjs";
 import { buildWorkerReport } from "./worker-report.mjs";
+import { reportJobs, reportWorkerTarget } from "./worker-resolve.mjs";
 
 export const ACTIVE = new Set(["queued", "running"]);
 export function recordFinishedJob(job) {
   if (!job?.runId || ACTIVE.has(job.status) || job.journalFinishedStatus === job.status) return;
   try {
     const report = job.report ?? buildWorkerReport(job.result ?? { status: 1, error: job.errorMessage ?? "No stored result." }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile });
-    if (finishJournalJob(job, directReport({ ...report, status: job.status, ...leaseExpiryReport(job) }, job))) {
+    if (finishJournalJob(job, fullReport({ ...report, status: job.status, ...leaseExpiryReport(job) }, job))) {
       // The journal lock has been released before acquiring the job-state lock.
       updateJob(job.workspaceRoot, job.id, () => ({ journalFinishedStatus: job.status }));
     }
@@ -78,12 +79,26 @@ export function continuationReport(job) {
   return { continuationCommand,
     continuationNote: continuationCommand ? "Starts one new turn on the same Codex thread with this job's recorded sandbox, write, model and browser-origin settings; append extra instructions as the prompt. It has not been run. Wait for any pending interruption to finish first." : "No thread handle was recorded; no continuation command is available." };
 }
-// Direct callers get the same report, without the feed or verbose progress.
-// Filter a copy so the existing JSON/feed and status shapes remain unchanged.
-export function directReport(payload, job) {
-  const report = { ...payload, ...(job.agentName ? { agentName: job.agentName } : {}) };
-  for (const key of ["activity", "activityOmitted", "cursor", "startupTimings", "currentItem", "completedItems", "questionMessage"]) delete report[key];
-  if (report.startupWarning == null) delete report.startupWarning;
+// The details view retains the full report and the old direct-mode commands,
+// summary and expanded lists. JSON/feed callers keep their existing payloads.
+export function fullReport(payload, job = {}) {
+  const report = { ...payload,
+    ...(job.backgroundTerminals ? { backgroundTerminals: job.backgroundTerminals } : {}),
+    ...(job.request?.claudeMd ? { claudeMd: job.request.claudeMd } : {}),
+    ...(job.request?.settingsInheritance ? { settingsInheritance: job.request.settingsInheritance } : {}),
+    ...(payload.activityCount === undefined && job.activity ? { activityCount: job.activity.length } : {}),
+    ...(job.agentName ? { agentName: job.agentName } : {}) };
+  // Older stored reports may predate status normalization. Project their
+  // decision without rewriting the record or overriding failure states.
+  const structured = job.result?.structured;
+  if (structured) report.declaredStatus = structured.status;
+  if (["completed", "needs_input", "blocked"].includes(report.status)) {
+    if (structured?.blockers?.length || (report.status === "completed" && report.blockers?.length)) report.status = "blocked";
+    else if (report.status === "completed" && structured?.question) {
+      report.status = "needs_input";
+      report.question = redactActivity(structured.question);
+    }
+  }
   if (ACTIVE.has(report.status) || report.status === "needs_answer") {
     const target = `${quote(job.id)} --cwd ${quote(job.request?.cwd ?? job.workspaceRoot)} --owner ${quote(job.ownerId)}`;
     const question = report.status === "needs_answer" ? report.question : null;
@@ -98,12 +113,26 @@ export function directReport(payload, job) {
   // A terminal report carries Codex's final summary, so the caller does not
   // have to read rawOutputFile for the answer itself.
   if (!ACTIVE.has(report.status) && report.status !== "needs_answer" && report.status !== "ownership_moved") {
-    if (job.result?.structured) {
-      for (const [target, source] of [["keyFindings", "keyFindings"], ["assumptions", "assumptions"], ["claimedVerification", "verification"]]) {
-        report[target] = (job.result.structured[source] ?? []).slice(0, 20).map(value => redactActivity(value).slice(0, 2000));
-      }
+    for (const [target, values] of [
+      ["touchedFiles", job.result?.touchedFiles],
+      ["preExistingChanges", job.result?.preExistingChanges],
+      ["verification", job.result?.commandExecutions?.map(c => `${c.command ?? "command"}: exit ${c.exitCode ?? "unknown"}, ${c.status ?? "unknown"}`)]
+    ]) {
+      if (!Array.isArray(values)) continue;
+      report[target] = values.slice(0, DETAILS_LIST_LIMIT).map(value => redactActivity(value).slice(0, 2000));
+      report[`${target}Omitted`] = Math.max(0, values.length - DETAILS_LIST_LIMIT);
     }
-    const text = redactActivity(job.result?.structured?.summary ?? job.result?.rawOutput ?? "").trim();
+    if (job.result?.structured) {
+      for (const target of ["keyFindings", "assumptions"]) {
+        const values = job.result.structured[target] ?? [];
+        report[target] = values.slice(0, DETAILS_LIST_LIMIT).map(value => redactActivity(value).slice(0, 2000));
+        report[`${target}Omitted`] = Math.max(0, values.length - DETAILS_LIST_LIMIT) + (job.result.structured[`${target}Omitted`] ?? 0);
+      }
+      const claimed = job.result.structured.verification ?? [];
+      report.claimedVerification = claimed.slice(0, DETAILS_LIST_LIMIT).map(value => redactActivity(value).slice(0, 2000));
+      report.claimedVerificationOmitted = Math.max(0, claimed.length - DETAILS_LIST_LIMIT) + (job.result.structured.verificationOmitted ?? 0);
+    }
+    const text = redactActivity(job.result?.structured?.summary ?? job.result?.rawOutput ?? job.result?.codex?.stdout ?? "").trim();
     if (text) {
       report.summary = text.slice(0, DIRECT_SUMMARY_LIMIT);
       if (text.length > DIRECT_SUMMARY_LIMIT) report.summaryTruncated = true;
@@ -112,6 +141,88 @@ export function directReport(payload, job) {
   return report;
 }
 const DIRECT_SUMMARY_LIMIT = 8000;
+const DETAILS_LIST_LIMIT = 500;
+
+const duetTarget = value => /^[\w.-]+$/.test(value) ? value : quote(value);
+const envelopeBytes = ({ summary, ...envelope }) => Buffer.byteLength(JSON.stringify(envelope));
+const brief = value => redactActivity(value).replace(/\s+/g, " ").trim().slice(0, 240);
+
+// Budget serialized UTF-8, not JS character counts: escaping and multibyte text
+// both count. Details always retains the unabridged report behind this view.
+function fitDirectEnvelope(report) {
+  const lists = [
+    [report, "keyFindings"], [report, "assumptions"],
+    [report.checks, "ran"], [report.checks, "claimed"], [report, "changedFiles"],
+    [report, "blockers", 1]
+  ];
+  while (envelopeBytes(report) > 2000) {
+    const candidates = lists.filter(([object, key, min = 0]) => object?.[key]?.length > min);
+    if (!candidates.length) break;
+    const [object, key] = candidates.sort(([a, ak], [b, bk]) => Buffer.byteLength(JSON.stringify(b[bk])) - Buffer.byteLength(JSON.stringify(a[ak])))[0];
+    object[key].pop();
+    if (key === "changedFiles") report.changedFilesOmitted = (report.changedFilesOmitted ?? 0) + 1;
+    else if (object === report.checks) report.checks.omitted += 1;
+    else if (!object[key].length) delete object[key];
+  }
+  while (envelopeBytes(report) > 2000) {
+    const strings = [
+      ...(report.blockers ?? []).map(blocker => [blocker, "message"]),
+      ...(report.question ? [[report.question, "text"], ...report.question.options.map((_, i) => [report.question.options, i])] : [])
+    ].filter(([object, key]) => object[key].length > 8);
+    if (!strings.length) break; // Valid job handles and fixed fields fit on their own.
+    const [object, key] = strings.sort(([a, ak], [b, bk]) => Buffer.byteLength(JSON.stringify(b[bk])) - Buffer.byteLength(JSON.stringify(a[ak])))[0];
+    object[key] = Array.from(object[key]).slice(0, Math.floor(Array.from(object[key]).length / 2)).join("") + "…";
+  }
+  if (report.changedFilesOmitted === 0) delete report.changedFilesOmitted;
+  return report;
+}
+
+export function directReport(payload, job = {}, env = process.env) {
+  const full = fullReport(payload, job);
+  const worker = job.agentName ?? full.agentName ?? null;
+  const jobId = full.jobId ?? job.id ?? null;
+  let target = jobId;
+  if (worker && jobId) {
+    try { target = reportWorkerTarget(job, reportJobs(job, env), worker, jobId); }
+    catch { /* Unavailable or invalid records must use the exact job ID. */ }
+  }
+  const command = target ? duetTarget(target) : null;
+  const summary = redactActivity(full.summary ?? full.headline ?? full.message ?? full.error ?? "");
+  /** @type {Record<string, any>} */
+  const report = {
+    status: full.status,
+    worker,
+    jobId,
+    summary: summary.slice(0, DIRECT_SUMMARY_LIMIT),
+    ...(full.summaryTruncated || summary.length > DIRECT_SUMMARY_LIMIT ? { summaryTruncated: true } : {})
+  };
+  if (full.blockers?.length) report.blockers = full.blockers.map(blocker => ({ code: blocker.code, message: brief(blocker.message ?? ""),
+    ...(blocker.code === "thread_busy" && blocker.cancelCommand ? { cancelCommand: blocker.cancelCommand } : {}) }));
+  if (full.question) {
+    const question = typeof full.question === "string" ? { text: full.question } : full.question;
+    report.question = { id: question.id ?? null, kind: question.kind ?? "question", text: redactActivity(question.text),
+      options: (question.options ?? []).map(redactActivity),
+      expiresInSec: Number.isFinite(question.expiresAt) ? Math.max(0, Math.ceil((question.expiresAt - Date.now()) / 1000)) : null };
+  }
+  if (full.touchedFiles?.length || full.touchedFilesOmitted) {
+    report.changedFiles = (full.touchedFiles ?? []).map(brief);
+    report.changedFilesOmitted = full.touchedFilesOmitted ?? 0;
+  }
+  if (full.verification?.length || full.claimedVerification?.length) {
+    report.checks = { ran: (full.verification ?? []).map(brief), claimed: (full.claimedVerification ?? []).map(brief),
+      omitted: Math.max(0, (job.result?.commandExecutions?.length ?? 0) - (full.verification?.length ?? 0))
+        + Math.max(0, (job.result?.structured?.verification?.length ?? 0) - (full.claimedVerification?.length ?? 0))
+        + (job.result?.structured?.verificationOmitted ?? 0) };
+  }
+  if (full.assumptions?.length) report.assumptions = full.assumptions.slice(0, 12).map(brief);
+  if (full.keyFindings?.length) report.keyFindings = full.keyFindings.slice(0, 12).map(brief);
+  report.next = !command || ["completed", "ownership_moved"].includes(full.status) ? null
+    : full.status === "needs_answer" ? `duet answer ${command}`
+    : ACTIVE.has(full.status) ? `duet wait ${command}`
+    : `duet task --to ${command}`;
+  report.details = command ? `duet result ${command} --details` : null;
+  return fitDirectEnvelope(report);
+}
 export function ownershipNotice(job, owner) {
   if (!owner || job.ownerId === owner || !job.retiredOwnerIds?.includes(owner)) return null;
   return { status: "ownership_moved", jobStatus: job.status, jobId: job.id, ownerId: job.ownerId,
@@ -198,12 +309,27 @@ export function activeJobForThread(cwd, threadId) {
  */
 // kind "question" is Codex's own ask_parent call; kind "approval" is a Computer
 // Use request the runtime forwards, with the fixed choices from APPROVAL_CHOICES.
-export async function askParentQuestion(cwd, id, { question, options = [], kind = "question" }, { signal = null, onProgress = null, stopped = () => false } = {}) {
+export async function askParentQuestion(cwd, id, { question, options = [], kind = "question", callId = null }, { signal = null, onProgress = null, stopped = () => false } = {}) {
   const questionId = `${kind}-${randomUUID()}`;
+  const askedAt = new Date(Date.now()).toISOString();
+  // Approval requests have no ask_parent tool item. Never guess a missing ID
+  // from question order, text, or the MCP transport's independent request ID.
+  callId = kind === "approval" ? null : callId;
+  const historyPatch = (current, resolution, answer = undefined) => ({ questionHistory: [...(current.questionHistory ?? []).slice(-19), {
+    id: questionId, callId, kind, text: question, options, askedAt,
+    answeredAt: answer === undefined ? null : new Date(Date.now()).toISOString(),
+    answer: answer === undefined ? null : answer.slice(0, 2000), resolution
+  }] });
   const job = readJobFile(resolveJobFile(cwd, id));
-  if (!ACTIVE.has(job.status) || job.cancelRequested) return { text: "The owner cancelled this task. Stop work and report interrupted.", resolution: "interrupted" };
-  if (job.pendingQuestion) return { text: "Another parent question is pending. Proceed on a conservative assumption and report it.", resolution: "busy" };
-  const pending = { id: questionId, kind, text: question, options, expiresAt: Date.now() + (job.questionTimeoutSec ?? 900) * 1000 };
+  if (!ACTIVE.has(job.status) || job.cancelRequested) {
+    updateJob(cwd, id, current => historyPatch(current, "interrupted"));
+    return { text: "The owner cancelled this task. Stop work and report interrupted.", resolution: "interrupted" };
+  }
+  if (job.pendingQuestion) {
+    updateJob(cwd, id, current => historyPatch(current, "busy"));
+    return { text: "Another parent question is pending. Proceed on a conservative assumption and report it.", resolution: "busy" };
+  }
+  const pending = { id: questionId, callId, kind, text: question, options, askedAt, expiresAt: Date.now() + (job.questionTimeoutSec ?? 900) * 1000 };
   updateJob(cwd, id, () => ({ pendingQuestion: pending, phase: "needs_answer" }));
   onProgress?.({ message: `Parent question pending: ${questionId}.`, phase: "needs_answer" });
   let text = "No answer arrived before the timeout. Proceed on a conservative assumption within the authorized scope and report the assumption. If essential input is missing, finish with needs_input.";
@@ -222,8 +348,12 @@ export async function askParentQuestion(cwd, id, { question, options = [], kind 
     else if (current.pendingQuestion?.id === questionId && current.pendingQuestion.answer !== undefined) { text = current.pendingQuestion.answer; resolution = "answered"; }
     return { text, resolution };
   } finally {
-    updateJob(cwd, id, current => current.pendingQuestion?.id === questionId || current.phase === "needs_answer"
-      ? { pendingQuestion: null, lastQuestion: { id: questionId, resolution }, phase: resolution === "interrupted" || current.cancelRequested ? "interrupting" : "running" } : { lastQuestion: { id: questionId, resolution } });
+    updateJob(cwd, id, current => {
+      const answer = current.pendingQuestion?.id === questionId ? current.pendingQuestion.answer : undefined;
+      return { ...historyPatch(current, resolution, answer), lastQuestion: { id: questionId, resolution },
+        ...(current.pendingQuestion?.id === questionId || current.phase === "needs_answer"
+          ? { pendingQuestion: null, phase: resolution === "interrupted" || current.cancelRequested ? "interrupting" : "running" } : {}) };
+    });
     onProgress?.(`Parent question ${resolution}: ${questionId}.`);
   }
 }
@@ -237,10 +367,19 @@ export function isParentQuestion(message, policy) {
     (p.arguments.options === undefined || Array.isArray(p.arguments.options) && p.arguments.options.length <= 6 && p.arguments.options.every(o => typeof o === "string" && o.length <= 160));
 }
 
+// The runtime owns the job record; the turn capture owns the live connection.
+// Associate them by signal so cleanup can be recorded even if capture throws.
+const runtimeJobs = new WeakMap();
+export function recordBackgroundTerminals(signal, backgroundTerminals) {
+  const runtime = runtimeJobs.get(signal);
+  if (runtime) updateJob(runtime.cwd, runtime.id, () => ({ backgroundTerminals }));
+}
+
 export class JobRuntime {
   constructor(cwd, id, { foreground = false, onProgress = null } = {}) {
     this.cwd = cwd; this.id = id; this.onProgress = onProgress;
     this.abort = new AbortController(); this.reason = null;
+    runtimeJobs.set(this.abort.signal, this);
     this.handlers = new Map();
     for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
       const handler = () => this.stop(`signal_${signal.toLowerCase()}`);
@@ -274,7 +413,7 @@ export class JobRuntime {
     this.abort.abort(reason);
   }
   async question(message) {
-    const { text } = await askParentQuestion(this.cwd, this.id, message.params.arguments, { signal: this.abort.signal, onProgress: this.onProgress });
+    const { text } = await askParentQuestion(this.cwd, this.id, { ...message.params.arguments, callId: message.params.callId }, { signal: this.abort.signal, onProgress: this.onProgress });
     return textReply(text);
   }
   // A forwarded Computer Use request. Only an explicit answer grants anything;
@@ -284,7 +423,7 @@ export class JobRuntime {
     const { text, resolution } = await askParentQuestion(this.cwd, this.id, { question, options: APPROVAL_OPTIONS, kind: "approval" }, { signal: this.abort.signal, onProgress: this.onProgress });
     return resolution === "answered" ? parseApprovalAnswer(text) : "deny";
   }
-  close() { clearInterval(this.timer); for (const [signal, handler] of this.handlers) process.off(signal, handler); }
+  close() { runtimeJobs.delete(this.abort.signal); clearInterval(this.timer); for (const [signal, handler] of this.handlers) process.off(signal, handler); }
 }
 
 // Deliberately omit shell arguments, tool arguments, model text and outputs.

@@ -39,7 +39,7 @@ import { itemActivity, planActivity } from "./activity.mjs";
  *   onProgress: ProgressReporter | null
  * }} TurnCaptureState
  */
-import { ASK_PARENT, PARENT_BRIDGE_ENV, PARENT_BRIDGE_SERVER, safeItem } from "./job-runtime.mjs";
+import { ASK_PARENT, PARENT_BRIDGE_ENV, PARENT_BRIDGE_SERVER, recordBackgroundTerminals, safeItem } from "./job-runtime.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { resolveIsolatedCodexHome, resolveCodexBinary, isolatedCodexEnv } from "./codex-home.mjs";
@@ -48,6 +48,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { readJsonFile } from "./fs.mjs";
+import { snapshotClaudeSession } from "./claude-session-transfer.mjs";
 import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable } from "./process.mjs";
@@ -92,6 +93,7 @@ function buildThreadParams(cwd, options = {}) {
     approvalPolicy: options.approvalPolicy ?? "never",
     sandbox: options.sandbox ?? "read-only",
     serviceName: SERVICE_NAME,
+    ...(options.developerInstructions != null ? { developerInstructions: options.developerInstructions } : {}),
     ...(options.parentQuestions ? { dynamicTools: [ASK_PARENT] } : {}),
     ephemeral: options.ephemeral ?? true
   };
@@ -126,6 +128,7 @@ function buildResumeParams(threadId, cwd, options = {}) {
   return {
     threadId,
     cwd,
+    ...(options.developerInstructions != null ? { developerInstructions: options.developerInstructions } : {}),
     model: options.model ?? null,
     approvalPolicy: options.approvalPolicy ?? "never",
     sandbox: options.sandbox ?? "read-only",
@@ -675,10 +678,18 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     applyTurnNotification(state, message);
   });
 
-  let interruptTimer = null;
+  let interruptTimer = null, backgroundTerminalsCleanup = null;
   const interrupt = () => {
+    if (backgroundTerminalsCleanup || state.completed) return;
     const turnId = state.turnId ?? client.serverRequestPolicy.turnId;
-    if (turnId) void client.request("turn/interrupt", { threadId, turnId }).catch(() => {});
+    if (turnId) {
+      try { void client.request("turn/interrupt", { threadId, turnId }).catch(() => {}); } catch { /* cleanup still reports a closed transport */ }
+      // Sending the interrupt precedes cleanup; its acknowledgement may never
+      // arrive. Keep this client's connection open for the bounded cleanup.
+      backgroundTerminalsCleanup = cleanBackgroundTerminals(client, threadId).then(outcome => {
+        try { recordBackgroundTerminals(options.signal, outcome); } catch { /* recording cannot change the interruption outcome */ }
+      });
+    }
     if (!interruptTimer) interruptTimer = setTimeout(() => { void client.close(); }, 4000);
   };
   options.signal?.addEventListener("abort", interrupt);
@@ -716,14 +727,28 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       state.completion,
       client.exitPromise.then(() => { throw client.exitError ?? new Error("Codex connection closed before turn completion; recover the recorded job."); })
     ]);
+  } catch (error) {
+    if (connectionFailure(error, client)) {
+      error.failureSource = "transport";
+      error.threadId = threadId;
+      error.turnId = state.turnId ?? client.serverRequestPolicy.turnId;
+      if (error.turnId) error.message = "Connection to Codex closed while the turn was running.";
+    }
+    throw error;
   } finally {
     options.signal?.removeEventListener("abort", interrupt);
+    await backgroundTerminalsCleanup;
     clearTimeout(interruptTimer);
     clearInterval(heartbeat);
     clearCompletionTimer(state);
     client.setNotificationHandler(previousHandler ?? null);
     client.setServerRequestContext(null, null);
   }
+}
+
+function connectionFailure(error, client) {
+  return client?.exitResolved || ["BROKER_CONNECTION_CLOSED", "ECONNRESET", "EPIPE", "ECONNREFUSED"].includes(error.code) ||
+    /^codex app-server (?:connection closed|client is closed)\.$/i.test(error.message);
 }
 
 async function withAppServer(cwd, fn, options = {}) {
@@ -734,10 +759,16 @@ async function withAppServer(cwd, fn, options = {}) {
     await client.close();
     return result;
   } catch (error) {
+    if (connectionFailure(error, client)) {
+      error.failureSource = "transport";
+      if (!error.turnId && /^codex app-server (?:connection closed|client is closed)\.$/i.test(error.message)) {
+        error.message = client?.transport === "broker" ? "Codex broker connection closed during startup." : "Codex connection closed during startup.";
+      }
+    }
     const brokerRequested = client?.transport === "broker" || Boolean(process.env[BROKER_ENDPOINT_ENV]);
-    const shouldRetryDirect =
+    const shouldRetryDirect = !error.turnId && (
       (client?.transport === "broker" && error?.rpcCode === BROKER_BUSY_RPC_CODE) ||
-      (brokerRequested && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED"));
+      (brokerRequested && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED")));
 
     if (client) {
       await client.close().catch(() => {});
@@ -774,14 +805,12 @@ function sourceContentSha256(sourcePath) {
   return crypto.createHash("sha256").update(fs.readFileSync(sourcePath)).digest("hex");
 }
 
-function importedThreadIdForSource(sourcePath) {
+function importedThreadIdForSource(canonicalSource, contentSha256) {
   const ledgerPath = path.join(resolveCodexHome(), "external_agent_session_imports.json");
   if (!fs.existsSync(ledgerPath)) {
     return null;
   }
   const ledger = readJsonFile(ledgerPath);
-  const canonicalSource = fs.realpathSync(sourcePath);
-  const contentSha256 = sourceContentSha256(canonicalSource);
   const records = Array.isArray(ledger?.records) ? ledger.records : [];
   const match = records
     .filter(
@@ -816,29 +845,49 @@ function externalAgentSessionMigration(sourcePath, cwd) {
 
 async function requestExternalAgentSessionImport(client, params) {
   const previousHandler = client.notificationHandler;
-  let timeout = null;
+  let importId = null;
+  const earlyCompletions = new Map();
+  /** @type {(notification: Extract<AppServerNotification, { method: "externalAgentConfig/import/completed" }>["params"]) => void} */
   let resolveCompleted;
-  let rejectCompleted;
-  const completed = new Promise((resolve, reject) => {
+  const completed = new Promise((resolve) => {
     resolveCompleted = resolve;
-    rejectCompleted = reject;
   });
-  void completed.catch(() => {});
+  let timeout;
+  /** @type {Promise<never>} */
+  const deadline = new Promise((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(
+      `Timed out after 120 seconds waiting for Codex Claude session import${importId ? ` ${importId}` : " acknowledgement"}. No task turn was started. Check the Codex app-server logs, then retry or use a normal duet task brief without --fork.`
+    )), EXTERNAL_AGENT_IMPORT_TIMEOUT_MS);
+  });
 
   client.setNotificationHandler((message) => {
     if (message.method === EXTERNAL_AGENT_IMPORT_COMPLETED) {
-      resolveCompleted();
+      const notification = message.params;
+      if (notification?.importId === importId) resolveCompleted(notification);
+      else if (!importId && typeof notification?.importId === "string") earlyCompletions.set(notification.importId, notification);
       return;
     }
     previousHandler?.(message);
   });
-  timeout = setTimeout(() => {
-    rejectCompleted(new Error("Timed out waiting for Codex to finish importing the Claude session."));
-  }, EXTERNAL_AGENT_IMPORT_TIMEOUT_MS);
-
   try {
-    await client.request("externalAgentConfig/import", params);
-    await completed;
+    // The deadline covers a missing response as well as a missing completion.
+    const response = await Promise.race([client.request("externalAgentConfig/import", params), deadline]);
+    if (typeof response?.importId !== "string" || !response.importId) {
+      throw new Error("Codex did not acknowledge the Claude session import with an importId. Update Codex and retry, or use a normal task brief.");
+    }
+    importId = response.importId;
+    if (earlyCompletions.has(importId)) resolveCompleted(earlyCompletions.get(importId));
+    earlyCompletions.clear();
+    const notification = await Promise.race([completed, deadline]);
+    const results = notification?.itemTypeResults;
+    const failures = (results ?? []).flatMap(result => result.failures ?? []);
+    if (failures.length) {
+      throw new Error(`Codex Claude session import ${importId} failed: ${failures.map(failure => `${failure.itemType} (${failure.failureStage}): ${failure.message}`).join("; ")}. No task turn was started. Retry the import or use a normal task brief.`);
+    }
+    if (!results?.some(result => result.itemType === "SESSIONS" && result.successes?.length)) {
+      throw new Error(`Codex Claude session import ${importId} reported no successful SESSIONS import. No task turn was started. Check the Codex app-server logs or use a normal task brief.`);
+    }
+    return { importId };
   } finally {
     clearTimeout(timeout);
     client.setNotificationHandler(previousHandler ?? null);
@@ -1092,13 +1141,38 @@ export async function getCodexAuthStatus(cwd, options = {}) {
   }
 }
 
+/**
+ * @param {Awaited<ReturnType<typeof CodexAppServerClient.connect>>} client
+ * @param {string} threadId
+ * @returns {Promise<{ cleaned: boolean, detail: string | null }>}
+ */
+async function cleanBackgroundTerminals(client, threadId) {
+  let timeout;
+  try {
+    await Promise.race([
+      // Experimental in Codex 0.146.0; the generated stable request map omits it.
+      client.request(/** @type {any} */ ("thread/backgroundTerminals/clean"), { threadId }),
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("Background terminal cleanup timed out.")), 3000); })
+    ]);
+    return { cleaned: true, detail: null };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const unsupported = error?.rpcCode === -32601 || /(?:unknown|unsupported|not found).*method|method.*(?:unknown|unsupported|not found)/i.test(detail);
+    return { cleaned: false, detail: unsupported ? "thread/backgroundTerminals/clean is unsupported." : shorten(detail, 200) || "Background terminal cleanup failed." };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
+  const backgroundTerminals = { cleaned: false, detail: "No turn interrupt was sent." };
   if (!threadId || !turnId) {
     return {
       attempted: false,
       interrupted: false,
       transport: null,
-      detail: "missing threadId or turnId"
+      detail: "missing threadId or turnId",
+      backgroundTerminals
     };
   }
 
@@ -1108,28 +1182,65 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
       attempted: false,
       interrupted: false,
       transport: null,
-      detail: availability.detail
+      detail: availability.detail,
+      backgroundTerminals
     };
   }
 
-  let client = null;
+  let client = null, interruptSent = false;
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(), 10000);
   try {
-    client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true });
-    await client.request("turn/interrupt", { threadId, turnId });
+    client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true, signal: abort.signal });
+    let interruptError = null;
+    try {
+      try {
+        interruptSent = true;
+        await client.request("turn/interrupt", { threadId, turnId });
+      } catch (error) {
+        // A replacement app-server may know the persisted thread but not have
+        // loaded it. Resume only that thread, without overriding its settings.
+        if (!/thread.*(?:not found|not loaded|unknown)|(?:no|unknown) (?:active )?thread/i.test(error.message)) throw error;
+        await client.request("thread/resume", { threadId });
+        await client.request("turn/interrupt", { threadId, turnId });
+      }
+    } catch (error) {
+      if (connectionFailure(error, client)) throw error;
+      // The turn may have finished just before the interrupt. Its terminal
+      // record, never the interrupt error itself, can establish resolution.
+      interruptError = error;
+    }
+    // RPC acknowledgement is not proof that the turn stopped. Read the exact
+    // handle until terminal; never resolve from a later turn on this thread.
+    let result = null;
+    for (const deadline = Date.now() + 5000; Date.now() < deadline;) {
+      const response = await client.request("thread/read", { threadId, includeTurns: true });
+      result = appServerTurnResult(response, threadId, turnId);
+      if (!result || result.turnEnded) break;
+      if (interruptError) throw interruptError;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     return {
       attempted: true,
-      interrupted: true,
+      interrupted: Boolean(result?.turnEnded),
+      result,
+      backgroundTerminals,
       transport: client.transport,
-      detail: `Interrupted ${turnId} on ${threadId}.`
+      detail: result?.turnEnded ? `Confirmed ${turnId} on ${threadId} is ${result.turnStatus}.` : `The server has not confirmed that ${turnId} stopped.${interruptError ? ` ${interruptError.message}` : ""}`
     };
   } catch (error) {
     return {
       attempted: true,
       interrupted: false,
+      backgroundTerminals,
       transport: client?.transport ?? null,
       detail: error instanceof Error ? error.message : String(error)
     };
   } finally {
+    clearTimeout(timeout);
+    // Also clean when the exact-turn poll times out or fails. Cleanup is a
+    // separate outcome and never changes interruption confirmation or errors.
+    if (client && interruptSent) Object.assign(backgroundTerminals, await cleanBackgroundTerminals(client, threadId));
     await client?.close().catch(() => {});
   }
 }
@@ -1201,32 +1312,41 @@ export async function importExternalAgentSession(cwd, options = {}) {
     throw new Error("A Claude session source path is required.");
   }
 
-  return withDirectAppServer(cwd, async (client) => {
-    emitProgress(options.onProgress, "Importing Claude session into Codex.", "transferring");
-    try {
-      await requestExternalAgentSessionImport(client, externalAgentSessionMigration(options.sourcePath, cwd));
-    } catch (error) {
-      if (error?.rpcCode === -32601) {
+  const snapshot = snapshotClaudeSession(cwd, options.sourcePath);
+  try {
+    const sourceSha256 = sourceContentSha256(snapshot.snapshotPath);
+    return await withDirectAppServer(cwd, async (client) => {
+      emitProgress(options.onProgress, "Importing Claude session into Codex.", "transferring");
+      let imported;
+      try {
+        imported = await requestExternalAgentSessionImport(client, externalAgentSessionMigration(snapshot.snapshotPath, cwd));
+      } catch (error) {
+        if (error?.rpcCode === -32601) {
+          throw new Error(
+            "This Codex version does not support Claude session transfer. Update Codex with `npm install -g @openai/codex@latest`, then retry.",
+            { cause: error }
+          );
+        }
+        throw error;
+      }
+      const threadId = importedThreadIdForSource(snapshot.snapshotPath, sourceSha256);
+      if (!threadId) {
+        const stderr = cleanCodexStderr(client.stderr);
         throw new Error(
-          "This Codex version does not support Claude session transfer. Update Codex with `npm install -g @openai/codex@latest`, then retry.",
-          { cause: error }
+          `Codex reported that the Claude import completed, but did not record an imported thread.${stderr ? `\n${stderr}` : " Check the Codex app-server logs for the underlying import error."}`
         );
       }
-      throw error;
-    }
-    const threadId = importedThreadIdForSource(options.sourcePath);
-    if (!threadId) {
-      const stderr = cleanCodexStderr(client.stderr);
-      throw new Error(
-        `Codex reported that the Claude import completed, but did not record an imported thread.${stderr ? `\n${stderr}` : " Check the Codex app-server logs for the underlying import error."}`
-      );
-    }
-    emitProgress(options.onProgress, `Claude session imported (${threadId}).`, "completed", { threadId });
-    return {
-      threadId,
-      stderr: cleanCodexStderr(client.stderr)
-    };
-  });
+      emitProgress(options.onProgress, `Claude session imported (${threadId}).`, "completed", { threadId });
+      return {
+        threadId,
+        sourceSha256,
+        importId: imported.importId,
+        stderr: cleanCodexStderr(client.stderr)
+      };
+    });
+  } finally {
+    snapshot.cleanup();
+  }
 }
 
 export async function runAppServerTurn(cwd, options = {}) {
@@ -1283,6 +1403,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     if (options.resumeThreadId) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
       const response = await resumeThread(client, options.resumeThreadId, cwd, {
+        developerInstructions: options.developerInstructions,
         model: options.model,
         sandbox: options.sandbox,
         approvalPolicy,
@@ -1296,6 +1417,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     } else {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
       const response = await startThread(client, cwd, {
+        developerInstructions: options.developerInstructions,
         model: options.model,
         sandbox: options.sandbox,
         approvalPolicy,
@@ -1409,6 +1531,11 @@ export async function readAppServerTurn(cwd, { threadId, turnId }) {
   try {
     client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true, signal: abort.signal });
     const response = await client.request("thread/read", { threadId, includeTurns: true });
+    return appServerTurnResult(response, threadId, turnId);
+  } finally { clearTimeout(timeout); await client?.close(); }
+}
+
+function appServerTurnResult(response, threadId, turnId) {
     const turn = response.thread?.turns?.find(candidate => candidate.id === turnId);
     if (!turn) return null;
     const items = turn.items ?? [];
@@ -1427,7 +1554,6 @@ export async function readAppServerTurn(cwd, { threadId, turnId }) {
       touchedFiles: collectTouchedFiles(fileChanges),
       commandExecutions: items.filter(item => item.type === "commandExecution")
     };
-  } finally { clearTimeout(timeout); await client?.close(); }
 }
 
 export async function findLatestTaskThread(cwd) {

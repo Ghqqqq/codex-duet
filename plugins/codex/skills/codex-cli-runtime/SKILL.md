@@ -6,16 +6,21 @@ user-invocable: false
 
 # Codex Runtime
 
-Use this skill only inside the `codex:codex-rescue` subagent. Its restrictions apply to that wrapper. The parent Claude agent owns planning, parallel task assignments, integration, verification, and user-facing summaries. The self-contained `codex:codex-worker` agent uses its own instructions for native parallel delegation and explicit-thread follow-ups; do not load this rescue-only skill there.
+Use this skill only inside the `codex:codex-rescue` subagent. Its restrictions apply to that wrapper. The parent Claude agent owns planning, parallel task assignments, integration, verification, and user-facing summaries. The self-contained `codex:codex-worker` agent uses its own instructions for fallback delegation and worker-specific follow-ups; do not load this rescue-only skill there.
 
-For the parent's background `task --direct` and `wait --direct` calls, compact progress lines appear in /tasks, then the JSON payload as the last stdout line. On completion, read only the last line starting with `{` in the output file (`grep '^{' <output file> | tail -n 1`). Claude Code may append `[exited with code N]`; never read the whole output file. Add `--quiet` for exactly one JSON line without progress; it requires `--direct`. The rescue wrapper's foreground invocation below is unchanged.
+The parent prefers `Agent(subagent_type: "codex:codex-native")` when available,
+otherwise `duet task` in background Bash. Its report arrives with the completion
+notification; only if missing, use `duet result <worker>`. Follow-ups use
+`duet task --to <worker>`; pending questions use `duet answer <worker>`. Native
+agents instead receive both through SendMessage. Do not parse output files.
 
-Primary helper:
-- `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task "<raw arguments>"`
-- `node "$CODEX_COMPANION" task --help` (or `-h`) lists every task flag and examples without starting a job. Unknown task flags before `--` are errors; pass literal option-like task text after `--` or on stdin.
+Primary helper: `duet task --quiet` with the brief only on stdin via a
+single-quoted `DUET_TASK` heredoc. `duet task --help` lists flags without starting
+a job. Single-quote runtime arguments; double quotes, pipes and commands outside
+the permission hook's grammar use normal permissions.
 
 Execution rules:
-- Set Bash `dangerouslyDisableSandbox: true` for every companion call. Add `--report --json` so stdout is a concise report with rawOutputFile/resultFile paths. The companion injects a conservative-assumptions, finish-this-turn contract; preserve needs_input and its question as incomplete work. No AskUserQuestion or confirmations in the wrapper.
+- When Claude's Bash sandbox is on, set `dangerouslyDisableSandbox: true`. `duet task` implies `--direct`; use `--quiet --timeout-sec 570` with Bash `timeout: 600000` for one JSON report v2. Do not add `--report --json` or `--follow`. Full evidence and artifact paths are available to the parent through `duet result <worker> --details`. The companion injects a conservative-assumptions, finish-this-turn contract; preserve needs_input and its question as incomplete work. No AskUserQuestion or confirmations in the wrapper.
 - On an unreachable/sandbox/socket/timeout failure before any job handle, retry once outside the Bash sandbox and report it. If a handle exists, return it for the parent's status/result recovery; never automatically submit another turn.
 - The rescue subagent is a forwarder, not an orchestrator. Its only job is to invoke `task` once and return that stdout unchanged.
 - Prefer the helper over hand-rolled `git`, direct Codex CLI strings, or any other Bash activity.
@@ -30,7 +35,7 @@ Execution rules:
 
 Command selection:
 - Use exactly one `task` invocation per rescue handoff.
-- Keep the inner helper in the foreground. The parent controls the native Agent lifecycle; do not launch a detached runtime background task.
+- Keep the inner helper call in the foreground; the parent controls the Agent lifecycle. Direct mode manages the detached Codex job and attached owner wait internally. Return a nonterminal report unchanged for the parent to wait or answer; never treat it as completion.
 - If the forwarded request includes `--background` or `--wait`, treat that as Claude-side execution control only. Strip it before calling `task`, and do not treat it as part of the natural-language task text.
 - If the forwarded request includes `--model`, normalize `spark` to `gpt-5.3-codex-spark` and pass it through to `task`.
 - If the forwarded request includes `--effort`, pass it through to `task`.
@@ -43,13 +48,13 @@ Command selection:
 
 Safety rules:
 - Default to write-capable Codex work in `codex:codex-rescue` for implementation and fix requests. Keep diagnosis, planning, research, and review without requested edits read-only.
-- Pass task text safely through stdin with a single-quoted heredoc delimiter absent from the prompt. Keep runtime flags separate and shell-quote their values. Do not interpolate prompt text into shell command syntax.
+- Pass task text through a single-quoted `DUET_TASK` heredoc with its delimiter absent as a complete line from the prompt. Keep runtime flags separate and shell-quote their values. Do not interpolate prompt text into shell command syntax.
 - Preserve the user's task text as-is apart from stripping routing flags.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Return the stdout of the `task` command exactly as-is.
 - If the Bash call fails or Codex cannot be invoked, return the failure and captured stderr to the outer Claude agent. Do not hide authentication, isolation, unsupported model/effort/tier, or runtime errors; do not claim successful execution.
 
 Isolated runtime and collaboration:
-- Pass `--fast` when the caller explicitly selects fast mode, including a parent Claude selection for latency-sensitive work; otherwise use normal mode (omit `--fast` or pass `--normal`). Never inherit fast from an earlier task. These flags are runtime controls, not prompt text. Reasoning effort and speed mode are independent.
+- Pass `--fast` when the caller explicitly selects fast mode, including a parent Claude selection for latency-sensitive work; otherwise use normal mode (omit `--fast` or pass `--normal`). On explicit-thread follow-ups, pass `--normal` when resetting inherited fast mode. These flags are runtime controls, not prompt text. Reasoning effort and speed mode are independent.
 - Use only this plugin runtime and its printed `codex-isolated.mjs` login/resume commands. Never fall back to the ordinary Codex home.
 - During `codex-claude collaboration`, the outer Claude agent owns planning, parallel worker assignments, integration and acceptance. The thin forwarding rules apply only to this rescue subagent; the outer agent must inspect changes and verification evidence.

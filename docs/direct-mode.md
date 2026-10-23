@@ -12,98 +12,149 @@ Have Codex investigate why the integration tests are flaky, and in parallel have
 another Codex worker review the retry logic in src/net/.
 ```
 
-### Direct mode (default)
+### Native subagent (preferred when available)
 
-Run `node "$CODEX_COMPANION" task --help` (or `-h`) for all task flags, copy-paste dispatch examples and JSON result handling; help starts no job, and unknown task flags are rejected before dispatch. SessionStart adds a short command template and help pointer alongside the existing environment exports.
+Claude can call `Agent(subagent_type: "codex:codex-native", name: "reviewer", prompt: "<brief>")`.
+The function hook runs Codex and returns its report through the native agent
+completion. An optional first prompt line sets Codex options:
 
-Claude makes one Bash call per job, with `run_in_background: true` and
-`description: "Codex: <label>"`. When Claude's Bash sandbox is on, it sets
-`dangerouslyDisableSandbox: true` because the runtime needs network and local
-sockets. SessionStart exports `CODEX_COMPANION`, the absolute path to the
-companion, to every Bash call. Older sessions lack it: resolve
-`../scripts/codex-companion.mjs` relative to the [protocol's prompts
-folder](../plugins/codex/prompts/ultra-codex-protocol.md) and use that absolute path.
-
-```bash
-node "$CODEX_COMPANION" task --fresh --direct --model gpt-6-astra --effort xhigh --normal <<'CODEX_TASK'
+```text
+DUET: --model gpt-6-astra --effort xhigh --sandbox read-only --normal
 <brief: objective, context, owned paths, constraints, acceptance criteria>
-CODEX_TASK
 ```
 
-The prompt goes on stdin through a single-quoted heredoc, never on the command
-line. Choose a delimiter absent as a complete line from the brief, and quote
-dynamic runtime arguments separately. Read-only investigators and reviewers add
-`--sandbox read-only`; another checkout adds `--cwd <dir>`. Parallel jobs need
-disjoint OWNED PATHS, or separate worktrees Claude creates with `git worktree add`
-and passes as `--cwd`.
+The header also accepts `--cwd` and `--fork`. Put these choices in the prompt,
+not the Agent tool's model/effort fields. Use SendMessage to the native agent's
+name to continue the same Codex thread or answer its pending question. The
+adapter handles waits; stop an active task from `/tasks`. A parked question may
+outlive stopping an already-ended agent row: use `duet cancel <worker>` for an
+explicit cancellation, or the question expires after 900 seconds by default.
 
-The helper starts a detached job with this process attached as its owner wait.
-While it waits it prints compact progress lines, which show up in `/tasks`.
-After the sequence prefix, finished commands lead with exit status and seconds
-when available, with shell wrappers removed; plans show completed/total steps
-and file edits show added/removed line counts. When the job ends, a question is
-pending, or the timeout passes, it prints the compact JSON payload as its last
-line of output (`--quiet` prints only that line).
-Claude Code's completion notification carries no output: Claude reads the last
-line starting with `{` from the output file it names
-(`grep '^{' <output file> | tail -n 1`). Progress lines never start with `{`,
-and Claude Code may append a trailer such as `[exited with code 0]`. Never read
-the whole file, poll or sleep. The owner lease renews on its own timer, so a
-reader that stops draining the output never interrupts the job; pending progress
-is capped at 200 lines and the overflow is reported as one
-"… N progress lines omitted" line before the payload.
+Codex progress lines stream inside the agent while it runs and are kept in its
+transcript as notices; they also keep jobs longer than ten minutes alive under
+Claude Code's subagent stall watchdog.
 
-- Terminal: run the [acceptance protocol](../plugins/codex/prompts/ultra-codex-protocol.md#accepting-a-result-every-worker-report-no-exceptions),
-  even after a nonzero exit. The structured report includes handles, runtime
-  model/effort/serviceTier, touchedFiles/preExistingChanges/fileTrackingStatus,
-  captured `verification` and `claimedVerification`, findings, assumptions,
-  blockers and artifact paths, plus Codex's final `summary` (cut at 8000
-  characters with `summaryTruncated: true`). It has `activityCount`, no
-  `activity` list. Never read `rawOutputFile` unless a report field is
-  insufficient.
-- `running`: run its `waitCommand` (`wait <job-id> --owner <owner-id> --direct`)
-  in the background again, then wait for the next notification.
-- `needs_answer`: run its `answerAndWaitCommand` in ONE background Bash call
-  (`run_in_background: true`, `timeout: 600000`), putting the answer on stdin
-  through a single-quoted heredoc. The command includes `--owner`, `--question`
-  and `--direct`; it attaches the sole owner wait, submits once, then keeps the
-  lease alive while waiting past that question. `question` supplies `id`,
-  `kind`, `text`, `options` and `expiresAt`. A `question.kind` of `approval` is a
-  Computer Use app request with four fixed options; forward it with
-  `AskUserQuestion` unless the user pre-authorised the app. The answer continues
-  the same turn. Compatibility fallback for `needs_answer`: FIRST run its
-  `waitCommand` in background Bash; it includes `--after-question <id>` and keeps
-  the lease alive. Then answer with the returned `answerCommand`, putting the
-  answer on stdin through a single-quoted heredoc; do not start another wait
-  after answering.
+The adapter announces native workers on the first prompt of each session, only
+when it registered. If it is unavailable, the agent returns `blocked` with `native_adapter_unavailable`,
+not a substitute solution. Check `duet status` before retrying because dispatch
+is unconfirmed. See [troubleshooting](troubleshooting.md).
+
+### Direct mode
+
+Use `duet task --help` for task flags; help starts no job. The installed plugin
+adds `bin/` to PATH, and SessionStart supplies the session ID and a short dispatch
+recipe. If `duet` is missing in an older session, reload/start a new session or
+use the absolute `plugins/codex/bin/duet` launcher path.
+
+Claude makes one Bash call per job with `run_in_background: true` and
+`description: "Codex: <label>"`. When Claude's Bash sandbox is on, set
+`dangerouslyDisableSandbox: true` because the runtime needs network and local
+sockets.
+
+```bash
+duet task --model gpt-6-astra --effort xhigh --normal <<'DUET_TASK'
+<brief: objective, context, owned paths, constraints, acceptance criteria>
+DUET_TASK
+```
+
+The brief goes only on stdin. Use single-quoted `DUET_TASK`/`DUET_ANSWER`
+heredocs with delimiters absent as complete lines from the text, and single-quote
+dynamic arguments. The permission hook auto-approves only its narrow grammar:
+double quotes, pipes, compound commands, sandbox bypass and flags outside its
+allowlist go through normal permissions. Read-only workers add `--sandbox
+read-only`; another checkout adds `--cwd '<dir>'`. Parallel writers need disjoint
+OWNED PATHS or separate worktrees.
+
+For accepted commands, the hook pins the quoted absolute launcher and inserts
+the Claude session/tool-use bindings in every non-plan permission mode, including
+bypass mode; plan mode abstains. PATH collisions still use normal permissions.
+It does not scan shell snapshots: harmless aliases, helper text and stale or
+missing snapshots must not silently prevent report attachment. A shell function
+can shadow even an absolute launcher, but anyone able to plant functions in the
+user's shell initialisation can already run arbitrary commands.
+
+`duet task` implies `--direct`: a detached job with this process attached as
+its owner wait. Compact progress appears in `/tasks`. When the job ends, asks a
+question or reaches the wait budget, report v2 arrives with the completion
+notification. Only if the report is missing, run `duet result <worker>`; do not
+parse the output file, poll or sleep. `--quiet` suppresses progress. The wait
+renews its lease independently of output draining; pending progress is capped
+at 200 lines, with an omitted-line notice before the final JSON line.
+
+Report v2 starts with `status`, `worker`, `jobId`, `summary`. The summary is capped
+at 8000 characters (`summaryTruncated` when cut); the rest fits within 2000 bytes.
+Nonempty fields include `blockers`, `question`, `changedFiles`, `checks.ran`
+(captured commands), `checks.claimed` (Codex's account), `assumptions` and
+`keyFindings`. `next` suggests an action or is null. `details` gives `duet result
+<worker> --details` for handles, settings, artifact paths and fuller evidence.
+Use it whenever compact evidence or question text was shortened.
+
+- Terminal: apply the [acceptance protocol](../plugins/codex/prompts/ultra-codex-protocol.md#accepting-a-result-every-worker-report-no-exceptions),
+  even after a nonzero exit. Verify the diff and checks yourself; read
+  `rawOutputFile` only if report fields are insufficient.
+- `running`: run `duet wait <worker>` in background Bash and wait for its notification.
+- `needs_answer`: run ONE background Bash call (`timeout: 600000`):
+
+  ```bash
+  duet answer Ada <<'DUET_ANSWER'
+  <answer to Ada's pending question>
+  DUET_ANSWER
+  ```
+
+  Replace Ada with the report's `worker`. The command resolves the owner and
+  pending question, submits once, then waits on the same turn. Do not start
+  another wait. `question` supplies `id`, `kind`, `text`, `options` and
+  `expiresInSec`. A Computer Use approval has four fixed options; forward it
+  with `AskUserQuestion` unless the user pre-authorised the app.
 - `ownership_moved`: report it; do not reuse the retired owner or re-adopt.
-- `error`: validation errors occur before dispatch, but runtime or wait errors
-  can occur after launch; check `status` for an existing job before resubmitting.
-  `owner_stopped`: the wait itself was stopped; the job is
-  interrupted and the line carries its handles and `continuationCommand`.
+- `error`: check `duet status` before resubmitting; a runtime or wait failure
+  may occur after launch. `owner_stopped` means the wait was stopped and the
+  job interrupted; use `--details` for recovery information.
 
 Never run two waits for one job. Exit codes are 0 for `completed`, 2 for
 `blocked`/`needs_input`, 1 for other terminal states, 0 for `running`/`needs_answer`,
-2 for `ownership_moved`, and 130 for a stopped owner wait.
-Direct mode rejects `--follow`, `--detached`, `--background`, `--json`,
-`--feed-limit` and `--min-interval-sec`. It supports `--fresh`, `--thread`,
-`--continue`, model/effort/speed, sandbox and approval flags, `--cwd` and stdin.
+2 for `ownership_moved`, and 130 for a stopped owner wait. Direct mode rejects
+`--follow`, `--detached`, `--background`, `--json`, `--feed-limit` and
+`--min-interval-sec`.
 
-Each dispatched task gets a random historical scientist or computing pioneer name (`agentName` in JSON), reused by `--thread` and `--continue` follow-ups.
+Each worker gets a historical scientist or computing pioneer name. Follow up with
+`duet task --to <worker>` and a new stdin brief; it keeps the original cwd and
+thread and inherits the recorded model, effort, sandbox, speed and request
+grants. Explicit flags override them; restate `--sandbox read-only` when narrowing
+access and `--normal` when resetting fast mode. `--thread <id>` also inherits
+recorded settings. Use a job ID to address an older turn; never select parallel
+work by “the latest thread”.
 
-Follow-ups and rework start a new job on the same thread with
-`task --thread <threadId> --direct`, the same `--cwd`, and the relevant criteria
-restated. Never select a worker by "the latest thread". Verify claims with the
-job/thread/turn handles, `result --report --json`, the actual diff and checks.
+### Context: instructions and explicit forks
+
+Claude's loaded CLAUDE.md/rules from the session's first `prompt.context` are
+automatically forwarded as `developerInstructions`. Later contexts are ignored;
+edits apply from the next Claude session. An unavailable or incomplete first
+inventory leaves no snapshot and Duet reports an approximate startup scan.
+Threads retain their original instructions, so changed rules also need a fresh task. Opt out
+with `--no-claude-md` on a fresh task or `CODEX_COMPANION_CLAUDE_MD=0`.
+Codex's own project-file discovery is separate; see
+[configuration](configuration.md#claude-instructions-and-conversation-imports).
+
+A normal brief does not include the conversation. Use `duet task --fork` with
+stdin to import the current Claude transcript into a new thread, then run the
+assignment. `--source '<jsonl>'` selects another allowed transcript. Imports are
+labelled “imported Claude conversation (fidelity not verified)”; fidelity has
+not been established. The default import limit is 20 MiB, configurable with
+`CODEX_COMPANION_IMPORT_MAX_BYTES`; oversized imports fail rather than truncate.
+`--fork` cannot combine with `--to`, `--thread`, `--continue` or resume flags.
+Use `--to` for follow-ups after the fork.
 
 ### Live view with codex-live
 
 Install the separate pane plugin with `/plugin install codex-live@duet`. New jobs
 ask Claude Code to open the pane; Claude Code decides whether it is shown at the
 current width. `/codex-live` opens and focuses it at any width.
-It shows the session's jobs and the selected job's Codex messages, commands,
-file changes, tool calls, plan and pending question. Jobs on the same Codex
-thread (`--thread` and `--continue` follow-ups) form one row whose transcript
+It shows the session's jobs and the selected job's prompt, Codex messages, commands,
+file changes, tool calls, plan and pending question. Resolved `ask_parent` calls
+show their matched answer; on resumed threads Codex 0.146.0 does not pass a call ID
+to custom MCP servers, so answers cannot be matched and are not shown. Jobs on the same Codex
+thread (`--to`, `--thread` and `--continue` follow-ups) form one row whose transcript
 shows every turn in order. It is read-only: it never
 starts, answers or cancels a job, and costs no Claude tokens. The pane reads
 companion-written markers under
@@ -118,33 +169,28 @@ jobs for this session without deleting their records or changing the default
 
 ### Haiku fallback
 
-Use `Agent(subagent_type: "codex:codex-worker")` only when direct mode cannot be
-used, such as a surface without background Bash, or when the user asks for an
-agent transcript view. Never pass `model` or `effort` to that agent; Codex's
-model and effort go in the assignment text. The forwarder stays `model: haiku`,
-`effort: low`, `omitClaudeMd: true`, `autoCompactWindow: 100000` in
-[its definition](../plugins/codex/agents/codex-worker.md).
+Use `Agent(subagent_type: "codex:codex-worker")` when native dispatch and
+background Bash are unavailable, or the user asks for a forwarding-agent
+transcript. Never pass `model` or `effort` to that Haiku agent; put Codex's choices
+in the assignment text. Its [definition](../plugins/codex/agents/codex-worker.md)
+keeps `effort: low`, `omitClaudeMd: true` and `autoCompactWindow: 100000`.
 
-The fallback runs `task --fresh --follow --report` with Bash `timeout: 600000`,
-then `wait <job> --owner <ownerId> --report` on a `running` return (570 s wait
-budget). Feed mode is only for this fallback; `--feed-limit` defaults to 60.
-The worker sends `questionMessage` verbatim to Claude once per pending question
-and accepts the reply via SendMessage; progress, status and completion messages
-are forbidden. It returns the helper's final JSON line verbatim plus at most
-5 lines of notes for stderr, retries or a relayed question, with no prose report.
-
-Fallback follow-ups and rework start a NEW worker with `--thread <threadId>` and
-the same `--cwd`; SendMessage to an existing worker is only for answering its
-pending question. Final results arrive only as agent return values. The parent
-still performs the same acceptance checks.
+The forwarder calls `duet task --timeout-sec 570` in foreground Bash with
+`timeout: 600000`, then `duet wait <worker> --timeout-sec 570` on `running`.
+It relays the full `questionMessage` from `duet result <worker> --details`, accepts
+SendMessage replies and submits them with `duet answer <worker>`. It returns
+report v2 verbatim plus at most five lines of notes for stderr, retries or a
+relayed question. Follow-ups start a NEW fallback agent with `duet task --to
+<worker>`; SendMessage to an existing fallback agent only answers its pending
+question. The parent performs the same acceptance checks.
 
 ### If a worker is stopped
 
-In short: `task --continue <jobId> --cwd <cwd> --direct` starts one new turn on
+`duet task --continue <jobId> --cwd '<cwd>'` starts one new turn on
 the same thread with the recorded settings, only with the user's consent, and a
 still-running job can be adopted by a replacement owner without a new turn.
 
-Stop the background task in Claude Code, or run `cancel <jobId> --json`.
+Stop the background task in Claude Code, or run `duet cancel <worker>`.
 Stopping its attached owner wait signals the helper, interrupting the Codex turn
 as `interruptionReason: owner_stopped`. A dead owner wait can be replaced
 immediately with the same owner while the job is still active and its lease
@@ -155,25 +201,26 @@ edits persist. A normal wait return (timeout, question, terminal state) leaves
 the job protected by its lease. A stopped fallback agent cannot resume via
 SendMessage.
 
-The direct report carries the exact `continuationCommand`:
-`node '<companion>' task --continue '<job>' --cwd '<cwd>' --direct`. It starts
-ONE new turn on the same thread with the original sandbox, model, effort, speed
-and approval settings; any extra prompt text is appended. With the user's explicit consent,
-Claude runs it in background Bash; nothing starts it automatically. If no thread handle was recorded, no continuation is available.
-Use a new fallback worker only when direct mode cannot be used or the user
-requests an agent transcript view; its continuation uses `--follow --report`.
+After a stop, `duet result <worker> --details` supplies the recorded handles and
+compatibility `continuationCommand`. With explicit user consent, run
+`duet task --to <worker>` with a new brief, or `duet task --continue <jobId>
+--cwd '<cwd>'` to retain that exact job's settings. Either starts one new turn;
+nothing continues automatically. If no thread was recorded, continuation is
+unavailable. A native agent can also continue through SendMessage when Claude
+Code allows it; the Haiku fallback requires a new agent.
 
 A job still running after its owner returned normally stays alive for the lease
 window (default 1800 s in direct mode, 180 s otherwise, from the last renewal;
 `task --lease-sec`). With the user's explicit consent, a replacement owner whose
-FIRST action is `adopt <jobId> --json` takes over that live turn. Adoption rotates
+FIRST action is `duet adopt <jobId> --json` takes over that live turn. Adoption rotates
 the ownerId and renews the lease, preserving the thread, turn, pending question
 and delivered feed cursor; never submit a new task for an adoptable job. Start
-one `wait <jobId> --owner <newOwnerId> --direct` in background Bash. The old
+one `duet wait <jobId> --owner '<newOwnerId>'` in background Bash. The old
 owner's wait/status/answer calls return `ownership_moved`; it must stop, never
 re-adopt. Without adoption the job is interrupted at lease expiry
-(`lease_expired`) with a continuation command. Parent `/codex:status`, `status`,
-`result` and ownerless `wait` never renew the lease.
+(`lease_expired`) with a continuation command. Observational `/codex:status`, `duet status` and `duet result` do not renew the
+lease. `duet wait` resolves and renews the owner; an ownerless compatibility
+companion wait is observation only.
 
 `/codex:status` marks stale running jobs **orphaned**, with remaining lease seconds
 and an exact adopt instruction, after half the lease without renewal in direct
@@ -186,24 +233,22 @@ lease otherwise.
 | --- | --- | --- |
 | Model | `gpt-6-astra` | `--model <name>` (`spark` maps to `gpt-5.3-codex-spark`) |
 | Reasoning effort | `xhigh` | `--effort none…xhigh` or `--effort max` where the model supports it |
-| Speed | normal | `--fast` requests the fast tier for that call only; `--normal` resets |
+| Speed | normal | `--fast` requests the fast tier; `--normal` resets inherited speed |
 | Direct-mode timeout | 3600 s | `--timeout-sec <seconds>` (maximum 3600) |
 | Owner lease | 1800 s in direct mode; 180 s otherwise | `--lease-sec <seconds>` |
-| Fallback feed limit | 60 lines per call | `--feed-limit <lines>` (`0` = unlimited; unavailable with `--direct`) |
 | Codex sandbox | `danger-full-access` (full access, like the Codex app's own full-access mode) | Lower the default with `setup --default-sandbox read-only\|workspace-write` (stored in `~/.claude/codex-isolated/duet/config.toml`); narrow or widen one call with `task --sandbox <mode>`; `--write` is a floor (at least `workspace-write`), `--write=false` an explicit read-only call |
-| Approval policy | `never+elicitations` on owned jobs (every command/sandbox/rule prompt rejected; a Computer Use app request is forwarded to the parent as a question); `never` on a plain foreground `task` | — |
+| Approval policy | `never+elicitations` on owned jobs (every command/sandbox/rule prompt rejected; a Computer Use app request is forwarded to the parent as a question); `never` on a compatibility non-direct companion task | — |
 | Browser | unrestricted: any website, no per-origin prompt (`approval_mode = "never_ask"` is mirrored into the isolated browser runtime before every task); network access stays on in every sandbox mode | `setup --browser-approval ask` restores the runtime's ordinary origin checks (saved in `duet/config.toml`); `setup --browser-approval never-ask` returns to the default |
 | Computer Use apps | `mirror`: apps the user marked "always allow" in their Codex app (`~/.codex/computer-use/config.toml`, read-only) are copied into the isolated runtime's approval file before every task; any other app is asked of the parent during the task | `setup --computer-use-approval ask` stops the sync; `setup --allow-computer-app`/`--revoke-computer-app <bundle id>` adjust individual apps; `task --approve-computer-app <bundle id>` pre-approves one app for one call |
-| Project instructions | `claude-md`: Codex reads `CLAUDE.md` where no `AGENTS.md` exists (`project_doc_fallback_filenames` in the isolated `config.toml`) | `setup --project-docs agents-only` |
+| Claude instructions | Loaded CLAUDE.md/rules forwarded; approximate scan if unavailable | `--no-claude-md`, `CODEX_COMPANION_CLAUDE_MD=0` |
+| Codex project discovery | `CLAUDE.md` where no `AGENTS.md` exists | `duet setup --project-docs agents-only` |
 
-The parent chooses a sandbox per call the way it would choose a permission mode
-for a native subagent; without a flag the configured default applies. Each
-follow-up uses its own flags and the current configured default; only
-`task --continue` deliberately inherits the original job's settings. Per-call write access, fast
-mode and browser grants are otherwise never inherited from an earlier turn, and
-workers never elevate after a denial. Companion Bash calls run with
-`dangerouslyDisableSandbox: true` because the runtime needs network access and
-local sockets; that is separate from Codex's own sandbox.
+The parent chooses a sandbox per call; fresh tasks without a flag use the
+configured default. `--to`/`--thread` inherit recorded settings unless overridden;
+`--continue` inherits the selected job's settings and rejects conflicting flags.
+Workers never elevate after a denial. Bash's `dangerouslyDisableSandbox: true`
+is separate from Codex's own sandbox and is needed when Claude's Bash sandbox
+blocks the runtime's network access or local sockets.
 
 ### Parallel work
 

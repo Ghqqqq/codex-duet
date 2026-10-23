@@ -38,7 +38,7 @@ test("SessionEnd cancels only its session's jobs and retains confirmation eviden
   const parentRepo = makeTempDir(); initGitRepo(parentRepo);
   const end = run(process.execPath, [hook, "SessionEnd"], { cwd: parentRepo, env: f.env, input: JSON.stringify({ session_id: "fixture-session", cwd: parentRepo }) });
   assert.equal(end.status, 0, end.stderr);
-  const result = json(f.call("result", launch.jobId, "--json", "--report"), 1);
+  const result = json(f.call("result", launch.jobId, "--details"), 1);
   assert.equal(result.status, "interrupted"); assert.equal(result.interruptionReason, "session_end"); assert.equal(result.interruptionConfirmed, true);
   assert.equal(job(f, foreign.jobId).status, "running");
   json(f.call("cancel", foreign.jobId, "--json"));
@@ -59,7 +59,7 @@ test("legacy session-ID owners remain readable and session-scoped without implic
   assert.ok(job(f, launch.jobId).leaseExpiresAt > before);
   const ended = run(process.execPath, [hook, "SessionEnd"], { cwd: f.repo, env: f.env, input: JSON.stringify({ session_id: "fixture-session", cwd: f.repo }) });
   assert.equal(ended.status, 0, ended.stderr);
-  assert.equal(json(f.call("result", launch.jobId, "--json", "--report"), 1).interruptionReason, "session_end");
+  assert.equal(json(f.call("result", launch.jobId, "--details"), 1).interruptionReason, "session_end");
 });
 
 test("foreground and direct tasks write private atomic session markers", () => {
@@ -77,7 +77,7 @@ test("foreground and direct tasks write private atomic session markers", () => {
     const marker = JSON.parse(fs.readFileSync(markerFile, "utf8"));
     assert.deepEqual(marker, { v: 1, jobId: launched.jobId, jobFile: saved.logFile.replace(/\.log$/, ".json"), logFile: saved.logFile, title: saved.title, name: saved.agentName, summary: "marker fixture", workspaceRoot: f.repo, createdAt: saved.createdAt });
     assert.ok(AGENT_NAMES.includes(saved.agentName));
-    assert.equal(launched.agentName, saved.agentName);
+    assert.equal(args.includes("--direct") ? launched.worker : launched.agentName, saved.agentName);
     if (extra.length) assert.equal(saved.agentName, previous.agentName);
     assert.equal(fs.statSync(markerFile).mode & 0o777, 0o600);
     assert.equal(fs.statSync(path.dirname(markerFile)).mode & 0o777, 0o700);

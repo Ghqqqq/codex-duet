@@ -1,6 +1,19 @@
 {
   "description": "Session lifecycle, ultra-codex mode reminder and the optional stop-time review gate for Duet.",
+  "modules": ["./register.mjs"],
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/duet-permission-hook.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [

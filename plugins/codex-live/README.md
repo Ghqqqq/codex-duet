@@ -1,14 +1,20 @@
 # Codex Live
 
 A read-only live pane for the current Claude session's Duet Codex jobs. It shows
-status, elapsed time, model/effort, messages, commands, file changes, tool calls,
+status, elapsed time, model/effort, assignment prompts, messages, commands, file changes, tool calls,
 plans and pending questions in Claude Code’s transcript style: a bullet, bold tool
 name and indented result. Messages use light inline styling for bold, code,
 headings, lists and links; fenced code and tables stay on one row per source line.
 Status colours follow your theme. Select a session row to view its conversation.
 
+Each detailed turn shows its assignment prompt (up to 20,000 characters),
+collapsed to three rows with click-to-expand/collapse.
+Resolved `ask_parent` calls show the parent's answer (up to 2,000 characters),
+matched only by call ID, never by order. On resumed threads, Codex 0.146.0 does
+not forward a call ID to custom MCP servers, so those answers are not shown.
+
 Jobs in this Claude session that share a Codex `threadId` appear as one session,
-including `task --thread` and `task --continue` follow-ups. Its row shows the
+including `duet task --to`, `--thread` and `--continue` follow-ups. Its row shows the
 latest turn's summary, status and elapsed time, plus a turn count when it fits.
 Selecting it shows each turn's header and activity in creation order; follow-ups
 preserve selection and following. The latest turn controls the footer, questions

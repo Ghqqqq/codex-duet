@@ -78,7 +78,7 @@ export function jobRow(job: CodexLiveJob | CodexLiveSession, selected: boolean, 
   return { selector, bullet, label, summary, marker, gap: ' '.repeat(Math.max(0, labelColumns - width(label + summary))), meta };
 }
 
-export type ResultLine = { text: string; color: ThemeKey; bold?: boolean; strikethrough?: boolean };
+export type ResultLine = { text: string; color: ThemeKey; bold?: boolean; boldPrefix?: string; strikethrough?: boolean };
 export type FeedItem = {
   key: string;
   notice?: boolean;
@@ -86,6 +86,7 @@ export type FeedItem = {
   bold?: string;
   maxRows?: number;
   markdown?: string;
+  prompt?: { turnId: string; text: string; report: boolean };
   color: ThemeKey;
   results: ResultLine[];
 };
@@ -159,7 +160,10 @@ export function eventItem(event: CodexLiveEvent, job: CodexLiveJob, now: number)
     case 'dynamicToolCall': {
       const name = event.type === 'mcpToolCall' ? `${event.server || 'unknown'} - ${event.tool || 'unknown'}` : event.tool || 'unknown';
       return { ...base, title: `${name}${event.type === 'mcpToolCall' ? ' (MCP)' : ''}`, bold: name,
-        results: [toolResult(event, now, job)] };
+        results: [toolResult(event, now, job),
+          ...(event.tool === 'ask_parent' && event.questionText !== undefined
+            ? [{ text: event.questionText, color: 'subtle' as const },
+              ...(event.answer === undefined ? [] : [{ text: `Answer: ${event.answer}`, color: 'text' as const, boldPrefix: 'Answer:' }])] : [])] };
     }
     case 'plan': return { ...base, title: 'Update Todos', bold: 'Update Todos',
       color: failed(event) ? 'error' : event.steps?.length && event.steps.every((_, i) => event.statuses?.[i] === 'completed') ? 'success' : 'inactive',
@@ -202,7 +206,9 @@ export function feedItems(job: CodexLiveJob | CodexLiveSession, now: number): Fe
     title: `${omitted} earlier ${omitted === 1 ? 'turn' : 'turns'} not shown`, color: 'subtle', results: [] }] : [];
   return [...notice, ...turns.flatMap((turn, index) => {
     const detailed = index >= turns.length - DETAIL_TURN_LIMIT && !turn.detailsOmitted;
-    const items = [headerItem(turn, now), ...(detailed ? activityItems(turn).map(event => eventItem(event, turn, now)) : [])];
+    const prompt: FeedItem[] = detailed && turn.prompt !== undefined ? [{ key: 'prompt', title: 'Prompt', bold: 'Prompt', maxRows: 1,
+      color: 'suggestion', results: [], prompt: { turnId: turn.id, text: turn.prompt, report: turn.promptReport === true } }] : [];
+    const items = [headerItem(turn, now), ...prompt, ...(detailed ? activityItems(turn).map(event => eventItem(event, turn, now)) : [])];
     if (index === turns.length - 1 && jobLifecycle(turn).active && turn.question) items.push({ key: 'pending-question', title: 'Waiting for Claude', color: 'warning',
       results: [{ text: turn.question.text, color: 'subtle' },
         ...turn.question.options.map((option, i): ResultLine => ({ text: `${i + 1}. ${option}`, color: 'subtle' }))] });
@@ -212,7 +218,7 @@ export function feedItems(job: CodexLiveJob | CodexLiveSession, now: number): Fe
 }
 
 export type Span = { text: string; color?: ThemeKey; bold?: boolean; strikethrough?: boolean; start?: number; end?: number };
-export type FeedLine = { key: string; spans: Span[]; source?: string; start?: number; end?: number };
+export type FeedLine = { key: string; spans: Span[]; source?: string; start?: number; end?: number; togglePromptId?: string };
 export type FeedLines = FeedLine[] & { sources?: Record<string, string> };
 
 // Small inline grammar, deliberately not a Markdown renderer: every output
@@ -337,7 +343,26 @@ export function messageLines(body: string, columns: number): Span[][] {
   return messageLayout(body, columns).rows.map(row => row.spans.map(({ start, end, ...span }) => span));
 }
 
-export function feedLines(job: CodexLiveJob, now: number, columns: number): FeedLines {
+// A brief is literal text: preserve its headings, list markers and indentation.
+// Unlike agent Markdown, blank runs become one row and no inline syntax changes.
+function promptLayout(body: string, columns: number): { rows: LaidRow[]; text: string } {
+  const rows: LaidRow[] = [];
+  let text = '';
+  let blank = false;
+  for (const line of cleanBody(body).replace(/\t/g, '    ').split('\n')) {
+    const empty = !line.trim();
+    if (empty && blank) continue;
+    blank = empty;
+    const literal = empty ? '' : line;
+    const prefix = /^ *(?:(?:[-*]|\d+\.) +)?/.exec(literal)![0];
+    const indent = ' '.repeat(width(prefix));
+    rows.push(...laid(wrapSpans([{ text: literal, color: 'subtle' }], columns, '', indent), text.length));
+    text += `${literal}\n`;
+  }
+  return { rows, text };
+}
+
+export function feedLines(job: CodexLiveJob, now: number, columns: number, view?: CodexLiveFeedView): FeedLines {
   const lines: FeedLines = [];
   const sources: Record<string, string> = {};
   for (const item of feedItems(job, now)) {
@@ -360,10 +385,33 @@ export function feedLines(job: CodexLiveJob, now: number, columns: number): Feed
     let resultRow = 0;
     const resultSource = `${item.key}-results`;
     let resultText = '';
+    if (item.prompt) {
+      const prompt = promptLayout(item.prompt.text, Math.max(0, columns - 5));
+      const expanded = view?.expandedPromptIds?.includes(item.prompt.turnId);
+      const shown = expanded ? prompt.rows : prompt.rows.slice(0, 3);
+      for (const row of shown) lines.push({ key: `${item.key}-result-${resultRow}`, source: resultSource,
+        start: row.start, end: row.end, spans: [
+          { text: fit(resultRow++ ? '     ' : '  ⎿  ', columns), color: 'subtle' }, ...row.spans,
+        ] });
+      // Snapshot all prompt text even while collapsed: toggles are not new work.
+      sources[resultSource] = prompt.text;
+      if (expanded && item.prompt.report) lines.push({ key: `${item.key}-report`, source: `${item.key}-report`, start: 0, end: 0,
+        spans: [{ text: fit('     + standard report instructions', columns), color: 'subtle' }] });
+      if (item.prompt.report) sources[`${item.key}-report`] = '+ standard report instructions';
+      if (expanded || prompt.rows.length > 3) {
+        const toggleSource = `${item.key}-toggle`;
+        sources[toggleSource] = 'Prompt';
+        lines.push({ key: toggleSource, source: toggleSource, start: 0, end: 0, togglePromptId: item.prompt.turnId,
+          spans: [{ text: fit(`     ${expanded ? 'click to collapse' : `… +${prompt.rows.length - 3} lines · click to expand`}`, columns), color: 'subtle' }] });
+      }
+      continue;
+    }
     for (const result of item.results) {
       // Clock text is display-only and cannot create unseen content identities.
       const stable = result.text.replace(/Running… \(\d+s\)/g, 'Running…');
-      for (const row of laid(wrapSpans([result], Math.max(0, columns - 5)), resultText.length)) {
+      const spans: Span[] = result.boldPrefix ? [{ text: result.boldPrefix, bold: true, color: result.color },
+        { text: result.text.slice(result.boldPrefix.length), color: result.color }] : [result];
+      for (const row of laid(wrapSpans(spans, Math.max(0, columns - 5)), resultText.length)) {
         lines.push({ key: `${item.key}-result-${resultRow}`, source: resultSource, start: row.start, end: Math.min(row.end, resultText.length + stable.length), spans: [
           { text: fit(resultRow++ ? '     ' : '  ⎿  ', columns), color: 'subtle' }, ...row.spans,
         ] });
@@ -497,8 +545,22 @@ export function scrollFeed(lines: FeedLines, rows: number, view: CodexLiveFeedVi
 export function reconcileFeed(previous: CodexLiveJob, job: CodexLiveJob, view: CodexLiveFeedView, now: number): CodexLiveFeedView {
   const columns = view.columns ?? 60;
   const rows = view.rows ?? 8;
-  const before = view.anchor && view.seenItems ? view : normalizeFeed(feedLines(previous, now, columns), rows, view);
-  return normalizeFeed(feedLines(job, now, columns), rows, before);
+  const before = view.anchor && view.seenItems ? view : normalizeFeed(feedLines(previous, now, columns, view), rows, view);
+  return normalizeFeed(feedLines(job, now, columns, view), rows, before);
+}
+
+export function togglePrompt(job: CodexLiveJob, now: number, columns: number, rows: number,
+  view: CodexLiveFeedView | undefined, turnId: string): CodexLiveFeedView {
+  const lines = feedLines(job, now, columns, view);
+  const before = normalizeFeed(lines, rows, view);
+  const expanded = new Set(before.expandedPromptIds);
+  if (expanded.has(turnId)) expanded.delete(turnId);
+  else expanded.add(turnId);
+  // Freeze the current top source/character offset even when following the end.
+  // normalizeFeed resolves that same anchor after reflow, like scrolling/polls.
+  const next = { ...before, expandedPromptIds: [...expanded], following: false,
+    seenItems: before.seenItems ?? snapshot(lines), columns };
+  return normalizeFeed(feedLines(job, now, columns, next), rows, next);
 }
 
 export function footerLayout(job: CodexLiveJob, state: CodexLiveState, columns: number, following: boolean, newLines: number) {

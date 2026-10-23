@@ -19,11 +19,10 @@
 
 ## Why Duet
 
-- **Claude spends its effort where it matters.** Each worker is one background
-  Bash call. Claude sleeps until the job ends, then reads one compact JSON report:
-  Codex's final summary (capped at 8,000 characters), plus structured evidence and
-  handles. It does not babysit a growing transcript, so long Codex jobs cost
-  Claude almost nothing.
+- **Claude briefs and checks the work.** Each worker is a native agent call or
+  background `duet task`. Its completion notification carries a compact report:
+  Codex's summary (up to 8,000 characters), evidence, and commands for next steps
+  or full details. Claude checks the diff and verification before accepting it.
 - **Workers can talk back.** Codex can ask a question mid-task (`ask_parent`)
   and Claude's answer continues the *same* turn. Stopping a job really stops it,
   and stopped work can be continued or adopted later.
@@ -45,9 +44,9 @@
 1. **Claude** scouts the code, writes acceptance criteria and a precise brief for
    each worker.
 2. The **Duet companion** starts each job on its own Codex thread and keeps the
-   Bash call attached as the job's owner (lease, heartbeat, questions, stops).
+   wait attached as the job's owner (lease, heartbeat, questions, stops).
 3. **Codex workers** run in parallel and finish with a structured report.
-4. Claude wakes on the completion notification, checks the diff and its own
+4. Claude receives the report with the completion notification, checks the diff and its own
    evidence against each criterion, records the verdict and integrates.
 
 ## Install
@@ -103,32 +102,54 @@ For a substantial task, hand the whole orchestration over:
 | `/codex:transfer` | Continue the current Claude conversation directly in Codex |
 | `/codex:setup` | Check the runtime; opt into browser/desktop tools and other settings |
 
+Claude prefers `codex:codex-native` when the first prompt of the session reports
+native workers ready; otherwise it uses background `duet task`. Continue by sending the native agent a message,
+or use `duet task --to <worker>` with a new brief. A pending question uses
+SendMessage or `duet answer <worker>` and continues the same turn.
+
 Every command and flag: [docs/commands.md](docs/commands.md).
 
 ## Features
 
-### Direct mode: parallel workers, minimal Claude cost
+### Call Codex like a native subagent
 
-Claude dispatches each job as one background Bash call:
+Claude calls `Agent(subagent_type: "codex:codex-native", name: "reviewer", prompt: "<brief>")`.
+An optional first line such as `DUET: --sandbox read-only --effort xhigh` sets
+Codex flags. SendMessage to that agent continues its thread or answers a pending
+question; stop an active task from `/tasks`. This requires the supported function
+hooks. If unavailable, the agent returns a blocked report; check `duet status`
+before retrying through Bash. → [Native dispatch](docs/direct-mode.md#native-subagent-preferred-when-available)
+
+### Direct mode: background workers
+
+Claude can also dispatch one background Bash call per job:
 
 ```bash
-node "$CODEX_COMPANION" task --fresh --direct --model gpt-6-astra --effort xhigh <<'CODEX_TASK'
+duet task --model gpt-6-astra --effort xhigh --normal <<'DUET_TASK'
 <brief: objective, context, owned paths, constraints, acceptance criteria>
-CODEX_TASK
+DUET_TASK
 ```
 
-While the job runs, the call prints compact progress lines for `/tasks`. When the
-job ends, asks a question or reaches its time budget, the last JSON line is the
-report, with ready-to-run `waitCommand`, one-call `answerAndWaitCommand`, fallback
-`answerCommand` and `continuationCommand` handles. Each worker gets a name (Ada,
-Noether, Turing, …) that its follow-ups keep. →
-[Direct mode and worker lifecycle](docs/direct-mode.md)
+`duet task` implies direct mode. Progress appears in `/tasks`; report v2 arrives
+with the completion notification. Only if missing, run `duet result <worker>`.
+The report separates captured `checks.ran` from `checks.claimed`, and supplies
+`next` and `details` commands. `duet result <worker> --details` shows full evidence,
+settings, handles and artifact paths. Each worker gets a name (Ada, Noether,
+Turing, …) reused by `--to` follow-ups. → [Direct mode and worker lifecycle](docs/direct-mode.md)
+
+Claude's loaded CLAUDE.md/rules are forwarded automatically; opt out on a fresh
+task with `--no-claude-md` or `CODEX_COMPANION_CLAUDE_MD=0`. Without the loaded
+inventory, forwarding uses an approximate scan. `duet task --fork` explicitly
+imports the current conversation into a new thread before running the brief,
+labelled “imported Claude conversation (fidelity not verified)”. → [Context configuration](docs/configuration.md#claude-instructions-and-conversation-imports)
 
 ### Live view: `codex-live` and `/tasks`
 
 `codex-live` is a read-only pane that draws every worker the way Claude Code
-draws its own transcript: `⏺` rows, tool headers, file changes, plans and
-pending questions. New jobs ask Claude Code to open the pane; Claude Code decides
+draws its own transcript: prompts, `⏺` rows, tool headers, file changes, plans and
+pending questions. Resolved `ask_parent` calls show matched answers. On resumed
+threads, Codex 0.146.0 supplies no call ID to custom MCP servers, so answers are
+not shown. New jobs ask Claude Code to open the pane; Claude Code decides
 whether it is shown at the current width. `/codex-live` opens and focuses it at any width.
 Follow-ups on the same Codex thread stay in one row, with every turn in one
 continuous transcript; new jobs preserve your selection and scroll position.
@@ -170,7 +191,8 @@ always / deny). → [docs/configuration.md](docs/configuration.md)
 | Codex sandbox | full access, like the Codex app's own full-access mode | `setup --default-sandbox …`, or `--sandbox` per call |
 | Browser | any site, no per-origin prompt | `setup --browser-approval ask` |
 | Computer Use apps | mirror your Codex app's "always allow" list | `setup --computer-use-approval ask` |
-| Project instructions | `CLAUDE.md` is read where no `AGENTS.md` exists | `setup --project-docs agents-only` |
+| Claude instructions | Loaded CLAUDE.md/rules forwarded; approximate scan if unavailable | `--no-claude-md`, `CODEX_COMPANION_CLAUDE_MD=0` on fresh tasks |
+| Codex project discovery | `CLAUDE.md` where no `AGENTS.md` exists | `duet setup --project-docs agents-only` |
 | Wait budget · owner lease | 3600 s · 1800 s | `--timeout-sec`, `--lease-sec` |
 | Retention | Claude Code's `cleanupPeriodDays` (30 days) | `cleanup --days N`, `CODEX_COMPANION_RETENTION_DAYS` |
 
@@ -181,7 +203,7 @@ Full table and the security implications of each setting:
 
 | Topic | Page |
 | --- | --- |
-| Dispatch, reports, questions, stops, continue/adopt, Haiku fallback | [Direct mode](docs/direct-mode.md) · [Worker lifecycle](docs/worker-lifecycle.md) |
+| Native/Bash dispatch, reports, questions, stops and recovery | [Direct mode](docs/direct-mode.md) · [Worker lifecycle](docs/worker-lifecycle.md) |
 | Orchestration protocol and phases | [Ultra-codex](docs/ultra-codex.md) |
 | Run journal format and commands | [Run journal](docs/run-journal.md) |
 | All slash commands and companion subcommands | [Commands](docs/commands.md) |
@@ -198,7 +220,9 @@ Full table and the security implications of each setting:
   touched-file snapshot, the Codex sandbox and `git diff` are the controls.
 - File attribution is unreliable when several writers share one checkout. Give
   parallel writers disjoint paths or separate worktrees.
-- `codex-live` needs Claude Code 2.1.302's function-hooks pane API.
+- The native adapter and `codex-live` require the supported Claude Code 2.1.302
+  function-hook APIs. Stopping an already-ended native row may leave a parked
+  question until its default 900 s timeout; `duet cancel <worker>` cancels explicitly.
 
 More: [docs/troubleshooting.md](docs/troubleshooting.md#known-limitations).
 

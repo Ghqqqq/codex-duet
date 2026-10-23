@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { binaryAvailable } from "./process.mjs";
 
 // Resolve existing ancestors too, so a not-yet-created child of a symlink is checked.
 function canonicalPath(value) {
@@ -46,11 +47,13 @@ export function resolveIsolatedCodexHome(env = process.env) {
 }
 
 // A private runtime pointer lets this integration use a verified CLI without changing PATH globally.
-export function resolveCodexBinary(env = process.env) {
+export function resolveCodexSelection(env = process.env) {
   let selected = env.CODEX_COMPANION_BIN;
+  let source = selected ? "CODEX_COMPANION_BIN" : "PATH";
+  const runtimeFile = path.join(resolveIsolatedCodexHome(env), "runtime.json");
   if (!selected) {
-    const runtimeFile = path.join(resolveIsolatedCodexHome(env), "runtime.json");
     if (fs.existsSync(runtimeFile)) selected = JSON.parse(fs.readFileSync(runtimeFile, "utf8")).codexBinary;
+    if (selected) source = "runtime.json";
   }
   if (env.CODEX_COMPANION_TEST_MODE === "1") {
     const root = canonicalPath(env.CODEX_COMPANION_TEST_ROOT);
@@ -60,14 +63,53 @@ export function resolveCodexBinary(env = process.env) {
       if (explicit) throw new Error("Test-home guard: refusing a non-fixture Codex executable.");
       // An unavailable fixture is reported as unavailable, never resolved from
       // the developer's PATH or installed application's executable.
-      return path.join(root, "missing-codex-fixture");
+      return { binary: path.join(root, "missing-codex-fixture"), source, runtimeFile };
     }
   }
-  if (!selected) return "codex";
+  if (!selected) return { binary: "codex", source, runtimeFile };
   if (typeof selected !== "string" || !path.isAbsolute(selected)) {
     throw new Error("The isolated Codex runtime must be an absolute executable path.");
   }
-  return selected;
+  return { binary: selected, source, runtimeFile };
+}
+
+export function resolveCodexBinary(env = process.env) {
+  return resolveCodexSelection(env).binary;
+}
+
+export function executableOnPath(name, env = process.env) {
+  const suffixes = process.platform === "win32" ? (env.PATHEXT || ".EXE;.CMD;.BAT").split(";") : [""];
+  return (env.PATH || "").split(path.delimiter).flatMap(dir => suffixes.map(ext => path.resolve(dir, name + ext))).find(candidate => {
+    try { fs.accessSync(candidate, fs.constants.X_OK); return fs.statSync(candidate).isFile(); }
+    catch { return false; }
+  }) ?? null;
+}
+
+// Diagnose the selected runtime, never silently bypass a broken private pin.
+export function codexRuntimeDiagnostic(cwd, availability, env = process.env) {
+  const { binary, source, runtimeFile } = resolveCodexSelection(env);
+  const executable = path.isAbsolute(binary) ? binary : executableOnPath(binary, env) ?? binary;
+  const result = { executable, source, pathCodex: null, guidance: null };
+  if (availability.available) return result;
+  if (source === "PATH") {
+    const repair = executable === "codex"
+      ? "Install Codex with `npm install -g @openai/codex`, then rerun setup."
+      : `Repair or replace ${executable}, or change PATH to select a working Codex runtime.`;
+    result.guidance = `Selected executable ${executable} (source: PATH) is unavailable. ${repair}`;
+    return result;
+  }
+  const candidate = executableOnPath("codex", env);
+  // Diagnostic probes obey the same fixture boundary as normal runtime startup.
+  const allowed = candidate && (env.CODEX_COMPANION_TEST_MODE !== "1" || contains(canonicalPath(env.CODEX_COMPANION_TEST_ROOT), canonicalPath(candidate)));
+  if (allowed) {
+    const options = { cwd, env: isolatedCodexEnv(env) };
+    const version = binaryAvailable(candidate, ["--version"], options);
+    result.pathCodex = { path: candidate, available: version.available && binaryAvailable(candidate, ["app-server", "--help"], options).available };
+  }
+  const setting = source === "CODEX_COMPANION_BIN" ? "CODEX_COMPANION_BIN" : `codexBinary in ${runtimeFile}`;
+  const fallback = result.pathCodex?.available ? ` PATH has a working Codex at ${candidate}.` : "";
+  result.guidance = `Selected executable ${executable} (source: ${source}) is ${fs.existsSync(executable) ? "unusable" : "missing"}.${fallback} Fix or remove ${setting}; a global install cannot override this pin.`;
+  return result;
 }
 
 // Capture this before spawning a broker; recomputing it during handshake could

@@ -118,11 +118,9 @@ test("mirror runs before every task; a per-call --approve-computer-app grant exi
   const status = f.json(f.call("status", granted.jobId, "--json"));
   assert.deepEqual(status.job.approvedComputerApps, ["com.apple.Notes", "org.mozilla.firefox"]);
 
-  assert.deepEqual(f.json(f.call("result", granted.jobId, "--report", "--json")).approvedComputerApps, ["com.apple.Notes", "org.mozilla.firefox"]);
-  // A follow-up on the same thread does not inherit; --continue inherits and rejects the flag.
-  const follow = f.json(f.call("task", "--json", "--thread", granted.threadId, "follow up"));
-  assert.deepEqual(follow.approvedComputerApps, []);
-  assert.equal(f.state().lastTurnStart.computerUse.session, null);
+  assert.deepEqual(f.json(f.call("result", granted.jobId, "--details")).approvedComputerApps, ["com.apple.Notes", "org.mozilla.firefox"]);
+  // --continue inherits recorded request grants and rejects additional flags.
+  // Named/thread inheritance (excluding runtime-only grants) is in task-sandbox.
   const rejected = f.call("task", "--continue", granted.jobId, "--approve-computer-app", "com.apple.Notes", "again");
   assert.notEqual(rejected.status, 0);
   const continued = f.json(f.call("task", "--json", "--continue", granted.jobId, "again"));

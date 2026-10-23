@@ -12,24 +12,24 @@ SessionStart exports `CODEX_COMPANION` and `CODEX_COMPANION_SESSION_ID`. Start
 one active run per Claude session, then send JSON on stdin:
 
 ```sh
-node "$CODEX_COMPANION" journal start <<'JSON'
+duet journal start <<'JSON'
 {"goal":"Add durable recovery","criteria":["Criteria and verdicts survive compaction"]}
 JSON
-node "$CODEX_COMPANION" journal add criteria <<'JSON'
+duet journal add criteria <<'JSON'
 {"criteria":["Keep all journal files in the isolated home"]}
 JSON
-node "$CODEX_COMPANION" journal add verdict <<'JSON'
+duet journal add verdict <<'JSON'
 {"jobId":"task-...","verdict":"ACCEPT","criteria":[{"criterion":"Criteria and verdicts survive compaction","evidence":"Ran journal show in a new process and observed the stored criteria","result":"met"},{"criterion":"Keep all journal files in the isolated home","evidence":"Checked run and artifact paths in the isolated home","result":"met"}],"reason":"Observed evidence meets the criterion"}
 JSON
-node "$CODEX_COMPANION" journal add decision <<'JSON'
+duet journal add decision <<'JSON'
 {"summary":"Use a workspace journal","basis":"Keep acceptance evidence after job pruning","risk":"History still expires under retention"}
 JSON
-node "$CODEX_COMPANION" journal show
-node "$CODEX_COMPANION" journal validate
-node "$CODEX_COMPANION" journal close <<'JSON'
+duet journal show
+duet journal validate
+duet journal close <<'JSON'
 {"judgment":"passed","summary":"Acceptance criteria verified","openRisks":[]}
 JSON
-node "$CODEX_COMPANION" journal list --json
+duet journal list --json
 ```
 
 All commands accept `--cwd <dir>`, `--json`, `--help` and `-h`. Help exits

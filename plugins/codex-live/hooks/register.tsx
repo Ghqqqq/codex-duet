@@ -2,8 +2,8 @@ import { atom, read } from 'claude-code';
 import type { Register, Timer } from 'claude-code';
 import type { CodexLiveState } from '../types';
 import { feedLines, feedWindow, fit, footerLayout, paneLayout, jobRow, jobRowColor,
-  messageLines, scrollFeed, selectedJob, width } from './layout';
-import type { Span } from './layout';
+  messageLines, scrollFeed, selectedJob, togglePrompt, width } from './layout';
+import type { FeedLines, Span } from './layout';
 import { clearFinished, jobLifecycle, normalizeSessions, visibleSessions } from './model';
 import { createPoller } from './poll';
 import { updateFailure, viewports, writeView } from './runtime';
@@ -41,7 +41,7 @@ export const register: Register = on => {
       // A wheel over pinned chrome does not move the transcript beneath it.
       if (e.pointer && (e.pointer.row < pinnedRows || e.pointer.row >= bodyRows - 1 ||
           e.pointer.column < 0 || e.pointer.column >= columns)) return state;
-      const lines = feedLines(job, state.nowMs, columns);
+      const lines = feedLines(job, state.nowMs, columns, state.feeds?.[job.id]);
       const next = scrollFeed(lines, rows, state.feeds?.[job.id], e.by, bodyRows, e.contentRows, !!e.pointer);
       return { ...state, feeds: { ...state.feeds, [job.id]: { ...next, columns, surface: surface ?? 'terminal' } } };
     });
@@ -59,7 +59,7 @@ export const register: Register = on => {
     viewports.set(e.surface, { columns, bodyRows });
     const engineOffset = Math.max(0, Math.floor(e.props.scroll.offset));
     const jobs = visibleSessions(state);
-    const lines = selected ? feedLines(selected, state.nowMs, columns)
+    const lines: FeedLines = selected ? feedLines(selected, state.nowMs, columns, state.feeds?.[selected.id])
       : messageLines('No Codex jobs in this session yet. They appear here when Claude starts one.', columns)
         .map((spans, i) => ({ key: `empty-${i}`, spans: spans.map(span => ({ ...span, color: 'subtle' as const })) }));
     if (!selected && (state.hiddenFinishedBefore !== undefined || state.hiddenJobIds?.length)) lines.push({ key: 'hidden-notice',
@@ -85,7 +85,19 @@ export const register: Register = on => {
       : selected ? footerLayout(selected, state, footerColumns, window.following, window.newLines) : undefined;
     const jumpToBottom = async () => {
       await writeView($, latest => ({ ...latest, feeds: { ...latest.feeds,
-        [selected!.id]: { feedOffset: 0, following: true, seenLines: 0 } } }));
+        [selected!.id]: { ...latest.feeds?.[selected!.id], feedOffset: 0, following: true, seenLines: 0,
+          anchor: undefined, seenItems: undefined } } }));
+    };
+    const toggle = async (turnId: string) => {
+      await writeView($, latest => {
+        latest = normalizeSessions(latest);
+        const job = selectedJob(latest);
+        if (!job || job.id !== selected?.id || !job.turns.some(turn => turn.id === turnId && turn.prompt !== undefined)) return latest;
+        const currentRows = paneLayout(latest, job, bodyRows).rows;
+        return { ...latest, feeds: { ...latest.feeds, [job.id]: {
+          ...togglePrompt(job, latest.nowMs, columns, currentRows, latest.feeds?.[job.id], turnId), surface: e.surface,
+        } } };
+      });
     };
     const select = async (id: string) => {
       await writeView($, latest => visibleSessions(latest).some(job => job.id === id)
@@ -139,7 +151,9 @@ export const register: Register = on => {
         {Array.from({ length: rows }, (_, i) => {
           const line = window.lines[i];
           return <Box key={line?.key ?? `padding-${i}`} height={1} flexShrink={0} overflow="hidden">
-            <Text wrap="truncate-end">{line?.spans.length ? drawSpans(line.spans) : ' '}</Text>
+            {line?.togglePromptId ? <Button key={`toggle-prompt-${line.togglePromptId}`} plain onPress={() => toggle(line.togglePromptId!)}>
+              <Text wrap="truncate-end">{drawSpans(line.spans)}</Text>
+            </Button> : <Text wrap="truncate-end">{line?.spans.length ? drawSpans(line.spans) : ' '}</Text>}
           </Box>;
         })}
       </Box>

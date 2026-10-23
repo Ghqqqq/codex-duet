@@ -111,7 +111,11 @@ wherever an `AGENTS.md` is missing. `--project-docs agents-only` removes Duet's
 list and is remembered; a hand-written list is reported as `custom` and left
 alone. Run this flag separately from other setup changes; supports `--dry-run`
 and `--json` (`projectDocs`: `projectDocs`, `fallbackFilenames`, `custom`,
-`changedFiles`). The user-level `~/.claude/CLAUDE.md` is never involved.
+`changedFiles`). This controls only Codex's project-file fallback. Task dispatch
+separately forwards Claude's loaded CLAUDE.md/rules, including user-level files,
+as developer instructions (approximate scan when the inventory is unavailable).
+Use `duet task --fresh --no-claude-md` or `CODEX_COMPANION_CLAUDE_MD=0` to opt out
+of forwarding; existing threads retain their original instructions.
 
 Transport/browser setup is offline. `--transport status` only reads selected
 transport; explicit `--transport http|websocket` merges a named ChatGPT provider

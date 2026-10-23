@@ -10,6 +10,8 @@ import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 import { resolveCodexRuntimeIdentity } from "../plugins/codex/scripts/lib/codex-home.mjs";
 import { resolveSessionMarkersRoot } from "../plugins/codex/scripts/lib/session-markers.mjs";
 import { resolveRetentionDays, planRetention, applyRetention, applyRetentionWithBroker, runAutomaticRetention } from "../plugins/codex/scripts/lib/retention.mjs";
+import { claudeSnapshotFile, writeClaudeSnapshot } from "../plugins/codex/scripts/lib/claude-memory.mjs";
+import { instructionInventory } from "../plugins/codex/hooks/claude-memory.mjs";
 
 const DAY = 86400000;
 const cli = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
@@ -67,6 +69,70 @@ function cliResult(f, ...args) {
   const result = run(process.execPath, [cli, "cleanup", ...args], { cwd: f.cwd, env: f.env });
   assert.equal(result.status, 0, result.stderr + result.stdout); return JSON.parse(result.stdout);
 }
+
+test("SessionEnd deletes only its instruction snapshot and retention rechecks the job cutoff", async () => {
+  const f = fixture();
+  f.env.CODEX_COMPANION_RETENTION_DAYS = "7";
+  const put = (sessionId, date = f.now) => {
+    writeClaudeSnapshot({ sessionId, cwd: f.cwd, ...instructionInventory([{ path: "/loaded/CLAUDE.md", kind: "user", content: "Synthetic rule" }]) }, f.env);
+    const file = claudeSnapshotFile(sessionId, f.env);
+    fs.utimesSync(file, new Date(date), new Date(date));
+    return file;
+  };
+  const ended = put("ended"), other = put("other"), stale = put("stale", f.now - 8 * DAY), recent = put("recent", f.now - 6 * DAY), renewed = put("renewed", f.old);
+  const root = path.dirname(ended), unrelated = path.join(root, "keep.json"), outside = path.join(f.root, "outside.json");
+  json(unrelated, { keep: true }); json(outside, { keep: true });
+  const link = claudeSnapshotFile("link", f.env); fs.symlinkSync(outside, link);
+  const end = run(process.execPath, [hook, "SessionEnd"], { cwd: f.cwd, env: f.env, input: JSON.stringify({ session_id: "ended", cwd: f.cwd }) });
+  assert.equal(end.status, 0, end.stderr);
+  assert.equal(fs.existsSync(ended), false); assert.ok(fs.existsSync(other));
+  const p = plan(f);
+  assert.deepEqual(p.snapshots.map(file => file.path).sort(), [stale, renewed].sort());
+  put("renewed");
+  const result = await applyRetention(p);
+  assert.equal(result.snapshotsDeleted, 1); assert.deepEqual(result.errors, []);
+  assert.equal(fs.existsSync(stale), false);
+  for (const file of [other, recent, renewed, unrelated, link, outside]) assert.ok(fs.existsSync(file));
+  // Automatic cleanup uses the same configured cutoff after a missed SessionEnd.
+  put("stale", f.now - 8 * DAY);
+  const automatic = await runAutomaticRetention({ env: f.env, now: f.now });
+  assert.equal(automatic.snapshotsDeleted, 1); assert.deepEqual(automatic.errors, []);
+  assert.equal(fs.existsSync(stale), false); assert.ok(fs.existsSync(recent));
+});
+
+test("automatic retention sweeps only stale owned import copies and leaves fresh copies and symlinks intact", async () => {
+  const f = fixture(), projects = path.join(f.env.HOME, ".claude", "projects");
+  const source = path.join(projects, "repo", "session.jsonl"); json(source, { type: "user" });
+  const module = new URL("../plugins/codex/scripts/lib/claude-session-transfer.mjs", import.meta.url).href;
+  const probe = run(process.execPath, ["--input-type=module", "-e", `
+    import { snapshotClaudeSession } from ${JSON.stringify(module)};
+    console.log(JSON.stringify([0, 1, 2].map(() => snapshotClaudeSession(process.cwd(), ${JSON.stringify(source)}).snapshotPath)));
+  `], { cwd: f.cwd, env: f.env });
+  assert.equal(probe.status, 0, probe.stderr);
+  const [old, fresh, unmarked] = JSON.parse(probe.stdout).map(file => path.dirname(file));
+  fs.unlinkSync(path.join(unmarked, ".duet-import.json"));
+  const backup = path.join(projects, ".duet-import-backup"); fs.renameSync(unmarked, backup);
+  const date = new Date(f.now - 2 * 3600000);
+  for (const dir of [old, backup]) {
+    for (const file of fs.readdirSync(dir)) fs.utimesSync(path.join(dir, file), date, date);
+    fs.utimesSync(dir, date, date);
+  }
+  const outside = path.join(f.root, "outside"); fs.mkdirSync(outside); json(path.join(outside, "keep.jsonl"), { keep: true });
+  const link = path.join(projects, ".duet-import-ABC123"); fs.symlinkSync(outside, link);
+  const unsafe = fs.mkdtempSync(path.join(projects, ".duet-import-")); fs.chmodSync(unsafe, 0o700);
+  fs.symlinkSync(path.join(outside, "keep.jsonl"), path.join(unsafe, "copy.jsonl")); fs.utimesSync(unsafe, date, date);
+  const foreign = fs.mkdtempSync(path.join(projects, ".duet-import-")); fs.chmodSync(foreign, 0o700);
+  json(path.join(foreign, "notes.txt"), { keep: true }); fs.utimesSync(foreign, date, date);
+  const p = plan(f);
+  assert.deepEqual(p.imports.map(item => item.path), [old]);
+  assert.ok(fs.existsSync(old), "planning does not remove copies");
+  const result = await runAutomaticRetention({ env: f.env, now: f.now });
+  assert.equal(result.importsDeleted, 1); assert.deepEqual(result.errors, []);
+  assert.equal(fs.existsSync(old), false);
+  for (const dir of [fresh, backup, outside, link, unsafe, foreign]) assert.ok(fs.existsSync(dir));
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(backup, "session.jsonl"))), { type: "user" });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(outside, "keep.jsonl"))), { keep: true });
+});
 
 test("retention precedence, default, integer validation and reported one-day clamp", () => {
   const f = fixture();

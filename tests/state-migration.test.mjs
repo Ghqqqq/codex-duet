@@ -62,7 +62,7 @@ test("jobs written under the old plugin-data directory are found by status, resu
   assert.ok(fs.existsSync(path.join(legacyDir, "jobs", `${done.jobId}.json`)));
   for (const dir of [f.stateDir, path.join(f.stateDir, "jobs")]) assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
 
-  const report = f.json(f.call(["result", done.jobId, "--report", "--json"]));
+  const report = f.json(f.call(["result", done.jobId, "--details"]));
   assert.equal(report.jobId, done.jobId); assert.equal(report.status, "completed");
   assert.equal(report.model, "gpt-6-astra"); assert.equal(report.effort, "xhigh"); assert.equal(report.serviceTier, null);
   assert.ok(fs.existsSync(report.resultFile));
@@ -186,7 +186,7 @@ test("a legacy job whose worker is still alive is served in place, then merged w
     assert.equal(after.job.status, "completed"); assert.equal(after.job.summary, "finished by the old worker");
     assert.deepEqual(f.marker().pending, []);
     assert.ok(fs.existsSync(path.join(f.stateDir, "jobs", `${id}.json`)), "merged into the isolated home once the worker was gone");
-    const report = f.json(f.call(["result", id, "--report", "--json"]));
+    const report = f.json(f.call(["result", id, "--details"]));
     assert.equal(report.serviceTier, "priority"); assert.equal(report.effort, "low");
   } finally {
     if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL");

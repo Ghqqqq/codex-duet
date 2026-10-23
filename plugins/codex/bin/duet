@@ -1,0 +1,18 @@
+#!/usr/bin/env node
+
+import fs from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+// Resolve symlinks before locating the companion; PATH wrappers need no env pointer.
+const launcher = fs.realpathSync(process.argv[1]);
+const companion = path.resolve(path.dirname(launcher), "../scripts/codex-companion.mjs");
+const [command, ...args] = process.argv.slice(2);
+const flags = args.slice(0, args.indexOf("--") < 0 ? args.length : args.indexOf("--"));
+if (!process.env.CODEX_COMPANION_SESSION_ID?.trim() && !flags.some(arg => arg === "--session" || arg.startsWith("--session="))) {
+  process.stderr.write("Duet: no Claude session id; jobs are scoped to this workspace and are not linked to a Claude session.\n");
+}
+if (["task", "answer", "wait"].includes(command)) args.unshift("--direct");
+// Import in this process to preserve stdin, signals and the companion's exit code.
+process.argv = [process.execPath, launcher, command, ...args].filter(value => value !== undefined);
+await import(pathToFileURL(companion).href);

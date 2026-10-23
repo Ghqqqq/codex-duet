@@ -15,7 +15,7 @@ installed browser/desktop tools; preview the change first from the repository
 root:
 
 ```bash
-node plugins/codex/scripts/codex-companion.mjs setup --sync-tools --profile codex-app --replace-cua --dry-run --json
+plugins/codex/bin/duet setup --sync-tools --profile codex-app --replace-cua --dry-run --json
 ```
 
 After reviewing the preview, rerun without `--dry-run` to apply. The defaults
@@ -87,12 +87,14 @@ only read. The isolated file is validated, backed up privately if it exists and
 written atomically; a second pass changes nothing.
 
 ```bash
-node "$CODEX_COMPANION" setup --list-computer-apps --json          # read-only preview
-node "$CODEX_COMPANION" setup --computer-use-approval ask          # stop syncing
-node "$CODEX_COMPANION" setup --computer-use-approval mirror       # default
-node "$CODEX_COMPANION" setup --allow-computer-app com.google.Chrome
-node "$CODEX_COMPANION" setup --revoke-computer-app com.apple.finder
-node "$CODEX_COMPANION" task --approve-computer-app com.google.Chrome "…"
+duet setup --list-computer-apps --json          # read-only preview
+duet setup --computer-use-approval ask          # stop syncing
+duet setup --computer-use-approval mirror       # default
+duet setup --allow-computer-app com.google.Chrome
+duet setup --revoke-computer-app com.apple.finder
+duet task --approve-computer-app com.google.Chrome <<'DUET_TASK'
+<brief for the explicitly approved app>
+DUET_TASK
 ```
 
 `--allow-computer-app` adds an app to the isolated runtime even in `ask` mode;
@@ -101,8 +103,9 @@ allowed again. Both take bundle identifiers (`com.google.Chrome`), support
 `--dry-run` and `--json`, and never run from a worker. `task
 --approve-computer-app` approves only the listed apps, only for that call: the
 grant is written as a session-scoped approval for the job's own thread while the
-turn runs and withdrawn afterwards; a follow-up on the same thread does not
-inherit it, `task --continue` does. If the user has only ever chosen "This
+turn runs and withdrawn afterwards. `--to`/`--thread` follow-ups inherit recorded
+request grants unless explicitly overridden; `--continue` inherits the selected
+job's recorded grants. If the user has only ever chosen "This
 session" in the Codex app, mirror finds nothing to copy; choose "Always" there,
 use `--allow-computer-app`, or answer the forwarded question when a worker asks.
 "Allow for this task" grants the app to that worker's thread until the turn
@@ -112,8 +115,8 @@ ends; "Allow always" adds an explicit entry to the isolated home's list, never t
 ## Browser and computer-use tooling
 
 ```bash
-node "$CODEX_COMPANION" setup --sync-tools --dry-run   # preview
-node "$CODEX_COMPANION" setup --sync-tools             # apply
+duet setup --sync-tools --dry-run   # preview
+duet setup --sync-tools             # apply
 ```
 
 Copies only allowlisted browser/computer-use tool settings into the isolated home
@@ -128,9 +131,9 @@ end, including on failure; they never claim an existing user tab.
 ## Browser origin consent
 
 ```bash
-node "$CODEX_COMPANION" setup --allow-browser-origin https://www.example.com
-node "$CODEX_COMPANION" setup --revoke-browser-origin https://www.example.com
-node "$CODEX_COMPANION" setup --list-browser-origins
+duet setup --allow-browser-origin https://www.example.com
+duet setup --revoke-browser-origin https://www.example.com
+duet setup --list-browser-origins
 ```
 
 These write the browser runtime's own persisted approval file
@@ -151,9 +154,9 @@ the browser runtime does not persist as a deny. Details:
 ## Model transport
 
 ```bash
-node "$CODEX_COMPANION" setup --transport status   # read-only
-node "$CODEX_COMPANION" setup --transport http
-node "$CODEX_COMPANION" setup --transport websocket
+duet setup --transport status   # read-only
+duet setup --transport http
+duet setup --transport websocket
 ```
 
 Switches the isolated home between the WebSocket and HTTP ChatGPT provider. Use
@@ -183,3 +186,57 @@ executable until it exits (after 60 s idle by default) or is restarted.
 A custom absolute `CODEX_COMPANION_HOME` is supported; homes overlapping
 the normal Codex home are rejected. Failures never fall back to the normal
 session store.
+
+## Claude instructions and conversation imports
+
+Task dispatch automatically forwards Claude's loaded CLAUDE.md/rules through
+Codex's `developerInstructions`. Only the first `prompt.context` in each Claude
+session can capture managed, user, project and local instruction files, including
+loaded imports; auto-memory entries are excluded. Later contexts are ignored
+because this event has no agent attribution. CLAUDE.md edits apply from the next
+Claude session. The forwarded text is capped at 60,000 UTF-16 units,
+including executor framing and omission notes. `duet result <worker> --details`
+includes `claudeMd` metadata: source, completeness, approximate status and omissions.
+
+If the first loaded inventory is unavailable or incomplete, no snapshot is saved;
+Duet uses an approximate startup scan of
+readable managed policy, user CLAUDE.md/rules and the ancestors of the Claude
+session's directory (the worker cwd when that is unknown). It cannot
+reproduce effective settings, exclusions, external-import approvals, inline
+policy or later path-triggered rules. Managed environments skip user-supplied `prompt.context` hooks, so a personally
+installed plugin uses this fallback there.
+
+Threads retain the instructions captured at their creation. Start a new Claude
+session and a fresh task to apply changed instructions. To disable forwarding,
+start a fresh task:
+
+```bash
+duet task --fresh --no-claude-md <<'DUET_TASK'
+<brief>
+DUET_TASK
+```
+
+`CODEX_COMPANION_CLAUDE_MD=0` disables forwarding globally for processes that
+inherit it. Opting out on a thread that already has forwarded instructions is
+rejected; use a fresh task. These opt-outs do not disable Codex's own AGENTS.md
+loading or its CLAUDE.md project fallback. `duet setup --project-docs agents-only`
+removes Duet's exact `project_doc_fallback_filenames = ["CLAUDE.md"]` default
+from the isolated config; custom lists remain unchanged.
+
+`duet task --fork` imports the current Claude transcript into a new Codex thread,
+then runs the stdin brief. The recorded label is “imported Claude conversation
+(fidelity not verified)”. It does not promise a lossless copy of Claude's context.
+`--source '<jsonl>'` overrides the source; the file must resolve beneath
+`~/.claude/projects/`. Imports above the byte limit fail rather than truncate.
+`--fork` cannot combine with `--to`, `--thread`, `--continue` or resume flags;
+use `--to` after the fork completes.
+
+| Environment variable | Effect |
+| --- | --- |
+| `CODEX_COMPANION_CLAUDE_MD=0` | Disable instruction capture/forwarding; use a fresh thread to opt out |
+| `CODEX_COMPANION_IMPORT_MAX_BYTES` | Positive integer import byte limit; default 20 MiB (20,971,520 bytes) |
+| `CODEX_COMPANION_SESSION_ID` | Session scope, exported by SessionStart; `--session <id>` overrides it |
+| `CODEX_COMPANION_TRANSCRIPT_PATH` | Current Claude JSONL transcript, exported by SessionStart; `--source` overrides it for imports |
+
+Without a session ID, the launcher warns and scopes jobs to the workspace; they
+are not linked to a Claude session. Use `duet task --help` for dispatch options.

@@ -180,7 +180,7 @@ test("broker relay routes only to the owner, rejects other sockets and fails clo
   assert.equal(logs[1].reason, "no-active-job");
 });
 
-test("task requests are logged, origin flags persist in task/status/result and reset on follow-up", () => {
+test("task requests are logged, origin flags persist in task/status/result without becoming global", () => {
   const f = fixture();
   const first = f.call("task", "--json", "--report", "--approve-browser-origin", "HTTPS://EXAMPLE.COM:443", "--approve-browser-origin", "https://second.example", "fixture");
   assert.equal(first.status, 0, first.stderr);
@@ -188,7 +188,7 @@ test("task requests are logged, origin flags persist in task/status/result and r
   assert.deepEqual(report.approvedBrowserOrigins, ["https://example.com", "https://second.example"]);
   const status = JSON.parse(f.call("status", report.jobId, "--json").stdout);
   assert.deepEqual(status.job.approvedBrowserOrigins, report.approvedBrowserOrigins);
-  assert.deepEqual(JSON.parse(f.call("result", report.jobId, "--report", "--json").stdout).approvedBrowserOrigins, report.approvedBrowserOrigins);
+  assert.deepEqual(JSON.parse(f.call("result", report.jobId, "--details").stdout).approvedBrowserOrigins, report.approvedBrowserOrigins);
   assert.deepEqual(f.state().serverRequestReplies[0].result, { decision: "accept" });
   assert.ok(f.state().serverRequestReplies.slice(1).every(r => r.error?.code === -32601 || r.result?.action === "cancel"));
   const log = fs.readFileSync(status.job.logFile, "utf8");
@@ -196,7 +196,7 @@ test("task requests are logged, origin flags persist in task/status/result and r
   for (const reason of ["origin-match", "origin-mismatch", "not-network-only", "malformed-request", "unsupported-method"]) assert.ok(log.includes(reason), reason);
   assert.doesNotMatch(log + first.stderr, /DO_NOT_LOG_FIXTURE|access_browser_origin|networkApprovalContext/);
 
-  const follow = f.call("task", "--json", "--thread", report.threadId, "fixture follow-up");
+  const follow = f.call("task", "--json", "--fresh", "fixture separate task");
   assert.equal(follow.status, 0, follow.stderr);
   assert.deepEqual(JSON.parse(follow.stdout).approvedBrowserOrigins, []);
   assert.ok(f.state().serverRequestReplies.slice(8).every(r => r.error?.code === -32601 || r.result?.action === "cancel"));

@@ -11,7 +11,6 @@ import fs from "node:fs";
 import net from "node:net";
 import process from "node:process";
 import { spawnOwned as spawn } from "./process.mjs";
-import readline from "node:readline";
 import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
 import { ensureBrokerSession, loadBrokerSession } from "./broker-lifecycle.mjs";
 import { isolatedCodexArgs, isolatedCodexEnv, resolveCodexBinary, resolveCodexRuntimeIdentity, resolveIsolatedCodexHome } from "./codex-home.mjs";
@@ -277,10 +276,12 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       this.handleExit(detail);
     });
 
-    this.readline = readline.createInterface({ input: this.proc.stdout });
-    this.readline.on("line", (line) => {
-      this.handleLine(line);
-    });
+    // JSONL records end only at LF. readline also splits on Unicode U+2028 /
+    // U+2029 in newer Node versions, although those are valid JSON string data.
+    // Keep partial records (and UTF-8 sequences via setEncoding) across reads,
+    // just as the broker socket does; a stream chunk is not a message boundary.
+    this.stdoutHandler = (chunk) => this.handleChunk(chunk);
+    this.proc.stdout.on("data", this.stdoutHandler);
 
     await this.request("initialize", {
       clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
@@ -293,7 +294,7 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     if (this.closePromise) return this.closePromise;
     this.closePromise = (async () => {
       this.closed = true;
-      this.readline?.close();
+      if (this.stdoutHandler) this.proc?.stdout.off("data", this.stdoutHandler);
       this.proc?.stdin.end();
       await stopOwnedProcessGroup(this.proc, 150);
       await Promise.race([this.exitPromise, new Promise(resolve => setTimeout(resolve, 500))]);

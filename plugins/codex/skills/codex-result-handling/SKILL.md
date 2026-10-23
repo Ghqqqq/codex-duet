@@ -6,6 +6,20 @@ user-invocable: false
 
 # Codex Result Handling
 
+Background `duet task`/`wait`/`answer` reports arrive with the completion notification;
+native `codex:codex-native` reports arrive as agent results. Only if a report is
+missing, use `duet result <worker>`. Do not parse output files or poll.
+Report v2 gives `status`, `worker`, `jobId`, `summary`, nonempty evidence, `next`
+and `details`. `checks.ran` is captured evidence; `checks.claimed` is Codex's
+account. Use `duet result <worker> --details` for shortened fields, full handles,
+settings, file-tracking basis and artifact paths. A suggested `next` command is
+not permission to continue user-stopped work.
+
+For `running`, background `duet wait <worker>`; for `needs_answer`, background
+`duet answer <worker>` with stdin via a single-quoted `DUET_ANSWER` heredoc.
+Never run two waits. Follow up with `duet task --to <worker>` and a `DUET_TASK`
+heredoc. Native agents receive answers and follow-ups via SendMessage instead.
+
 When the helper returns Codex output:
 - Preserve the helper's verdict, summary, findings, and next steps structure.
 - For review output, present findings first and keep them ordered by severity.

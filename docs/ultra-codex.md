@@ -3,14 +3,11 @@
 `/codex:ultra-codex <task>` makes the Claude Code main agent run a substantive
 task the way Claude Code's own Ultracode mode does, with Codex workers in place
 of Claude subagents. Claude scouts, assigns, judges and integrates; Codex
-investigates, implements and reviews. Direct mode is the default: Claude runs
-`task --direct` in background Bash. Progress lines appear in /tasks, then the
-JSON payload as the last stdout line. On the completion notification, Claude
-reads only the last line starting with `{` in the output file
-(`grep '^{' <output file> | tail -n 1`), never the whole output file.
-Claude Code may append `[exited with code N]` after the JSON.
-This saves the Claude cost of a Haiku relay repeatedly
-reading its growing transcript; the heavy lifting spends Codex quota.
+investigates, implements and reviews. Claude prefers the native
+`codex:codex-native` agent when available; otherwise it runs `duet task` in
+background Bash. The report arrives with the completion notification. Only if
+missing, Claude runs `duet result <worker>`; full evidence and handles are in
+`duet result <worker> --details`. No output-file parsing is needed.
 `/codex:ultra-codex on` makes that the session's default (see "Mode" below);
 `off` ends it.
 
@@ -25,9 +22,9 @@ id>.json`, keyed by the Claude session id that the SessionStart hook exports as
 one-line versioned reminder to every prompt (shown with the repository-relative
 protocol path):
 
-> Ultra-codex mode on (thorough, max 4 workers). Apply protocol vb24e94e3 to
+> Ultra-codex mode on (thorough, max 4 workers). Apply protocol v5eb371e7 to
 > substantive tasks; re-read plugins/codex/prompts/ultra-codex-protocol.md only if
-> vb24e94e3 is not in your context.
+> v5eb371e7 is not in your context.
 
 Control-only invocations (`on`, `off`, `status` or no arguments) do not load the
 protocol; task invocations, including `on` with task text, use Read on its path.
@@ -39,7 +36,7 @@ no session id is present, and on any error.
 Three things turn the mode off:
 
 - `/codex:ultra-codex off` removes the record, lists this session's Codex jobs
-  that are still running (they are not cancelled; `cancel <jobId>` does that on
+  that are still running (they are not cancelled; `duet cancel <worker>` does that on
   request) and tells Claude that the orchestration has ended.
 - The session's end (`SessionEnd` hook) and a fresh start or `/clear` for the
   same session id (`SessionStart` with `source` other than `resume`/`compact`).
@@ -81,74 +78,70 @@ several workflows in sequence. The quality comes from the patterns the prompt
 insists on: adversarial verification, judge panels, loop-until-dry review,
 completeness critics, and never silently capping the work.
 
-`/codex:ultra-codex` reproduces that division of labour with background Bash
-and direct Codex jobs, so it works at any effort level without the Workflow tool:
+`/codex:ultra-codex` reproduces that division of labour with native agents
+or background Bash and direct Codex jobs, so it works at any effort level without the Workflow tool:
 
 | Ultracode element | /codex:ultra-codex equivalent |
 | --- | --- |
-| `agent()` with `schema` | Bash → `task --direct`; the report is schema-enforced (`schemas/worker-report.schema.json`) |
-| `parallel()` fan-out | one Bash call per job with `run_in_background: true`, then read only the last line starting with `{` in each output file on its completion notification (grep recipe below) |
+| `agent()` with `schema` | `codex:codex-native` or Bash → `duet task`; the report is schema-enforced (`schemas/worker-report.schema.json`) |
+| `parallel()` fan-out | one named native agent or background `duet task` per job; reports arrive with completion notifications |
 | `phase()` | the seven phases below, tracked with `TodoWrite`; a phase starts when the previous one's reports are in |
 | `isolation: "worktree"` | Claude creates worktrees with `git worktree add`, passes each as `--cwd` and merges the branches; a shared checkout requires disjoint OWNED PATHS |
-| journal cache / resume | `journal show` recovers criteria, verdicts, decisions and saved worker artifacts; `task --continue <jobId> --cwd <cwd> --direct` starts an explicitly requested continuation while its job record is retained |
+| journal cache / resume | `journal show` recovers criteria, verdicts, decisions and saved worker artifacts; `duet task --continue <jobId> --cwd '<cwd>'` starts an explicitly requested continuation while its job record is retained |
 | adversarial verify, judge, loop-until-dry | the Verify phase: read-only reviewer workers, findings routed to the owning implementer, at most the configured fix rounds |
 
-Use the [direct-mode recipe](worker-operations.md#direct-mode): a quoted stdin
-heredoc, `description: "Codex: <label>"`, `dangerouslyDisableSandbox: true` when
-Claude's Bash sandbox is on, and `--sandbox read-only` for investigators and
-reviewers. SessionStart exports `CODEX_COMPANION`; older sessions resolve
-`../scripts/codex-companion.mjs` relative to the protocol's `prompts/` folder.
-The default timeout is 3600 s (maximum 3600), the direct owner lease 1800 s.
-Add `--quiet` to `task --direct` or `wait --direct` for exactly one JSON line
-without progress; `--quiet` requires `--direct`. Never poll, sleep or use `tail -f`.
-The completion notification carries no output; read only the last line starting
-with `{` in its output file (`grep '^{' <output file> | tail -n 1`), never the whole output file.
-For `running`, background the returned `waitCommand`; for `needs_answer`, run
-its `answerAndWaitCommand` in ONE background Bash call (`run_in_background: true`,
-`timeout: 600000`), putting the answer on stdin through a single-quoted heredoc.
-Compatibility fallback for `needs_answer`: FIRST run its `waitCommand` in
-background Bash; it includes `--after-question <id>` and keeps the lease alive.
-Then answer with the returned `answerCommand`, putting the answer on stdin
-through a single-quoted heredoc; do not start another wait after answering.
-Never run two waits for one job; the answer continues the same turn.
-Report `ownership_moved` and stop using that owner. Terminal reports go through
-the acceptance protocol; read `rawOutputFile` only if a report field is
-insufficient. Follow-ups and rework use `task --thread <threadId> --direct` with
-the same `--cwd` and restated criteria. Stop the background task in Claude Code
-(`owner_stopped`) or use `cancel <jobId> --json`; thread context and edits persist.
-Run the reported `continuationCommand` after a user stop only with consent.
-When several completion notifications are already pending, batch their labelled
-final-JSON reads and, after accepting each job, their separate verdict writes in
-one Bash call each; stop on a failed read or submission (`set -euo pipefail`).
-Never delay pending questions to build a batch or prewrite verdicts.
+Use the [dispatch recipe](direct-mode.md): a named native agent with an optional
+first prompt line `DUET: <flags>`, or `duet task` with a single-quoted `DUET_TASK`
+heredoc in background Bash. Investigators and reviewers use `--sandbox read-only`.
+SessionStart supplies invocation guidance and advertises native workers only
+when the adapter registered. If `duet` is not on PATH, reload/start a new session
+or use the absolute `bin/duet` launcher. Native-hook failure returns a blocked
+report; check `duet status` before retrying.
 
-The separate read-only `codex-live` plugin (`/plugin install codex-live@duet`)
-shows session jobs and the selected job's messages, commands, file changes,
-tool calls, plan and pending question, at no Claude token cost. New jobs ask Claude
-Code to open the pane; Claude Code decides whether to show it at the current width.
-Its `codex-live` slash command opens it at any width. It reads companion-written
-markers under `<isolated home>/duet/sessions/<claudeSessionId>/` and never starts,
-answers or cancels a job.
+Native follow-ups and answers use SendMessage to the agent's name. Bash
+follow-ups use `duet task --to <worker>` and a new stdin brief; `running` uses
+one background `duet wait <worker>`, and `needs_answer` uses one background
+`duet answer <worker>` with a single-quoted `DUET_ANSWER` heredoc. Never run two
+waits. Reports arrive with the completion notification; only if missing, run
+`duet result <worker>`. Use `--details` for shortened evidence or questions.
+Direct waits default to 3600 s (maximum 3600), the lease to 1800 s; `--quiet`
+suppresses progress. Never poll, sleep or parse output files.
 
-Fallback only: `Agent(subagent_type: "codex:codex-worker")` when background Bash
-is unavailable or the user asks for an agent transcript view. Never pass `model`
-or `effort` to the Haiku forwarder; Codex's choices go in the assignment text.
-Its `effort: low`, `omitClaudeMd: true`, `autoCompactWindow: 100000`, feed limit
-60 and verbatim JSON return (plus at most 5 lines of notes, no prose report)
-limit Claude cost. Fallback rework uses a NEW worker with `--thread <threadId>` and
-the same `--cwd`; SendMessage to an existing worker is only for answering its
-pending question.
-The Workflow tool can address plugin agents (`agentType: "codex:codex-worker"`),
-but that fallback integration has not been exercised with Duet and is not
-required by this command.
+`--to`/`--thread` keep recorded settings unless overridden; restate read-only
+sandbox and normal speed when narrowing a follow-up. `--fork` explicitly imports
+the current Claude transcript into a new Codex thread before running the brief,
+labelled “imported Claude conversation (fidelity not verified)”. It cannot
+combine with thread-selection flags; follow up afterwards with `--to`.
+
+Stop active native tasks or background Bash waits from `/tasks`, or run
+`duet cancel <worker>`. Continue user-stopped work only with consent. A question
+parked after a native agent returns may not cancel immediately when that ended
+row is stopped; explicit cancellation or its default 900 s timeout applies.
+When several reports are already pending, accept each; batch only missing-report
+or detail reads and the subsequent separate verdict writes. Stop on a failed
+read/submission; never delay questions for a batch or prewrite verdicts.
+
+The read-only `codex-live` pane shows prompts, messages, commands, file changes,
+tool calls, plans and questions at no Claude token cost. Resolved `ask_parent`
+answers are matched by call ID; Codex 0.146.0 omits that ID for custom MCP servers
+on resumed threads, so those answers are not shown. New jobs request a pane;
+`/codex-live` opens it at any width. It never starts, answers or cancels jobs.
+
+The Haiku `codex:codex-worker` remains a fallback when native dispatch and
+background Bash are unavailable, or for a requested forwarding-agent transcript.
+Put Codex's model/effort in its brief, not Agent fields. Rework starts a NEW
+fallback agent with `duet task --to <worker>`; SendMessage to an existing
+fallback only answers its pending question. The Workflow tool's fallback
+`agentType: "codex:codex-worker"` integration has not been exercised with Duet
+and is not required by this command.
 
 ## Why the briefs and the acceptance are stricter than Ultracode's
 
 Ultracode agents are the same model as the orchestrator, read the same
 `CLAUDE.md`, and in a fan-out share a prompt cache with it; a terse assignment
-is usually read the way it was meant. A Codex worker shares none of that: it
-sees the prompt text and the repository, nothing of the conversation or of the
-orchestrator's reading of the user's intent. Every gap in a brief is filled with
+is usually read the way it was meant. A Codex worker receives the brief, repository and forwarded Claude instruction
+files, but the conversation only through an explicit `--fork`. An import does
+not establish that it shares the orchestrator's reading of the user's intent. Every gap in a brief is filled with
 Codex's own guess, and a plausible guess that differs from what Claude meant is
 the main failure mode of cross-model delegation. The command therefore shifts
 Claude's effort to the two ends of each assignment:
@@ -161,12 +154,13 @@ Claude's effort to the two ends of each assignment:
   the interface contract so parallel pieces fit, and list the decisions that
   must come back through `ask_parent`.
 - **Acceptance** runs the same protocol on every report: status gate; scope
-  check (`touchedFiles` within `OWNED PATHS`, confirmed with `git diff --stat`);
+  check (`changedFiles`, or `touchedFiles` in `--details`, within `OWNED PATHS`,
+  confirmed with `git diff --stat`);
   reading the diff rather than the summary, looking for unrequested behaviour
   changes, weakened or rewritten tests, new dependencies, stubs, swallowed
   errors; a criteria walk recording evidence → verdict per criterion;
-  a verification audit comparing `claimedVerification` with the captured
-  `verification` events and rerunning the commands; an assumptions audit
+  a verification audit comparing `checks.claimed` with captured `checks.ran`
+  (`claimedVerification`/`verification` in `--details` when shortened) and rerunning the commands; an assumptions audit
   accepting or rejecting every assumption; and an explicit decision: `ACCEPT`,
   `ACCEPT WITH GLUE` (trivial mechanical fixes only), `REWORK` (same thread,
   findings with file:line and the failed criterion) or `REASSIGN` (corrected
@@ -182,7 +176,7 @@ Claude's own evidence.
 
 ## Run journal
 
-After writing task-level criteria, Claude runs `node "$CODEX_COMPANION" journal
+After writing task-level criteria, Claude runs `duet journal
 start` with stdin JSON containing `goal` and `criteria`. Tasks in that Claude
 session link automatically across workspaces and worktrees, preserving the exact
 worker brief and final compact report. Claude records each acceptance with `journal add verdict`,
@@ -220,29 +214,26 @@ commands and limits.
 
 ## What the worker report gives the orchestrator
 
-Every direct or `--report` worker turn runs with the worker-report output schema,
-so the final message is a JSON object Codex must fill: `status` (`completed`,
-`needs_input`, `blocked`), `summary`, `key_findings`, `assumptions`,
-`verification`, `blockers`, `question`. The helper merges it with what it
-observed itself. In direct mode it returns compact JSON as the last stdout line
-after progress in /tasks. Read only the last line starting with `{`
-(`grep '^{' <output file> | tail -n 1`), never the whole output file. The payload
-has no `activity` list, only `activityCount`; terminal reports also carry the
-final `summary`, cut at 8000 characters. Fields include:
+Each direct or `--report` turn asks Codex for a structured final response with
+status, summary, findings, assumptions, verification, blockers and question. The
+helper merges those declarations with its own captured evidence. Report v2
+arrives with the completion notification:
 
-- `status` — the declared status, except that a captured runtime refusal (for
-  example a Computer Use denial) makes the turn `blocked`, and a `completed`
-  whose summary is only a plan or a question is reported as `needs_input`.
-- `reportFormat: "structured"` when the schema was honoured; absent when the
-  helper had to infer the report from prose (interrupted turn, older thread).
-- `keyFindings`, `assumptions`, `claimedVerification` — Codex's declarations.
-- `verification` — command events the helper captured; `touchedFiles` and
-  `fileTrackingStatus` — from workspace snapshots and file-change events.
-- `blockers` — captured/detected blockers when present, otherwise Codex's own entries.
-- `question` — the exact missing input when `status` is `needs_input`.
+- `status`, `worker`, `jobId`, `summary` come first. The summary is capped at
+  8000 characters with `summaryTruncated` when cut; the rest fits within 2000 bytes.
+- Nonempty `blockers`, `question`, `changedFiles`, `checks`, `assumptions` and
+  `keyFindings` follow. Lists/text may be shortened; `changedFilesOmitted` and
+  `checks.omitted` count omissions. `checks.ran` is captured command evidence;
+  `checks.claimed` is Codex's account.
+- `next` suggests an action or is null; `details` supplies `duet result <worker>
+  --details` for handles, settings, tracking basis, artifact paths and fuller evidence.
+- A runtime refusal forces `blocked`; a `completed` response that is only a plan
+  or question becomes `needs_input`. Neither counts as accepted work.
 
-The summary remains in `rawOutputFile` for the stop-gate hook; human
-`/codex:result` adds the outcome, evidence and blockers around that prose.
+In `--details`, `reportFormat: "structured"` marks parsed worker declarations;
+otherwise the helper inferred fields from prose. `verification` is captured,
+`claimedVerification` is declared, and `touchedFiles`/`fileTrackingStatus` describe
+file evidence. Read `rawOutputFile` only when a report field is insufficient.
 
 ## Approvals during orchestration
 
@@ -256,10 +247,24 @@ through `AskUserQuestion` unless the user pre-authorised the app.
 
 ## Project instructions
 
-Codex reads `AGENTS.md` on its own. Before each task the helper also adds
-Codex's `project_doc_fallback_filenames = ["CLAUDE.md"]` in the isolated home's
-`config.toml` unless a custom fallback list exists. This default lets a worker read
-the project's `CLAUDE.md` wherever an `AGENTS.md` is missing (same discovery rules
-and size limit as Codex applies to `AGENTS.md`). `setup --project-docs agents-only`
-removes only Duet's exact default list; custom lists are unchanged. The user-level
-`~/.claude/CLAUDE.md` is never involved.
+Claude's loaded CLAUDE.md/rules are automatically forwarded as developer
+instructions, including user-level files. When the inventory is unavailable,
+Duet reports an approximate startup scan. Existing threads retain their original
+instructions. Disable forwarding for a fresh task with `--no-claude-md` or set
+`CODEX_COMPANION_CLAUDE_MD=0`.
+
+Codex also discovers `AGENTS.md` itself. Duet's separate default
+`project_doc_fallback_filenames = ["CLAUDE.md"]` lets Codex read project
+CLAUDE.md where no AGENTS.md exists; `duet setup --project-docs agents-only`
+removes only that exact fallback list, leaving custom lists intact. It does not
+disable forwarding. See [configuration](configuration.md#claude-instructions-and-conversation-imports).
+
+## Protocol content version
+
+The first line of [the protocol](../plugins/codex/prompts/ultra-codex-protocol.md)
+is `<!-- Ultra-codex protocol v<hash> -->`. The hash is the first eight lowercase
+hex digits of SHA-256 over the UTF-8 text after removing only the matching
+version line and its newline. Keep the following blank line and all other bytes.
+`protocolVersion()` in `scripts/lib/ultra-codex-mode.mjs` computes it at runtime;
+`tests/ultra-codex-mode.test.mjs` checks that the committed header matches. After
+editing the body, recompute the header and update the example reminder above.

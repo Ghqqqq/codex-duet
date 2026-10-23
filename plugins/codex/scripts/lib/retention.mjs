@@ -8,6 +8,8 @@ import { planSessionMarkers, pruneSessionMarkers } from "./session-markers.mjs";
 import { planRuns, pruneRuns, RUN_SESSIONS_DIR } from "./run-journal.mjs";
 import { CodexAppServerClient } from "./app-server.mjs";
 import { ensureBrokerSession } from "./broker-lifecycle.mjs";
+import { CLAUDE_MEMORY_DIR, planClaudeSnapshots, pruneClaudeSnapshots } from "./claude-memory.mjs";
+import { planClaudeImports, sweepClaudeImports } from "./claude-session-transfer.mjs";
 
 const DAY = 86400000;
 const INTERVAL = 12 * 60 * 60 * 1000;
@@ -144,7 +146,7 @@ function inspectWorkspaces(env, cutoff, { retainAll = false } = {}) {
     const root = resolveStateRoot(env);
     realDirectory(root);
     for (const entry of fs.readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      if (entry.name === RUN_SESSIONS_DIR) continue;
+      if ([RUN_SESSIONS_DIR, CLAUDE_MEMORY_DIR].includes(entry.name)) continue;
       const workspace = path.join(root, entry.name);
       if (!entry.isDirectory()) {
         if (entry.isSymbolicLink()) errors.push({ workspace, message: "Symlinked workspace; references are unknown." });
@@ -217,14 +219,16 @@ export function planRetention({ now = Date.now(), days, env = process.env } = {}
   const state = inspectWorkspaces(env, cutoffMs);
   const markers = planSessionMarkers(cutoffMs, { env });
   const runs = planRuns(cutoffMs, { env });
+  const snapshots = planClaudeSnapshots(cutoffMs, { env });
+  const imports = planClaudeImports({ now, env });
   const threads = state.errors.length ? { threads: [], errors: [] } : inspectThreads(env, cutoffMs, state.referenced);
-  const plan = { cutoff: new Date(cutoffMs).toISOString(), ...policy, jobs: state.jobs, runs: runs.runs, runSessions: runs.runSessions, markers: markers.markers, threads: threads.threads, retained: state.retained, errors: [...state.errors, ...markers.errors, ...runs.errors, ...threads.errors] };
-  Object.defineProperty(plan, CONTEXT, { value: { env: { ...env } } });
+  const plan = { cutoff: new Date(cutoffMs).toISOString(), ...policy, jobs: state.jobs, runs: runs.runs, runSessions: runs.runSessions, markers: markers.markers, snapshots: snapshots.snapshots, imports: imports.imports, threads: threads.threads, retained: state.retained, errors: [...state.errors, ...markers.errors, ...runs.errors, ...snapshots.errors, ...imports.errors, ...threads.errors] };
+  Object.defineProperty(plan, CONTEXT, { value: { env: { ...env }, now: Number(new Date(now)) } });
   return plan;
 }
 
 export async function applyRetention(plan, { deleteThread } = {}) {
-  const report = { jobsDeleted: 0, runsDeleted: 0, runSessionsDeleted: 0, markersDeleted: 0, threadsDeleted: 0, threadsSkipped: 0, bytesFreed: 0, retained: (plan?.retained ?? []).map(item => ({ ...item })), errors: [...(plan?.errors ?? [])], days: plan?.days, warnings: [...(plan?.warnings ?? [])] };
+  const report = { jobsDeleted: 0, runsDeleted: 0, runSessionsDeleted: 0, markersDeleted: 0, snapshotsDeleted: 0, importsDeleted: 0, threadsDeleted: 0, threadsSkipped: 0, bytesFreed: 0, retained: (plan?.retained ?? []).map(item => ({ ...item })), errors: [...(plan?.errors ?? [])], days: plan?.days, warnings: [...(plan?.warnings ?? [])] };
   try {
     const env = plan[CONTEXT]?.env ?? process.env, cutoff = Date.parse(plan.cutoff);
     if (!Number.isFinite(cutoff)) throw new Error("Invalid retention cutoff.");
@@ -283,6 +287,14 @@ export async function applyRetention(plan, { deleteThread } = {}) {
     report.markersDeleted = markers.markersDeleted;
     report.bytesFreed += markers.bytesFreed;
     report.errors.push(...markers.errors);
+    const snapshots = pruneClaudeSnapshots(plan.snapshots ?? [], cutoff, { env });
+    report.snapshotsDeleted = snapshots.snapshotsDeleted;
+    report.bytesFreed += snapshots.bytesFreed;
+    report.errors.push(...snapshots.errors);
+    const imports = sweepClaudeImports({ now: plan[CONTEXT]?.now ?? Date.now(), env, files: plan.imports ?? [] });
+    report.importsDeleted = imports.importsDeleted;
+    report.bytesFreed += imports.bytesFreed;
+    report.errors.push(...imports.errors);
     for (const thread of plan.threads) {
       try {
         // Even expired jobs that failed to be removed now protect their threads.
@@ -368,7 +380,7 @@ function acquireAutomaticLock(directory) {
 
 export async function runAutomaticRetention({ cwd = process.cwd(), now = Date.now(), env = process.env, broker, deleteThread } = {}) {
   let release;
-  const failed = error => ({ jobsDeleted: 0, runsDeleted: 0, runSessionsDeleted: 0, markersDeleted: 0, threadsDeleted: 0, threadsSkipped: 0, bytesFreed: 0, retained: [], errors: [errorEntry({ scope: "automatic-retention" }, error)] });
+  const failed = error => ({ jobsDeleted: 0, runsDeleted: 0, runSessionsDeleted: 0, markersDeleted: 0, snapshotsDeleted: 0, importsDeleted: 0, threadsDeleted: 0, threadsSkipped: 0, bytesFreed: 0, retained: [], errors: [errorEntry({ scope: "automatic-retention" }, error)] });
   try {
     const directory = path.join(resolveIsolatedCodexHome(env), "duet");
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });

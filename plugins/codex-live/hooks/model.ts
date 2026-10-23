@@ -155,9 +155,19 @@ export function jobView(value: unknown, marker: CodexLiveMarker, details = true)
     (event.lifecycle === 'started' || ['inProgress', 'running', 'queued'].includes(event.status)));
   const currentOperation = operation?.type === 'commandExecution' ? unwrapCommand(operation.command)
     : operation ? [operation.server, operation.tool].filter(Boolean).join('.') : clean(latest.text);
+  // C3 identity matching only: approvals and capped/legacy history cannot shift answers.
+  const history = new Map((details && Array.isArray(job.questionHistory) ? job.questionHistory.slice(-20).map(object) : [])
+    .filter(question => typeof question.callId === 'string' && question.callId.length > 0)
+    .map(question => [string(question.callId), question]));
   const events = details ? paired.map(event => {
     const projected = eventView(activity[event.index], event.seq);
-    return { ...projected, command: limitChars(clean(projected.command), 2000) };
+    const callId = object(activity[event.index]).callId;
+    const question = ['dynamicToolCall', 'mcpToolCall'].includes(event.type) && event.tool === 'ask_parent' && typeof callId === 'string'
+      ? history.get(callId) : undefined;
+    return { ...projected, command: limitChars(clean(projected.command), 2000),
+      ...(typeof question?.text === 'string' ? { questionText: limitChars(clean(question.text), 2000),
+        ...(question.resolution === 'answered' && typeof question.answer === 'string'
+          ? { answer: limitChars(clean(question.answer), 2000) } : {}) } : {}) };
   }) : [];
   return {
     id: marker.jobId, label: taskText(marker.summary || job.summary || marker.title) || 'Codex Task', status,
@@ -171,6 +181,8 @@ export function jobView(value: unknown, marker: CodexLiveMarker, details = true)
     sandbox: limitChars(clean(job.sandbox), 100), workspaceRoot: marker.workspaceRoot,
     ...summaryFields({ currentOperation, lastActivityAt: string(latest.at) }),
     question, finalStatus: clean(report.status) || status,
+    ...(details && typeof request.prompt === 'string'
+      ? { prompt: limitChars(cleanBody(request.prompt), 20_000), promptReport: request.report === true } : {}),
     fileCount: Array.isArray(report.touchedFiles) ? report.touchedFiles.length : null,
     events: details ? events : [], detailsLoaded: details,
     toolUses: paired.filter(event => ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall'].includes(event.type)).length,
@@ -350,6 +362,7 @@ export function clearFinished(state: CodexLiveState, nowMs: number): CodexLiveSt
 export function jobSummary(job: CodexLiveJob): CodexLiveJob {
   const lifecycle = jobLifecycle(job);
   return { ...job, ...lifecycle, ...summaryFields(job), events: [], detailsLoaded: false,
+    prompt: undefined, promptReport: undefined,
     toolUses: job.toolUses ?? job.events.filter(event => ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall'].includes(event.type)).length,
     question: lifecycle.active && job.question ? { text: questionExcerpt(job.question.text), options: [],
       createdAt: isoTime(job.question.createdAt) } : null };
@@ -368,13 +381,18 @@ export function boundState(state: CodexLiveState): CodexLiveState {
       question: lifecycle.active && previous.question ? { ...previous.question, createdAt: isoTime(previous.question.createdAt) } : null };
     if (sessionId(job) !== state.selectedId) return jobSummary(job);
     if (!detailed.has(job.id)) return { ...jobSummary(job), detailsOmitted: true };
-    return { ...job, detailsOmitted: undefined, events: job.events.slice(-200).map(event => ({ ...event })) };
+    return { ...job, detailsOmitted: undefined,
+      prompt: job.prompt === undefined ? undefined : limitChars(cleanBody(job.prompt), 20_000),
+      events: job.events.slice(-200).map(event => ({ ...event,
+        ...(event.answer === undefined ? {} : { answer: limitChars(clean(event.answer), 2000) }) })) };
   });
+  // Briefs share the existing detail budget; count JSON escaping as well.
   // One event budget across the selected conversation, oldest bodies first.
   // Every turn keeps its header even when its oldest activity must be dropped.
   const selected = jobs.filter(job => sessionId(job) === state.selectedId).sort(oldestJob);
   const events = selected.flatMap(job => job.events);
-  let total = events.reduce((n, event) => n + JSON.stringify(event).length, 0);
+  let total = selected.reduce((n, job) => n + JSON.stringify({ prompt: job.prompt, promptReport: job.promptReport }).length, 0)
+    + events.reduce((n, event) => n + JSON.stringify(event).length, 0);
   for (const event of events) {
     if (total <= 450_000) break;
     if (event.body === undefined) continue;
@@ -385,7 +403,10 @@ export function boundState(state: CodexLiveState): CodexLiveState {
   for (const job of selected) {
     while (total > 450_000 && job.events.length) total -= JSON.stringify(job.events.shift()).length;
   }
-  return fitState({ ...state, jobs, turnCounts });
+  const feeds = state.feeds && Object.fromEntries(Object.entries(state.feeds).map(([id, feed]) => [id,
+    feed.expandedPromptIds ? { ...feed, expandedPromptIds: [...new Set(feed.expandedPromptIds)]
+      .filter(turnId => jobs.some(job => job.id === turnId && sessionId(job) === id)) } : feed]));
+  return fitState({ ...state, jobs, turnCounts, feeds });
 }
 
 // Apply this again after feed normalization, which can add anchor snapshots.

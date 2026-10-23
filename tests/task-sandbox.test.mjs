@@ -11,10 +11,10 @@ function fixture() {
   const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
   const env = { ...buildEnv(dir), CLAUDE_PLUGIN_DATA: path.join(dir, "data") };
   const call = (...args) => run(process.execPath, [script, ...args], { cwd: repo, env });
-  return { call, dir, env, script, state: () => JSON.parse(fs.readFileSync(path.join(dir, "fake-codex-state.json"))) };
+  return { call, dir, repo, env, script, state: () => JSON.parse(fs.readFileSync(path.join(dir, "fake-codex-state.json"))) };
 }
 
-test("full access is the built-in default; setup --default-sandbox lowers it and explicit task flags win", () => {
+test("sandbox defaults apply to fresh tasks; named and thread follow-ups inherit recorded settings with explicit overrides", () => {
   const f = fixture();
   const json = result => { assert.equal(result.status, 0, result.stderr); return JSON.parse(result.stdout); };
   assert.equal(json(f.call("setup", "--default-sandbox", "read-only", "--dry-run", "--json")).defaultSandbox, "read-only");
@@ -25,9 +25,9 @@ test("full access is the built-in default; setup --default-sandbox lowers it and
   assert.deepEqual(f.state().lastTurnStart.sandboxPolicy, { type: "dangerFullAccess" });
   for (const mode of ["read-only", "workspace-write"]) {
     assert.equal(json(f.call("setup", "--default-sandbox", mode, "--json")).defaultSandbox, mode);
-    const result = json(f.call("task", "--thread", first.threadId, "--json", "--report", "investigate"));
+    const result = json(f.call("task", "--fresh", "--json", "--report", "investigate"));
     assert.equal(result.sandbox, mode);
-    assert.equal(f.state().lastThreadResume.sandbox, mode);
+    assert.equal(f.state().lastThreadStart.sandbox, mode);
     assert.equal(f.state().lastTurnStart.sandboxPolicy.type, mode === "workspace-write" ? "workspaceWrite" : "readOnly");
     assert.equal(f.state().lastTurnStart.approvalPolicy, "never");
   }
@@ -51,34 +51,64 @@ test("full access is the built-in default; setup --default-sandbox lowers it and
   assert.equal(json(f.call("setup", "--browser-approval", "ask", "--json")).browserOrigins.approval, "ask");
   assert.equal(json(f.call("task", "--json", "investigate")).sandbox, "danger-full-access");
   assert.equal(json(f.call("setup", "--json")).browserOrigins.approval, "ask", "an explicit ask survives later tasks");
-});
 
-test("task sandbox reaches thread and turn APIs and resets to the default on an ordinary follow-up", () => {
-  const f = fixture();
-  const task = (...args) => {
-    const result = f.call("task", "--json", ...args, "investigate");
+  const duet = new URL("../plugins/codex/bin/duet", import.meta.url).pathname;
+  const invoke = (args, cwd = f.repo) => run(duet, args, { cwd, env: f.env, input: "Synthetic follow-up brief." });
+  const direct = result => { assert.equal(result.status, 0, result.stderr); return JSON.parse(result.stdout.trim().split("\n").at(-1)); };
+  const stored = id => json(f.call("result", id, "--json")).storedJob;
+  const patch = (id, fields, cwd = f.repo) => {
+    const module = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
+    const result = run(process.execPath, ["--input-type=module", "-e", `import { updateJob } from ${JSON.stringify(module)}; updateJob(process.cwd(), ${JSON.stringify(id)}, () => (${JSON.stringify(fields)}));`], { cwd, env: f.env });
     assert.equal(result.status, 0, result.stderr);
-    return JSON.parse(result.stdout);
   };
-  assert.equal(task().sandbox, "danger-full-access");
-  assert.equal(f.state().lastThreadStart.sandbox, "danger-full-access");
-  assert.deepEqual(f.state().lastTurnStart.sandboxPolicy, { type: "dangerFullAccess" });
-  assert.equal(task("--sandbox", "workspace-write").sandbox, "workspace-write");
-  assert.equal(f.state().lastThreadStart.sandbox, "workspace-write");
-  assert.equal(f.state().lastTurnStart.sandboxPolicy.type, "workspaceWrite");
-  const narrowed = task("--sandbox", "read-only", "--report");
-  assert.equal(narrowed.sandbox, "read-only");
-  assert.equal(narrowed.approvalPolicy, "never");
-  assert.equal(f.state().lastThreadStart.sandbox, "read-only");
+  f.env.CODEX_COMPANION_SESSION_ID = "ignored-session";
+  const session = ["--session", "addressing-session"];
+  const narrow = direct(invoke(["task", ...session, "--sandbox", "read-only", "--model", "fixture-reviewer", "--effort", "high", "--fast",
+    "--approve-browser-origin", "https://example.com", "--approve-computer-app", "com.example.Recorded"]));
+  const narrowJob = stored(narrow.jobId);
+  // Grants received while answering a runtime question are not request grants.
+  patch(narrow.jobId, { approvedBrowserOrigins: ["https://one-call.example"], approvedComputerApps: ["com.example.OneCall"] });
+  const followed = direct(invoke(["task", ...session, "--to", narrow.worker.toLowerCase()], other));
+  assert.equal(stored(followed.jobId).threadId, narrowJob.threadId);
+  assert.equal(followed.worker, narrow.worker);
+  const request = stored(followed.jobId).request;
+  assert.equal(request.cwd, f.repo);
+  assert.equal(stored(followed.jobId).sessionId, "addressing-session");
+  assert.deepEqual([request.model, request.effort, request.sandbox, request.serviceTier], ["fixture-reviewer", "high", "read-only", "priority"]);
+  assert.deepEqual(request.approvedBrowserOrigins, ["https://example.com"]);
+  assert.deepEqual(request.approvedComputerApps, ["com.example.Recorded"]);
+  assert.equal(f.state().lastThreadResume.cwd, f.repo);
+  assert.equal(f.state().lastThreadResume.sandbox, "read-only");
   assert.equal(f.state().lastTurnStart.sandboxPolicy.type, "readOnly");
-  assert.equal(f.state().lastTurnStart.sandboxPolicy.networkAccess, true, "a narrowed sandbox limits writes, never where Codex may connect");
-  assert.equal(f.state().lastTurnStart.approvalPolicy, "never");
-  const normal = task("--thread", narrowed.threadId);
-  assert.equal(normal.sandbox, "danger-full-access", "a follow-up without flags returns to the default, not the previous call");
-  assert.equal(f.state().lastThreadResume.sandbox, "danger-full-access");
-  assert.equal(f.state().lastThreadResume.approvalPolicy, "never");
-  assert.equal(task("--sandbox", "read-only", "--thread", narrowed.threadId).sandboxPolicy.type, "readOnly");
-  assert.equal(f.state().lastTurnStart.sandboxPolicy.type, "readOnly");
+  assert.equal(f.state().lastTurnStart.effort, "high");
+  assert.equal(f.state().lastTurnStart.serviceTier, "priority");
+  const explicit = direct(invoke(["task", ...session, "--thread", narrowJob.threadId, "--model", "fixture-editor", "--effort", "medium", "--sandbox", "workspace-write", "--normal",
+    "--approve-browser-origin", "https://override.example", "--approve-computer-app", "com.example.Override"]));
+  // The legacy invocation gets identical inheritance, including normal (null) tier.
+  const legacy = direct(run(process.execPath, [f.script, "task", ...session, "--thread", narrowJob.threadId, "--direct"], { cwd: f.repo, env: f.env, input: "Legacy follow-up." }));
+  const latest = stored(legacy.jobId).request;
+  assert.deepEqual([latest.model, latest.effort, latest.sandbox, latest.serviceTier], ["fixture-editor", "medium", "workspace-write", null]);
+  assert.deepEqual(latest.approvedBrowserOrigins, ["https://override.example"]);
+  assert.deepEqual(latest.approvedComputerApps, ["com.example.Override"]);
+  assert.equal(stored(legacy.jobId).threadId, stored(explicit.jobId).threadId);
+  assert.equal(json(invoke(["status", narrow.worker, ...session, "--json"], other)).job.id, legacy.jobId);
+  assert.equal(json(invoke(["result", narrow.worker, ...session], other)).jobId, legacy.jobId);
+  assert.equal(json(invoke(["result", legacy.jobId, ...session, "--json"], other)).storedJob.request.cwd, f.repo);
+  assert.equal(direct(invoke(["wait", narrow.worker, ...session], other)).jobId, legacy.jobId);
+  const before = f.state().nextTurnId;
+  for (const args of [["task", ...session, "--to", "UnknownWorker"], ["task", "--to", narrow.worker]]) {
+    const missing = invoke(args);
+    assert.equal(missing.status, 1);
+    assert.equal(JSON.parse(missing.stdout).status, "error");
+  }
+  assert.equal(f.state().nextTurnId, before, "failed resolution never starts a turn");
+  const duplicate = direct(invoke(["task", ...session], other));
+  patch(duplicate.jobId, { agentName: narrow.worker }, other);
+  const ambiguous = invoke(["task", ...session, "--to", narrow.worker]);
+  assert.equal(ambiguous.status, 1);
+  assert.ok(ambiguous.stderr.includes(duplicate.jobId));
+  assert.ok(ambiguous.stderr.includes(legacy.jobId));
+  assert.equal(f.state().nextTurnId, before + 1, "an ambiguous name never starts a turn");
 });
 
 test("task rejects unknown, missing and conflicting sandbox flags before starting a turn", () => {
@@ -92,6 +122,77 @@ test("task rejects unknown, missing and conflicting sandbox flags before startin
     assert.match(result.stderr, /sandbox/);
   }
   assert.throws(f.state, /ENOENT/, "no runtime may be started by invalid flags");
+});
+
+test("named follow-ups stay session-scoped while explicit continuations inherit the selected request", () => {
+  const f = fixture();
+  const json = result => {
+    assert.equal(result.status, 0, result.stderr);
+    try { return JSON.parse(result.stdout); }
+    catch { return JSON.parse(result.stdout.trim().split("\n").at(-1)); }
+  };
+  const stored = id => json(f.call("result", id, "--json")).storedJob;
+  const addRuntimeGrants = id => {
+    const module = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
+    const result = run(process.execPath, ["--input-type=module", "-e", `import { updateJob } from ${JSON.stringify(module)}; updateJob(process.cwd(), ${JSON.stringify(id)}, () => ({ approvedBrowserOrigins: ["https://one-call.example"], approvedComputerApps: ["com.example.OneCall"] }));`], { cwd: f.repo, env: f.env });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  f.env.CODEX_COMPANION_SESSION_ID = "session-a";
+  const first = json(f.call("task", "--direct", "--fresh", "--sandbox", "read-only", "--model", "session-a-model", "--effort", "high", "--fast", "fixture"));
+  const own = json(f.call("task", "--direct", "--to", first.worker, "--effort", "medium", "--normal", "fixture"));
+  const thread = stored(own.jobId).threadId;
+  f.env.CODEX_COMPANION_SESSION_ID = "session-b";
+  const foreign = json(f.call("task", "--direct", "--thread", thread, "--sandbox", "danger-full-access", "--model", "session-b-model", "--effort", "max", "--fast",
+    "--approve-browser-origin", "https://foreign.example", "--approve-computer-app", "com.example.Foreign", "fixture"));
+  f.env.CODEX_COMPANION_SESSION_ID = "session-a";
+  const followup = json(f.call("task", "--direct", "--to", first.worker, "fixture"));
+  const request = stored(followup.jobId).request;
+  assert.deepEqual([request.sandbox, request.model, request.effort, request.serviceTier], ["read-only", "session-a-model", "medium", null]);
+  assert.deepEqual(request.approvedBrowserOrigins, []);
+  assert.deepEqual(request.approvedComputerApps, []);
+  assert.equal(f.state().lastThreadResume.sandbox, "read-only");
+  assert.equal(f.state().lastTurnStart.sandboxPolicy.type, "readOnly");
+  assert.equal(f.state().lastTurnStart.model, "session-a-model");
+  const details = json(f.call("result", followup.jobId, "--details"));
+  assert.equal(details.settingsInheritance.jobId, own.jobId);
+  assert.equal(details.settingsInheritance.skippedJobId, foreign.jobId);
+  assert.equal(details.settingsInheritance.scope, "session");
+  assert.equal(Object.hasOwn(followup, "settingsInheritance"), false);
+
+  addRuntimeGrants(foreign.jobId);
+  f.env.CODEX_COMPANION_SESSION_ID = "session-c";
+  const restarted = json(f.call("task", "--continue", foreign.jobId, "--direct", "fixture"));
+  const restartedJob = stored(restarted.jobId);
+  assert.equal(restartedJob.request.continuedFrom, foreign.jobId);
+  assert.equal(restartedJob.threadId, thread);
+  assert.equal(restartedJob.sessionId, "session-c");
+  for (const key of ["sandbox", "write", "model", "effort", "serviceTier", "approvedBrowserOrigins", "approvedComputerApps"]) {
+    assert.deepEqual(restartedJob.request[key], stored(foreign.jobId).request[key], key);
+  }
+  assert.equal(f.state().lastTurnStart.sandboxPolicy.type, "dangerFullAccess");
+  assert.equal(f.state().lastTurnStart.model, "session-b-model");
+  assert.match(f.state().lastTurnStart.computerUse.session, /com\.example\.Foreign/);
+  assert.doesNotMatch(f.state().lastTurnStart.computerUse.session, /com\.example\.OneCall/);
+  addRuntimeGrants(restarted.jobId);
+  f.env.CODEX_COMPANION_SESSION_ID = "session-d";
+  const threaded = json(f.call("task", "--direct", "--thread", thread, "fixture"));
+  const threadedJob = stored(threaded.jobId);
+  assert.equal(threadedJob.threadId, thread);
+  assert.equal(threadedJob.sessionId, "session-d");
+  for (const key of ["sandbox", "write", "model", "effort", "serviceTier", "approvedBrowserOrigins", "approvedComputerApps"]) {
+    assert.deepEqual(threadedJob.request[key], restartedJob.request[key], key);
+  }
+  assert.equal(f.state().lastTurnStart.model, "session-b-model");
+  assert.match(f.state().lastTurnStart.computerUse.session, /com\.example\.Foreign/);
+  assert.doesNotMatch(f.state().lastTurnStart.computerUse.session, /com\.example\.OneCall/);
+  const threadedDetails = json(f.call("result", threaded.jobId, "--details"));
+  assert.equal(threadedDetails.settingsInheritance.jobId, restarted.jobId);
+  assert.equal(threadedDetails.settingsInheritance.scope, "workspace");
+  assert.equal(Object.hasOwn(threaded, "settingsInheritance"), false);
+  f.env.CODEX_COMPANION_SESSION_ID = "";
+  const unscoped = json(f.call("task", "--direct", "--thread", thread, "fixture"));
+  assert.deepEqual(stored(unscoped.jobId).request.approvedComputerApps, ["com.example.Foreign"]);
+  assert.deepEqual(stored(unscoped.jobId).request.approvedBrowserOrigins, ["https://foreign.example"]);
 });
 
 test("background task persists and reports the deliberately requested sandbox", async () => {
@@ -112,7 +213,7 @@ test("background task persists and reports the deliberately requested sandbox", 
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   assert.equal(job.status, "completed");
-  const result = f.call("result", queued.jobId, "--report", "--json");
+  const result = f.call("result", queued.jobId, "--details");
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).sandbox, "danger-full-access");
   assert.deepEqual(f.state().lastTurnStart.sandboxPolicy, { type: "dangerFullAccess" });

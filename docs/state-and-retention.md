@@ -60,8 +60,8 @@ API, keeping its indexes consistent; unavailable deletion is reported and skippe
 Jobs with legacy artifact paths are kept and listed under `retained`, separately
 from errors. Their threads stay protected while unrelated old threads can expire.
 
-Preview with `node "$CODEX_COMPANION" cleanup --dry-run --json`; apply with
-`node "$CODEX_COMPANION" cleanup --json`. Both ignore the 12-hour limit; `--days N`
+Preview with `duet cleanup --dry-run --json`; apply with
+`duet cleanup --json`. Both ignore the 12-hour limit; `--days N`
 overrides the period for that command. Nothing is removed immediately on job
 completion, so results, continuations and pane history remain available during
 the retention period (subject to the count cap).

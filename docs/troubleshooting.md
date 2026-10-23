@@ -4,6 +4,33 @@ Back to the [README](../README.md).
 
 ## Troubleshooting
 
+**`duet: command not found` after install.** Reload plugins or start a new Claude
+session so the plugin's `bin/` is on PATH. You can also invoke the installed
+plugin's absolute launcher, for example `'/absolute/path/plugins/codex/bin/duet'
+task --help`. `/codex:setup` reports the resolved launcher path and availability.
+SessionStart supplies the session ID and dispatch guidance; do not construct a
+second runtime or submit a replacement for a job that may already exist.
+
+**Native agent unavailable.** `Agent(subagent_type: "codex:codex-native")` needs
+the supported function-hook module. SessionStart advertises it only after
+registration. If the model fallback runs, it returns a blocked
+`native_adapter_unavailable` report and does not solve the assignment. Check
+`duet status` before retrying, then enable the supported hooks/reload or use
+background `duet task`. Do not treat the fallback as zero Claude usage.
+
+**Completion notification has no report.** The function hook normally attaches
+report v2. If it cannot, run `duet result <worker>`; use `--details` for full
+evidence, handles and settings. Do not parse the task output file.
+
+**Claude instructions are approximate.** Managed environments skip user-supplied
+`prompt.context` hooks. If the session's first loaded instruction inventory is
+missing or incomplete, Duet falls back to a startup scan and records
+`claudeMd.approximate` in `--details`. Later contexts cannot replace that first attempt.
+The scan cannot reproduce all policy/settings, imports or path-triggered rules.
+Threads keep their original instructions. CLAUDE.md edits require a new Claude
+session and a fresh task to use the new snapshot. Opt out on a fresh task with
+`--no-claude-md`. See [configuration](configuration.md#claude-instructions-and-conversation-imports).
+
 **Slow first tool call.** Each job records startup timings: broker connect/spawn,
 app-server initialization, thread start/resume, turn start, first model event and
 first tool call. A 2026-10-15 measurement traced a ~120 s pre-tool delay to about
@@ -22,7 +49,7 @@ Bash sandbox caused it, retry outside the sandbox rather than logging in again.
 assignment again with a fresh tab; do not steal the claim.
 
 **`status: blocked` with `computer_use_app_not_approved`.** The worker tried to
-drive an app (`blockers[].app`) that the isolated runtime has not approved. Check
+drive an app (`blockers[].app` in `duet result <worker> --details`) that the isolated runtime has not approved. Check
 `setup --list-computer-apps --json`: in `mirror` mode the app must be "Always"
 allowed in the user's Codex app (or added with `setup --allow-computer-app`); in
 `ask` mode mirrored grants are dropped but explicit ones remain. Approve with
@@ -30,12 +57,12 @@ allowed in the user's Codex app (or added with `setup --allow-computer-app`); in
 (`setup --allow-computer-app`), or the forwarded approval question on an owned job.
 `computer_use_app_blocked_by_policy`/`computer_use_app_forbidden` come from
 Codex's own policy and cannot be overridden here. `browser_tab_debugger_unattached`
-names a tab (`tabId`, `sessionId`, `closed`) the worker could not inspect or
+names a tab (`tabId`, `sessionId`, `closed` in `--details`) the worker could not inspect or
 close; close it manually if `closed` is `false`. `reported_blocked` means Codex's
 own final answer declared itself blocked. Blocked tasks exit 2, like `needs_input`.
 
-**Interrupted worker or lost connection.** Inspect `status <job> --json` and
-`result <job> --report --json` in the original workspace: an eligible lost turn
+**Interrupted worker or lost connection.** Inspect `duet status <worker>` and
+`duet result <worker> --details` in the original workspace: an eligible lost turn
 is reconciled against its exact server record without resubmission, preserving
 its real outcome and recovery provenance. A follow-up on a busy or unresolved
 thread is blocked with `thread_busy`; use its observational status
@@ -45,6 +72,25 @@ More: [worker operations](worker-operations.md) and
 [worker lifecycle](worker-lifecycle.md).
 
 ## Known limitations
+
+- Stopping an active native agent from `/tasks` interrupts its turn and ends
+  the commands its thread started. Claude Code refuses process calls in the
+  stopped dispatch, so the agent's result reports `interrupted` from the
+  recorded handles, and the confirmation is recorded on the job afterwards
+  (`duet status <worker>`); SendMessage can then continue the agent. If no job
+  was recorded yet, the result is blocked (`native_stop_unconfirmed`); after
+  `duet cancel <worker>` confirms it, the next SendMessage is accepted. A question parked
+  after the native agent returns may not receive a stop event; use `duet cancel
+  <worker>`, or the default 900 s question timeout applies.
+- Cancelling ends every background terminal the worker's thread started,
+  including dev servers from earlier turns. A Codex runtime without
+  `thread/backgroundTerminals/clean` reports `backgroundTerminals.cleaned:
+  false` and leaves them running.
+- `--fork` imports are labelled “imported Claude conversation (fidelity not
+  verified)”; use an explicit brief for facts and acceptance criteria.
+- `codex-live` shows prompts and matched `ask_parent` answers. On resumed threads,
+  Codex 0.146.0 does not forward a call ID to custom MCP servers, so answers
+  cannot be matched and are not shown.
 
 - `ask_parent`, `--follow`, owner loss, `--continue`, lease expiry and
   cancellation are covered by fixture tests against a fake app-server. The
@@ -58,7 +104,7 @@ More: [worker operations](worker-operations.md) and
   and a per-thread MCP server override on resumed threads. Runtimes that reject
   either registration fall back to a final `needs_input` report.
 - Codex edits bypass Claude Code's own permission prompts and edit tracking; the
-  report's `touchedFiles`/`preExistingChanges`, the Codex sandbox and your git
+  report's `changedFiles` (`touchedFiles`/`preExistingChanges` in `--details`), the Codex sandbox and your git
   history are the controls. `git diff`/`git status` show current uncommitted changes;
   also check new commits and the report's touched-file evidence, with the limits
   below for ignored files, submodules and concurrent writers. Claude's own rewind

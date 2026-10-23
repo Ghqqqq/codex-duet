@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawnOwned as spawn } from "../plugins/codex/scripts/lib/process.mjs";
 import { fileURLToPath } from "node:url";
 
@@ -69,9 +70,9 @@ test("task unknown options retain direct JSON errors and cannot hide as option v
   const result = f.call("task", "--direct", "--model", "--frobnicate");
   assert.equal(result.status, 1);
   const payload = JSON.parse(result.stdout);
-  assert.deepEqual(Object.keys(payload).sort(), ["error", "status"]);
+  assert.deepEqual(Object.keys(payload), ["status", "worker", "jobId", "summary", "next", "details"]);
   assert.equal(payload.status, "error");
-  assert.ok(payload.error.length);
+  assert.ok(payload.summary.length);
   f.unchanged();
 });
 
@@ -313,7 +314,8 @@ test("transfer delegates the current Claude session directly to native import", 
   assert.equal(fakeState.threads.length, 1);
   assert.equal(fakeState.threads[0].ephemeral, false);
   assert.equal(fakeState.threads[0].name, "Native transfer");
-  assert.equal(fakeState.lastExternalAgentImport.sourcePath, canonicalSourcePath);
+  assert.notEqual(fakeState.lastExternalAgentImport.sourcePath, canonicalSourcePath);
+  assert.equal(fs.existsSync(fakeState.lastExternalAgentImport.sourcePath), false);
   assert.deepEqual(
     fakeState.threads[0].visibleMessages.map((message) => message.text),
     ["Initial request", "Initial answer", "/codex:transfer"]
@@ -356,7 +358,7 @@ test("transfer fails visibly when native import completes without a ledger recor
   const sourcePath = path.join(projectDir, "session.jsonl");
   fs.mkdirSync(repo, { recursive: true });
   fs.mkdirSync(projectDir, { recursive: true });
-  installFakeCodex(binDir, "external-import-fails");
+  installFakeCodex(binDir, "external-import-no-ledger");
   initGitRepo(repo);
   fs.writeFileSync(
     sourcePath,
@@ -397,6 +399,174 @@ test("transfer rejects sources outside the Claude projects directory", () => {
   });
 
   assert.notEqual(result.status, 0);
+});
+
+function forkFixture(behavior = "review-ok") {
+  const directory = makeTempDir("duet14-f-");
+  const repo = path.join(directory, "repo");
+  fs.mkdirSync(repo);
+  initGitRepo(repo);
+  installFakeCodex(directory, behavior);
+  const env = { ...buildEnv(directory), CODEX_COMPANION_HOME: path.join(directory, "isolated"),
+    CLAUDE_PLUGIN_DATA: path.join(directory, "data"), CODEX_COMPANION_SESSION_ID: "fork-contract" };
+  const projects = path.join(env.HOME, ".claude", "projects");
+  const source = path.join(projects, "-repo", "fork-session.jsonl");
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  const contents = [
+    { type: "user", message: { content: "Synthetic prior request" } },
+    { type: "assistant", message: { content: "Synthetic prior answer" } }
+  ].map(row => JSON.stringify(row)).join("\n") + "\n";
+  fs.writeFileSync(source, contents);
+  env.CODEX_COMPANION_TRANSCRIPT_PATH = source;
+  const call = (...args) => run(path.join(PLUGIN_ROOT, "bin", "duet"), args, { cwd: repo, env, input: "Synthetic fork brief." });
+  const json = result => {
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    try { return JSON.parse(result.stdout); }
+    catch { return JSON.parse(result.stdout.trim().split("\n").at(-1)); }
+  };
+  const statePath = path.join(directory, "fake-codex-state.json");
+  return { directory, repo, env, source, projects, contents, call, json,
+    state: () => fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath)) : null,
+    stored: id => json(call("result", id, "--json")).storedJob };
+}
+
+test("session snapshots refuse a leaf replaced after validation before reading any content", () => {
+  const f = forkFixture();
+  const module = new URL("../plugins/codex/scripts/lib/claude-session-transfer.mjs", import.meta.url).href;
+  const probe = run(process.execPath, ["--input-type=module", "-e", `
+    import fs from 'node:fs';
+    import path from 'node:path';
+    import assert from 'node:assert/strict';
+    import { snapshotClaudeSession } from ${JSON.stringify(module)};
+    const source = ${JSON.stringify(f.source)}, outside = ${JSON.stringify(path.join(f.directory, "outside.jsonl"))};
+    const open = fs.openSync, read = fs.readSync;
+    fs.writeFileSync(outside, 'OUTSIDE_CONTENT');
+    for (const replacement of ['symlink', 'regular']) {
+      let swapped = false, reads = 0;
+      fs.readSync = (...args) => { reads++; return read(...args); };
+      fs.openSync = (file, ...args) => {
+        if (file === source && !swapped) {
+          swapped = true;
+          fs.renameSync(source, source + '.validated');
+          if (replacement === 'symlink') fs.symlinkSync(outside, source);
+          else fs.copyFileSync(outside, source);
+        }
+        return open(file, ...args);
+      };
+      try {
+        assert.throws(() => snapshotClaudeSession(process.cwd(), source),
+          replacement === 'symlink' ? { code: 'ELOOP' } : /changed after validation/);
+        assert.equal(swapped, true);
+        assert.equal(reads, 0);
+        assert.deepEqual(fs.readdirSync(path.dirname(path.dirname(source))), ['-repo']);
+      } finally {
+        fs.openSync = open; fs.readSync = read;
+        fs.unlinkSync(source); fs.renameSync(source + '.validated', source);
+      }
+    }
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'OUTSIDE_CONTENT');
+  `], { cwd: f.repo, env: f.env });
+  assert.equal(probe.status, 0, probe.stderr);
+});
+
+test("transfer and fork sweep abandoned private copies but preserve fresh and unrelated directories", () => {
+  const module = new URL("../plugins/codex/scripts/lib/claude-session-transfer.mjs", import.meta.url).href;
+  for (const command of [["transfer", "--json"], ["task", "--fork"]]) {
+    const f = forkFixture();
+    const copies = run(process.execPath, ["--input-type=module", "-e", `
+      import { snapshotClaudeSession } from ${JSON.stringify(module)};
+      console.log(JSON.stringify([0, 1].map(() => snapshotClaudeSession(process.cwd(), ${JSON.stringify(f.source)}).snapshotPath)));
+    `], { cwd: f.repo, env: f.env });
+    const [old, fresh] = f.json(copies).map(file => path.dirname(file));
+    const date = new Date(Date.now() - 2 * 3600000);
+    for (const file of fs.readdirSync(old)) fs.utimesSync(path.join(old, file), date, date);
+    fs.utimesSync(old, date, date);
+    const unrelated = path.join(f.projects, ".duet-import-custom"); fs.mkdirSync(unrelated);
+    fs.writeFileSync(path.join(unrelated, "keep.txt"), "unrelated"); fs.utimesSync(unrelated, date, date);
+    const backup = path.join(f.projects, ".duet-import-backup"); fs.mkdirSync(backup, { mode: 0o700 });
+    const backupFile = path.join(backup, "keep.jsonl"); fs.writeFileSync(backupFile, "user backup", { mode: 0o600 });
+    fs.utimesSync(backupFile, date, date); fs.utimesSync(backup, date, date);
+    f.json(f.call(...command));
+    assert.equal(fs.existsSync(old), false);
+    assert.ok(fs.existsSync(fresh));
+    assert.equal(fs.readFileSync(path.join(unrelated, "keep.txt"), "utf8"), "unrelated");
+    assert.equal(fs.readFileSync(backupFile, "utf8"), "user backup");
+  }
+});
+
+test("fork imports a private snapshot despite live appends and early completion, then follows up with task settings", () => {
+  const f = forkFixture("external-import-early");
+  f.json(run(process.execPath, [SCRIPT, "setup", "--default-sandbox", "read-only", "--json"], { cwd: f.repo, env: f.env }));
+  const result = f.json(f.call("task", "--fork", "--model", "fixture-fork", "--effort", "high", "--fast"));
+  assert.equal(result.status, "completed");
+  const job = f.stored(result.jobId);
+  const imported = f.state().lastExternalAgentImport;
+  assert.equal(job.threadId, imported.threadId);
+  assert.equal(f.state().lastThreadResume.threadId, imported.threadId);
+  assert.equal(f.state().lastTurnStart.threadId, imported.threadId);
+  assert.ok(f.state().lastTurnStart.prompt.includes("Synthetic fork brief."));
+  assert.equal(job.request.forked, true);
+  assert.equal(job.request.forkSourceSha256, createHash("sha256").update(f.contents).digest("hex"));
+  assert.equal(job.request.forkImportId, imported.importId);
+  assert.equal(job.request.threadId, imported.threadId);
+  assert.deepEqual([job.request.model, job.request.effort, job.request.sandbox, job.request.serviceTier], ["fixture-fork", "high", "read-only", "priority"]);
+  assert.equal(f.state().lastThreadResume.model, "fixture-fork");
+  assert.equal(f.state().lastTurnStart.effort, "high");
+  assert.equal(f.state().lastTurnStart.serviceTier, "priority");
+  assert.equal(f.state().lastTurnStart.sandboxPolicy.type, "readOnly");
+  assert.ok(fs.statSync(f.source).size > Buffer.byteLength(f.contents));
+  assert.deepEqual(imported.messages.map(message => message.text), ["Synthetic prior request", "Synthetic prior answer"]);
+  const migration = f.state().externalAgentImports[0];
+  assert.notEqual(migration.sourcePath, fs.realpathSync(f.source));
+  assert.equal(fs.existsSync(path.dirname(migration.sourcePath)), false);
+  if (process.platform !== "win32") assert.deepEqual([migration.sourceMode, migration.directoryMode], [0o600, 0o700]);
+  assert.deepEqual(migration.params.migrationItems.map(item => item.itemType), ["SESSIONS"]);
+  for (const key of ["plugins", "mcpServers", "hooks", "subagents", "commands"]) assert.deepEqual(migration.params.migrationItems[0].details[key], []);
+  const details = f.json(f.call("result", result.worker, "--details"));
+  for (const key of ["forked", "forkSourceSha256", "forkImportId", "forkLabel", "threadId"]) {
+    assert.equal(details[key], job.request[key]);
+    assert.equal(Object.hasOwn(result, key), false, "fork provenance stays out of the compact report");
+  }
+  // Identical content still creates a fresh imported thread.
+  fs.writeFileSync(f.source, f.contents);
+  const second = f.json(f.call("task", "--fork", "--source", f.source));
+  const secondJob = f.stored(second.jobId);
+  assert.notEqual(secondJob.threadId, job.threadId);
+  assert.notEqual(secondJob.request.forkImportId, job.request.forkImportId);
+  assert.equal(secondJob.request.forkSourceSha256, job.request.forkSourceSha256);
+  const followup = f.json(f.call("task", "--to", result.worker));
+  const followupJob = f.stored(followup.jobId);
+  assert.equal(followup.worker, result.worker);
+  assert.equal(followupJob.threadId, job.threadId);
+  assert.deepEqual([followupJob.request.model, followupJob.request.effort, followupJob.request.sandbox, followupJob.request.serviceTier], ["fixture-fork", "high", "read-only", "priority"]);
+  assert.equal(f.state().externalAgentImports.length, 2);
+});
+
+test("fork rejects incompatible targets and oversized sources before import, and import failure never starts a turn", () => {
+  const f = forkFixture("external-import-fails");
+  const incompatible = f.call("task", "--fork", "--to", "UnknownWorker");
+  assert.equal(incompatible.status, 1);
+  assert.match(incompatible.stderr, /--fork.*--to/);
+  assert.equal(f.state(), null);
+  const descriptor = fs.openSync(f.source, "r+");
+  fs.ftruncateSync(descriptor, 20 * 1024 * 1024 + 1);
+  fs.closeSync(descriptor);
+  const oversized = f.call("task", "--fork");
+  assert.equal(oversized.status, 1);
+  assert.match(oversized.stderr, /import limit/);
+  assert.equal(f.state()?.externalAgentImports?.length ?? 0, 0);
+  fs.writeFileSync(f.source, f.contents);
+  f.env.CODEX_COMPANION_IMPORT_MAX_BYTES = String(Buffer.byteLength(f.contents) - 1);
+  assert.equal(f.call("task", "--fork").status, 1);
+  assert.equal(f.state()?.externalAgentImports?.length ?? 0, 0);
+  delete f.env.CODEX_COMPANION_IMPORT_MAX_BYTES;
+  const failed = f.call("task", "--fork");
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /SESSIONS.*conversion.*Synthetic transcript conversion failed/);
+  assert.equal(f.state().externalAgentImports.length, 1);
+  assert.equal(f.state().threads.length, 0);
+  assert.equal(f.state().lastTurnStart, undefined);
+  assert.deepEqual(fs.readdirSync(f.projects), ["-repo"], "failed imports remove their snapshots");
 });
 
 test("task reports the actual Codex auth error when the run is rejected", () => {
@@ -735,7 +905,7 @@ test("session start hook exports unchanged environment and adds compact dispatch
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
     fs.readFileSync(envFile, "utf8"),
-    `export CODEX_COMPANION='${SCRIPT}'\nexport CODEX_COMPANION_SESSION_ID='sess-current'\nexport CODEX_COMPANION_TRANSCRIPT_PATH='${transcriptPath}'\nexport CLAUDE_PLUGIN_DATA='${pluginDataDir}'\nexport CODEX_COMPANION_HOME='${path.join(repo,"isolated")}'\n`
+    `export CODEX_COMPANION='${SCRIPT}'\nexport CODEX_COMPANION_SESSION_ID='sess-current'\nexport CODEX_COMPANION_SESSION_CWD='${repo}'\nexport CODEX_COMPANION_TRANSCRIPT_PATH='${transcriptPath}'\nexport CLAUDE_PLUGIN_DATA='${pluginDataDir}'\nexport CODEX_COMPANION_HOME='${path.join(repo,"isolated")}'\n`
   );
   const output = JSON.parse(result.stdout);
   assert.deepEqual(Object.keys(output), ["hookSpecificOutput"]);
@@ -1062,7 +1232,7 @@ test("human status exposes the pending question and choices without changing the
   assert.equal(fs.readFileSync(jobFile, "utf8"), before, "observation cannot answer or renew the lease");
 });
 
-test("human blocked results preserve the summary and blocker identifiers without changing JSON or exit codes", () => {
+test("human blocked rendering from the full report preserves summary and identifiers without changing stored JSON", async () => {
   const workspace = makeTempDir();
   const report = { status: "blocked", summary: "Stopped: fixture dependency unavailable.\n  Detail stays unchanged.\n",
     blockers: [{ code: "stale_browser_tab_claim", message: "Fixture tab already claimed", app: "Chrome", tabId: "tab-1", sessionId: "session-1" }] };
@@ -1072,10 +1242,11 @@ test("human blocked results preserve the summary and blocker identifiers without
   const stored = fs.readFileSync(jobFile, "utf8");
   const call = (...args) => run(process.execPath, [SCRIPT, "result", job.id, ...args], { cwd: workspace });
   const beforeJson = call("--json"), beforeReport = call("--report", "--json");
-  const human = call();
-  assert.equal(human.status, 0, human.stderr);
-  assert.ok(human.stdout.includes(report.summary));
-  for (const value of Object.values(report.blockers[0])) assert.ok(human.stdout.includes(value));
+  const { renderStoredJobResult } = await import("../plugins/codex/scripts/lib/render.mjs");
+  const full = JSON.parse(beforeJson.stdout);
+  const human = renderStoredJobResult(full.job, full.storedJob);
+  assert.ok(human.includes(report.summary));
+  for (const value of Object.values(report.blockers[0])) assert.ok(human.includes(value));
   const afterJson = call("--json"), afterReport = call("--report", "--json");
   assert.equal(beforeJson.status, 0, beforeJson.stderr);
   assert.equal(afterJson.status, beforeJson.status, afterJson.stderr);
@@ -1309,10 +1480,12 @@ test("result returns the stored output for the latest finished job by default", 
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(
-    result.stdout,
-    "Outcome: completed\n\nReviewed uncommitted changes.\nNo material issues found.\n\nCodex session ID: thr_review_finished\nResume in Codex: " + isolatedCodexCommand(["resume", "thr_review_finished"]) + "\n\nNext: Review the result and evidence above.\n"
-  );
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.status, "completed"); assert.equal(report.jobId, "review-finished");
+  assert.equal(report.summary, "Reviewed uncommitted changes.\nNo material issues found.");
+  assert.equal(report.next, null); assert.equal(report.details, "duet result review-finished --details");
+  const details = JSON.parse(run("node", [SCRIPT, "result", "--details"], { cwd: workspace }).stdout);
+  assert.equal(details.threadId, "thr_review_finished");
 });
 
 test("result without a job id prefers the latest finished job from the current Claude session", () => {
@@ -1407,10 +1580,11 @@ test("result without a job id prefers the latest finished job from the current C
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(
-    result.stdout,
-    "Outcome: completed\n\nCurrent session output.\n\nCodex session ID: thr_current\nResume in Codex: " + isolatedCodexCommand(["resume", "thr_current"]) + "\n\nNext: Review the result and evidence above.\n"
-  );
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.status, "completed"); assert.equal(report.jobId, "review-current");
+  assert.equal(report.summary, "Current session output.");
+  const details = JSON.parse(run("node", [SCRIPT, "result", report.jobId, "--details"], { cwd: workspace }).stdout);
+  assert.equal(details.threadId, "thr_current");
 });
 test("cancel does not kill an unverified legacy PID or claim confirmation", async (t) => {
   const workspace = makeTempDir();

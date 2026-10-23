@@ -1,130 +1,115 @@
 # Isolated workers in unattended workflows
 
-Use direct mode by default: the main Claude agent runs `task --direct` in
-background Bash. Supply the objective, owned paths, constraints and acceptance
-criteria using the [brief template](../plugins/codex/prompts/ultra-codex-protocol.md#writing-a-brief-every-codex-assignment).
-Claude reads only the last line starting with `{` in the output file
-(`grep '^{' <output file> | tail -n 1`) on notification; it does not pay for a
-Haiku relay re-reading a growing transcript during long jobs.
+Prefer `Agent(subagent_type: "codex:codex-native")` when available; otherwise
+use `duet task` in background Bash. Supply objective, owned paths, constraints
+and acceptance criteria with the [brief template](../plugins/codex/prompts/ultra-codex-protocol.md#writing-a-brief-every-codex-assignment).
+The completion notification carries the report. Only if it is missing, run
+`duet result <worker>`; do not parse output files or poll.
 
 ## Direct mode
 
 Dispatch one Bash call per job with `run_in_background: true` and
 `description: "Codex: <label>"`. When Claude's Bash sandbox is on, set
-`dangerouslyDisableSandbox: true` on the tool call: the runtime needs network and
-local sockets. SessionStart exports `CODEX_COMPANION`, the absolute path of
-`scripts/codex-companion.mjs`, to every Bash call. A session started before this
-version lacks it; resolve `../scripts/codex-companion.mjs` relative to the
-[protocol file's prompts folder](../plugins/codex/prompts/ultra-codex-protocol.md)
-and use that absolute path.
+`dangerouslyDisableSandbox: true`: the runtime needs network and local sockets.
+The plugin adds `bin/duet` to PATH; SessionStart supplies the session ID and
+invocation guidance. Older sessions may need a reload/new session or the absolute
+launcher path.
 
 ```bash
-node "$CODEX_COMPANION" task --fresh --direct --model gpt-6-astra --effort xhigh --normal <<'CODEX_TASK'
+duet task --model gpt-6-astra --effort xhigh --normal <<'DUET_TASK'
 <brief>
-CODEX_TASK
+DUET_TASK
 ```
 
-Put the prompt on stdin through a single-quoted heredoc, never on the command
-line. Choose a delimiter absent as a complete line from the brief and shell-quote
-dynamic arguments separately. Read-only investigators and reviewers add
-`--sandbox read-only`. A job in another checkout adds `--cwd <dir>`. Parallel
-jobs require disjoint OWNED PATHS or separate worktrees the orchestrator creates
-with `git worktree add` and passes as `--cwd`.
+Use stdin only, single-quoted arguments and `DUET_TASK`/`DUET_ANSWER` heredocs
+whose delimiters do not occur as complete lines in the text. The permission hook
+recognizes a narrow grammar; double quotes, pipes, compound commands, sandbox
+bypass and unsupported flags fall back to normal permissions. Investigators add
+`--sandbox read-only`; other checkouts use `--cwd '<dir>'`. Parallel writers need
+disjoint OWNED PATHS or separate worktrees.
 
-`task --direct` starts the same detached job as `--follow`, with this process
-attached as its owner wait. It prints compact progress lines visible in /tasks,
-then the JSON payload as the last stdout line when the job ends, a question is
-pending, or the timeout passes. Add `--quiet` to `task --direct` or `wait --direct` for
-exactly one JSON line without progress; `--quiet` requires `--direct`. The default
-`--timeout-sec` is 3600 (maximum 3600), and default `--lease-sec` is 1800 rather
-than the 180 used outside direct mode. It accepts `--fresh`, `--thread <id>`,
-`--continue <job-id>`, `--model`, `--effort`, `--fast|--normal`, `--sandbox`,
-`--approve-*`, `--cwd` and stdin. It rejects `--follow`, `--detached`,
-`--background`, `--json`, `--feed-limit` and `--min-interval-sec`.
+`duet task`/`wait`/`answer` imply `--direct`. The owner wait prints progress in
+`/tasks`, then report v2 when the job ends, asks a question or reaches its wait
+budget. The report is attached to the completion notification; `--quiet` suppresses
+progress. The wait budget defaults to 3600 s (maximum 3600) and the owner lease
+to 1800 s. Direct mode conflicts with `--follow`, `--detached`, `--background`,
+`--json`, `--feed-limit` and `--min-interval-sec`.
 
-Wait for Claude Code's completion notification, which carries no output. Read
-only the last line starting with `{` in the output file it names
-(`grep '^{' <output file> | tail -n 1`), the JSON payload. Claude Code may append
-`[exited with code N]`; never read the whole output file. Never poll, sleep or use `tail -f`.
-Retain the job/owner/thread handles and the original cwd. Never run two waits for one job.
-
-- Terminal: apply the [acceptance protocol](../plugins/codex/prompts/ultra-codex-protocol.md#accepting-a-result-every-worker-report-no-exceptions),
-  even after a nonzero exit. The report has the structured fields described
-  below, including runtime model/effort/serviceTier, touchedFiles,
-  preExistingChanges/fileTrackingStatus, captured `verification` versus
-  `claimedVerification`, keyFindings, assumptions, blockers, rawOutputFile and
-  resultFile, plus Codex's final `summary` (cut at 8000 characters with
-  `summaryTruncated: true`). It has `activityCount`, no `activity` list. Never
-  read `rawOutputFile` unless a report field is insufficient.
-- `running`: run its `waitCommand` (`wait <job-id> --owner <owner-id> --direct`)
-  in background Bash again, then wait for its notification.
-- `needs_answer`: run its `answerAndWaitCommand` in ONE background Bash call
-  (`run_in_background: true`, `timeout: 600000`), putting the answer on stdin
-  through a single-quoted heredoc. The command includes `--owner`, `--question`
-  and `--direct`; it attaches the sole owner wait, submits once, then keeps the
-  lease alive while waiting past that question. `question` supplies `id`,
-  `kind`, `text`, `options` and `expiresAt`. A `question.kind` of `approval` is a
-  Computer Use app request with four fixed options; forward it with
-  `AskUserQuestion` unless the user pre-authorised the app. The answer continues
-  the same turn. Compatibility fallback for `needs_answer`: FIRST run its
-  `waitCommand` in background Bash; it includes `--after-question <id>` and keeps
-  the lease alive. Then answer with the returned `answerCommand`, putting the
-  answer on stdin through a single-quoted heredoc; do not start another wait
-  after answering.
-  Answer from your context when the brief should have covered it (and note the
-  brief defect), otherwise collect it for the user.
-- `ownership_moved`: report it; do not reuse the retired owner, re-adopt or
-  submit a replacement task.
+- Terminal: apply the [acceptance protocol](../plugins/codex/prompts/ultra-codex-protocol.md#accepting-a-result-every-worker-report-no-exceptions)
+  even on nonzero exit. Use `duet result <worker> --details` for full evidence,
+  handles, runtime settings and artifact paths. Read `rawOutputFile` only if
+  report fields are insufficient.
+- `running`: background `duet wait <worker>` and wait for its notification.
+- `needs_answer`: background ONE `duet answer <worker>` with stdin via a
+  single-quoted `DUET_ANSWER` heredoc (`timeout: 600000`). It resolves the owner
+  and question, submits once and waits on the same turn. Never start a second
+  wait. Answer from your context when the brief should have covered it; otherwise
+  collect the user's decision. A Computer Use approval has four fixed options;
+  forward with `AskUserQuestion` unless the app was pre-authorised. Use
+  `--details` if the compact question/options were shortened.
+- `ownership_moved`: report it; do not reuse the retired owner or re-adopt.
+- `error`: check `duet status` before resubmitting; a runtime failure may occur
+  after dispatch. `owner_stopped` means the wait was stopped and the turn interrupted.
 
 Exit codes are 0 for `completed`, 2 for `blocked`/`needs_input`, 1 for other
 terminal states, 0 for `running`/`needs_answer`, 2 for `ownership_moved`, and 130
-for a stopped owner wait. Follow-ups and rework start a
-new job on the same thread with `task --thread <threadId> --direct`, the same
-`--cwd`, and the relevant criteria restated. Stop the background task in Claude
-Code to interrupt the owner wait (`owner_stopped`), or run
-`cancel <jobId> --json`. Threads and edits persist. With the user's consent, run
-the report's `continuationCommand`:
-`node '<companion>' task --continue '<job>' --cwd '<cwd>' --direct`. Ownership,
-leases, adoption and orphan detection remain as described below.
+for a stopped owner wait. Never run two waits for one job.
 
-For live activity, install the separate read-only pane with
-`/plugin install codex-live@duet`. New active jobs ask Claude Code to open the pane;
-Claude Code decides whether it is shown at the current width. `/codex-live` opens
-it at any width. It shows session jobs and the selected
-job's messages, commands, file changes, tool calls, plan and pending question.
-It never starts, answers or cancels jobs and costs no Claude tokens. It reads
-companion-written markers under
-`<isolated home>/duet/sessions/<claudeSessionId>/`.
+Follow up with `duet task --to <worker>` and a new brief. It keeps the worker's
+cwd/thread and inherits recorded model, effort, sandbox, speed and request grants;
+explicit flags override them. `--thread` also inherits recorded settings. Repeat
+`--sandbox read-only` for a read-only follow-up and `--normal` to reset fast mode.
+Use a job ID for an older turn, never “latest thread” for parallel work.
+
+`duet task --fork` explicitly imports the current Claude transcript into a new
+thread before running the stdin brief. It is labelled “imported Claude
+conversation (fidelity not verified)”; the default 20 MiB limit is set by
+`CODEX_COMPANION_IMPORT_MAX_BYTES`. `--source '<jsonl>'` overrides the source.
+It cannot combine with `--to`, `--thread`, `--continue` or resume flags.
+
+Native agents take an optional first line `DUET: <flags>` (`--model`, `--effort`,
+`--sandbox`, `--fast`/`--normal`, `--cwd`, `--fork`). Use SendMessage to their
+Claude agent name for follow-ups and answers; they handle waits themselves.
+Stop active native tasks from `/tasks`. A parked question may not cancel when
+its already-ended agent row is stopped; use `duet cancel <worker>` or the default
+900 s question timeout applies. Missing hooks yield a blocked report; check
+`duet status` before retrying. See [direct mode](direct-mode.md).
+
+The read-only `codex-live` pane shows prompts, messages, commands, file changes,
+tool calls, plans and pending questions. Resolved `ask_parent` calls show answers
+matched by call ID. Codex 0.146.0 does not pass a call ID to custom MCP servers on
+resumed threads, so those answers are not shown. New jobs request a pane;
+`/codex-live` opens it at any width. It never starts, answers or cancels jobs and
+costs no Claude tokens.
 
 ## Haiku fallback and shared rules
 
-Use `Agent(subagent_type: "codex:codex-worker")` only when direct mode cannot be
-used (for example, no background Bash), or the user asks for an agent transcript
-view. Never pass `model` or `effort` to that agent: it is a Haiku forwarder;
-Codex's model and effort go in the assignment text. It uses `effort: low`,
-`omitClaudeMd: true` and `autoCompactWindow: 100000`. Follow-ups and rework start
-a NEW worker with `--thread <threadId>` and the same `--cwd`; SendMessage to an
-existing worker is only for answering its pending question. It returns the
-helper's final JSON line verbatim plus at most 5 lines of notes for stderr,
-retries or a relayed question, with no prose report.
+Use `Agent(subagent_type: "codex:codex-worker")` only when native dispatch and
+background Bash are unavailable, or the user asks for a forwarding-agent
+transcript. It stays Haiku with low effort, `omitClaudeMd: true` and
+`autoCompactWindow: 100000`; put Codex's model/effort in the brief, not Agent
+fields. A NEW fallback agent follows up with `duet task --to <worker>`;
+SendMessage to an existing fallback only answers its pending question. It
+returns report v2 verbatim plus at most five lines of notes for stderr, retries
+or a relayed question.
 
 Codex tasks use the plugin's configured sandbox default (`danger-full-access`
 unless lowered with `setup --default-sandbox`). Owned jobs (including `--direct`,
 detached, `--background`, `--follow`) run with the granular approval policy
 `never+elicitations`: command, sandbox, rule, skill and permission prompts are
 rejected as under `never`, and MCP elicitations are forwarded so a Computer Use
-app request becomes a question for the parent. A plain foreground `task` keeps
-`never`. Omit `--sandbox` for the configured default; narrow investigators and
+app request becomes a question for the parent. A compatibility non-direct companion task keeps `never`. Omit `--sandbox` for the configured default; narrow investigators and
 reviewers with `--sandbox read-only`, or use `--sandbox workspace-write` when the
 assignment requires it. Never elevate after a denial.
 
-Project instructions: Codex discovers `AGENTS.md` itself. By default, before every
-task the helper adds `project_doc_fallback_filenames = ["CLAUDE.md"]` to the isolated
-home's `config.toml` only when no custom list exists. `setup --project-docs agents-only`
-removes only Duet's exact default list; custom lists remain unchanged. The fallback
-lets a worker read the project's `CLAUDE.md` wherever no `AGENTS.md` exists, under
-Codex's own discovery rules and size limit. The user-level `~/.claude/CLAUDE.md`
-is not involved.
+Claude's loaded CLAUDE.md/rules are forwarded automatically through
+`developerInstructions`, with an explicitly approximate startup scan when the
+loaded inventory is unavailable. Existing threads retain their original
+instructions. Opt out on a fresh task with `--no-claude-md` or
+`CODEX_COMPANION_CLAUDE_MD=0`. This is separate from Codex discovering `AGENTS.md`
+and Duet's `project_doc_fallback_filenames = ["CLAUDE.md"]` default in the
+isolated config. `duet setup --project-docs agents-only` removes only that exact
+fallback list, leaving custom lists unchanged. See [configuration](configuration.md#claude-instructions-and-conversation-imports).
 
 Parallel workers need disjoint write ownership or separate worktrees. Direct
 mode handles questions in the main agent; the fallback relays them with
@@ -135,15 +120,15 @@ unfinished response becomes `needs_input` with its question, exit code 2, and a
 saved result. A turn that hit a known runtime refusal (a Computer Use app the
 runtime has not approved, a browser tab left with `Debugger unattached`, a stale
 tab claim) or whose final answer declares itself blocked becomes `blocked`, also
-exit code 2, with structured `blockers` (`{ code, app | tabId, sessionId, closed,
-message }`). Detection is heuristic; the parent still checks task acceptance.
+exit code 2, with `blockers` (`code`, `message` in v2; app/tab/session/cleanup details under
+`--details`). Detection is heuristic; the parent still checks task acceptance.
 
 Prerequisites must be handled before unattended execution: an installed runtime,
 isolated authentication (or an independently configured provider), and Claude
 permission rules allowing the companion command. Missing prerequisites are
 reported as blockers. The interactive `/codex:setup` install offer and
 `/codex:rescue` continuation chooser are separate user-facing paths; dynamic
-workflows should use `task --direct`, with `codex:codex-worker` only as fallback,
+workflows should use the native agent or `duet task`, with `codex:codex-worker` only as fallback,
 not those choosers.
 Codex server requests for approval/input are logged safely. Supported Computer Use
 approvals reach the parent on owned jobs; the explicit origin policy and registered
@@ -172,14 +157,14 @@ grant. `task --approve-browser-origin` covers only supported network-egress appr
 The worker forwards supplied flags exactly. The CLI normalizes scheme/host case and default ports,
 deduplicates, and rejects paths (even `/`), queries, fragments, userinfo,
 wildcards and malformed values before starting the runtime. There is no implicit
-subdomain or redirect grant. Fresh tasks and `--thread` follow-ups use only their own
-approval flags; `--continue` inherits the original job's recorded origin and app
-approvals. The flag is never added automatically after denial.
+subdomain or redirect grant. Fresh tasks use their own approval flags. `--to`/`--thread` inherit recorded
+origin and app request grants unless explicitly overridden; `--continue` inherits
+the selected job's recorded grants. The flag is never added automatically after denial.
 
 Normalized `approvedBrowserOrigins` are stored with foreground/background jobs,
 task/status/result JSON and text reports, and interrupted-result recovery.
-Compact reports show up to three origins with an omitted count; job metadata and
-the full result retain every origin. The option does not change sandbox policy
+The details report shows up to three origins with an omitted count; job metadata
+and the result artifact retain every origin. Report v2 omits these settings. The option does not change sandbox policy
 or the job's approval policy, and never grants session-wide authority.
 
 ## Computer Use app approvals
@@ -197,13 +182,13 @@ the isolated file before Codex starts. The user switches with
 repeated `task --approve-computer-app <bundle id>` flags for one call: the apps are
 granted to the job's own thread only while the turn runs, and a forwarded
 elicitation is accepted only for an exact bundle-id match on the current turn
-without persistence. `--thread` follow-ups start with no grant; `--continue`
-inherits. On an owned job, an app that no list or flag covers pauses the tool
+without persistence. `--to`/`--thread` inherit recorded request grants unless overridden;
+`--continue` inherits the selected job's grants. On an owned job, an app that no list or flag covers pauses the tool
 call and reaches the parent as a pending question (`question.kind: "approval"`,
 options `Allow this call` / `Allow for this task` / `Allow always (isolated
 Codex home)` / `Deny`); in direct mode the main agent handles it via
-`answerAndWaitCommand` (or the compatibility `waitCommand`/`answerCommand`
-flow); the fallback relays it and delivers the parent's choice with `answer`.
+`duet answer <worker>` with a `DUET_ANSWER` heredoc; native agents use
+SendMessage, and the fallback relays the question and submits the parent's choice.
 "This task" writes the thread's session file for the rest of the turn; "always"
 adds an explicit entry to the isolated home's allow list; everything else
 cancels the request. An unapproved app is reported as `status: blocked` with
@@ -237,42 +222,27 @@ owner fail closed and log to broker stderr, since no job log remains available.
 
 ## Detached execution, questions and cleanup
 
-The Haiku fallback runs ONE `task --fresh --follow --report` (Bash
-`timeout: 600000`): it enqueues the detached task-worker and stays attached as
-owner until the job ends, a question is pending, or the 570 s wait budget ends
-(`status: running`; then `wait <job> --owner <ownerId> --report` once per
-further 9.5 minutes). Scripts may still use `task --detached` plus `wait`. Feed
-mode (no `--json`, used only by the Haiku fallback) flushes one activity line per
-Codex event as it arrives, so the agent's Bash output in Claude Code shows Codex working live,
-and ends with ONE final JSON line containing the snapshot/report plus `activity`
-(12 newest), `activityCount`/`activityOmitted` and `cursor`. One call streams at
-most `--feed-limit` lines (default 60, `0` = unlimited) because every streamed
-line also enters the agent's context; after the cap a single notice line is
-printed and later events are only counted. `--json` prints the final line only. `--timeout-sec` accepts 1–3600;
-early return on activity requires an explicit `--min-interval-sec`. Questions and
-completion return immediately. The worker never paraphrases or re-prints the feed.
-
-The feed selects assistant snippets (300 chars), command first lines (160 chars)
-with exits/durations, file path/kind, MCP/dynamic tool names/status/durations and
-plan titles (80 chars each). It never copies tool arguments, command outputs,
-diffs or page payloads. Text is shown as written (ANSI escapes and control
-characters stripped); there is no credential redaction, so do not put secrets/page prose in progress
-messages. Events are retained in job state, with a separate cursor for each
-explicit owner and one shared ownerless observer cursor. Use one wait per owner
-at a time. A crash between line delivery and cursor persistence can replay a line.
+The Haiku fallback runs one foreground `duet task --timeout-sec 570` with Bash
+`timeout: 600000`, followed by `duet wait <worker> --timeout-sec 570` on `running`.
+It uses the same direct progress/report format. The companion's legacy
+`--follow --report` feed and `--detached`/`--background` modes remain available
+for compatibility; the launcher always adds `--direct` to task/wait/answer.
 
 `ask_parent` is registered on new threads through experimental `dynamicTools` and
-on resumed threads (`--thread`, `--continue`) through a per-thread `duet_parent`
+on resumed threads (`--to`, `--thread`, `--continue`) through a per-thread `duet_parent`
 MCP bridge (`scripts/parent-bridge-mcp.mjs`) that blocks on the same job file.
 In the fallback, on `needs_answer`, SendMessage ONLY the companion's
-`questionMessage` verbatim to `main` once per question ID. That one-line field includes ID, text and options.
+`questionMessage` from `duet result <worker> --details` verbatim to `main` once per question ID. That one-line field includes ID, text and options.
 Never send progress, status, completion claims or placeholders; the final result
-is delivered only as the native agent's return value. Parent worker messages
+is delivered only as the fallback agent's return value. Parent worker messages
 that are not verbatim questions are not evidence: verify with handles and artifacts.
-Keep waiting with `--owner <ownerId> --after-question <id> --timeout-sec 20`, then
-pass the answer on stdin to `answer <job> --owner <ownerId> --question <id> --json`.
+Keep waiting with `duet wait <worker> --after-question '<id>' --timeout-sec 20`,
+then submit the answer with `duet answer <worker> --timeout-sec 570` via a
+single-quoted `DUET_ANSWER` heredoc; it keeps waiting after submission.
 The callback stays pending, so the reply continues the same turn. Text/options are
-private job state, not progress logs; answers are removed after delivery. Default
+private job state, not progress logs. Resolved questions are retained in
+`questionHistory` (newest 20, answers capped at 2000 characters) with call IDs and
+resolution; approvals without call IDs cannot be matched into the pane. Default
 timeout is 900 seconds (`--question-timeout-sec`); on timeout Codex receives
 conservative-assumption guidance. Runtimes that reject both registrations keep
 final needs_input.
@@ -281,9 +251,10 @@ Leases default to 1800 seconds in direct mode, 180 seconds otherwise
 (`--lease-sec`, or CODEX_COMPANION_LEASE_SEC).
 Every task generates a unique job-based ownerId unless `task --owner` is explicit;
 ambient owner/session variables never choose it. Session ID is stored separately
-for SessionEnd. The owner must pass `--owner <ownerId>` on every wait/status/answer.
-Only an explicit match renews an unexpired lease. Parent `/codex:status`, status,
-result and ownerless wait do not renew. Foreground tasks renew while their owning
+for SessionEnd. The launcher resolves the owner for `duet wait`/`answer`; explicit `--owner`
+handles remain supported. Only a matching owner renews an unexpired lease.
+Observational `/codex:status`, `duet status` and `duet result` do not renew;
+ownerless compatibility companion waits also do not renew. Foreground tasks renew while their owning
 process runs; detached workers cannot renew themselves. Legacy records without
 sessionId remain readable and SessionEnd falls back to their session-ID ownerId.
 
@@ -300,21 +271,18 @@ refused, and a replaced wait cannot renew or detach its replacement. Both
 interruptions are confirmed like any other interruption. A normal return
 followed by silence still falls back to lease expiry.
 
-A stopped native agent cannot resume in Claude Code 2.1.301. Every interrupted or
-failed report carries `continuationCommand`:
-`task --continue <jobId> --cwd <cwd> --direct` in direct mode (legacy report
-mode uses `--follow --report --json`), which starts ONE new turn on the same
-thread with the job's recorded sandbox/write, model, effort, speed and approved origins (it rejects flags it inherits and refuses active jobs).
-With the user's explicit consent the parent runs it in background Bash (a new
-worker only for fallback); it is never run automatically. For a job that is still
-running, with the user's explicit consent, a replacement owner's
-FIRST action is `adopt <jobId> --json`, which atomically rotates ownerId and
-renews the unexpired lease without starting a turn; it then runs
-`wait <jobId> --owner <newOwnerId> --direct` in background Bash, or `--report`
-for the fallback. The replacement inherits thread/turn, pending question and delivered activity cursor. Old wait/status/answer
-calls return `ownership_moved` without renewing or answering (exit 2 outside
-direct mode). Adoption
-moves SessionEnd scope to the caller's Claude session when available.
+After a stop, `duet result <worker> --details` exposes recovery handles and the
+compatibility `continuationCommand`. With explicit user consent, use
+`duet task --to <worker>` with a new brief, or `duet task --continue <jobId>
+--cwd '<cwd>'` to inherit that exact job's settings. These start one new turn;
+never continue automatically. Native SendMessage continuation also uses the same
+thread when Claude Code permits it; the Haiku fallback requires a new agent.
+For an unfinished adoptable job, the replacement owner's FIRST action is
+`duet adopt <jobId> --json`, with user consent, then one
+`duet wait <jobId> --owner '<newOwnerId>'`. Adoption rotates ownerId and renews
+the unexpired lease without starting a turn, preserving thread/turn, question
+and feed cursor. Retired owners return `ownership_moved`; adoption moves
+SessionEnd scope to the caller's Claude session when available.
 
 Adoption after expiry or completion returns `lease_expired` or `job_ended`
 (exit 2) with the same `continuationCommand`, and never runs it. Cancellation in
@@ -372,8 +340,8 @@ If policy forbids that parameter, the worker returns the permission blocker.
 Persist a default for all workspaces sharing this isolated home:
 
 ```bash
-node "$CODEX_COMPANION" setup --default-sandbox workspace-write --dry-run --json
-node "$CODEX_COMPANION" setup --default-sandbox workspace-write --json
+duet setup --default-sandbox workspace-write --dry-run --json
+duet setup --default-sandbox workspace-write --json
 ```
 
 The accepted values are `read-only`, `workspace-write`, and `danger-full-access`.
@@ -392,15 +360,17 @@ Review commands keep their separate read-only behavior.
 For an assignment that must not touch anything, the parent narrows one call:
 
 ```bash
-node "$CODEX_COMPANION" task --fresh --sandbox read-only --report --json 'Investigate and report; change nothing.'
+duet task --sandbox read-only <<'DUET_TASK'
+Investigate and report; change nothing.
+DUET_TASK
 ```
 
 Never choose elevation automatically on an EPERM or browser failure when the
 parent narrowed a call; return the denial to the parent.
-Without per-call flags, the configured default applies. Every thread resume explicitly
-sets this invocation's sandbox, preventing inheritance from a prior elevated task.
-Background jobs persist the requested policy before starting. Completed JSON/report
-output includes `sandbox` and `approvalPolicy`; full results include `sandboxPolicy`.
+Fresh tasks without flags use the configured default. `--to`/`--thread` inherit
+recorded sandbox settings unless overridden, so explicitly narrow read-only
+follow-ups. Background jobs persist the policy before starting. `--details`
+includes `sandbox` and `approvalPolicy`; result artifacts include `sandboxPolicy`.
 
 The local generated v2 protocol supports `ThreadStartParams.sandbox`,
 `ThreadResumeParams.sandbox`, `TurnStartParams.sandboxPolicy` and
@@ -409,7 +379,7 @@ The local generated v2 protocol supports `ThreadStartParams.sandbox`,
 policy, verifies the returned mode, and forwards the acknowledged policy to
 `turn/start` for explicit opt-ins, retaining the runtime's roots/network defaults.
 Owned jobs use `never+elicitations` to forward supported Computer Use approvals
-to the parent; a plain foreground task uses `never`.
+to the parent; a compatibility non-direct companion task uses `never`.
 
 Full access removes Codex's own filesystem sandbox for that task. Isolated home
 routing and overlap checks remain active, but this option does not restrict the
@@ -426,12 +396,12 @@ into existing arrays; do not replace unrelated settings:
 {
   "sandbox": {
     "excludedCommands": [
-      "node /absolute/path/to/codex-plugin-isolated/plugins/codex/scripts/codex-companion.mjs"
+      "/absolute/path/to/codex-plugin-isolated/plugins/codex/bin/duet"
     ]
   },
   "permissions": {
     "allow": [
-      "Bash(node /absolute/path/to/codex-plugin-isolated/plugins/codex/scripts/codex-companion.mjs *)"
+      "Bash(/absolute/path/to/codex-plugin-isolated/plugins/codex/bin/duet *)"
     ]
   }
 }
@@ -450,8 +420,8 @@ or managed policy can still prevent unattended execution. Do not add broad
 Run these commands outside the Bash sandbox (or through `/codex:setup`):
 
 ```bash
-node "$CODEX_COMPANION" setup --sync-tools --dry-run --json
-node "$CODEX_COMPANION" setup --sync-tools --json
+duet setup --sync-tools --dry-run --json
+duet setup --sync-tools --json
 ```
 
 The preview is offline and makes no writes or Codex calls. It returns toolSync,
@@ -517,8 +487,8 @@ session/shared Codex runtime after a sync to load the configuration.
 ### Codex App profile
 
 ```bash
-node "$CODEX_COMPANION" setup --sync-tools --profile codex-app --dry-run --json
-node "$CODEX_COMPANION" setup --sync-tools --profile codex-app --replace-cua --json
+duet setup --sync-tools --profile codex-app --dry-run --json
+duet setup --sync-tools --profile codex-app --replace-cua --json
 ```
 
 This explicit profile reads the newest numeric version with a `.mcp.json` under
@@ -633,33 +603,32 @@ and the [troubleshooting guide](troubleshooting.md#troubleshooting).
 
 ## Results, progress and recovery
 
-Direct mode uses `task --direct`; the fallback uses `task --follow --report`.
-Without `--direct` or `--report`, task output remains full; human `result` starts
-with the outcome and adds nonempty evidence and blocker sections to the stored
-summary. Both direct and report turns run with the
-worker-report output schema (`schemas/worker-report.schema.json`): Codex's final
-message is a JSON object with `status` (`completed`/`needs_input`/`blocked`),
-`summary`, `key_findings`, `assumptions`, `verification`, `blockers` and
-`question`. The helper stores the summary as the raw output (so `result`, the
-stop-gate hook and the live feed keep showing prose; the feed shows the final
-message as `[status] summary`), keeps the parsed object as `structured` in the
-result artifact, and builds the report from it: the declared status (a captured
-runtime refusal still forces `blocked`; a `completed` whose summary is a plan or
-a question becomes `needs_input`), `keyFindings`, `assumptions`,
-`claimedVerification` (Codex's list, distinct from the captured `verification`
-command events), `blockers` (captured/detected when present, otherwise Codex's
-declared entries) and `question`. The saved structured result keeps any additional declarations.
-`reportFormat: "structured"` marks such a report; when the final message is not
-a valid report (interrupted turn, older runtime) the fields are inferred from
-the prose as before. The compact report includes
-status, jobId, threadId, turnId, the sandbox and approval policy, the `model`,
-`effort` and `serviceTier` the runtime actually used (from the thread-start or
-thread-resume response, overridden by per-call flags; the request's values when
-the runtime reported none), touched files, command verification evidence,
-Codex-reported findings, blockers and output paths. Direct mode emits one compact
-JSON line; the fallback forwards its final JSON line verbatim plus at most 5
-lines of notes, with no prose report.
-`task --json`, `wait --report` and `result --report` carry the same three fields.
+`duet task` uses direct mode and asks Codex for a structured final response
+(`schemas/worker-report.schema.json`): `status` (`completed`/`needs_input`/`blocked`),
+`summary`, `key_findings`, `assumptions`, `verification`, `blockers`, `question`.
+The helper preserves the declarations in the result artifact and merges them
+with captured evidence. A runtime refusal forces `blocked`; a `completed` answer
+that is only a plan or question becomes `needs_input`.
+
+The default direct/result view is report v2: `status`, `worker`, `jobId`,
+`summary` (8000-character cap with `summaryTruncated`), then nonempty `blockers`,
+`question`, `changedFiles`, `checks`, `assumptions`, `keyFindings`, followed by
+`next` and `details`. The envelope excluding summary fits within 2000 bytes;
+text/lists may be shortened. `changedFilesOmitted` and `checks.omitted` count
+omitted entries. `checks.ran` holds captured commands; `checks.claimed` holds
+Codex's verification claims. `question` has `id`, `kind`, `text`, `options`,
+`expiresInSec`. `next` suggests `duet wait`, `duet answer` or a follow-up, or is
+null; it never authorizes resuming user-stopped work.
+
+`duet result <worker> --details` returns the full report: thread/turn/owner
+handles when available, settings, file-tracking basis, artifact paths,
+`verification`, `claimedVerification`, `touchedFiles`, `preExistingChanges`,
+`claudeMd` forwarding metadata and compatibility recovery commands.
+`reportFormat: "structured"` marks parsed worker declarations; older/interrupted
+responses may instead be inferred from prose. Use the job ID for an older turn.
+The summary remains in `rawOutputFile`; `duet result <worker> --json` alone
+selects the stored payload rather than report v2.
+
 `touchedFiles` combines turn file-change events with before/after SHA-256 content,
 executable-mode and Git-index comparisons. All tracked and nonignored untracked
 files are sampled, including files dirty before the turn, so shell writes and
@@ -696,27 +665,18 @@ cancellable through its record) and merged once that worker exits. A busy
 legacy lock is retried later. Lookups by job ID, ID prefix or `--thread` that
 miss in the new directory search the legacy directories and import the match.
 
-Outside direct mode, job ID and log/output paths are persisted and printed on
-stderr before execution; thread and turn IDs are persisted as soon as the server returns them. Progress
-events and a 15-second heartbeat go to stderr and the job log even in JSON mode.
-Heartbeats show item/tool counts, elapsed time and last notification age. No
-notifications during a long tool call means silence, not proof of a hang. Stdout
-for task/result JSON remains a single final JSON document; wait in fallback feed
-mode streams lines before its final JSON line (`--json` suppresses them). A
-fallback Bash output file may combine stdout with stderr, so use
-`result --report --json` for clean retrieval if needed. Direct mode's output file
-contains progress lines visible in /tasks, then the JSON payload, possibly
-followed by a Claude Code exit trailer (`--quiet` suppresses progress).
-On the completion notification, read only the last line starting with `{`
-(`grep '^{' <output file> | tail -n 1`); never read the whole output file.
+The background-task completion notification carries report v2. Only if missing,
+run `duet result <worker>`; never parse the output file or poll. Direct stdout
+still ends with a JSON line after progress (`--quiet` suppresses progress).
+Compatibility companion non-direct/feed output retains its existing format.
 
-After interruption, retrieve in the original workspace:
+After interruption, retrieve in the original workspace or by session worker name:
 
 ```bash
-node "$CODEX_COMPANION" status '<job-id>' --json
-node "$CODEX_COMPANION" status '<job-id>' --wait --timeout-ms 30000 --json
-node "$CODEX_COMPANION" result '<job-id>' --report --json
-node "$CODEX_COMPANION" result --thread '<thread-id>' --report --json
+duet status Ada
+duet result Ada
+duet result Ada --details
+duet result '<job-id>' --details
 ```
 
 Explicit references work across Claude session IDs. `--thread` selects the most
@@ -729,9 +689,9 @@ and `turnStatus`); structured `blocked`/`needs_input` outcomes still exit 2 in
 direct/report mode. A follow-up on a still-running or unresolved thread becomes
 a blocked job with a typed `thread_busy` blocker whose `recoveryCommand` observes
 status without attaching another wait. A running direct turn is handled by its
-background `waitCommand`, not polling. A missing turn handle, unavailable runtime
+background `duet wait <worker>`, not polling. A missing turn handle, unavailable runtime
 or absent server history is reported as unknown/unreachable. No automatic rerun
-is safe in that case. `task --thread` starts another turn; reserve it for an
+is safe in that case. `duet task --to`/`--thread` start another turn; reserve it for an
 explicit follow-up after recovery.
 If interruption lost the end-of-turn snapshot, recovery uses only the exact
 turn's persisted file-change events and marks file coverage partial. It preserves

@@ -57,7 +57,7 @@ export function itemActivity(item, lifecycle, starts, key, now = Date.now()) {
       return lifecycle === "completed" ? (item.changes ?? []).map(change => ({ ...base, path: snippet(change.path, 180), kind: ["add", "delete", "update"].includes(change.kind?.type ?? change.kind) ? (change.kind?.type ?? change.kind) : "unknown", ...changeLineCounts(change) })) : [];
     case "mcpToolCall":
     case "dynamicToolCall":
-      return [{ ...base, server: snippet(item.server ?? item.namespace ?? "dynamic", 80), tool: snippet(item.tool ?? item.name ?? "unknown", 80), durationMs }];
+      return [{ ...base, callId: item.id ?? null, server: snippet(item.server ?? item.namespace ?? "dynamic", 80), tool: snippet(item.tool ?? item.name ?? "unknown", 80), durationMs }];
     default: return [];
   }
 }

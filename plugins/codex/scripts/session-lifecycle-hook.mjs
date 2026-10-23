@@ -11,12 +11,15 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { clearMode, pruneModes } from "./lib/ultra-codex-mode.mjs";
 import { runAutomaticRetention } from "./lib/retention.mjs";
 import { activeRunContext } from "./lib/run-journal.mjs";
+import { deleteClaudeSnapshot } from "./lib/claude-memory.mjs";
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const SESSION_START_CONTEXT = [
-  'Codex jobs: node "$CODEX_COMPANION" task --fresh --direct --model gpt-6-astra --effort xhigh --normal --cwd <dir>',
-  "Run with Bash run_in_background: true; brief on stdin through a single-quoted heredoc; progress shows in /tasks; result: grep '^{' <output file> | tail -n 1.",
-  "Use a fresh thread per independent job; follow up with task --thread <threadId> --direct in the same cwd.",
-  'Run node "$CODEX_COMPANION" task --help for flags, examples and JSON result handling.'
+  "Dispatch Codex with duet task <<'DUET_TASK' (brief on following lines, then DUET_TASK alone); use Bash run_in_background: true.",
+  "The background-task completion notification carries the complete Duet report.",
+  "Follow up on the same worker with duet task --to <worker> and a brief on stdin.",
+  "Answer with duet answer <worker> <<'DUET_ANSWER' (answer on following lines, then DUET_ANSWER alone).",
+  "If a report is missing, run duet result <worker>.",
+  "Run duet task --help for flags."
 ].join("\n");
 const shellEscape = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 function appendEnvVar(name, value) {
@@ -36,6 +39,7 @@ async function main() {
   if ((event || input.hook_event_name) === "SessionStart") {
     try { appendEnvVar("CODEX_COMPANION", fileURLToPath(new URL("./codex-companion.mjs", import.meta.url))); } catch { /* best effort */ }
     appendEnvVar(SESSION_ID_ENV, input.session_id);
+    appendEnvVar("CODEX_COMPANION_SESSION_CWD", input.cwd || process.cwd());
     appendEnvVar(TRANSCRIPT_PATH_ENV, input.transcript_path);
     // A mode is per session and never inherited: a stale file from a session
     // that ended without SessionEnd is removed here. A resumed or compacted
@@ -56,6 +60,7 @@ async function main() {
   if ((event || input.hook_event_name) !== "SessionEnd") return;
   const session = input.session_id || process.env[SESSION_ID_ENV];
   if (!session) return;
+  try { deleteClaudeSnapshot(session); } catch { /* best effort; retention retries stale snapshots */ }
   try { clearMode(cwd, session); } catch { /* best effort */ }
   const deadline = Date.now() + 4000;
   const jobs = listSessionJobs(cwd, session).filter(job => ACTIVE.has(job.status));

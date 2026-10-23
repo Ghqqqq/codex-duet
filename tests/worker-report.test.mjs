@@ -49,7 +49,11 @@ function loseTurn(f) {
   const job = storedFixtureJob(f, id);
   assert.equal(job.status, "failed");
   assert.ok(job.threadId && job.turnId && job.errorMessage);
-  assert.ok(!job.result);
+  assert.equal(job.result.failureSource, "transport");
+  assert.equal(job.result.errorCode, "BROKER_CONNECTION_CLOSED");
+  assert.equal(job.result.turnEnded, false);
+  assert.match(job.errorMessage, /connection to Codex closed while the turn was running/i);
+  assert.equal(job.activity.length, 36);
   assert.equal(f.state().nextTurnId, 2);
   return job;
 }
@@ -67,24 +71,36 @@ function callAsync(f, ...args) {
   return { child, done: new Promise(resolve => child.once("close", status => resolve({ status, stdout, stderr }))) };
 }
 
-test("lost completed turns preserve structured blocked and needs_input outcomes with recovery provenance", () => {
-  for (const outcome of ["blocked", "needs_input"]) {
-    const f = fixture("lost-turn:completed"), original = loseTurn(f);
+test("stored transport failures recover the exact terminal outcome and provenance without replay", () => {
+  for (const outcome of ["completed", "blocked", "needs_input", "failed", "interrupted"]) {
+    const turnStatus = ["failed", "interrupted"].includes(outcome) ? outcome : "completed";
+    const f = fixture(`lost-turn:${turnStatus}`), original = loseTurn(f);
     const state = f.state(), turn = state.threads[0].turns[0];
-    assert.equal(turn.status, "completed");
-    const blockers = [{ code: "fixture_dependency", message: "Fixture dependency unavailable." }];
+    assert.equal(turn.status, turnStatus);
+    const blockers = outcome === "blocked" ? [{ code: "fixture_dependency", message: "Fixture dependency unavailable." }] : [];
     const question = outcome === "needs_input" ? "Which fixture dependency should be used?" : null;
     const message = turn.items.find(item => item.type === "agentMessage");
-    message.text = JSON.stringify({ ...JSON.parse(message.text), status: outcome,
+    if (["blocked", "needs_input"].includes(outcome)) message.text = JSON.stringify({ ...JSON.parse(message.text), status: outcome,
       summary: "Fixture dependency unavailable.", blockers, question });
     fs.writeFileSync(path.join(f.dir, "fake-codex-state.json"), JSON.stringify(state));
 
+    // Legacy releases persisted the diagnostic without a typed transport marker.
+    if (outcome === "completed") storedFixtureJob(f, original.id, { errorMessage: "Codex broker connection closed during startup.",
+      result: { status: 1, error: "Codex broker connection closed during startup.", threadId: original.threadId, turnId: original.turnId } });
+    if (["completed", "interrupted"].includes(outcome)) {
+      const status = directJson(f.call("status", original.id, "--json"));
+      assert.equal(status.job.status, outcome);
+      assert.equal(status.job.turnResolution, turnStatus);
+    }
+
     const waited = f.call("wait", original.id, "--owner", original.ownerId, "--direct");
-    assert.equal(waited.status, 2, waited.stderr + waited.stdout);
-    const report = directJson(waited), saved = storedFixtureJob(f, original.id);
+    const exitCode = outcome === "completed" ? 0 : ["failed", "interrupted"].includes(outcome) ? 1 : 2;
+    assert.equal(waited.status, exitCode, waited.stderr + waited.stdout);
+    const compact = directJson(waited), report = directJson(f.call("result", original.id, "--details")), saved = storedFixtureJob(f, original.id);
+    assert.equal(compact.status, outcome);
     assert.equal(report.status, outcome);
     assert.equal(saved.status, outcome);
-    assert.equal(saved.result.structured.status, outcome);
+    if (!["failed", "interrupted"].includes(outcome)) assert.equal(saved.result.structured.status, outcome);
     assert.equal(saved.result.workerStatus, outcome);
     assert.equal(report.recovered, true);
     assert.equal(saved.recovered, true);
@@ -92,30 +108,94 @@ test("lost completed turns preserve structured blocked and needs_input outcomes 
     assert.equal(report.completedAt, new Date(turn.completedAt * 1000).toISOString());
     assert.equal(saved.completedAt, report.completedAt);
     assert.notEqual(report.completedAt, report.recoveredAt);
-    assert.equal(report.recovery.originalError, original.errorMessage);
+    const originalError = outcome === "completed" ? "Codex broker connection closed during startup." : original.errorMessage;
+    assert.equal(report.recovery.originalError, originalError);
     assert.equal(report.recovery.wrapperEndedAt, original.completedAt);
-    assert.equal(report.recovery.turnStatus, "completed");
+    assert.equal(report.recovery.turnStatus, turnStatus);
     assert.equal(report.recovery.source, "thread/read");
     assert.equal(report.threadId, original.threadId);
     assert.equal(report.turnId, original.turnId);
     assert.equal(report.recovery.turnId, original.turnId);
-    assert.deepEqual(report.blockers, blockers);
+    if (!["failed", "interrupted"].includes(outcome)) assert.deepEqual(report.blockers, question ? [{ code: "needs_input", message: question }] : blockers);
     if (question) assert.equal(report.question, question);
-    assert.equal(saved.errorMessage, null);
-    assert.equal(JSON.parse(fs.readFileSync(saved.resultFile)).recovery.originalError, original.errorMessage);
+    assert.equal(saved.errorMessage, outcome === "failed" ? "Fixture worker failed" : null);
+    assert.equal(JSON.parse(fs.readFileSync(saved.resultFile)).recovery.originalError, originalError);
 
-    const result = f.call("result", original.id, "--report", "--json");
-    assert.equal(result.status, 2, result.stderr + result.stdout);
+    const result = f.call("result", original.id, "--details");
+    assert.equal(result.status, exitCode, result.stderr + result.stdout);
     const reread = directJson(result);
     assert.equal(reread.status, outcome);
     assert.equal(reread.recoveredAt, report.recoveredAt);
     assert.equal(reread.completedAt, report.completedAt);
     assert.deepEqual(reread.recovery, report.recovery);
-    assert.deepEqual(reread.blockers, blockers);
+    assert.deepEqual(reread.blockers, report.blockers);
     if (question) assert.equal(reread.question, question);
     assert.deepEqual(f.state().turnReads, [{ threadId: original.threadId, includeTurns: true }]);
     assert.equal(f.state().nextTurnId, 2, "recovery never replays the turn");
   }
+});
+
+test("an unresolved transport failure stays blocked until explicit exact-turn cancel is confirmed", () => {
+  const f = fixture("lost-turn:inProgress"), original = loseTurn(f);
+  const changeServer = patch => fs.writeFileSync(path.join(f.dir, "fake-codex-state.json"), JSON.stringify({ ...f.state(), ...patch }));
+  const status = () => directJson(f.call("status", original.id, "--json"));
+  assert.equal(status().job.turnResolution, "in_progress");
+  const blocked = directJson(f.call("task", "--continue", original.id, "--direct", "follow up"));
+  assert.equal(blocked.status, "blocked");
+  assert.ok(blocked.blockers[0].cancelCommand);
+  const blocker = directJson(f.call("result", blocked.jobId, "--details")).blockers[0];
+  const observe = run("/bin/sh", ["-c", blocker.recoveryCommand], { cwd: f.repo, env: f.env });
+  assert.equal(directJson(observe).job.turnResolution, "in_progress");
+  assert.equal(f.state().nextTurnId, 2);
+  assert.equal(f.state().lastInterrupt, null);
+
+  changeServer({ unreachable: true });
+  const cancel = () => run("/bin/sh", ["-c", blocker.cancelCommand], { cwd: f.repo, env: f.env });
+  const offline = f.call("cancel", original.agentName, "--json");
+  assert.equal(offline.status, 2, offline.stderr + offline.stdout);
+  assert.equal(directJson(offline).confirmation, "unconfirmed");
+  assert.match(directJson(offline).detail, /unreachable/);
+  assert.deepEqual(storedFixtureJob(f, original.id).result, original.result);
+  assert.equal(storedFixtureJob(f, original.id).turnResolution, "unknown");
+  assert.equal(f.state().lastInterrupt, null);
+  changeServer({ unreachable: false, unreadable: true });
+  assert.equal(status().job.turnResolution, "unknown");
+  changeServer({ unreadable: false, ignoreInterrupt: true });
+  assert.equal(cancel().status, 2, "an interrupt acknowledgement alone must not release the thread");
+  assert.equal(storedFixtureJob(f, original.id).turnResolution, "in_progress");
+  changeServer({ ignoreInterrupt: false });
+  const stopped = cancel();
+  assert.equal(stopped.status, 0, stopped.stderr + stopped.stdout);
+  assert.equal(directJson(stopped).confirmation, "confirmed");
+  const saved = storedFixtureJob(f, original.id);
+  assert.equal(saved.status, "interrupted");
+  assert.equal(saved.turnResolution, "interrupted");
+  assert.equal(saved.recovery.originalError, original.errorMessage);
+  assert.equal(saved.recovery.interruptRequested, true);
+  assert.deepEqual(f.state().lastInterrupt, { threadId: original.threadId, turnId: original.turnId });
+  assert.equal(f.state().lastThreadResume.threadId, original.threadId);
+  const followup = f.call("task", "--to", original.agentName, "--direct", "follow up");
+  assert.equal(followup.status, 0, followup.stderr + followup.stdout);
+  assert.equal(directJson(followup).status, "completed");
+  assert.equal(f.state().nextTurnId, 3);
+
+  // A worker-reported failure, even with the old diagnostic as its text, is
+  // terminal and must never be overwritten by a server read.
+  const workerFailure = { status: 1, error: "Codex broker connection closed during startup.", turnEnded: true, workerStatus: "failed" };
+  storedFixtureJob(f, original.id, { status: "failed", recovered: false, result: workerFailure });
+  const reads = f.state().turnReads.length;
+  status();
+  assert.equal(f.state().turnReads.length, reads);
+  assert.deepEqual(storedFixtureJob(f, original.id).result, workerFailure);
+
+  const startup = fixture("lost-turn:startup");
+  const start = startup.call("task", "--report", "--json", "fixture startup");
+  assert.equal(start.status, 1);
+  const startId = /Job handle: ([^;]+)/.exec(start.stderr)[1];
+  const startJob = storedFixtureJob(startup, startId);
+  assert.ok(!startJob.turnId);
+  assert.equal(startJob.result.failureSource, "transport");
+  assert.match(startJob.errorMessage, /connection closed during startup/);
 });
 
 test("running predecessor blocks a direct follow-up with an observational status command", async () => {
@@ -127,7 +207,8 @@ test("running predecessor blocks a direct follow-up with an observational status
     const job = storedFixtureJob(f, launch.jobId);
     const response = f.call("task", "--thread", job.threadId, "--direct", "follow up");
     assert.equal(response.status, 2, response.stderr + response.stdout);
-    const report = directJson(response);
+    const compact = directJson(response);
+    const report = directJson(f.call("result", compact.jobId, "--details"));
     assert.equal(report.status, "blocked");
     assert.equal(report.turnId, null);
     assert.equal(report.blockers[0].code, "thread_busy");
@@ -166,8 +247,9 @@ test("compact worker report is bounded, separates claims and preserves full outp
   assert.ok(JSON.parse(fs.readFileSync(report.resultFile)).rawOutput.includes("Finding 299"));
   const restored = f.call("result", report.jobId, "--report", "--json");
   assert.equal(restored.status, 0, restored.stderr);
-  assert.deepEqual(JSON.parse(restored.stdout), report);
+  assert.equal(JSON.parse(restored.stdout).summary, fs.readFileSync(report.rawOutputFile, "utf8").trim().slice(0, 8000));
   const legacy = JSON.parse(f.call("result", report.jobId, "--json").stdout);
+  assert.deepEqual(legacy.storedJob.report, report);
   assert.ok(legacy.storedJob.result.rawOutput.includes("Finding 299"));
   assert.equal(f.state().nextTurnId, 2);
 });
@@ -198,14 +280,43 @@ test("a --report worker runs with the worker-report schema and the parent reads 
   assert.equal(JSON.parse(plain.stdout).rawOutput, "Handled the requested task.\nTask prompt accepted.");
 });
 
-test("a declared blocked report is blocked with Codex's own blocker entries", () => {
-  const f = fixture("structured-blocked");
-  const response = f.call("task", "--report", "--json", "install the dependency");
-  assert.equal(response.status, 2, response.stderr);
-  const report = JSON.parse(response.stdout);
-  assert.equal(report.status, "blocked");
-  assert.deepEqual(report.blockers, [{ code: "missing_dependency", message: "fixture-dep is not installed" }]);
-  assert.equal(JSON.parse(f.call("status", report.jobId, "--json").stdout).job.status, "blocked");
+test("declared blockers override completed while failures and essential questions retain their outcomes", () => {
+  for (const declaredStatus of ["blocked", "completed"]) {
+    const f = fixture("structured-blocked");
+    if (declaredStatus === "completed") {
+      const binary = path.join(f.dir, "codex");
+      fs.writeFileSync(binary, fs.readFileSync(binary, "utf8").replace('status: "blocked", summary:', 'status: "completed", summary:'));
+    }
+    const response = f.call("task", "--direct", "install the dependency");
+    assert.equal(response.status, 2, response.stderr);
+    const report = directJson(response), details = directJson(f.call("result", report.jobId, "--details"));
+    assert.equal(report.status, "blocked"); assert.equal(details.declaredStatus, declaredStatus);
+    assert.deepEqual(report.blockers, [{ code: "missing_dependency", message: "fixture-dep is not installed" }]);
+    assert.equal(JSON.parse(f.call("status", report.jobId, "--json").stdout).job.status, "blocked");
+    const payload = directJson(f.call("result", report.jobId, "--json")).storedJob.result;
+    assert.equal(buildWorkerReport({ ...payload, status: 1 }).status, "failed");
+    const essential = buildWorkerReport({ ...payload, structured: { ...payload.structured, status: declaredStatus, blockers: [], question: "Which branch?" } });
+    assert.equal(essential.status, "needs_input"); assert.equal(essential.declaredStatus, declaredStatus);
+    assert.equal(essential.question, "Which branch?");
+    if (declaredStatus === "completed") {
+      const saved = storedFixtureJob(f, report.jobId);
+      const { declaredStatus: oldDeclaration, ...oldReport } = saved.report;
+      storedFixtureJob(f, report.jobId, { status: "completed", report: { ...oldReport, status: "completed" } });
+      for (const command of [["result", report.jobId], ["wait", report.jobId, "--direct"], ["result", report.jobId, "--details"]]) {
+        const observed = f.call(...command);
+        assert.equal(observed.status, 2); assert.equal(directJson(observed).status, "blocked", "older stored reports cannot claim completed with blockers");
+      }
+      assert.equal(directJson(f.call("result", report.jobId, "--details")).declaredStatus, "completed");
+      const question = "Which branch should receive the legacy fix?";
+      storedFixtureJob(f, report.jobId, { report: { ...oldReport, status: "completed", blockers: [] },
+        result: { ...saved.result, structured: { ...saved.result.structured, blockers: [], question } } });
+      for (const command of [["result", report.jobId], ["wait", report.jobId, "--direct"], ["result", report.jobId, "--details"]]) {
+        const observed = f.call(...command), recovered = directJson(observed);
+        assert.equal(observed.status, 2); assert.equal(recovered.status, "needs_input");
+        assert.equal(typeof recovered.question === "string" ? recovered.question : recovered.question.text, question);
+      }
+    }
+  }
 });
 
 test("parseStructuredReport accepts the schema object or a trailing json block and rejects prose", () => {
@@ -316,12 +427,12 @@ test("recovery fetches the exact lost turn, even after a later turn on the same 
     upsertJob(process.cwd(), { id, status: "running", pid: null });
   `], { cwd: f.repo, env: f.env });
   assert.equal(patch.status, 0, patch.stderr);
-  const recovered = f.call("result", first.jobId, "--report", "--json");
+  const recovered = f.call("result", first.jobId, "--details");
   assert.equal(recovered.status, 0, recovered.stderr);
   assert.equal(JSON.parse(recovered.stdout).turnId, first.turnId);
   assert.equal(JSON.parse(recovered.stdout).fileTrackingStatus, "partial");
   assert.equal(JSON.parse(recovered.stdout).sandbox, "danger-full-access", "the recovered report keeps the sandbox the job actually ran with");
-  assert.equal(JSON.parse(f.call("result", "--thread", first.threadId, "--report", "--json").stdout).turnId, second.turnId);
+  assert.equal(JSON.parse(f.call("result", "--thread", first.threadId, "--details").stdout).turnId, second.turnId);
   assert.equal(f.state().nextTurnId, 3, "recovery must not submit a third turn");
 });
 
@@ -381,27 +492,29 @@ test("task --direct streams progress as owner, then resumes without replaying ac
   fs.writeFileSync(gate, "complete");
   const done = direct({ status: await closed, stdout, stderr });
   assert.equal(done.status, "completed");
-  assert.equal(directLines(stdout).length - 1, done.activityCount);
-  assert.ok(done.activityCount > 0);
-  const stored = job(f, done.jobId);
+  const stored = storedFixtureJob(f, done.jobId);
+  assert.equal(directLines(stdout).length - 1, stored.activity.length);
+  assert.ok(stored.activity.length > 0);
   assert.equal(stored.leaseSec, 1800);
   assert.equal(stored.direct, true);
-  assert.equal(stored.ownerId, done.ownerId);
+  assert.equal(stored.ownerId, json(f.call("result", done.jobId, "--details")).ownerId);
   assert.equal(stored.ownerDetachReason, "returned");
   assert.equal(stored.request.report, true);
   assert.equal(stored.request.detached, true);
   assert.doesNotMatch(JSON.stringify(done), /PRIVATE_FIXTURE/);
-  const again = f.call("wait", done.jobId, "--owner", done.ownerId, "--direct");
-  const repeated = direct(again);
+  const again = f.call("wait", done.jobId, "--owner", stored.ownerId, "--direct", "--details");
+  const repeated = json(again);
   assert.equal(directLines(again.stdout).length, 1);
   assert.equal(repeated.activityCount, 0);
-  assert.equal(repeated.turnId, done.turnId);
+  assert.equal(repeated.turnId, stored.turnId);
   assert.equal(f.state().nextTurnId, 2);
 });
 
 test("direct questions provide executable re-wait and stdin-answer commands and preserve adoption", async () => {
   const f = fixture("w5-parent"), launch = json(f.call("task", "--detached", "--json", "--owner", "parent's owner", "fixture"));
-  const pending = direct(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--direct"));
+  const compact = direct(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--direct"));
+  const pending = json(f.call("result", launch.jobId, "--details"));
+  assert.equal(compact.next, `duet answer ${launch.agentName}`);
   assert.equal(pending.status, "needs_answer"); assert.ok(pending.question.id);
   assert.deepEqual(pending.question.options, ["Small", "Broad"]);
   assert.deepEqual(splitRawArgumentString(pending.waitCommand), ["node", script, "wait", launch.jobId, "--cwd", f.repo, "--owner", launch.ownerId, "--direct", "--after-question", pending.question.id]);
@@ -417,9 +530,9 @@ test("direct questions provide executable re-wait and stdin-answer commands and 
   const adopted = json(f.call("adopt", launch.jobId, "--json"));
   assert.deepEqual(splitRawArgumentString(adopted.waitCommand), ["node", script, "wait", launch.jobId, "--owner", adopted.ownerId, "--cwd", f.repo, "--direct"]);
   const moved = direct(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--direct"), 2);
-  assert.equal(moved.status, "ownership_moved"); assert.equal(moved.ownerId, adopted.ownerId);
+  assert.equal(moved.status, "ownership_moved"); assert.equal(job(f, launch.jobId).ownerId, adopted.ownerId);
   assert.equal(moved.waitCommand, undefined); assert.equal(moved.answerCommand, undefined);
-  const replacement = direct(f.call(...splitRawArgumentString(adopted.waitCommand).slice(2)));
+  const replacement = directJson(f.call(...splitRawArgumentString(adopted.waitCommand).slice(2), "--details"));
   const cursor = job(f, launch.jobId).activityCursors[activityReader(adopted.ownerId)];
   const owner = spawnOwned(process.execPath, splitRawArgumentString(replacement.waitCommand).slice(1), { cwd: f.repo, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "", stderr = "";
@@ -431,59 +544,241 @@ test("direct questions provide executable re-wait and stdin-answer commands and 
   const done = direct({ status: await closed, stdout, stderr });
   const progress = directLines(stdout).slice(0, -1);
   assert.ok(progress.length > 0, "answering produces new progress before the final report");
-  assert.equal(progress.length, done.activityCount);
+  assert.equal(progress.length, storedFixtureJob(f, done.jobId).activity.filter(event => event.seq > cursor).length);
   for (const line of progress) assert.ok(Number(/^\[(\d+)\]/.exec(line)?.[1]) > cursor, "only new events are streamed");
-  assert.equal(done.status, "completed"); assert.equal(done.turnId, pending.turnId);
+  assert.equal(done.status, "completed"); assert.equal(job(f, done.jobId).turnId, pending.turnId);
 });
 
-test("direct terminal waits retain structured report fields and existing outcome exit codes", () => {
-  for (const [behavior, status, code] of [["slow-task", "completed", 0], ["structured-blocked", "blocked", 2], ["question-only", "needs_input", 2]]) {
-    const f = fixture(behavior), output = f.call("task", "--direct", "fixture");
-    const result = direct(output, code), launch = result;
-    assert.ok(directLines(output.stdout).length > 1, "task streams progress before its terminal report");
-    // An independent observer reads the same completed job from cursor zero,
-    // avoiding different job IDs/timestamps while comparing exact payload bytes.
-    const quiet = f.call("wait", launch.jobId, "--direct", "--quiet");
-    assert.deepEqual(direct(quiet, code), result);
-    assert.equal(quiet.stdout, `${directLines(output.stdout).at(-1)}\n`);
-    assert.equal(result.status, status); assert.equal(result.reportFormat, "structured");
-    assert.equal(result.summary, fs.readFileSync(result.rawOutputFile, "utf8").trim(), "the final summary travels in the direct payload");
-    const legacy = json(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--json"), code);
-    for (const key of ["status", "reportFormat", "jobId", "threadId", "turnId", "exitCode", "sandbox", "approvalPolicy", "model", "effort", "serviceTier", "touchedFiles", "preExistingChanges", "fileTrackingStatus", "fileTrackingBasis", "verification", "verificationBasis", "keyFindings", "findingsBasis", "assumptions", "blockers", "question", "rawOutputFile", "resultFile", "ownerId", "sessionId"]) {
-      assert.equal(Object.hasOwn(result, key), Object.hasOwn(legacy, key), key); assert.deepEqual(result[key], legacy[key], key);
-    }
-    assert.deepEqual(result.claimedVerification, legacy.claimedVerification ?? [], "direct structured reports include the full verification list, including an empty list");
-    if (status !== "completed") {
-      assert.match(result.continuationCommand, / --direct$/);
-      assert.equal(legacy.continuationCommand, result.continuationCommand);
-      assert.equal(json(f.call("adopt", launch.jobId, "--json"), 2).continuationCommand, result.continuationCommand);
+test("report v2 is decision-first and bounded; result and wait details retain the full report", () => {
+  for (const [behavior, status, code] of [["slow-task", "completed", 0], ["structured-blocked", "blocked", 2], ["question-only", "needs_input", 2], ["w5-parent", "needs_answer", 0], ["w5-working", "running", 0]]) {
+    const f = fixture(behavior), output = f.call("task", "--direct", ...(status === "running" ? ["--timeout-sec", "1"] : []), "fixture");
+    const result = direct(output, code);
+    try {
+      assert.equal(result.status, status);
+      assert.deepEqual(Object.keys(result).slice(0, 4), ["status", "worker", "jobId", "summary"]);
+      assert.deepEqual(Object.keys(result).slice(-2), ["next", "details"]);
+      const { summary, ...envelope } = result;
+      assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
+      assert.equal(result.details, `duet result ${result.worker} --details`);
+      assert.equal(result.next, status === "completed" ? null : status === "needs_answer" ? `duet answer ${result.worker}` : status === "running" ? `duet wait ${result.worker}` : `duet task --to ${result.worker}`);
+      for (const key of ["waitCommand", "answerCommand", "answerAndWaitCommand", "rawOutputFile", "ownerId"]) assert.equal(Object.hasOwn(result, key), false);
+      const details = json(f.call("result", result.jobId, "--details"), code);
+      const reread = json(f.call("result", result.jobId), code);
+      assert.equal(reread.status, result.status); assert.equal(reread.next, result.next);
+      if (["running", "needs_answer"].includes(status)) {
+        assert.ok(details.waitCommand);
+        if (status === "needs_answer") {
+          assert.deepEqual(Object.keys(result.question), ["id", "kind", "text", "options", "expiresInSec"]);
+          assert.deepEqual(result.question.options, details.question.options);
+          assert.ok(result.question.expiresInSec >= 0);
+          assert.ok(details.answerCommand && details.answerAndWaitCommand);
+        }
+      } else {
+        assert.equal(result.summary, fs.readFileSync(details.rawOutputFile, "utf8").trim());
+        assert.deepEqual(reread, result);
+        const quiet = f.call("wait", result.jobId, "--direct", "--quiet");
+        assert.deepEqual(direct(quiet, code), result);
+        assert.equal(quiet.stdout, `${directLines(output.stdout).at(-1)}\n`);
+        const legacy = json(f.call("wait", result.jobId, "--json"), code);
+        const waited = json(f.call("wait", result.jobId, "--details"), code);
+        assert.deepEqual(Object.keys(legacy).filter(key => !Object.hasOwn(waited, key)), [], "no 1.3 wait report keys disappear");
+        for (const key of ["status", "reportFormat", "jobId", "threadId", "turnId", "exitCode", "sandbox", "approvalPolicy", "model", "effort", "serviceTier", "touchedFiles", "preExistingChanges", "fileTrackingStatus", "fileTrackingBasis", "verification", "verificationBasis", "keyFindings", "findingsBasis", "assumptions", "blockers", "question", "rawOutputFile", "resultFile", "ownerId", "sessionId"]) {
+          assert.equal(Object.hasOwn(details, key), Object.hasOwn(legacy, key), key);
+          assert.deepEqual(details[key], legacy[key], key);
+        }
+        assert.deepEqual(details.claimedVerification, legacy.claimedVerification ?? []);
+        assert.deepEqual(result.checks?.ran ?? [], details.verification);
+        assert.deepEqual(result.checks?.claimed ?? [], details.claimedVerification);
+        if (status !== "completed") {
+          assert.match(details.continuationCommand, / --direct$/);
+          assert.equal(legacy.continuationCommand, details.continuationCommand);
+          assert.equal(json(f.call("adopt", result.jobId, "--json"), 2).continuationCommand, details.continuationCommand);
+        }
+      }
+    } finally {
+      if (["running", "needs_answer"].includes(status)) f.call("cancel", result.jobId, "--json");
     }
   }
+});
+
+test("v2 budgets UTF-8 text and counts omitted files/checks while details keeps expanded lists", () => {
   const cwd = makeTempDir(), id = "long-structured-report", createdAt = new Date().toISOString();
-  const entries = ["\x1b[31mLong finding\x1b[0m\n" + "detail ".repeat(80), "x".repeat(2100), ...Array.from({ length: 20 }, (_, i) => `Entry ${i}\nwith details`)];
-  const structured = { status: "completed", summary: "Completed the work.", keyFindings: entries, assumptions: entries, verification: entries, blockers: [], question: null };
-  const result = { status: 0, structured, rawOutput: structured.summary };
+  const entries = ["\x1b[31mLong finding\x1b[0m\n" + "detail ".repeat(80).trimEnd(), "字".repeat(2100), ...Array.from({ length: 28 }, (_, i) => `Entry ${i}\nwith details`)];
+  const structured = parseStructuredReport(JSON.stringify({ status: "completed", summary: "Completed the work. " + "字".repeat(9000), key_findings: entries, assumptions: entries, verification: entries, blockers: [], question: null }));
+  const result = { status: 0, structured, rawOutput: structured.summary, touchedFiles: entries,
+    commandExecutions: entries.map(command => ({ command, exitCode: 0, status: "completed" })) };
   const report = buildWorkerReport(result, { jobId: id });
   const record = { id, workspaceRoot: cwd, jobClass: "task", status: "completed", createdAt, result, report,
     activity: Array.from({ length: 75 }, (_, i) => ({ seq: i + 1, type: "agentMessage", text: "\x1b[31mFixture\x1b[0m\n\r\u202e " + "details ".repeat(40) })) };
   writeJobFile(cwd, id, record); upsertJob(cwd, record);
   const output = run(process.execPath, [script, "wait", id, "--direct"], { cwd });
-  const full = direct(output);
+  const compact = direct(output);
   assert.equal(directLines(output.stdout).length, 76, "direct progress has no feed cap");
-  assert.equal(full.activityCount, 75);
+  assert.equal(compact.summary.length, 8000); assert.equal(compact.summaryTruncated, true);
+  assert.equal(compact.details, `duet result ${id} --details`, "unnamed jobs use the job ID");
+  const { summary, ...envelope } = compact;
+  assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
+  assert.equal(compact.changedFiles.length + compact.changedFilesOmitted, entries.length);
+  assert.equal(compact.checks.ran.length + compact.checks.claimed.length + compact.checks.omitted, entries.length * 2);
+  assert.deepEqual(compact, directReport(report, { ...record, result: { ...result,
+    structured: { ...structured, keyFindings: entries.slice(0, 12), assumptions: entries.slice(0, 12) } } }), "expanded storage preserves compact v2");
+  const full = json(run(process.execPath, [script, "wait", id, "--details"], { cwd }));
   const legacy = json(run(process.execPath, [script, "wait", id, "--json"], { cwd }));
-  for (const key of ["keyFindings", "assumptions", "claimedVerification"]) {
-    assert.deepEqual(full[key], entries.slice(0, 20).map(value => redactActivity(value).slice(0, 2000)), key);
+  for (const key of ["keyFindings", "assumptions"]) {
+    assert.deepEqual(full[key], entries.map(value => redactActivity(value).slice(0, 2000)), key);
     assert.ok(full[key][0].length > 300); assert.ok(full[key][0].includes("\n")); assert.equal(full[key][1].length, 2000);
     assert.deepEqual(legacy[key], report[key], "non-direct lists retain the report builder's bounds");
     assert.ok(legacy[key][0].length <= 300);
   }
+  const expanded = entries.map(value => redactActivity(value).slice(0, 2000));
+  const ran = result.commandExecutions.map(c => redactActivity(`${c.command}: exit ${c.exitCode}, ${c.status}`).slice(0, 2000));
+  for (const details of [full, json(run(process.execPath, [script, "result", id, "--details"], { cwd }))]) {
+    assert.deepEqual(details.touchedFiles, expanded);
+    assert.deepEqual(details.verification, ran);
+    assert.deepEqual(details.claimedVerification, expanded);
+    assert.deepEqual(details.keyFindings, expanded);
+    assert.deepEqual(details.assumptions, expanded);
+    for (const key of ["touchedFilesOmitted", "verificationOmitted", "claimedVerificationOmitted", "keyFindingsOmitted", "assumptionsOmitted"]) assert.equal(details[key], 0);
+  }
+  const checks = Array.from({ length: 503 }, (_, i) => `Check ${i}`);
+  const parsed = parseStructuredReport(JSON.stringify({ status: "completed", summary: "Completed.", verification: checks, key_findings: checks, assumptions: checks }));
+  assert.deepEqual(parsed.verification, checks.slice(0, 500));
+  assert.equal(parsed.verificationOmitted, 3);
+  const largeResult = { ...result, touchedFiles: checks, structured: parsed, commandExecutions: checks.map(command => ({ command, exitCode: 0, status: "completed" })) };
+  const largeRecord = { ...record, result: largeResult, report: buildWorkerReport(largeResult, { jobId: id }) };
+  writeJobFile(cwd, id, largeRecord); upsertJob(cwd, largeRecord);
+  const capped = json(run(process.execPath, [script, "result", id, "--details"], { cwd }));
+  for (const key of ["touchedFiles", "verification", "claimedVerification", "keyFindings", "assumptions"]) {
+    assert.equal(capped[key].length, 500);
+    assert.equal(capped[`${key}Omitted`], 3);
+  }
+  const cappedCompact = json(run(process.execPath, [script, "result", id], { cwd }));
+  assert.equal(cappedCompact.changedFiles.length + cappedCompact.changedFilesOmitted, checks.length);
+  assert.equal(cappedCompact.checks.ran.length + cappedCompact.checks.claimed.length + cappedCompact.checks.omitted, checks.length * 2);
   assert.ok(legacy.assumptions.length <= 3); assert.ok(legacy.claimedVerification.length <= 3);
-  const warning = directReport({ status: "running", startupWarning: "fixture-warning", activity: [], cursor: 2 }, {});
-  assert.equal(warning.startupWarning, "fixture-warning");
-  assert.equal(Object.hasOwn(warning, "activity"), false);
-  const unstructured = { status: "completed", keyFindings: ["prose finding"], assumptions: ["prose assumption"], claimedVerification: ["prose check"] };
-  assert.deepEqual(directReport(unstructured, { result: {} }), unstructured, "without structured data, keep the report's lists");
+  const pending = directReport({ status: "needs_answer", jobId: id, question: { id: "q", text: "字".repeat(1000), options: Array(6).fill("字".repeat(160)), expiresAt: Date.now() + 10000 }, blockers: [{ code: "fixture", message: "字".repeat(500) }] });
+  const { summary: pendingSummary, ...pendingEnvelope } = pending;
+  assert.ok(Buffer.byteLength(JSON.stringify(pendingEnvelope)) <= 2000);
+  assert.equal(pending.next, `duet answer ${id}`);
+});
+
+test("report commands resolve ambiguous, cross-workspace and adopted workers through the duet CLI", t => {
+  const cwd = makeTempDir();
+  const records = ["first", "second"].map((id, i) => ({ id, workspaceRoot: cwd, jobClass: "task", agentName: "SharedWorker", threadId: `thread-${id}`,
+    sessionId: "command-session", status: "needs_input", createdAt: `2026-10-23T00:00:0${i}Z`,
+    report: { status: "needs_input", jobId: id, question: "Which branch?" } }));
+  const save = record => { writeJobFile(cwd, record.id, record); upsertJob(cwd, record); };
+  const read = id => json(run(process.execPath, [script, "result", id], { cwd, env: { CODEX_COMPANION_SESSION_ID: "command-session" } }), 2);
+  records.forEach(save);
+  for (const { id } of records) {
+    const report = read(id);
+    assert.equal(report.worker, "SharedWorker");
+    assert.equal(report.next, `duet task --to ${id}`);
+    assert.equal(report.details, `duet result ${id} --details`);
+    const recovered = json(run(process.execPath, [script, ...splitRawArgumentString(report.details).slice(1)], { cwd }), 2);
+    assert.equal(recovered.jobId, id);
+  }
+  save({ ...records[1], threadId: records[0].threadId });
+  assert.equal(read("first").details, "duet result first --details");
+  assert.equal(read("first").next, "duet task --to first");
+  assert.equal(read("second").details, "duet result SharedWorker --details");
+  assert.equal(read("second").next, "duet task --to SharedWorker");
+
+  const f = fixture("review-ok"), other = path.join(f.dir, "other-workspace");
+  fs.mkdirSync(other); initGitRepo(other);
+  f.env.PATH = `${path.dirname(new URL("../plugins/codex/bin/duet", import.meta.url).pathname)}${path.delimiter}${f.env.PATH}`;
+  const execute = (command, cwd = f.repo) => run("sh", ["-c", command], { cwd, env: f.env, input: "Complete the fixture follow-up." });
+  const workers = [f.repo, other].map(workspace => {
+    const launched = direct(execute("duet task --fresh", workspace));
+    const fixture = { ...f, repo: workspace };
+    const original = storedFixtureJob(fixture, launched.jobId);
+    storedFixtureJob(fixture, launched.jobId, { agentName: "AcrossWorker", status: "needs_input", report: { ...original.report, status: "needs_input" } });
+    return { fixture, original };
+  });
+  for (const { original } of workers) {
+    const projected = json(execute(`duet result ${original.id}`), 2);
+    assert.equal(projected.worker, "AcrossWorker");
+    assert.equal(projected.details, `duet result ${original.id} --details`);
+    assert.equal(projected.next, `duet task --to ${original.id}`);
+    assert.equal(json(execute(projected.details), 2).jobId, original.id);
+    const continued = direct(execute(projected.next));
+    assert.equal(continued.status, "completed");
+    const details = json(execute(continued.details));
+    assert.equal(details.threadId, original.threadId);
+    assert.equal(continued.next, null);
+  }
+  const adopted = workers[0];
+  storedFixtureJob(adopted.fixture, adopted.original.id, { agentName: "AdoptedWorker", status: "running", leaseExpiresAt: Date.now() + 180000 });
+  const moved = json(run(process.execPath, [script, "adopt", adopted.original.id, "--json"], {
+    cwd: f.repo, env: { ...f.env, CODEX_COMPANION_SESSION_ID: "replacement-session" }
+  }));
+  assert.equal(moved.adopted, true);
+  storedFixtureJob(adopted.fixture, adopted.original.id, { status: "needs_input", report: { ...adopted.original.report, status: "needs_input" } });
+  const dispatchProjection = json(execute(`duet result ${adopted.original.id}`), 2);
+  f.env.CODEX_COMPANION_SESSION_ID = "replacement-session";
+  const projected = json(execute(`duet result ${adopted.original.id}`), 2);
+  assert.deepEqual(projected, dispatchProjection, "all projections use the stored owning session");
+  assert.equal(projected.details, "duet result AdoptedWorker --details");
+  assert.equal(projected.next, "duet task --to AdoptedWorker");
+  assert.equal(json(execute(projected.details), 2).jobId, adopted.original.id);
+  const continued = direct(execute(projected.next));
+  assert.equal(continued.status, "completed");
+  assert.equal(json(execute(continued.details)).threadId, adopted.original.threadId);
+  assert.equal(continued.next, null);
+
+  // Reproduce pre-upgrade duplicate names: one completed worker and one real
+  // pending question in another workspace, both in the same Claude session.
+  const p = fixture("w5-parent"), remote = path.join(p.dir, "remote");
+  fs.mkdirSync(remote); initGitRepo(remote);
+  const duet = new URL("../plugins/codex/bin/duet", import.meta.url).pathname;
+  const command = (...args) => run(duet, args, { cwd: p.repo, env: p.env, input: "Small" });
+  const first = direct(command("task", "--fresh"));
+  assert.equal(first.status, "needs_answer");
+  assert.equal(direct(command("answer", first.jobId)).status, "completed");
+  const ended = storedFixtureJob(p, first.jobId, { agentName: "Heisenberg" });
+  const second = direct(command("task", "--fresh", "--cwd", remote));
+  const remoteFixture = { ...p, repo: remote };
+  const pending = storedFixtureJob(remoteFixture, second.jobId, { agentName: "Heisenberg" });
+  assert.equal(second.status, "needs_answer");
+  t.diagnostic(JSON.stringify({ scenario: "same-session legacy duplicate", candidates: [ended, pending].map(record => ({
+    jobId: record.id, worker: record.agentName, status: record.status, pending: Boolean(record.pendingQuestion), cwd: record.workspaceRoot
+  })) }));
+  const ambiguous = (...args) => {
+    const result = command(...args);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /ambiguous name across threads/);
+    for (const id of [first.jobId, second.jobId]) assert.ok(result.stderr.includes(id));
+    t.diagnostic(JSON.stringify({ command: `duet ${args.join(" ")}`, status: result.status, error: result.stderr.trim() }));
+  };
+  const before = p.state();
+  for (const args of [["task", "--to", "Heisenberg"], ["result", "Heisenberg"], ["cancel", "Heisenberg"]]) ambiguous(...args);
+  const waited = direct(command("wait", "heisenberg"));
+  assert.equal(waited.jobId, second.jobId); assert.equal(waited.status, "needs_answer");
+  t.diagnostic(JSON.stringify({ command: "duet wait heisenberg", ...waited }));
+  for (const status of ["queued", "running", "needs_answer"]) {
+    storedFixtureJob(p, first.jobId, { status, pendingQuestion: { ...pending.pendingQuestion, id: "legacy-question" } });
+    ambiguous("answer", "Heisenberg");
+    ambiguous("wait", "Heisenberg");
+  }
+  assert.equal(p.state().nextTurnId, before.nextTurnId, "ambiguous task never dispatches");
+  assert.equal(p.state().serverRequestReplies.length, before.serverRequestReplies.length, "ambiguous answer never submits");
+  assert.equal(storedFixtureJob(remoteFixture, second.jobId).pendingQuestion.answer, undefined);
+  // An active job with an already-answered question fits wait but not answer.
+  storedFixtureJob(p, first.jobId, { status: "running", pendingQuestion: { ...pending.pendingQuestion, id: "legacy-question", answer: "Already submitted" } });
+  ambiguous("wait", "Heisenberg");
+  const answered = direct(command("answer", "heisenberg"));
+  assert.equal(answered.jobId, second.jobId); assert.equal(answered.status, "completed");
+  assert.equal(p.state().serverRequestReplies.length, before.serverRequestReplies.length + 1);
+  t.diagnostic(JSON.stringify({ command: "duet answer heisenberg", ...answered }));
+  storedFixtureJob(p, first.jobId, { status: "completed", pendingQuestion: null });
+  ambiguous("answer", "Heisenberg");
+  ambiguous("wait", "Heisenberg");
+  assert.equal(direct(command("wait", first.jobId)).jobId, first.jobId, "explicit completed IDs still work");
+  const third = direct(command("task", "--fresh", "--cwd", remote));
+  const explicit = storedFixtureJob(remoteFixture, third.jobId, { agentName: "Heisenberg" });
+  const explicitAnswer = direct(command("answer", "Heisenberg", "--question", explicit.pendingQuestion.id, "--owner", explicit.ownerId));
+  assert.equal(explicitAnswer.jobId, third.jobId); assert.equal(explicitAnswer.status, "completed");
+  t.diagnostic(JSON.stringify({ command: "duet answer Heisenberg --question <id> --owner <id>", ...explicitAnswer }));
 });
 
 test("direct tasks preserve lease precedence, input forms, run settings and continuation inheritance", () => {
@@ -495,19 +790,22 @@ test("direct tasks preserve lease precedence, input forms, run settings and cont
   const observed = f.call("wait", first.jobId, "--direct");
   assert.deepEqual(direct(observed), first);
   assert.equal(`${directLines(observed.stdout).at(-1)}\n`, firstOutput.stdout, "quiet and streaming task payloads are byte-identical for the same job");
-  assert.ok(AGENT_NAMES.includes(first.agentName));
-  assert.equal(job(f, first.jobId).agentName, first.agentName);
-  assert.equal(job(f, first.jobId).leaseSec, 27); assert.equal(first.ownerId, "explicit-owner");
-  assert.equal(first.model, "gpt-5.3-codex-spark"); assert.equal(first.effort, "high"); assert.equal(first.serviceTier, "priority");
+  const firstDetails = json(f.call("result", first.jobId, "--details"));
+  assert.ok(AGENT_NAMES.includes(first.worker));
+  assert.equal(job(f, first.jobId).agentName, first.worker);
+  assert.equal(job(f, first.jobId).leaseSec, 27); assert.equal(firstDetails.ownerId, "explicit-owner");
+  assert.equal(firstDetails.model, "gpt-5.3-codex-spark"); assert.equal(firstDetails.effort, "high"); assert.equal(firstDetails.serviceTier, "priority");
   assert.equal(job(f, first.jobId).questionTimeoutSec, 42);
   assert.match(f.state().lastTurnStart.prompt, /fixture from prompt file/);
   const continued = direct(run(process.execPath, [script, "task", "--continue", first.jobId, "--direct", "--report", "--lease-sec", "39"], { cwd: f.repo, env: f.env, input: "fixture from stdin" }));
-  assert.equal(job(f, continued.jobId).leaseSec, 39); assert.equal(continued.threadId, first.threadId);
-  for (const key of ["agentName", "sandbox", "model", "effort", "serviceTier", "approvedBrowserOrigins", "approvedComputerApps"]) assert.deepEqual(continued[key], first[key], key);
+  assert.equal(job(f, continued.jobId).leaseSec, 39); const continuedDetails = json(f.call("result", continued.jobId, "--details"));
+  assert.equal(continuedDetails.threadId, firstDetails.threadId);
+  for (const key of ["agentName", "sandbox", "model", "effort", "serviceTier", "approvedBrowserOrigins", "approvedComputerApps"]) assert.deepEqual(continuedDetails[key], firstDetails[key], key);
   assert.match(f.state().lastTurnStart.prompt, /fixture from stdin/);
-  const threaded = direct(f.call("task", "--direct", "--thread", first.threadId, "--normal", "fixture next turn"));
-  assert.equal(threaded.agentName, first.agentName);
-  assert.equal(job(f, threaded.jobId).agentName, first.agentName);
-  assert.equal(threaded.threadId, first.threadId); assert.equal(threaded.serviceTier, null);
+  const threaded = direct(f.call("task", "--direct", "--thread", firstDetails.threadId, "--normal", "fixture next turn"));
+  assert.equal(threaded.worker, first.worker);
+  assert.equal(job(f, threaded.jobId).agentName, first.worker);
+  const threadedDetails = json(f.call("result", threaded.jobId, "--details"));
+  assert.equal(threadedDetails.threadId, firstDetails.threadId); assert.equal(threadedDetails.serviceTier, null);
 });
 }

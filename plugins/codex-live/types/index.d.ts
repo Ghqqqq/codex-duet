@@ -25,6 +25,8 @@ export type CodexLiveEvent = {
   removed?: number;
   server?: string;
   tool?: string;
+  questionText?: string;
+  answer?: string;
   steps?: string[];
   statuses?: ('pending' | 'inProgress' | 'completed')[];
 };
@@ -46,6 +48,9 @@ export type CodexLiveJob = {
   sandbox: string;
   workspaceRoot?: string;
   question: { text: string; options: string[]; createdAt?: string } | null;
+  // Only detailed turns retain the bounded Claude brief.
+  prompt?: string;
+  promptReport?: boolean;
   // Bounded display summaries survive when transcript details are omitted.
   currentOperation?: string;
   lastActivityAt?: string;
@@ -67,6 +72,7 @@ export type CodexLiveFeedView = {
   feedOffset: number;
   following: boolean;
   seenLines: number;
+  expandedPromptIds?: string[];
   // Originating surface measurements; content anchors survive different wrapping.
   columns?: number;
   rows?: number;

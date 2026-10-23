@@ -219,7 +219,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
           const measured = viewports.get(feed.surface ?? 'terminal');
           const columns = measured?.columns ?? feed.columns;
           const rows = measured ? paneLayout(candidate, selected, measured.bodyRows).rows : feed.rows ?? 8;
-          if (columns) candidate.feeds = { ...candidate.feeds, [selected.id]: normalizeFeed(feedLines(selected, nowMs, columns), rows, { ...feed, columns }) };
+          if (columns) candidate.feeds = { ...candidate.feeds, [selected.id]: normalizeFeed(feedLines(selected, nowMs, columns, feed), rows, { ...feed, columns }) };
         }
         return fitState(candidate);
       };

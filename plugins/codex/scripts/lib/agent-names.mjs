@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { listSessionJobs, resolveStateRoot } from "./state.mjs";
+
 // Historical scientists and computing pioneers; ASCII names keep pane labels compact.
 export const AGENT_NAMES = Object.freeze([
   "Ada", "Turing", "Hopper", "Curie", "Noether", "Euler", "Gauss", "Kepler",
@@ -18,4 +23,34 @@ export function pickAgentName(usedNames, random = Math.random) {
   let suffix = 2;
   while (used.has(`${base}-${suffix}`)) suffix++;
   return `${base}-${suffix}`;
+}
+
+// Keep session reservations outside the pruned workspace indexes. Exclusive
+// creation reserves a name before its job is published, even across workspaces.
+// Reservations have no age limit: a long-lived session must never recycle them.
+export function reserveAgentName(usedNames, { cwd, sessionId }, random = Math.random) {
+  if (!sessionId) return pickAgentName(usedNames, random);
+  const hash = value => createHash("sha256").update(value).digest("hex");
+  const directory = path.join(path.dirname(resolveStateRoot()), "agent-names", hash(sessionId));
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const reserve = name => {
+    try {
+      fs.writeFileSync(path.join(directory, hash(name.toLowerCase())), "", { flag: "wx", mode: 0o600 });
+      return true;
+    } catch (error) {
+      if (error.code === "EEXIST") return false;
+      throw error;
+    }
+  };
+  const used = new Set(usedNames);
+  for (const job of listSessionJobs(cwd, sessionId)) {
+    if (!job.agentName) continue;
+    used.add(job.agentName);
+    reserve(job.agentName);
+  }
+  for (;;) {
+    const name = pickAgentName(used, random);
+    if (reserve(name)) return name;
+    used.add(name);
+  }
 }

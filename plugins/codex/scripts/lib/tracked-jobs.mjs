@@ -188,13 +188,17 @@ export async function runTrackedJob(job, runner, options = {}) {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
+    const failure = { status: 1, error: errorMessage, threadId: existing.threadId ?? null, turnId: existing.turnId ?? null,
+      ...(error.failureSource === "transport" ? { failureSource: "transport", errorCode: error.code ?? null, turnEnded: false } : {}),
+      approvedBrowserOrigins: existing.approvedBrowserOrigins ?? [], approvedComputerApps: existing.approvedComputerApps ?? [] };
     if (job.rawOutputFile && !fs.existsSync(job.rawOutputFile)) fs.writeFileSync(job.rawOutputFile, `${errorMessage}\n`, { mode: 0o600 });
-    if (job.resultFile && !fs.existsSync(job.resultFile)) fs.writeFileSync(job.resultFile, `${JSON.stringify({ status: 1, error: errorMessage, threadId: existing.threadId ?? null, turnId: existing.turnId ?? null, approvedBrowserOrigins: existing.approvedBrowserOrigins ?? [], approvedComputerApps: existing.approvedComputerApps ?? [] })}\n`, { mode: 0o600 });
+    if (job.resultFile && !fs.existsSync(job.resultFile)) fs.writeFileSync(job.resultFile, `${JSON.stringify(failure)}\n`, { mode: 0o600 });
     const completedAt = nowIso();
     recordFinishedJob(updateJob(job.workspaceRoot, job.id, () => ({
       status: "failed",
       phase: "failed",
       errorMessage,
+      ...(error.failureSource === "transport" ? { result: failure, turnResolution: "unknown" } : {}),
       pid: null,
       completedAt,
       logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null

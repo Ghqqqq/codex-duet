@@ -41,12 +41,18 @@ export function parseStructuredReport(rawOutput) {
     let value;
     try { value = JSON.parse(candidate); } catch { continue; }
     if (!value || typeof value !== "object" || Array.isArray(value) || !WORKER_REPORT_STATUSES.includes(value.status) || typeof value.summary !== "string") continue;
+    const verification = stringList(value.verification, Infinity);
+    const keyFindings = stringList(value.key_findings, Infinity);
+    const assumptions = stringList(value.assumptions, Infinity);
     return {
       status: value.status,
       summary: value.summary.trim(),
-      keyFindings: stringList(value.key_findings, 12),
-      assumptions: stringList(value.assumptions, 12),
-      verification: stringList(value.verification, 12),
+      keyFindings: keyFindings.slice(0, 500),
+      ...(keyFindings.length > 500 ? { keyFindingsOmitted: keyFindings.length - 500 } : {}),
+      assumptions: assumptions.slice(0, 500),
+      ...(assumptions.length > 500 ? { assumptionsOmitted: assumptions.length - 500 } : {}),
+      verification: verification.slice(0, 500),
+      ...(verification.length > 500 ? { verificationOmitted: verification.length - 500 } : {}),
       blockers: (Array.isArray(value.blockers) ? value.blockers : []).filter(b => b && typeof b === "object" && typeof b.code === "string" && b.code.trim()).slice(0, 6)
         .map(b => ({ code: b.code.trim().slice(0, 64), message: stringOrNull(b.message), app: stringOrNull(b.app), tabId: stringOrNull(b.tab_id ?? b.tabId), sessionId: stringOrNull(b.session_id ?? b.sessionId) })),
       question: stringOrNull(value.question)
@@ -79,10 +85,11 @@ function fitBudget(report) {
   return report;
 }
 
-// A structured report declares its own status. "completed" is still checked
-// against the summary: a plan-only or question-only summary contradicts it and
-// is reported as needs_input, as it would be for an unstructured answer.
+// Declared blockers and essential questions outrank a successful declaration.
+// A plan-only summary also contradicts "completed", as for unstructured prose.
 function declaredStatus(structured) {
+  if (structured.blockers.length) return "blocked";
+  if (structured.question) return "needs_input";
   if (structured.status !== "completed") return structured.status;
   return classifyWorkerOutcome(structured.summary, 0);
 }
@@ -120,7 +127,7 @@ export function buildWorkerReport(payload, meta = {}) {
     status,
     // Present when Codex filled the worker-report schema; absent when the final
     // message was prose and status/findings were inferred from it.
-    ...(structured ? { reportFormat: "structured" } : {}),
+    ...(structured ? { reportFormat: "structured", declaredStatus: structured.status } : {}),
     jobId: meta.jobId ?? null,
     threadId: payload.threadId ?? null,
     turnId: payload.turnId ?? null,

@@ -109,9 +109,13 @@ apps for that call. Two mechanisms cover both runtimes:
   `{ action: "accept" }` and no `_meta.persist`, so nothing outlives the request.
   Everything else is cancelled (`cancel` is not persisted as a deny).
 
-A follow-up with `--thread` does not inherit the grant; `task --continue` does,
-and rejects the flag. The job record, `status`, `result` and the report show
-`approvedComputerApps`.
+Follow-ups (`duet task --to` or `--thread`) inherit model, effort, sandbox, speed
+and grants recorded in the request of the latest job on that thread within the
+same Claude session, unless explicitly overridden. Grants are never taken from
+another session's jobs. One-call approvals given only at runtime are not
+inherited. `duet task --continue` inherits the selected job's recorded settings
+and grants and rejects overriding approval flags. The job record, status and
+`duet result <worker> --details` expose `approvedComputerApps`.
 
 ### Forwarded approvals (owned jobs)
 

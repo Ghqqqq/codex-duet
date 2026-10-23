@@ -171,3 +171,14 @@ export function splitRawArgumentString(raw) {
 
   return tokens;
 }
+
+// Common companion option: propagate it to helpers and detached workers too.
+export function parseSessionArgs(argv, config = {}) {
+  const parsed = parseArgs(argv, { ...config, valueOptions: [...(config.valueOptions ?? []), "session"] });
+  if (parsed.options.session !== undefined) {
+    const session = parsed.options.session.trim();
+    if (!session || session.startsWith("-")) throw new Error("Provide a non-empty session ID for --session.");
+    process.env.CODEX_COMPANION_SESSION_ID = session;
+  }
+  return parsed;
+}

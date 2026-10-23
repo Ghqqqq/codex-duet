@@ -18,8 +18,8 @@ async function until(fn) {
   }
   throw new Error("Fixture condition timed out");
 }
-function fixture() {
-  const dir = makeTempDir("br-"); installFakeCodex(dir);
+function fixture(behavior = "review-ok") {
+  const dir = makeTempDir("br-"); installFakeCodex(dir, behavior);
   return { dir, env: buildEnv(dir), endpoint: `unix:${path.join(dir, "s")}`, socketPath: path.join(dir, "s") };
 }
 async function serve(f, handler) {
@@ -119,21 +119,48 @@ test("a failed detached launcher falls back once and records the target PID", as
   }
 });
 
-test("broker handshake EOF retries one private spawn before any task request", async t => {
+test("broker handshake EOF retries one private spawn; both transports preserve large JSONL", { timeout: 30000 }, async t => {
   if (!await requireLocalSockets(t)) return;
-  const f = fixture(), methods = [];
+  const f = fixture("large-jsonl"), methods = [];
   const close = await serve(f, (socket, message) => { methods.push(message.method); socket.destroy(); });
   t.after(close);
+  const payload = "x".repeat(438000) + "\u2028\u2029世界🚀\r\n" + "z".repeat(4 * 1024 * 1024);
+  async function roundTrip(client, threadId) {
+    let item;
+    const completed = new Promise(resolve => client.setNotificationHandler(message => {
+      if (message.method === "item/completed") item = message.params.item;
+      if (message.method === "turn/completed") resolve(message.params.turn);
+    }));
+    const { turn } = await client.request("turn/start", { threadId, input: [{ type: "text", text: payload, text_elements: [] }] });
+    const ended = await Promise.race([completed, client.exitPromise.then(() => { throw client.exitError ?? new Error("Transport closed before completion"); })]);
+    assert.equal(ended.id, turn.id);
+    assert.equal(ended.status, "completed");
+    assert.ok(item.text === payload, `${client.transport} notification preserves every character`);
+    const response = await client.request("thread/read", { threadId, includeTurns: true });
+    assert.ok(response.thread.turns.find(entry => entry.id === turn.id).items[0].text === payload,
+      `${client.transport} thread/read preserves every character`);
+    assert.equal((await client.request("account/read", { refreshToken: false })).account.type, "chatgpt",
+      "a later small response still resolves on the same connection");
+    t.diagnostic(`${client.transport}: ${Buffer.byteLength(payload)} payload bytes preserved in request, notification and thread/read; later RPC succeeds`);
+  }
   const events = [], client = await CodexAppServerClient.connect(f.dir, { env: f.env, brokerEndpoint: f.endpoint, onRuntimeEvent: event => events.push(event) });
   try {
     assert.equal(client.transport, "direct");
-    await client.request("thread/start", { cwd: f.dir, sandbox: "read-only", approvalPolicy: "never" });
+    const { thread } = await client.request("thread/start", { cwd: f.dir, sandbox: "read-only", approvalPolicy: "never" });
     assert.deepEqual(methods, ["initialize"]);
     const state = JSON.parse(fs.readFileSync(path.join(f.dir, "fake-codex-state.json")));
     assert.equal(state.threads.length, 1);
     assert.equal(state.appServerStarts, 1);
     assert.ok(events.some(e => e.brokerStartupRetry === true));
+    await roundTrip(client, thread.id);
   } finally { await client.close(); }
+  const broker = await readyBroker(f.dir, f.env); t.after(broker.close);
+  const relayed = await CodexAppServerClient.connect(f.dir, { env: f.env, brokerEndpoint: broker.endpoint });
+  try {
+    assert.equal(relayed.transport, "broker", "large-message coverage must use the real broker relay");
+    const { thread } = await relayed.request("thread/start", { cwd: f.dir });
+    await roundTrip(relayed, thread.id);
+  } finally { await relayed.close(); }
 });
 
 test("a broker close after handshake never replays thread/start", async t => {

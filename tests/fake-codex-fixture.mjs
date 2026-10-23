@@ -11,11 +11,11 @@ export function installFakeCodex(binDir, behavior = "review-ok") {
 const fs = require("node:fs");
 const crypto = require("node:crypto");
 const path = require("node:path");
-const readline = require("node:readline");
 
 	const STATE_PATH = ${JSON.stringify(statePath)};
 	const BEHAVIOR = ${JSON.stringify(behavior)};
 	const interruptibleTurns = new Map();
+  const loadedThreads = new Set();
   const serverRequests = new Map();
 
 	function loadState() {
@@ -29,6 +29,20 @@ function saveState(state) {
   const temporary = STATE_PATH + "." + process.pid + ".tmp";
   fs.writeFileSync(temporary, JSON.stringify(state, null, 2));
   fs.renameSync(temporary, STATE_PATH);
+}
+
+function sendParentQuestion(threadId, turnId, index) {
+  const callId = "fixture-call-" + index, id = "fixture-parent-request-" + index;
+  const args = { question: index === 1 ? "Which fixture fallback?" : "Which fixture approach?", options: ["Small", "Broad"] };
+  const item = { id: callId, type: "dynamicToolCall", namespace: null, tool: "ask_parent", arguments: args, status: "inProgress", contentItems: null, success: null };
+  const request = { id, method: "item/tool/call", params: { threadId, turnId, callId, namespace: null, tool: "ask_parent", arguments: args } };
+  const state = loadState();
+  state.parentQuestionRequests = [...(state.parentQuestionRequests || []), request];
+  state.parentQuestionItems = [...(state.parentQuestionItems || []), item];
+  saveState(state);
+  serverRequests.set(id, { threadId, turnId, questionItem: item, questionIndex: index });
+  send({ method: "item/started", params: { threadId, turnId, item } });
+  send(request);
 }
 
 function requiresExperimental(field, message, state) {
@@ -121,6 +135,7 @@ function buildConfigReadResult() {
   }
 }
 
+let outputQueue = Promise.resolve();
 function send(message) {
   if (message.method === "item/completed") {
     const key = message.params.turnId;
@@ -135,7 +150,20 @@ function send(message) {
       saveState(saved);
     }
   }
-  process.stdout.write(JSON.stringify(message) + "\\n");
+  if (BEHAVIOR === "large-jsonl") {
+    const output = Buffer.from(JSON.stringify(message) + "\\r\\n");
+    // Preserve wire order while deliberately splitting a UTF-8 separator and
+    // the CRLF terminator. Large records also span many pipe/socket reads.
+    outputQueue = outputQueue.then(async () => {
+      const separator = output.indexOf(Buffer.from("\\u2028"));
+      const cuts = separator >= 0 ? [separator + 1, separator + 2, output.length - 1, output.length] : [output.length];
+      let start = 0;
+      for (const end of cuts) {
+        await new Promise(resolve => process.stdout.write(output.subarray(start, end), resolve));
+        start = end;
+      }
+    });
+  } else process.stdout.write(JSON.stringify(message) + "\\n");
 }
 const capturedItems = new Map();
 
@@ -317,13 +345,26 @@ function readComputerUse(home, threadId) {
 }
 saveState(bootState);
 
-const rl = readline.createInterface({ input: process.stdin });
-rl.on("line", async (line) => {
+process.stdin.setEncoding("utf8");
+let inputBuffer = "";
+process.stdin.on("data", chunk => {
+  inputBuffer += chunk;
+  for (let end; (end = inputBuffer.indexOf("\\n")) !== -1;) {
+    const line = inputBuffer.slice(0, end);
+    inputBuffer = inputBuffer.slice(end + 1);
+    void handleLine(line);
+  }
+});
+async function handleLine(line) {
   if (!line.trim()) {
     return;
   }
 
   const message = JSON.parse(line);
+  if (["turn/start", "review/start", "turn/interrupt", "thread/resume", "thread/read", "thread/backgroundTerminals/clean"].includes(message.method)) {
+    const params = ["turn/start", "review/start"].includes(message.method) ? { threadId: message.params.threadId } : message.params;
+    fs.appendFileSync(STATE_PATH + ".requests.jsonl", JSON.stringify({ serverId: process.pid, method: message.method, params }) + "\\n");
+  }
   const state = loadState();
 
   try {
@@ -334,11 +375,17 @@ rl.on("line", async (line) => {
       // isolated home's Computer Use approval files.
       state.serverRequestReplies = [...(state.serverRequestReplies || []), { ...message, computerUse: readComputerUse(process.env.CODEX_HOME, pending.threadId) }];
       saveState(state);
+      if (pending.questionItem) {
+        send({ method: "item/completed", params: { threadId: pending.threadId, turnId: pending.turnId,
+          item: { ...pending.questionItem, status: "completed", success: true, contentItems: message.result.contentItems } } });
+        if (pending.questionIndex === 1) { sendParentQuestion(pending.threadId, pending.turnId, 2); return; }
+      }
       if (!serverRequests.size && state.lastInterrupt?.turnId !== pending.turnId) emitTurnCompleted(pending.threadId, pending.turnId, { completed: { type: "agentMessage", id: "approval-result", text: "Completed fixture request handling.", phase: "final_answer" } });
       return;
     }
     switch (message.method) {
       case "initialize":
+        if (state.unreachable) throw new Error("Fixture server unreachable");
         if (BEHAVIOR === "w5-initialize-hang") break;
         state.capabilities = message.params.capabilities || null;
         saveState(state);
@@ -364,7 +411,7 @@ rl.on("line", async (line) => {
         if (BEHAVIOR.startsWith("lost-turn:")) {
           state.turnReads = [...(state.turnReads || []), message.params];
           saveState(state);
-          if (BEHAVIOR === "lost-turn:unreadable") throw new Error("Recorded turn unavailable in fixture");
+          if (BEHAVIOR === "lost-turn:unreadable" || state.unreadable) throw new Error("Recorded turn unavailable in fixture");
         }
         const thread = ensureThread(state, message.params.threadId);
         send({ id: message.id, result: { thread: { ...buildThread(thread), turns: thread.turns || [] } } });
@@ -372,6 +419,7 @@ rl.on("line", async (line) => {
       }
 
       case "thread/start": {
+        if (BEHAVIOR === "lost-turn:startup") { process.exit(0); break; }
         if (BEHAVIOR === "auth-run-fails") {
           throw new Error("authentication expired; run codex login");
         }
@@ -379,6 +427,7 @@ rl.on("line", async (line) => {
           throw new Error("thread/start.persistFullHistory requires experimentalApi capability");
         }
         const thread = nextThread(state, message.params.cwd, message.params.ephemeral);
+        loadedThreads.add(thread.id);
         state.lastThreadStart = message.params;
         thread.sandbox = threadSandbox(message.params.sandbox);
         saveState(state);
@@ -414,6 +463,7 @@ rl.on("line", async (line) => {
           throw new Error("thread/resume.persistFullHistory requires experimentalApi capability");
         }
         const thread = ensureThread(state, message.params.threadId);
+        loadedThreads.add(thread.id);
         state.lastThreadResume = message.params;
         thread.sandbox = threadSandbox(message.params.sandbox);
         thread.updatedAt = now();
@@ -423,13 +473,19 @@ rl.on("line", async (line) => {
       }
 
       case "externalAgentConfig/import": {
+        const importId = "import_" + ((state.externalAgentImports || []).length + 1);
+        state.externalAgentImports = [...(state.externalAgentImports || []), { importId, params: message.params }];
+        saveState(state);
         if (BEHAVIOR === "external-import-unsupported") {
           send({ id: message.id, error: { code: -32601, message: "Unsupported method: externalAgentConfig/import" } });
           break;
         }
-        if (BEHAVIOR === "external-import-fails") {
-          send({ id: message.id, result: {} });
-          send({ method: "externalAgentConfig/import/completed", params: {} });
+        const success = { itemType: "SESSIONS", successes: [{ itemType: "SESSIONS", cwd: null, source: null, target: null }], failures: [] };
+        if (BEHAVIOR === "external-import-fails" || BEHAVIOR === "external-import-no-ledger") {
+          send({ id: message.id, result: { importId } });
+          send({ method: "externalAgentConfig/import/completed", params: { importId, itemTypeResults: [BEHAVIOR === "external-import-fails"
+            ? { itemType: "SESSIONS", successes: [], failures: [{ itemType: "SESSIONS", failureStage: "conversion", message: "Synthetic transcript conversion failed", errorType: null, subErrorType: null, source: null, cwd: null }] }
+            : success] } });
           break;
         }
         const sessions = (message.params.migrationItems || [])
@@ -440,6 +496,13 @@ rl.on("line", async (line) => {
         }
         const sourcePath = fs.realpathSync(session.path);
         const contents = fs.readFileSync(sourcePath, "utf8");
+        const latestImport = state.externalAgentImports.at(-1);
+        latestImport.sourcePath = sourcePath;
+        latestImport.sourceMode = fs.statSync(sourcePath).mode & 0o777;
+        latestImport.directoryMode = fs.statSync(path.dirname(sourcePath)).mode & 0o777;
+        if (BEHAVIOR === "external-import-early" && process.env.CODEX_COMPANION_TRANSCRIPT_PATH) {
+          fs.appendFileSync(process.env.CODEX_COMPANION_TRANSCRIPT_PATH, JSON.stringify({ type: "user", message: { content: "Appended during import" } }) + "\\n");
+        }
         const contentSha256 = crypto.createHash("sha256").update(contents).digest("hex");
         const ledger = loadImportLedger();
         let record = ledger.records.find(
@@ -458,7 +521,7 @@ rl.on("line", async (line) => {
           thread.name = title;
           thread.preview = messages.find((entry) => entry.role === "user")?.text || "";
           thread.visibleMessages = messages;
-          state.lastExternalAgentImport = { sourcePath, threadId: thread.id, messages };
+          state.lastExternalAgentImport = { sourcePath, threadId: thread.id, messages, importId };
           record = {
             source_path: sourcePath,
             content_sha256: contentSha256,
@@ -470,8 +533,13 @@ rl.on("line", async (line) => {
           saveState(state);
           saveImportLedger(ledger);
         }
-        send({ id: message.id, result: {} });
-        send({ method: "externalAgentConfig/import/completed", params: {} });
+        // Another import's completion must never satisfy the current request,
+        // even when both completions precede its response.
+        send({ method: "externalAgentConfig/import/completed", params: { importId: "unrelated-import", itemTypeResults: [] } });
+        const completed = { method: "externalAgentConfig/import/completed", params: { importId, itemTypeResults: [success] } };
+        if (BEHAVIOR === "external-import-early") send(completed);
+        send({ id: message.id, result: { importId } });
+        if (BEHAVIOR !== "external-import-early") send(completed);
         break;
       }
 
@@ -538,6 +606,11 @@ rl.on("line", async (line) => {
 	        saveState(state);
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
 
+        if (BEHAVIOR === "large-jsonl") {
+          emitTurnCompleted(thread.id, turnId, { completed: { type: "agentMessage", id: "large-message", text: prompt, phase: "final_answer" } });
+          break;
+        }
+
         if (BEHAVIOR === "computer-use-requests") {
           // node_repl's elicitation for an app that has no persisted approval.
           const id = "fixture-cua-request";
@@ -583,6 +656,13 @@ rl.on("line", async (line) => {
             interruptibleTurns.delete(turnId);
             emitTurnCompleted(thread.id, turnId, { completed: { type: "agentMessage", id: "fixture-done", text: "Completed fixture work.", phase: "final_answer" } });
           }
+          break;
+        }
+
+        if (BEHAVIOR === "parent-question-sequence") {
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          sendParentQuestion(thread.id, turnId, 1);
+          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
           break;
         }
 
@@ -764,13 +844,20 @@ rl.on("line", async (line) => {
 
 	        if (BEHAVIOR.startsWith("lost-turn:") && turnId === "turn_1") {
             send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
-            // Persist completion, then lose delivery to the admitted client.
+            for (let i = 1; i <= 36; i++) send({ method: "item/completed", params: { threadId: thread.id, turnId,
+              item: { type: "agentMessage", id: "progress_" + i, text: "Fixture progress " + i, phase: "commentary" } } });
+            // Keep the exact-turn state. Owner-stop stays attached until Duet
+            // disconnects; other lost-turn modes lose delivery immediately.
             const saved = loadState();
             const persisted = ensureThread(saved, thread.id).turns.find(turn => turn.id === turnId);
-            Object.assign(persisted, { status: "completed", completedAt: now(),
-              items: items.map(entry => entry.completed).filter(Boolean), error: null });
+            const status = BEHAVIOR === "lost-turn:owner-stop" ? "inProgress" : BEHAVIOR.slice("lost-turn:".length);
+            Object.assign(persisted, { status: status === "unreadable" ? "completed" : status,
+              completedAt: status === "inProgress" ? null : now(),
+              items: status === "inProgress" ? [] : items.map(entry => entry.completed).filter(Boolean),
+              error: status === "failed" ? { message: "Fixture worker failed" } : null });
             saveState(saved);
-            setTimeout(() => process.exit(0), 60);
+            if (BEHAVIOR === "lost-turn:owner-stop") interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+            else setTimeout(() => process.exit(0), 60);
             break;
           }
 
@@ -792,14 +879,32 @@ rl.on("line", async (line) => {
 	        break;
 	      }
 
+        case "thread/backgroundTerminals/clean": {
+          ensureThread(state, message.params.threadId);
+          const behavior = process.env.CODEX_FIXTURE_TERMINALS_CLEAN;
+          if (behavior === "timeout") break;
+          if (behavior === "unsupported") {
+            send({ id: message.id, error: { code: -32601, message: "Method not found" } });
+            break;
+          }
+          if (behavior === "unknown") throw new Error("Unknown method: thread/backgroundTerminals/clean");
+          if (behavior === "failed") throw new Error("Fixture cleanup failed");
+          send({ id: message.id, result: {} });
+          break;
+        }
 	      case "turn/interrupt": {
+          if (BEHAVIOR.startsWith("lost-turn:")) {
+            if (!loadedThreads.has(message.params.threadId)) throw new Error("thread not loaded");
+            const turn = ensureThread(state, message.params.threadId).turns.find(turn => turn.id === message.params.turnId);
+            if (turn?.status === "inProgress" && !state.ignoreInterrupt) Object.assign(turn, { status: "interrupted", completedAt: now() });
+          }
 	        state.lastInterrupt = {
 	          threadId: message.params.threadId,
 	          turnId: message.params.turnId
 	        };
 	        saveState(state);
 	        const pending = interruptibleTurns.get(message.params.turnId);
-	        if (pending) {
+	        if (pending && !state.ignoreInterrupt) {
 	          clearTimeout(pending.timer);
 	          interruptibleTurns.delete(message.params.turnId);
 	          send({
@@ -821,7 +926,7 @@ rl.on("line", async (line) => {
   } catch (error) {
     send({ id: message.id, error: { code: -32000, message: error.message } });
   }
-});
+}
 `;
   writeExecutable(scriptPath, source);
 
@@ -880,7 +985,7 @@ const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) 
 function fixture(behavior = "w5-working") {
   const dir = makeTempDir(), repo = path.join(dir, "repo"); fs.mkdirSync(repo); initGitRepo(repo); installFakeCodex(dir, behavior);
   const env = { ...buildEnv(dir), CLAUDE_PLUGIN_DATA: path.join(dir, "data"), CODEX_COMPANION_SESSION_ID: "fixture-session", CODEX_COMPANION_HOME: path.join(dir, "isolated") };
-  return { dir, repo, env, call: (...args) => run(process.execPath, [script, ...args], { cwd: repo, env }), state: () => JSON.parse(fs.readFileSync(path.join(dir, "fake-codex-state.json"))), answer: (job, id, text) => run(process.execPath, [script, "answer", job, "--question", id, "--json"], { cwd: repo, env, input: text }) };
+  return { dir, repo, env, call: (...args) => run(process.execPath, [script, ...args], { cwd: repo, env }), state: () => JSON.parse(fs.readFileSync(path.join(dir, "fake-codex-state.json"))), requests: () => fs.readFileSync(path.join(dir, "fake-codex-state.json.requests.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line)), answer: (job, id, text) => run(process.execPath, [script, "answer", job, "--question", id, "--json"], { cwd: repo, env, input: text }) };
 }
 function json(result, code = 0) { assert.equal(result.status, code, result.stderr + result.stdout); return JSON.parse(result.stdout); }
 function directLines(stdout) {
@@ -897,15 +1002,14 @@ function directLines(stdout) {
 function direct(result, code = 0) {
   const payload = json({ ...result, stdout: directLines(result.stdout).at(-1) }, code);
   for (const key of ["activity", "activityOmitted", "cursor", "startupTimings", "currentItem", "completedItems", "questionMessage"]) assert.equal(Object.hasOwn(payload, key), false, key);
-  assert.equal(typeof payload.activityCount, "number");
   return payload;
 }
 function directError(result) {
   const payload = json(result, 1);
   assert.equal(result.stdout.split("\n").length, 2, "exactly one error JSON line");
-  assert.deepEqual(Object.keys(payload).sort(), ["error", "status"]);
-  assert.equal(payload.status, "error"); assert.equal(typeof payload.error, "string"); assert.ok(payload.error.length);
-  assert.equal(result.stderr, `${payload.error}\n`);
+  assert.deepEqual(Object.keys(payload), ["status", "worker", "jobId", "summary", "next", "details"]);
+  assert.equal(payload.status, "error"); assert.equal(typeof payload.summary, "string"); assert.ok(payload.summary.length);
+  assert.equal(result.stderr, `${payload.summary}\n`);
   return payload;
 }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));

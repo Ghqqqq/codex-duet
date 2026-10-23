@@ -4,7 +4,7 @@ import type { CodexLiveMarker, CodexLiveState } from '../types';
 import { boundState, clearFinished, groupedSessions, isHiddenJob, normalizeSessions, visibleJobs, visibleSessions,
   collapseActivity, jobView, markerView, statusLine } from '../hooks/model';
 import { activityItems, eventItem, feedItems, feedLines, feedWindow, headerLayout, jobRow, recentEndedJobIds,
-  reconcileFeed, scrollFeed, selectedJob, width } from '../hooks/layout';
+  normalizeFeed, paneLayout, reconcileFeed, scrollFeed, selectedJob, width } from '../hooks/layout';
 
 const createdAt = '2026-10-18T00:00:00.000Z';
 const epoch = Date.parse(createdAt);
@@ -591,4 +591,97 @@ test('recent history sorts by completion and expires while preserving selection'
   expect(headerLayout(state, selected, 14).jobs.length).toBe(2);
   expect(headerLayout({ ...state, nowMs: epoch + 123000 }, selected, 14).jobs.map(job => job.id)).toEqual(['thread:newer']);
   expect(state.jobs.length).toBe(2);
+});
+
+test('each detailed turn exposes its prompt and hint clicks preserve the reading anchor across reload', async ($, on) => {
+  const prompt = [
+    'OBJECTIVE: Invalidate cached records.',
+    '- Keep the existing cache API while rejecting stale results from reads started before the write.',
+    '  * Preserve failed-write behavior and avoid clearing unrelated entries when a record update fails.',
+    '1. Run regression checks before reporting the final result.',
+    'VERIFY: npm test',
+    'REPORT: Summarize the fix.',
+  ].join('\n');
+  const first = jobView({ id: 'prompt-first', status: 'completed', completedAt: createdAt, threadId: 'prompt',
+    request: { prompt, report: true },
+    activity: [{ seq: 1, type: 'agentMessage', body: Array.from({ length: 50 }, (_, i) => `Activity ${i}`).join('\n') }],
+  }, marker('prompt-first'));
+  const second = jobView({ id: 'prompt-second', status: 'running', threadId: 'prompt',
+    request: { prompt: 'Verify the production build.' },
+  }, { ...marker('prompt-second'), createdAt: new Date(epoch + 1).toISOString() });
+  const state = boundState({ jobs: [first, second], selectedId: 'thread:prompt', nowMs: epoch });
+  const selected = selectedJob(state)!;
+  const sized = { ...props, scroll: { offset: 0, bodyRows: 36 } };
+  const rows = paneLayout(state, selected, sized.scroll.bodyRows).rows;
+  const lines = feedLines(selected, epoch, props.bodyColumns);
+  const stopped = normalizeFeed(lines, rows, { feedOffset: 1, following: false, seenLines: lines.length, columns: props.bodyColumns });
+  state.feeds = { [selected.id]: stopped };
+  seed(on, state);
+  const writes = track(on);
+  const promptRows = (feed = stopped) => feedLines(selected, epoch, props.bodyColumns, feed)
+    .filter(line => line.source === 'job:prompt-first:prompt-results');
+  expect(feedItems(selected, epoch).filter(item => item.prompt).map(item => item.prompt!.turnId)).toEqual([first.id, second.id]);
+  expect(first.prompt).toBe(prompt);
+  expect(promptRows().length).toBe(3);
+  const mount = () => $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: sized });
+  let ui = await mount();
+  expect((await ui.find({ key: 'toggle-prompt-prompt-first' }))?.props.plain).toBe(true);
+  await ui.press({ key: 'toggle-prompt-prompt-first' });
+  const expanded = writes.at(-1)!.feeds![selected.id]!;
+  expect(expanded.expandedPromptIds).toEqual([first.id]);
+  expect(expanded.anchor).toEqual(stopped.anchor);
+  expect(promptRows(expanded).length > 3).toBe(true);
+  expect(promptRows(expanded).at(-1)!.spans.map(span => span.text).join('')).toContain(prompt.split('\n').at(-1)!);
+  // Alignment is measured against fixture content, not a layout-string golden.
+  const list = promptRows(expanded).filter(line => line.start! >= prompt.indexOf('- ') && line.start! < prompt.indexOf('\n  *'));
+  const contentColumn = list[0]!.spans.map(span => span.text).join('').indexOf('Keep');
+  expect(list.slice(1).every(line => /^ */.exec(line.spans.map(span => span.text).join(''))![0].length === contentColumn)).toBe(true);
+  await ui.unmount();
+  ui = await mount();
+  const reloaded = JSON.parse(JSON.stringify(expanded));
+  expect(reconcileFeed(selected, selected, reloaded, epoch).anchor).toEqual(stopped.anchor);
+  await ui.press({ key: 'toggle-prompt-prompt-first' });
+  const collapsed = writes.at(-1)!.feeds![selected.id]!;
+  expect(collapsed.expandedPromptIds).toEqual([]);
+  expect(collapsed.anchor).toEqual(stopped.anchor);
+  expect(promptRows(collapsed).length).toBe(3);
+  await ui.unmount();
+});
+
+test('parent calls match C3 history only by callId across timeouts, approvals and missing history', () => {
+  const questionHistory = [
+    { id: 'timeout', callId: 'call-timeout', kind: 'question', text: 'Keep the cache expiry?', options: [], askedAt: createdAt,
+      answer: 'Not an answered resolution', resolution: 'timeout' },
+    { id: 'approval', callId: null, kind: 'approval', text: 'Allow the test runner?', options: [], askedAt: createdAt,
+      answeredAt: createdAt, answer: 'Allow', resolution: 'answered' },
+    { id: 'answered', callId: 'call-answer', kind: 'question', text: 'Keep the cache API?', options: [], askedAt: createdAt,
+      answeredAt: createdAt, answer: 'Y'.repeat(2100), resolution: 'answered' },
+    { id: 'legacy', kind: 'question', text: 'Legacy entry without a call ID', options: [], askedAt: createdAt,
+      answeredAt: createdAt, answer: 'Must not appear', resolution: 'answered' },
+  ];
+  const raw = { id: 'job-a', status: 'running', questionHistory,
+    pendingQuestion: { text: 'A pending question is not an answer source', answer: 'Not history', options: [] },
+    activity: [
+      { seq: 1, type: 'dynamicToolCall', tool: 'ask_parent', callId: 'call-timeout', lifecycle: 'started' },
+      { seq: 2, type: 'dynamicToolCall', tool: 'ask_parent', callId: 'call-timeout', lifecycle: 'completed' },
+      { seq: 3, type: 'mcpToolCall', server: 'duet_parent', tool: 'ask_parent', callId: 'call-answer', lifecycle: 'completed' },
+      { seq: 4, type: 'dynamicToolCall', tool: 'ask_parent', callId: 'no-history', lifecycle: 'completed' },
+      { seq: 5, type: 'dynamicToolCall', tool: 'ask_parent', lifecycle: 'completed' },
+    ] };
+  const job = jobView(raw, marker());
+  expect(job.events.map(event => [event.seq, event.questionText, event.answer])).toEqual([
+    [2, questionHistory[0]!.text, undefined],
+    [3, questionHistory[2]!.text, 'Y'.repeat(2000)], [4, undefined, undefined], [5, undefined, undefined],
+  ]);
+  const items = job.events.map(event => eventItem(event, job, epoch));
+  expect(items.map(item => item.results.length)).toEqual([2, 3, 1, 1]);
+  expect(items[0]!.results[1]!.text).toBe(questionHistory[0]!.text);
+  expect(items[1]!.results[2]!.text).toContain('Y'.repeat(2000));
+  const capped = jobView({ ...raw, questionHistory: questionHistory.slice(1) }, marker());
+  expect(capped.events.map(event => [event.seq, event.answer])).toEqual([
+    [2, undefined], [3, 'Y'.repeat(2000)], [4, undefined], [5, undefined],
+  ]);
+  const older = jobView({ ...raw, questionHistory: undefined }, marker());
+  expect(older.events.every(event => event.answer === undefined && event.questionText === undefined)).toBe(true);
+  expect(jobView(raw, marker(), false).events).toEqual([]);
 });

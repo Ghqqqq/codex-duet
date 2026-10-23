@@ -47,7 +47,8 @@ smaller model. It supports `--background`, `--wait`, `--resume` and `--fresh`.
 
 If you do not pass `--model` or `--effort`, delegated tasks use `gpt-6-astra` and `xhigh`.
 If you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`. For planned,
-parallel work Claude uses direct mode, with `codex:codex-worker` as fallback (see above).
+parallel work Claude prefers `codex:codex-native`, then background `duet task`,
+with `codex:codex-worker` as the Haiku fallback. See [direct mode](direct-mode.md).
 
 ### `/codex:ultra-codex`
 
@@ -73,7 +74,8 @@ session or the session's end turn it off; `--resume` keeps it. The saved scale
 (`--quick`/`--thorough`, default auto) and `--max-workers` apply to every task
 in the mode.
 
-Because the workers share none of Claude's context, the command puts Claude's
+Because workers use a different model and receive the conversation only through
+an explicit `--fork`, the command puts Claude's
 effort at both ends of each assignment: every brief follows a fixed template
 (objective, why, known context with file:line, interface contract, owned paths,
 non-goals, acceptance criteria, verification commands, when to ask), and every
@@ -103,10 +105,10 @@ answering or renewing the lease; JSON output is unchanged.
 
 ### `/codex:result`
 
-Starts with the outcome and stored summary, followed by nonempty findings,
-captured verification, unverified claims, assumptions and blockers (including
-app/tab/session identifiers), plus the Codex session ID and next action.
-JSON output and exit codes are unchanged.
+Returns report v2: status, worker, jobId, summary, nonempty evidence, `next` and
+`details`. Add `--details` for full evidence, handles, runtime settings, artifact
+paths and app/tab/session blocker identifiers. It retrieves a result without
+starting another turn.
 
 ### `/codex:cancel`
 
@@ -131,8 +133,33 @@ while you are watching the session.
 
 ## Companion subcommands
 
-Workers call `node "$CODEX_COMPANION"` in a Claude session (or
-`node plugins/codex/scripts/codex-companion.mjs` from the repository root):
-`task`, `wait`, `answer`, `status`, `result`, `cancel`, `setup` and
-`journal <start|add|validate|close|show|list>`. Run it without arguments for full
-usage.
+Use `duet <subcommand>` in a Claude session, or `plugins/codex/bin/duet` from the
+repository root. Run `duet task --help` for flags and side-effect-free examples.
+SessionStart supplies the session ID; `--session <id>` overrides it.
+
+| Command | Use |
+| --- | --- |
+| `duet task` | Fresh assignment; brief only on stdin; implies `--direct` |
+| `duet task --to <worker>` | New turn on that worker's thread/cwd, inheriting recorded settings unless overridden |
+| `duet task --fork` | Import the current Claude transcript into a new thread, then run the stdin brief; fidelity not verified |
+| `duet answer <worker>` | Answer the pending question from stdin and keep waiting on the same turn |
+| `duet wait <worker>` | Attach the sole owner wait and renew its lease |
+| `duet result <worker>` | Retrieve report v2 if missing from the completion notification |
+| `duet result <worker> --details` | Full evidence, settings, handles and artifact paths |
+| `duet status [worker]` | Observe jobs without renewing their lease |
+| `duet cancel <worker>` | Cancel and report whether interruption was confirmed |
+| `duet setup` | Runtime readiness and configuration |
+| `duet journal <start|add|validate|close|show|list>` | Acceptance criteria, verdicts and decisions |
+
+Worker names are unique within a Claude session. Worker commands also accept job
+IDs; use a job ID for an older turn. When a name still matches several jobs,
+`answer` picks the one with a pending question and `wait` the active one. Native
+`codex:codex-native` agents receive follow-ups and answers via SendMessage instead.
+Run task/wait/answer in background Bash; reports arrive with completion
+notifications. Use single-quoted arguments and `DUET_TASK`/`DUET_ANSWER` heredocs.
+Double quotes, pipes, compound commands and flags outside the permission hook's
+allowlist use normal permissions. Never start two waits for one job.
+
+Compatibility: `node "$CODEX_COMPANION" <subcommand>` remains supported, including
+the legacy non-direct/feed modes. Some slash-command preambles call the absolute
+companion path so they can run before PATH refreshes. New dispatches use `duet`.

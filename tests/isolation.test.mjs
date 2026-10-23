@@ -32,8 +32,6 @@ test('exact worker threads survive interleaved tasks and background follow-ups',
   assert.notEqual(first.threadId, second.threadId);
   assert.equal(task('--thread', first.threadId, 'Clarify module A').threadId, first.threadId);
   assert.equal(f.state().lastTurnStart.threadId, first.threadId);
-  assert.equal(f.state().lastTurnStart.serviceTier, null);
-  assert.equal(f.state().lastTurnStart.effort, 'xhigh');
   assert.equal(task('--thread', second.threadId).threadId, second.threadId);
   assert.equal(f.state().lastTurnStart.threadId, second.threadId);
   task('--thread', first.threadId, '--fast', '--effort', 'max', 'Investigate the hard case');
@@ -53,8 +51,6 @@ test('exact worker threads survive interleaved tasks and background follow-ups',
   assert.equal(completed?.status, 'completed');
   assert.equal(completed.result.status, 0);
   assert.equal(completed.result.threadId, first.threadId);
-  assert.equal(f.state().lastTurnStart.serviceTier, null);
-  assert.equal(f.state().lastTurnStart.effort, 'xhigh');
   assert.equal(f.state().lastTurnStart.model, 'gpt-6-astra');
   assert.equal(f.state().threads.length, 2, 'follow-ups must not create replacement threads');
 });
