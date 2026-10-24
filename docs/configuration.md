@@ -103,10 +103,13 @@ allowed again. Both take bundle identifiers (`com.google.Chrome`), support
 `--dry-run` and `--json`, and never run from a worker. `task
 --approve-computer-app` approves only the listed apps, only for that call: the
 grant is written as a session-scoped approval for the job's own thread while the
-turn runs and withdrawn afterwards. `--to`/`--thread` follow-ups inherit recorded
-request grants unless explicitly overridden; `--continue` inherits the selected
-job's recorded grants. If the user has only ever chosen "This
-session" in the Codex app, mirror finds nothing to copy; choose "Always" there,
+turn runs and withdrawn afterwards; stale task grants after worker death are
+released at the next start or recovery. `--to`/`--thread` follow-ups inherit
+original request grants only from the same Claude session, unless explicitly
+overridden; `--continue` inherits only eligible recorded grants. Runtime-only
+approvals and foreign dispatches after adoption are excluded. An explicit
+`--thread` may still inherit model, effort, sandbox and speed across sessions.
+If the user has only ever chosen "This session" in the Codex app, mirror finds nothing to copy; choose "Always" there,
 use `--allow-computer-app`, or answer the forwarded question when a worker asks.
 "Allow for this task" grants the app to that worker's thread until the turn
 ends; "Allow always" adds an explicit entry to the isolated home's list, never to
@@ -192,13 +195,16 @@ session store.
 Task dispatch automatically forwards Claude's loaded CLAUDE.md/rules through
 Codex's `developerInstructions`. Only the first `prompt.context` in each Claude
 session can capture managed, user, project and local instruction files, including
-loaded imports; auto-memory entries are excluded. Later contexts are ignored
+loaded imports; auto-memory entries are excluded, including through symlinked
+configuration or memory directories in the scan fallback. Later contexts are ignored
 because this event has no agent attribution. CLAUDE.md edits apply from the next
 Claude session. The forwarded text is capped at 60,000 UTF-16 units,
 including executor framing and omission notes. `duet result <worker> --details`
 includes `claudeMd` metadata: source, completeness, approximate status and omissions.
 
-If the first loaded inventory is unavailable or incomplete, no snapshot is saved;
+A valid loaded inventory remains authoritative even when the capture budget
+truncates it: omissions are reported without scanning filtered-out files back
+in. If the first inventory is unavailable or invalid, no snapshot is saved;
 Duet uses an approximate startup scan of
 readable managed policy, user CLAUDE.md/rules and the ancestors of the Claude
 session's directory (the worker cwd when that is unknown). It cannot

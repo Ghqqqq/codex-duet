@@ -4,8 +4,8 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { makeTempDir } from "./helpers.mjs";
-import { ensureStateDir, resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, resolveStateRoot, saveState } from "../plugins/codex/scripts/lib/state.mjs";
+import { initGitRepo, makeTempDir } from "./helpers.mjs";
+import { ensureStateDir, listSessionJobs, resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateDirForRoot, resolveStateFile, resolveStateRoot, saveState } from "../plugins/codex/scripts/lib/state.mjs";
 
 test("resolveStateDir is a per-workspace directory under the isolated home, independent of CLAUDE_PLUGIN_DATA and the temp dir", () => {
   const workspace = makeTempDir();
@@ -23,6 +23,21 @@ test("resolveStateDir is a per-workspace directory under the isolated home, inde
   }
   ensureStateDir(workspace);
   for (const dir of [stateRoot, stateDir, path.join(stateDir, "jobs")]) assert.equal(fs.statSync(dir).mode & 0o777, 0o700, dir);
+
+  // Recorded roots use the same key, including legacy subdirectory/alias
+  // records and repositories that have since been deleted.
+  assert.equal(resolveStateDirForRoot(workspace), stateDir);
+  const repo = makeTempDir(), nested = path.join(repo, "nested");
+  initGitRepo(repo); fs.mkdirSync(nested);
+  const repoState = resolveStateDir(repo), alias = path.join(workspace, "repo-alias");
+  fs.symlinkSync(repo, alias, process.platform === "win32" ? "junction" : "dir");
+  for (const root of [repo, nested, alias]) assert.equal(resolveStateDirForRoot(root), repoState);
+  ensureStateDir(repo);
+  const jobs = [repo, nested, alias].map((workspaceRoot, i) => ({ id: `task-root-${i}`, workspaceRoot, sessionId: "root-mapping" }));
+  fs.writeFileSync(path.join(repoState, "state.json"), JSON.stringify({ jobs }));
+  assert.deepEqual(listSessionJobs(nested, "root-mapping").map(job => job.id).sort(), jobs.map(job => job.id));
+  fs.rmSync(repo, { recursive: true, force: true });
+  assert.equal(resolveStateDirForRoot(repo), repoState);
 });
 
 test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", () => {

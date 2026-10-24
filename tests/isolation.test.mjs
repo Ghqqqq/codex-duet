@@ -65,7 +65,7 @@ test('exact thread rejects ambiguous selectors and unknown threads', () => {
   const missing = run(process.execPath, [script, 'task', '--thread', '--json'], {cwd: f.repo, env: f.env});
   assert.notEqual(missing.status, 0);
 
-  const unknown = run(process.execPath, [script, 'task', '--thread', 'missing-thread', 'follow up'], {cwd: f.repo, env: f.env});
+  const unknown = run(process.execPath, [script, 'task', '--thread', 'missing-thread', '--sandbox', 'read-only', 'follow up'], {cwd: f.repo, env: f.env});
   assert.notEqual(unknown.status, 0);
   assert.equal(f.state().threads.length, 0);
 });

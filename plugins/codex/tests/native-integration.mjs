@@ -54,7 +54,7 @@ function fixture(behavior) {
   let now = 1800000000000;
   const timers = new Set();
   let controller = new AbortController(), agents = [], hooks;
-  let modelCalls = 0, onWait;
+  let modelCalls = 0, onWait, syntheticUsage;
   const $ = {
     plugin: { name: 'codex', root: plugin },
     session: { id: async () => 'native-session', cwd: async () => `${root}/repo`, root: async () => `${root}/repo`,
@@ -126,6 +126,11 @@ function fixture(behavior) {
               record.error = `$.process.spawn(${request.argv[0]}) aborted`;
               throw Object.assign(new Error(record.error), { name: 'AbortError' });
             }
+            if (syntheticUsage && request.argv[2] === 'task') {
+              const report = JSON.parse(record.chunks.filter(c => c.stream === 'stdout').map(c => c.text).join('').trim().split('\n').at(-1));
+              const chunk = { stream: 'stdout', text: JSON.stringify({ ...report, usage: syntheticUsage }) + '\n' };
+              record.chunks.push(chunk); record.timeline?.push({ chunk }); yield chunk;
+            }
             settle(record.exit); return record.exit;
           } catch (error) { fail(error); throw error; }
           finally {
@@ -163,9 +168,18 @@ function fixture(behavior) {
   async function invoke(event, input, bottom) {
     const e = clone(input), record = { event, input: e };
     capture.events.push(record);
-    const next = Object.assign(bottom, { signal: controller.signal });
-    const value = hooks.has(event) ? hooks.get(event).fn($, e, next) : next(e);
+    let called = false, cached;
+    const next = Object.assign(input => {
+      if (called && event !== 'turn.step') return cached;
+      called = true;
+      return cached = bottom(input);
+    }, { signal: controller.signal });
+    const hook = hooks.get(event);
     if (event === 'turn.step') {
+      const value = (async function* () {
+        try { return yield* (hook ? hook.fn($, e, next) : next(e)); }
+        catch (error) { if (!hook?.catch) throw error; return yield* hook.catch($, e, next); }
+      })();
       const chunks = []; let step;
       do { step = await value.next(); if (!step.done) { chunks.push(step.value); record.chunks = chunks; } } while (!step.done);
       record.chunks = chunks; record.result = step.value; record.processCount = capture.processes.length;
@@ -174,23 +188,29 @@ function fixture(behavior) {
       assert.equal(chunks.filter(c => c.kind === 'text').map(c => c.text).join(''), step.value.answer);
       return step.value;
     }
-    record.result = await value;
+    try { record.result = await (hook ? hook.fn($, e, next) : next(e)); }
+    catch (error) { if (!hook?.catch) throw error; record.result = await hook.catch($, e, next); }
     return record.result;
   }
-  async function turn(text, number, aborted = false) {
+  async function turn(text, number, aborted = false, options = {}) {
     controller = new AbortController();
     let rewritten;
+    if (options.effort) await invoke('tool.call', { tool: 'Agent', tool_use_id: `spawn-${number}`,
+      subagent_type: AGENT_TYPE, description: 'Native fake task', prompt: text, effort: options.effort }, async () => ({ result: {} }));
     const spawnInput = { tool_use_id: `spawn-${number}`, prompt: text, description: 'Native fake task',
       subagentType: AGENT_TYPE, provider: { plugin: 'codex', tier: 'user' }, parentModel: 'haiku',
-      background: true, fork: false, name: 'native-worker', cwd: `${root}/repo`,
+      background: options.background ?? true, permissionMode: options.permissionMode ?? 'default',
+      fork: false, name: 'native-worker', cwd: `${root}/repo`,
       ...(number > 1 ? { resume: { agentId: 'native-agent' } } : {}) };
-    await invoke('agent.spawn', spawnInput, async e => {
+    const spawning = invoke('agent.spawn', spawnInput, async e => {
       rewritten = e.prompt;
       agents = [{ id: 'native-agent', type: AGENT_TYPE, name: 'native-worker', description: e.description, status: 'running' }];
       return { model: 'haiku', agentId: 'native-agent' };
     });
+    await spawning;
+    await options.afterSpawn?.();
     await invoke('turn.start', { agentId: 'native-agent', turnId: `turn-${number}`, text: rewritten }, async e => ({ turnId: e.turnId }));
-    const result = await invoke('turn.step', { agentId: 'native-agent', turnId: `turn-${number}`, index: 0, model: 'haiku', messageCount: 1 }, async function* () {
+    const result = await invoke('turn.step', { agentId: 'native-agent', turnId: `turn-${number}`, index: 0, model: 'haiku', effort: 'low', messageCount: 1 }, async function* () {
       modelCalls++; throw new Error('Claude model bottom was reached');
     });
     if (aborted) controller = new AbortController();
@@ -222,6 +242,7 @@ function fixture(behavior) {
     await delay(0);
   }
   return { root, $, turn, reload, readStore, save, invoke, env, capture, jobs, advance, timers,
+    withUsage: usage => { syntheticUsage = usage; },
     setStore: data => fs.writeFileSync(storeFile, JSON.stringify(data)),
     codexState: () => JSON.parse(fs.readFileSync(`${root}/bin/fake-codex-state.json`, 'utf8')),
     // Stop as a person would: after the early handle lookup has run.
@@ -292,7 +313,7 @@ test('real companion: dispatch, completion and reload follow-up reuse the Codex 
   assert.equal(f.capture.processes.filter(p => p.kind === 'spawn' && p.request.argv[2] === 'wait').length, 0);
   assert.notEqual(second.jobId, first.jobId);
   assert.equal(first.next, 'SendMessage to native-worker to continue');
-  assert.equal(first.details, `duet result ${first.worker} --details`);
+  assert.equal(first.details, `duet result '${first.jobId}' --details`);
   assert.deepEqual(Object.keys(first).slice(0, 4), ['status', 'worker', 'jobId', 'summary']);
   const state = Object.values(f.readStore())[0];
   assert.equal(state.incoming, undefined);
@@ -309,17 +330,97 @@ test('real companion: dispatch, completion and reload follow-up reuse the Codex 
 });
 
 test('real companion: question/answer stays on the job; abort interrupts fake Codex and persists cancellation', async () => {
-  const question = fixture('w5-parent');
+  const question = fixture('parent-question-sequence');
   const asked = await question.turn('Ask the fake parent a question.', 1);
   assert.equal(asked.status, 'needs_answer'); assert.ok(asked.question.id);
   assert.equal(asked.next, 'SendMessage to native-worker with the answer');
   assert.ok(question.capture.notices.some(n => n.message.content[0].text === `? Waiting for Claude: ${asked.question.text}`));
   question.reload();
-  const answered = await question.turn('Small', 2);
+  // Entering plan mode cannot answer into a previously writable live turn.
+  const inPlan = await question.turn('Do not resume writes from plan mode.', 2, false, { permissionMode: 'plan' });
+  assert.equal(inPlan.blockers[0].code, 'native_plan_mode_read_only');
+  assert.equal(question.capture.processes.filter(p => p.request.argv[2] === 'answer').length, 0);
+  // Another owner path answers Q1 and the same job parks at Q2 before Claude's
+  // delayed Q1 answer arrives. Never retarget that text to the new question.
+  const jobBeforeAnswer = question.jobs()[0];
+  const external = spawnSync(process.execPath, [plugin + '/bin/duet', 'answer', asked.jobId,
+    '--question', asked.question.id, '--owner', jobBeforeAnswer.ownerId, '--timeout-sec', '5',
+    '--cwd', `${question.root}/repo`, '--session', 'native-session'], { env: question.env, input: 'Small', encoding: 'utf8' });
+  assert.equal(external.status, 0, external.stderr);
+  const current = await until(() => question.jobs().find(job => job.pendingQuestion?.id !== asked.question.id)?.pendingQuestion);
+  const stale = await question.turn('Late Q1 answer', 3);
+  assert.equal(stale.status, 'needs_answer');
+  assert.equal(stale.question.id, current.id);
+  assert.equal(stale.question.text, current.text);
+  assert.deepEqual(stale.question.options, current.options);
+  assert.equal(question.capture.processes.filter(p => p.request.argv[2] === 'answer').length, 0);
+  assert.equal(question.codexState().serverRequestReplies.length, 1);
+  const answered = await question.turn('Small', 4);
   assert.equal(answered.status, 'completed'); assert.equal(answered.jobId, asked.jobId);
   assert.equal(question.codexState().nextTurnId, 2);
   assert.ok(JSON.stringify(question.codexState().serverRequestReplies).includes('Small'));
   question.save();
+
+  const questionSave = fixture('parent-question-sequence'), questionSet = questionSave.$.store.set;
+  let finalFailed = false;
+  questionSave.$.store.set = async (key, value) => {
+    if (!finalFailed && value.answer?.status === 'needs_answer') {
+      finalFailed = true;
+      throw new Error('Final question write failed before commit');
+    }
+    return questionSet(key, value);
+  };
+  const shown = await questionSave.turn('Ask a question whose final write fails.', 1);
+  assert.equal(finalFailed, true);
+  assert.equal(shown.status, 'needs_answer');
+  questionSave.reload();
+  assert.equal((await questionSave.turn('Small', 2)).status, 'needs_answer');
+  const submitted = questionSave.capture.processes.find(p => p.request.argv[2] === 'answer');
+  assert.equal(submitted.request.argv[submitted.request.argv.indexOf('--question') + 1], shown.question.id);
+
+  // A failure before returning Q2 must not record it as shown. Also cover a
+  // finalisation write which commits and then throws: Q2 must still be returned.
+  for (const finalWrite of [false, true]) {
+    const failure = fixture('parent-question-sequence');
+    const q1 = await failure.turn('Ask Q1 before injecting a store failure.', 1);
+    const job = failure.jobs()[0];
+    const external = spawnSync(process.execPath, [plugin + '/bin/duet', 'answer', q1.jobId,
+      '--question', q1.question.id, '--owner', job.ownerId, '--timeout-sec', '5',
+      '--cwd', `${failure.root}/repo`, '--session', 'native-session'], { env: failure.env, input: 'Small', encoding: 'utf8' });
+    assert.equal(external.status, 0, external.stderr);
+    const q2 = await until(() => failure.jobs().find(job => job.pendingQuestion?.id !== q1.question.id)?.pendingQuestion);
+    const set = failure.$.store.set;
+    let writes = 0, injected = false;
+    failure.$.store.set = async (key, value) => {
+      if (key.startsWith('native:v2:') && value.intent?.turnId === 'turn-2' && value.status === 'needs_answer') {
+        if (finalWrite ? value.answer?.status === 'needs_answer' : ++writes === 2) {
+          injected = true;
+          if (finalWrite) await set(key, value);
+          throw new Error('Injected question report save failure');
+        }
+      }
+      return set(key, value);
+    };
+    const failed = await failure.turn('Late Q1 answer', 2);
+    assert.equal(injected, true);
+    const saved = Object.values(failure.readStore()).find(s => s.agentId === 'native-agent');
+    if (finalWrite) {
+      assert.equal(failed.status, 'needs_answer');
+      assert.equal(failed.question.id, q2.id);
+      assert.equal(saved.questionId, q2.id);
+    } else {
+      assert.equal(failed.status, 'blocked');
+      assert.equal(saved.questionId, q1.question.id);
+      failure.reload();
+      const retried = await failure.turn('Retry the late Q1 answer', 3);
+      assert.equal(retried.status, 'needs_answer');
+      assert.equal(retried.question.id, q2.id);
+      assert.equal(retried.question.text, q2.text);
+      assert.deepEqual(retried.question.options, q2.options);
+    }
+    assert.equal(failure.capture.processes.filter(p => p.request.argv[2] === 'answer').length, 0);
+    assert.equal(failure.codexState().serverRequestReplies.length, 1);
+  }
 
   const cancellation = fixture('interruptible-slow-task');
   cancellation.stopOnWait();
@@ -333,7 +434,7 @@ test('real companion: question/answer stays on the job; abort interrupts fake Co
   assert.equal(stopped.worker, job.agentName);
   assert.equal(stopped.jobId, job.id);
   assert.equal(stopped.next, 'SendMessage to native-worker to continue');
-  assert.ok([job.agentName, job.id].some(target => stopped.details === `duet result ${target} --details`));
+  assert.equal(stopped.details, `duet result '${job.id}' --details`);
   assert.ok(!stopped.blockers?.some(blocker => blocker.code === 'native_adapter_error'));
   assert.equal(job.ownerAttached, false);
   assert.equal(job.dispatchNonce, 'native-session:native-agent:turn-1');
@@ -436,11 +537,270 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   f.save();
 
   const invalid = fixture('slow-task');
-  const rejected = await invalid.turn('DUET: --approve-browser-origin https://example.test\nNever dispatch.', 1);
+  const rejected = await invalid.turn('DUET: --approve-browser-origin https://example.test\nNever dispatch.', 1, false, { effort: 'high' });
   assert.equal(rejected.status, 'blocked');
   assert.ok(rejected.summary.includes('--model'));
   assert.equal(invalid.capture.processes.length, 0);
+
+  const tasks = () => invalid.capture.processes.filter(p => p.kind === 'spawn' && p.request.argv[2] === 'task');
+  const setting = (request, flag) => request.argv[request.argv.indexOf(flag) + 1];
+  const badSandbox = await invalid.turn('DUET: --sandbox invalid\nReject before reserving a job.', 2);
+  assert.equal(badSandbox.status, 'blocked');
+  assert.equal(invalid.jobs().length, 0);
+  invalid.reload();
+  const corrected = await invalid.turn('Corrected foreground plan.', 3, false, { background: false, permissionMode: 'plan' });
+  assert.equal(corrected.status, 'completed');
+  assert.equal(setting(tasks().at(-1).request, '--sandbox'), 'read-only');
+  assert.equal(setting(tasks().at(-1).request, '--effort'), 'high');
+  assert.equal(invalid.jobs()[0].request.effort, 'high');
+  const foreground = invalid.capture.events.filter(e => e.event === 'turn.step').at(-1);
+  assert.ok(foreground.chunks.some(c => c.kind === 'thinking'));
+  assert.deepEqual(JSON.parse(foreground.result.answer), corrected);
+  assert.equal(/^background:\s*true$/m.test(fs.readFileSync(plugin + '/agents/codex-native.md', 'utf8')), false);
+
+  assert.equal((await invalid.turn('DUET: --fork\nReject a fork continuation.', 4)).status, 'blocked');
+  assert.equal(invalid.jobs().length, 1);
+  invalid.reload();
+  const continued = await invalid.turn('DUET: --sandbox workspace-write\nContinue outside plan mode.', 5);
+  assert.equal(continued.status, 'completed');
+  const continuedJob = invalid.jobs().find(job => job.id === continued.jobId);
+  assert.equal(continuedJob.request.threadId, invalid.jobs().find(job => job.id === corrected.jobId).threadId);
+  assert.equal(continuedJob.request.sandbox, 'workspace-write');
+  assert.equal(continuedJob.request.effort, 'high');
+  assert.equal(tasks().at(-1).request.argv.includes('--effort'), false);
+  for (const [number, sandbox] of [[6, 'danger-full-access'], [7, 'workspace-write']]) {
+    const count = tasks().length;
+    const refused = await invalid.turn(`DUET: --sandbox ${sandbox}\nPlan cannot write.`, number, false, { permissionMode: 'plan' });
+    assert.equal(refused.status, 'blocked');
+    assert.equal(refused.blockers[0].code, 'native_plan_mode_read_only');
+    assert.equal(tasks().length, count);
+    assert.equal(invalid.jobs().length, 2);
+  }
+  const usage = { inputTokens: 12345, cachedInputTokens: 8000, outputTokens: 678, reasoningOutputTokens: 12, totalTokens: 13023 };
+  invalid.withUsage(usage);
+  const noticeCount = invalid.capture.notices.length;
+  const planned = await invalid.turn('DUET: --effort low\nContinue planning.', 8, false, { permissionMode: 'plan' });
+  assert.equal(planned.status, 'completed');
+  assert.equal(setting(tasks().at(-1).request, '--sandbox'), 'read-only');
+  assert.equal(setting(tasks().at(-1).request, '--effort'), 'low');
+  assert.deepEqual(planned.usage, usage);
+  const notices = invalid.capture.notices.slice(noticeCount).filter(n => n.message.content[0].text.includes('12,345'));
+  assert.equal(notices.length, 1);
+  assert.ok(notices[0].message.content[0].text.includes('8,000'));
+  assert.ok(notices[0].message.content[0].text.includes('678'));
+
+  // Availability failure is a structured pre-reservation rejection too; its
+  // wording is deliberately unrelated to invalid DUET flags.
+  invalid.withUsage(undefined);
+  const executable = invalid.env.CODEX_COMPANION_BIN, jobCount = invalid.jobs().length;
+  invalid.env.CODEX_COMPANION_BIN = `${invalid.root}/bin/unavailable-codex`;
+  const unavailable = await invalid.turn('Dispatch with the fixture binary unavailable.', 9);
+  assert.equal(unavailable.status, 'blocked');
+  assert.equal(invalid.jobs().length, jobCount);
+  const failed = tasks().at(-1);
+  assert.ok(Number.isInteger(failed.exit.code) && failed.exit.code !== 0);
+  const failure = JSON.parse(failed.chunks.filter(c => c.stream === 'stdout').map(c => c.text).join('').trim().split('\n').at(-1));
+  assert.equal(failure.status, 'error');
+  assert.equal(failure.jobId, null);
+  invalid.env.CODEX_COMPANION_BIN = executable;
+  invalid.reload();
+  assert.equal((await invalid.turn('Retry after restoring the fixture binary.', 10)).status, 'completed');
+  assert.equal(invalid.jobs().length, jobCount + 1);
   invalid.save();
+
+  // Explicit effort is separate from the shell's effective low. Headers win;
+  // max passes through; absence leaves the companion's default untouched.
+  for (const [effort, header, expected] of [[undefined, '', 'xhigh'], ['high', 'DUET: --effort low\n', 'low'], ['max', '', 'max']]) {
+    const effortFixture = fixture('slow-task');
+    const completed = await effortFixture.turn(header + 'Check effort precedence.', 1, false, { effort, background: false });
+    assert.equal(completed.status, 'completed');
+    assert.equal(effortFixture.jobs()[0].request.effort, expected);
+    const request = effortFixture.capture.processes.find(p => p.request.argv[2] === 'task').request;
+    if (!effort) assert.equal(request.argv.includes('--effort'), false);
+    else assert.equal(setting(request, '--effort'), expected);
+  }
+  const symlinked = fixture('slow-task');
+  fs.symlinkSync(`${symlinked.root}/repo`, `${symlinked.root}/linked`);
+  symlinked.$.session.cwd = async () => `${symlinked.root}/linked`;
+  assert.equal((await symlinked.turn('Start in a symlinked workspace.', 1)).status, 'completed');
+  symlinked.reload();
+  assert.equal((await symlinked.turn('DUET: --cwd .\nContinue in the same workspace.', 2)).status, 'completed');
+  assert.equal(Object.values(symlinked.readStore()).find(s => s.agentId === 'native-agent').cwd, `${symlinked.root}/repo`);
+  assert.equal(symlinked.codexState().threads.length, 1);
+
+  const planFirst = fixture('slow-task');
+  const planBlocked = await planFirst.turn('DUET: --sandbox danger-full-access\nReject writable first launch.', 1, false, { permissionMode: 'plan' });
+  assert.equal(planBlocked.blockers[0].code, 'native_plan_mode_read_only');
+  assert.equal(planFirst.jobs().length, 0);
+  assert.equal(planFirst.capture.processes.length, 0);
+  planFirst.reload();
+  assert.equal((await planFirst.turn('Corrected first plan.', 2, false, { permissionMode: 'plan' })).status, 'completed');
+  assert.equal(planFirst.jobs()[0].request.sandbox, 'read-only');
+
+  // The host can continue a spawned agent after the hook's binding write fails.
+  // Memory recovers mode/effort; a reload with only the failure guard blocks.
+  for (const [header, resume, reload] of [
+    ['DUET: --sandbox workspace-write\n', false, false], ['', false, false],
+    ['DUET: --sandbox workspace-write\n', true, false], ['', true, true],
+  ]) {
+    const binding = fixture('slow-task');
+    if (resume) assert.equal((await binding.turn('First run outside plan mode.', 1)).status, 'completed');
+    const count = binding.jobs().length, set = binding.$.store.set;
+    let injected = false;
+    binding.$.store.set = async (key, value) => {
+      if (!injected && key.startsWith('native:v2:') && value.permissionMode === 'plan') {
+        injected = true;
+        throw new Error('Injected plan binding failure');
+      }
+      return set(key, value);
+    };
+    const report = await binding.turn(header + 'Recover the plan binding.', resume ? 2 : 1, false, {
+      permissionMode: 'plan', effort: 'high',
+      afterSpawn: reload ? () => binding.reload() : undefined,
+    });
+    assert.equal(injected, true);
+    if (header || reload) {
+      assert.equal(report.status, 'blocked');
+      assert.equal(report.blockers[0].code, reload ? 'native_binding_unavailable' : 'native_plan_mode_read_only');
+      assert.equal(binding.jobs().length, count);
+      assert.equal(binding.capture.processes.filter(p => p.request.argv[2] === 'task').length, count);
+    } else {
+      assert.equal(report.status, 'completed');
+      const job = binding.jobs().find(job => job.id === report.jobId);
+      assert.equal(job.request.sandbox, 'read-only');
+      assert.equal(job.request.effort, 'high');
+    }
+  }
+
+  // Every native-state binding write can fail. A separate guard protects an
+  // existing writable question after reload; missing new state also blocks.
+  for (const resumed of [false, true]) {
+    const lost = fixture('parent-question-sequence');
+    if (resumed) assert.equal((await lost.turn('Ask outside plan mode.', 1)).status, 'needs_answer');
+    const set = lost.$.store.set, count = lost.jobs().length;
+    lost.$.store.set = async (key, value) => {
+      if (key.startsWith('native:v2:')) throw new Error('Binding writes unavailable');
+      return set(key, value);
+    };
+    const report = await lost.turn('Small', resumed ? 2 : 1, false, { permissionMode: 'plan',
+      afterSpawn: () => { lost.$.store.set = set; lost.reload(); } });
+    assert.equal(report.blockers[0].code, 'native_binding_unavailable');
+    assert.equal(lost.jobs().length, count);
+    assert.equal(lost.capture.processes.filter(p => p.request.argv[2] === 'answer').length, 0);
+  }
+
+  for (const fault of ['node', 'spawn', 'intent']) {
+    const rejected = fixture('slow-task'), run = rejected.$.process.run, spawn = rejected.$.process.spawn, set = rejected.$.store.set;
+    let injected = false;
+    const fail = () => { injected = true; throw new Error('Definitive pre-launch failure'); };
+    if (fault === 'node') rejected.$.process.run = async (argv, init) => !injected && argv[0] === 'node' ? fail() : run(argv, init);
+    if (fault === 'spawn') rejected.$.process.spawn = request => !injected && request.argv[2] === 'task' ? fail() : spawn(request);
+    if (fault === 'intent') rejected.$.store.set = async (key, value) => !injected && value.intent ? fail() : set(key, value);
+    assert.equal((await rejected.turn('Fail before launching.', 1)).status, 'blocked');
+    assert.equal(injected, true);
+    assert.equal(rejected.jobs().length, 0);
+    rejected.reload();
+    assert.equal((await rejected.turn('Corrected assignment.', 2)).status, 'completed');
+    assert.equal(rejected.jobs().length, 1);
+  }
+
+  const terminal = fixture('lost-turn:failed'), terminalSet = terminal.$.store.set;
+  let terminalFailed = false;
+  terminal.$.store.set = async (key, value) => {
+    if (!terminalFailed && value.answer) { terminalFailed = true; throw new Error('Failed terminal final save'); }
+    return terminalSet(key, value);
+  };
+  assert.equal((await terminal.turn('Fail the exact fake turn.', 1)).status, 'blocked');
+  assert.equal(terminalFailed, true);
+  terminal.reload();
+  assert.equal((await terminal.turn('Continue after the confirmed failure.', 2)).status, 'completed');
+
+  const overlap = fixture('slow-task'), now = overlap.$.clock.now;
+  let release, entered, paused = false;
+  const gate = new Promise(resolve => { release = resolve; });
+  const atGate = new Promise(resolve => { entered = resolve; });
+  overlap.$.clock.now = async () => {
+    if (!paused && overlap.capture.events.at(-1)?.event === 'turn.step') {
+      paused = true; entered(); await gate;
+    }
+    return now();
+  };
+  const firstTurn = overlap.turn('First overlapping assignment.', 1);
+  await atGate;
+  try { assert.equal((await overlap.turn('Second overlapping assignment.', 2)).status, 'blocked'); }
+  finally { release(); }
+  assert.equal((await firstTurn).status, 'completed');
+  assert.equal(overlap.jobs().length, 1);
+  assert.equal(overlap.codexState().threads.length, 1);
+
+  // Model the companion's full-index nonce API, with an empty visible history.
+  // Existing real-companion cases exercise the older CLI's flag fallback.
+  const history = fixture('slow-task');
+  const historical = await history.turn('Create the retained native job.', 1);
+  const data = history.readStore(), oldState = Object.values(data).find(s => s.agentId === 'native-agent');
+  for (const key of ['answer', 'answeredTurn', 'jobId', 'threadId', 'ownerId', 'worker', 'status', 'questionId', 'finishedAt']) delete oldState[key];
+  history.setStore(data); history.reload();
+  const indexedJobs = [history.jobs()[0], ...Array.from({ length: 50 }, (_, i) => ({
+    ...history.jobs()[0], id: `newer-${i}`, dispatchNonce: null,
+  }))];
+  assert.equal(indexedJobs.length, 51);
+  assert.equal(indexedJobs.slice(-50).some(job => job.id === historical.jobId), false);
+  const lookupRun = history.$.process.run;
+  let fullLookup = false;
+  history.$.process.run = async (argv, init) => {
+    if (argv[2] !== 'status' || !argv.includes('--all')) return lookupRun(argv, init);
+    const nonce = argv[argv.indexOf('--dispatch-nonce') + 1];
+    fullLookup = argv.includes('--dispatch-nonce');
+    return { exitCode: 0, stdout: JSON.stringify({ running: [], latestFinished: null,
+      recent: fullLookup ? indexedJobs.filter(job => job.dispatchNonce === nonce) : indexedJobs.slice(-50) }), isStdoutTruncated: false };
+  };
+  const recovered = await history.turn('Continue beyond visible history.', 2);
+  assert.equal(fullLookup, true);
+  assert.equal(recovered.status, 'completed');
+  assert.equal(history.jobs().find(job => job.id === recovered.jobId).threadId,
+    history.jobs().find(job => job.id === historical.jobId).threadId);
+
+  const outage = fixture('slow-task');
+  await outage.invoke('classic.SubagentStart', { session_id: 'native-session', agent_id: 'native-agent', agent_type: AGENT_TYPE }, async () => ({}));
+  outage.reload();
+  outage.$.agent.list = async () => { throw new Error('Discovery unavailable'); };
+  outage.$.store.get = async () => { throw new Error('Store unavailable'); };
+  const stopped = await outage.invoke('turn.step', { agentId: 'native-agent', turnId: 'outage', index: 0 }, async function* () {
+    assert.fail('An unavailable native guard must not reach the model');
+  });
+  assert.equal(JSON.parse(stopped.answer).status, 'blocked');
+  assert.equal(outage.capture.processes.length, 0);
+
+  // A complete-looking empty response establishes absence only on exit 0.
+  for (const exitCode of [1, null, 0]) {
+    const lookup = fixture('slow-task'), run = lookup.$.process.run;
+    lookup.$.process.run = async (argv, init) => argv[2] === 'status'
+      ? { exitCode, stdout: JSON.stringify({ running: [], recent: [], latestFinished: null }), isStdoutTruncated: false }
+      : run(argv, init);
+    assert.equal((await lookup.turn('DUET: --sandbox invalid\nReject before reservation.', 1)).status, 'blocked');
+    const state = Object.values(lookup.readStore()).find(s => s.agentId === 'native-agent');
+    assert.equal(state.answeredTurn === 'turn-1', exitCode === 0);
+    const retry = await lookup.turn('Corrected assignment after lookup.', 2);
+    assert.equal(retry.status, exitCode === 0 ? 'completed' : 'blocked');
+    assert.equal(lookup.capture.processes.filter(p => p.request.argv[2] === 'task').length, exitCode === 0 ? 2 : 1);
+    assert.equal(lookup.jobs().length, exitCode === 0 ? 1 : 0);
+  }
+
+  // A validation error is insufficient when nonce reconciliation is unavailable
+  // or says a matching job may exist. Neither case can admit a replacement.
+  for (const ambiguous of [false, true]) {
+    const uncertain = fixture('slow-task'), run = uncertain.$.process.run;
+    uncertain.$.process.run = async (argv, init) => {
+      if (argv[2] !== 'status') return run(argv, init);
+      if (!ambiguous) throw new Error('Fixture reconciliation unavailable');
+      const state = Object.values(uncertain.readStore()).find(s => s.agentId === 'native-agent');
+      const job = { id: 'ambiguous', sessionId: state.session, dispatchNonce: state.intent.nonce };
+      return { exitCode: 0, stdout: JSON.stringify({ running: [job, { ...job, id: 'also-ambiguous' }], latestFinished: null, recent: [] }) };
+    };
+    assert.equal((await uncertain.turn('DUET: --sandbox invalid\nRejected but lookup unavailable.', 1)).status, 'blocked');
+    assert.equal((await uncertain.turn('Do not redispatch an uncertain intent.', 2)).status, 'blocked');
+    assert.equal(uncertain.capture.processes.filter(p => p.request.argv[2] === 'task').length, 1);
+  }
 });
 
 test('store retention removes old finished handles, preserves parked questions, and refuses excess records', async () => {

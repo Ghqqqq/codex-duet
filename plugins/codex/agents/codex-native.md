@@ -1,9 +1,8 @@
 ---
 name: codex-native
-description: Codex worker through Duet, with native task completion and SendMessage continuation. Give it a name. An optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast/--normal --cwd <dir> sets task flags; otherwise companion defaults apply.
+description: Codex worker through Duet, with native task completion and SendMessage continuation. Give it a name. An optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast/--normal --cwd <dir> sets task flags. Initial effort uses header, explicit Agent effort, then companion default; follow-ups retain thread settings.
 model: haiku
 effort: low
-background: true
 omitClaudeMd: true
 # A nonempty allowlist cancelled by the denylist resolves to zero tools.
 # Unlike tools: [], Claude Code 2.1.302 also lists this as "Tools: None".

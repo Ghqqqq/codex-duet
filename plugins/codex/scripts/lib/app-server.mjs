@@ -24,6 +24,21 @@ const PLUGIN_MANIFEST = JSON.parse(fs.readFileSync(PLUGIN_MANIFEST_URL, "utf8"))
 export const BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 export const BROKER_BUSY_RPC_CODE = -32001;
 
+// Feed decoded UTF-8 chunks; only LF terminates a JSONL record. Unicode line
+// separators are valid JSON string data, and partial records span reads.
+export function createJsonLineReader(onLine) {
+  let buffer = "";
+  return chunk => {
+    buffer += chunk;
+    let newlineIndex;
+    while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      onLine(line);
+    }
+  };
+}
+
 /** @type {ClientInfo} */
 const DEFAULT_CLIENT_INFO = {
   title: "Codex Plugin",
@@ -76,7 +91,7 @@ class AppServerClientBase {
     this.exitError = null;
     /** @type {AppServerNotificationHandler | null} */
     this.notificationHandler = null;
-    this.lineBuffer = "";
+    this.readLines = createJsonLineReader(line => this.handleLine(line));
     this.transport = "unknown";
     this.serverRequestHandler = null;
     this.serverRequestPolicy = { approvedBrowserOrigins: normalizeBrowserOrigins(options.approvedBrowserOrigins ?? []), approvedComputerApps: normalizeBundleIds(options.approvedComputerApps ?? []), threadId: null, turnId: null };
@@ -123,14 +138,7 @@ class AppServerClientBase {
   }
 
   handleChunk(chunk) {
-    this.lineBuffer += chunk;
-    let newlineIndex = this.lineBuffer.indexOf("\n");
-    while (newlineIndex !== -1) {
-      const line = this.lineBuffer.slice(0, newlineIndex);
-      this.lineBuffer = this.lineBuffer.slice(newlineIndex + 1);
-      this.handleLine(line);
-      newlineIndex = this.lineBuffer.indexOf("\n");
-    }
+    this.readLines(chunk);
   }
 
   handleLine(line) {
@@ -146,6 +154,7 @@ class AppServerClientBase {
       return;
     }
 
+    if (!message || typeof message !== "object" || Array.isArray(message)) return;
     if (message.id !== undefined && message.method) {
       this.handleServerRequest(message);
       return;

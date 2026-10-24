@@ -5,7 +5,7 @@
 // as long as the thread stays loaded, so the bridge knows only the thread (env)
 // and binds each call to whichever Duet job is active on that thread right now.
 import process from "node:process";
-import readline from "node:readline";
+import { createJsonLineReader } from "./lib/app-server.mjs";
 import { ASK_PARENT, PARENT_BRIDGE_ENV, activeJobForThread, askParentQuestion } from "./lib/job-runtime.mjs";
 
 const cwd = process.env[PARENT_BRIDGE_ENV.cwd], threadId = process.env[PARENT_BRIDGE_ENV.threadId];
@@ -24,11 +24,12 @@ const valid = args => args && typeof args === "object" && typeof args.question =
   Object.keys(args).every(k => ["question", "options"].includes(k)) &&
   (args.options === undefined || (Array.isArray(args.options) && args.options.length <= 6 && args.options.every(o => typeof o === "string" && o.length <= 160)));
 
-const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-rl.on("line", async line => {
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", createJsonLineReader(async line => {
   if (!line.trim()) return;
   let message;
   try { message = JSON.parse(line); } catch { return; }
+  if (!message || typeof message !== "object" || Array.isArray(message)) return;
   if (message.id === undefined) return; // notifications need no reply
   try {
     switch (message.method) {
@@ -57,6 +58,6 @@ rl.on("line", async line => {
   } catch (error) {
     send({ id: message.id, result: { ...result(`Parent question unavailable (${error instanceof Error ? error.message : String(error)}). Proceed conservatively and report missing essential input.`), isError: true } });
   }
-});
-rl.on("close", () => process.exit(0));
+}));
+process.stdin.on("end", () => process.exit(0));
 process.stdout.on("error", () => process.exit(0));

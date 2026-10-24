@@ -31,12 +31,13 @@ once, under the new directory's state lock:
 
 - Migration keeps the newer `updatedAt` record per job ID and applies the normal
   history cap; legacy directories stay in place. Pruning can delete records and
-  their recorded artifacts, including those in legacy directories.
+  artifacts within the job's own directory; age cleanup retains legacy-path
+  artifacts for manual review.
 - Retained records keep absolute artifact paths (`logFile`, `rawOutputFile`,
   `resultFile`) unchanged; those artifacts remain readable in place.
 - A legacy job whose worker is still running is served in place until that
-  worker ends, so `wait`, `status`, `cancel` and SessionEnd keep working through
-  the upgrade; it is merged afterwards.
+  worker ends, then is merged. This migration fallback does not make mixed-version
+  writes safe: **upgrade or downgrade with no Duet jobs running**.
 - A busy legacy lock is retried later rather than waited on. Concurrent first
   commands migrate once; the marker is `<workspace>/.legacy-migration.json`.
 - `status`/`result`/`wait`/`adopt`/`cancel`/`task --continue` with a job or thread
@@ -53,8 +54,19 @@ At session start, Duet's detached prewarm child cleans ended job records, sessio
 markers and old Codex threads that no retained job uses, at most once every 12
 hours. It follows `cleanupPeriodDays` in `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json`
 (default 30 days); `CODEX_COMPANION_RETENTION_DAYS` overrides it. Values below one
-are clamped to one day and reported. The 50-ended-job cap remains a second bound.
-Running/queued jobs, attached owners and live worker PIDs are protected. Threads
+are clamped to one day and reported. Age cleanup protects running/queued jobs,
+attached owners, live worker PIDs and unresolved turns (a lost or unconfirmed
+turn that may still run on the server). Dead orphan records whose outcome is
+still unresolved remain protected. Expired dead orphan files that are not
+unresolved can be cleaned even if their saved status is stale; stale running
+index entries without private records are removed when not unresolved.
+
+Count pruning separately keeps active/unresolved jobs, the 50 newest ended jobs
+and, for settings inheritance, the newest ended job that started a turn on each
+of the 200 most recent threads (a newer refused or never-started attempt does not
+replace it). Those 200 thread anchors are protected from count pruning only:
+otherwise eligible ended anchors still expire with the age window. Status
+listings show the 50 newest ended jobs plus active/unresolved jobs. Threads
 use rollout last-activity time and are deleted through Codex's `thread/delete`
 API, keeping its indexes consistent; unavailable deletion is reported and skipped.
 Jobs with legacy artifact paths are kept and listed under `retained`, separately

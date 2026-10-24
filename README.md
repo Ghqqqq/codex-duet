@@ -51,6 +51,10 @@
 
 ## Install
 
+**Upgrade or downgrade with no Duet jobs running.** Finish or cancel active jobs
+before changing versions; workers from different versions can overwrite shared
+job state.
+
 ```bash
 /plugin marketplace add Ghqqqq/codex-duet     # or an absolute path to a local checkout
 /plugin install codex@duet
@@ -102,10 +106,15 @@ For a substantial task, hand the whole orchestration over:
 | `/codex:transfer` | Continue the current Claude conversation directly in Codex |
 | `/codex:setup` | Check the runtime; opt into browser/desktop tools and other settings |
 
-Claude prefers `codex:codex-native` when the first prompt of the session reports
-native workers ready; otherwise it uses background `duet task`. Continue by sending the native agent a message,
+Claude prefers `codex:codex-native` when the first accepted non-command person
+prompt after registration reports native workers ready; otherwise it uses
+background `duet task`. Continue by sending the native agent a message,
 or use `duet task --to <worker>` with a new brief. A pending question uses
-SendMessage or `duet answer <worker>` and continues the same turn.
+SendMessage for native agents. For Bash workers, use the report's `next` command
+verbatim, or `duet answer <worker> --question '<questionId>'` with the ID you saw
+and the answer on stdin. A bare `duet answer <worker>` answers whatever question
+is pending now, which may be newer. Native SendMessage already pins the displayed
+question; its answer path is unchanged. Both paths continue the same turn.
 
 Every command and flag: [docs/commands.md](docs/commands.md).
 

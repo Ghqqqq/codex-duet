@@ -109,12 +109,15 @@ apps for that call. Two mechanisms cover both runtimes:
   `{ action: "accept" }` and no `_meta.persist`, so nothing outlives the request.
   Everything else is cancelled (`cancel` is not persisted as a deny).
 
-Follow-ups (`duet task --to` or `--thread`) inherit model, effort, sandbox, speed
-and grants recorded in the request of the latest job on that thread within the
-same Claude session, unless explicitly overridden. Grants are never taken from
-another session's jobs. One-call approvals given only at runtime are not
-inherited. `duet task --continue` inherits the selected job's recorded settings
-and grants and rejects overriding approval flags. The job record, status and
+Follow-ups (`duet task --to`, `--thread`, or `--continue`) inherit recorded
+request grants (browser origins and Computer Use apps) only from jobs in the
+same Claude session and originally dispatched there. Adoption into another
+session does not re-authorize foreign request grants; runtime-only approvals
+are not inherited. `--to` and `--thread` inherit model, effort, sandbox and
+speed unless explicitly overridden; an explicit `--thread` may inherit those
+settings from another session's job, but never its grants. `duet task --continue`
+inherits the selected job's recorded settings and same-session request grants and rejects
+overriding approval flags. The job record, status and
 `duet result <worker> --details` expose `approvedComputerApps`.
 
 ### Forwarded approvals (owned jobs)
@@ -124,7 +127,11 @@ that no flag covers is not refused outright: the helper parks it as a pending
 question with `question.kind: "approval"` and the fixed options `Allow this
 call`, `Allow for this task`, `Allow always (isolated Codex home)`, `Deny`. The
 worker relays the `questionMessage` to the parent like any other question; the
-parent (or the user through it) answers with `answer <jobId> --question <id>`.
+parent (or the user through it) answers with the report's `next` command verbatim, or
+`duet answer '<jobId>' --question '<id>'` with the displayed ID and answer on
+stdin. A bare `duet answer <worker>` can answer a newer pending question; the
+native SendMessage path already pins the displayed question.
+Task-scoped grants left by a dead worker are released at the next start or recovery.
 The effect of each choice:
 
 | answer | reply to Codex | persisted state |
@@ -149,23 +156,31 @@ by `"decision":"approved","reason":"parent-task"` (or `parent-call`,
 
 A denied authorization is a blocker, not a success. Reports use
 `status: "blocked"` (exit code 2, like `needs_input`) with structured
-`blockers` entries:
+`blockers` entries. The default compact report v2 carries each retained
+blocker's `code` and short `message`. Its serialized UTF-8 envelope, excluding
+`summary`, is limited to 2,000 bytes; blocker lists and messages may be trimmed.
+It carries `next` (normally `duet task --to <worker>` for a blocked job) and
+`details` (`duet result '<jobId>' --details`, always the exact job), not `blockersOmitted` or
+`continuationCommand`.
 
-| `code` | fields | source |
+Use `duet result <worker> --details` for the stored blocker's extra fields when
+captured, and `continuationCommand` when job and thread handles are available.
+The detailed report can include these blocker codes:
+
+| `code` | extra fields in `--details` (when captured) | source |
 | --- | --- | --- |
 | `computer_use_app_not_approved` | `app` | cancelled/declined elicitation (bundle id) or `Computer Use was not approved to use <App>` in a tool result or the final answer (display name) |
 | `computer_use_app_blocked_by_policy` | `app` | organization policy message |
 | `computer_use_app_forbidden` | `app` | safety policy message |
-| `browser_tab_debugger_unattached` | `tabId`, `sessionId`, `closed` | `Debugger unattached` in the final answer; `closed` is `false` when the worker says it could not close the tab, `true` when it did, absent when unknown |
+| `browser_tab_debugger_unattached` | `tabId`, `sessionId`, optional `closed` | `Debugger unattached` in a tool result or the final answer; `closed` is inferred from captured cleanup text and absent when unknown |
 | `stale_browser_tab_claim` | `tabId`, `sessionId` | `Tab <id> is already part of browser session <uuid>` |
 | `reported_blocked` | — | the final answer starts with "Blocked"/"阻塞" or states `status: blocked` |
 | `needs_input` / `error` | — | question-only answers; non-zero exit |
 
 Tool-call blockers are captured from completed `mcpToolCall` items while the
 turn runs; only the matched identifiers are retained, never the tool arguments or
-payload. Each entry carries a short `message`; `blockersOmitted` counts entries
-dropped to keep the report within 60 lines. A `blocked` report also includes
-`continuationCommand` so the parent can resume after fixing the approval.
+payload. The detailed report preserves a stored `blockersOmitted` count when
+present; it does not restore blockers already omitted from the stored report.
 
 ## Tab cleanup on `Debugger unattached`
 
@@ -210,7 +225,7 @@ to prove the gate. Re-run the Chrome check while Chrome has a visible window.
 
 Observed live for forwarded approvals (1.0.6-isolated.17, TextEdit with an open
 window): a detached task asking for `com.apple.TextEdit` reached `needs_answer`
-with the approval question in about 9 s; `answer … "Allow for this task"` wrote
+with the approval question in about 9 s; answering "Allow for this task" wrote
 `sessions/<thread>.toml` with the app, the `cua_repl/js` call completed and
 returned the window title, the report came back `completed`, and the session
 file was gone afterwards. `~/.codex/computer-use` was not modified.

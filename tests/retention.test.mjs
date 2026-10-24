@@ -175,23 +175,55 @@ test("only expired, detached, dead-PID ended jobs and their four artifacts are r
   assert.deepEqual(JSON.parse(fs.readFileSync(gone.indexFile)).jobs.map(job => job.id).sort(), ["attached", "boundary", "invalid-date", "live", "queued", "recent", "running"]);
 });
 
-test("all workspaces and orphan job files protect threads; rollout activity decides expiry", async () => {
+test("all workspaces protect live or unresolved orphans and expire dead orphan and missing records", async () => {
   const f = fixture(), expired = seedJob(f, "expired");
   const elsewhere = path.join(f.root, "deleted-checkout");
   const retained = seedJob(f, "retained", { completedAt: f.recent }, elsewhere);
   const active = seedJob(f, "active", { status: "queued" }, elsewhere);
   const oldRollout = rollout(f, expired.threadId), kept = rollout(f, retained.threadId), activeRollout = rollout(f, active.threadId);
-  const orphan = seedJob(f, "orphan", { status: "running" });
-  const index = JSON.parse(fs.readFileSync(orphan.indexFile)); index.jobs = index.jobs.filter(job => job.id !== orphan.id); json(orphan.indexFile, index);
+  const orphan = seedJob(f, "orphan", { status: "running", pid: 2147483647 });
+  const protectedOrphans = [
+    seedJob(f, "orphan-live", { status: "running", pid: process.pid }),
+    seedJob(f, "orphan-starting", { status: "queued", createdAt: new Date(f.now).toISOString() }),
+    seedJob(f, "orphan-unresolved", { jobClass: "task", status: "failed", result: { failureSource: "transport", turnEnded: false } }),
+    seedJob(f, "orphan-recent", { completedAt: f.recent }),
+    seedJob(f, "orphan-published", { status: "running" })
+  ];
+  const missing = seedJob(f, "missing", { status: "running", pid: process.pid });
+  fs.unlinkSync(missing.file);
+  const orphanIds = new Set([orphan.id, ...protectedOrphans.map(job => job.id)]);
+  const index = JSON.parse(fs.readFileSync(orphan.indexFile)); index.jobs = index.jobs.filter(job => !orphanIds.has(job.id)); json(orphan.indexFile, index);
+  protectedOrphans.forEach(job => rollout(f, job.threadId));
   const orphanRollout = rollout(f, orphan.threadId), unreferenced = randomUUID(), unreferencedFile = rollout(f, unreferenced);
   const recentFile = rollout(f, randomUUID(), f.recent);
   const duplicate = randomUUID(); rollout(f, duplicate); rollout(f, duplicate, f.recent, "2026-01-02T00-00-00");
   const p = plan(f), calls = [];
-  assert.deepEqual(p.threads.map(thread => thread.threadId).sort(), [expired.threadId, unreferenced].sort());
+  assert.deepEqual(p.threads.map(thread => thread.threadId).sort(), [expired.threadId, orphan.threadId, protectedOrphans.at(-1).threadId, unreferenced].sort());
+  // Publication between preview and application restores active-job protection.
+  const publishedIndex = JSON.parse(fs.readFileSync(orphan.indexFile));
+  publishedIndex.jobs.push(JSON.parse(fs.readFileSync(protectedOrphans.at(-1).file))); json(orphan.indexFile, publishedIndex);
   const result = await applyRetention(p, { deleteThread: async threadId => { calls.push(threadId); return {}; } });
-  assert.equal(result.threadsDeleted, 2); assert.equal(result.threadsSkipped, 0); assert.equal(result.jobsDeleted, 1);
-  assert.deepEqual(calls.sort(), [expired.threadId, unreferenced].sort());
+  assert.equal(result.threadsDeleted, 3); assert.equal(result.threadsSkipped, 1); assert.equal(result.jobsDeleted, 3);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(calls.sort(), [expired.threadId, orphan.threadId, unreferenced].sort());
+  assert.ok(orphan.files.every(file => !fs.existsSync(file)));
+  assert.ok(missing.files.every(file => !fs.existsSync(file)));
+  assert.ok(!JSON.parse(fs.readFileSync(missing.indexFile)).jobs.some(job => job.id === missing.id));
+  for (const job of protectedOrphans) assert.ok(job.files.every(file => fs.existsSync(file)));
   for (const file of [oldRollout, kept, activeRollout, orphanRollout, unreferencedFile, recentFile]) assert.ok(fs.existsSync(file), "retention itself never unlinks rollouts");
+
+  const alias = fixture(), old = seedJob(alias, "old", { threadId: null });
+  const survivors = Array.from({ length: 50 }, (_, i) => seedJob(alias, `survivor-${i}`, { threadId: null, completedAt: alias.recent, updatedAt: alias.recent }));
+  const outside = path.join(alias.root, "outside.txt"); fs.writeFileSync(outside, "keep");
+  const aliasedIndex = JSON.parse(fs.readFileSync(old.indexFile));
+  Object.assign(aliasedIndex.jobs.find(job => job.id === old.id), { logFile: survivors[0].file, rawOutputFile: outside, resultFile: survivors[1].resultFile });
+  json(old.indexFile, aliasedIndex);
+  const stateModule = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
+  const prune = run(process.execPath, ["--input-type=module", "-e", `import { updateState } from ${JSON.stringify(stateModule)}; updateState(process.cwd(), () => {});`], { cwd: alias.cwd, env: alias.env });
+  assert.equal(prune.status, 0, prune.stderr);
+  assert.ok(old.files.every(file => !fs.existsSync(file)));
+  for (const job of survivors) assert.ok(job.files.every(file => fs.existsSync(file)));
+  assert.equal(fs.readFileSync(outside, "utf8"), "keep");
 });
 
 test("legacy artifact paths retain only their job and thread without blocking unrelated thread cleanup", async () => {
@@ -312,7 +344,7 @@ test("unsafe artifact paths are retained and the existing count cap cannot evict
   assert.deepEqual(plan(f).retained, [{ workspace: job.workspace, jobId: job.id, reason: "legacy-paths" }]);
   assert.equal((await applyRetention(plan(f))).jobsDeleted, 0); assert.ok(fs.existsSync(sqlite));
   const g = fixture(); seedJob(g, "expired");
-  for (let i = 0; i < 51; i++) seedJob(g, `recent-${i}`, { completedAt: g.recent });
+  for (let i = 0; i < 51; i++) seedJob(g, `recent-${i}`, { completedAt: g.recent, threadId: null });
   const result = await applyRetention(plan(g));
   assert.equal(result.jobsDeleted, 0); assert.match(result.errors[0].message, /unselected/);
 });

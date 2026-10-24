@@ -7,7 +7,7 @@ import process from "node:process";
 
 import { resolveIsolatedCodexHome, resolveCodexRuntimeIdentity } from "./lib/codex-home.mjs";
 import { parseArgs } from "./lib/args.mjs";
-import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
+import { BROKER_BUSY_RPC_CODE, CodexAppServerClient, createJsonLineReader } from "./lib/app-server.mjs";
 import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
 import { ServerRequestRelay, logServerRequest } from "./lib/server-requests.mjs";
 
@@ -72,6 +72,8 @@ async function main() {
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
   const activeTurns = new Map();
+  const forwardedRequests = new Set();
+  const pendingStreamStarts = new Set();
   let appClient;
   const signals = ["SIGTERM", "SIGINT", "SIGHUP"];
   // Install before initialize: readiness timeout may stop this broker while
@@ -104,6 +106,15 @@ async function main() {
     queueMicrotask(() => requests.request(message, owner));
   };
 
+  function forwardRequest(method, params) {
+    const promise = appClient.request(method, params);
+    forwardedRequests.add(promise);
+    // Observe settlement without delaying the response ahead of notifications
+    // delivered in the same stdout chunk.
+    promise.then(() => forwardedRequests.delete(promise), () => forwardedRequests.delete(promise));
+    return promise;
+  }
+
   function clearSocketOwnership(socket) {
     requests.disconnect(socket);
     for (const [threadId, turn] of activeTurns) if (turn.owner === socket) {
@@ -111,9 +122,9 @@ async function main() {
       // Lost owners cannot leave a still-running server behind indefinitely.
       setTimeout(() => { if (activeTurns.get(threadId) === turn) void shutdown(server); }, 4000).unref();
     }
-    if (activeRequestSocket === socket) {
-      activeRequestSocket = null;
-    }
+    // A pending RPC retains its owner even after disconnect: its callbacks
+    // must fail closed, never be reassigned to a later client. It no longer
+    // counts as activity, so an abandoned RPC cannot prevent idle shutdown.
     if (activeStreamSocket === socket) {
       activeStreamSocket = null;
       activeStreamThreadIds = null;
@@ -122,16 +133,20 @@ async function main() {
 
   function routeNotification(message) {
     const target = activeRequestSocket ?? activeStreamSocket;
-    if (message.method === "turn/completed") activeTurns.delete(message.params?.threadId);
+    if (message.method === "turn/completed") {
+      const threadId = message.params?.threadId, turnId = message.params?.turn?.id;
+      if (threadId && turnId) {
+        for (const completed of pendingStreamStarts) completed.add(JSON.stringify([threadId, turnId]));
+      }
+      const active = activeTurns.get(threadId);
+      if (!active || !turnId || active.id === turnId) activeTurns.delete(threadId);
+    }
     if (target) send(target, message);
     if (message.method === "turn/completed" && activeStreamSocket === target) {
       const threadId = message.params?.threadId ?? null;
       if (!threadId || !activeStreamThreadIds || activeStreamThreadIds.has(threadId)) {
         activeStreamSocket = null;
         activeStreamThreadIds = null;
-        if (activeRequestSocket === target) {
-          activeRequestSocket = null;
-        }
       }
     }
   }
@@ -169,120 +184,120 @@ async function main() {
     sockets.add(socket);
     lastBusy = Date.now();
     socket.setEncoding("utf8");
-    let buffer = "";
+    let inputQueue = Promise.resolve();
+    const readLines = createJsonLineReader(line => {
+      if (!line.trim()) return;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch (error) {
+        send(socket, {
+          id: null,
+          error: buildJsonRpcError(-32700, `Invalid JSON: ${error.message}`)
+        });
+        return;
+      }
 
-    socket.on("data", async (chunk) => {
+      if (!message || typeof message !== "object" || Array.isArray(message)) return;
+      // Callback replies must bypass the request queue: the in-flight RPC may
+      // be waiting for one. Unknown/expired replies are never client requests.
+      if (requests.response(message, socket) || message.method === undefined) return;
+      // A rejected request must not stall every later request on this socket.
+      inputQueue = inputQueue.then(() => handleRequest(message)).catch(() => {});
+    });
+    socket.on("data", chunk => {
       if (closing) { socket.destroy(); return; }
-      buffer += chunk;
-      let newlineIndex = buffer.indexOf("\n");
-      while (newlineIndex !== -1) {
-        const line = buffer.slice(0, newlineIndex);
-        buffer = buffer.slice(newlineIndex + 1);
-        newlineIndex = buffer.indexOf("\n");
+      readLines(chunk);
+    });
 
-        if (!line.trim()) {
-          continue;
-        }
-
-        let message;
-        try {
-          message = JSON.parse(line);
-        } catch (error) {
-          send(socket, {
-            id: null,
-            error: buildJsonRpcError(-32700, `Invalid JSON: ${error.message}`)
-          });
-          continue;
-        }
-
-        if (requests.response(message, socket)) continue;
-        // A response with an unknown/expired server request ID is never a new
-        // client request (nor permission to answer another job's callback).
-        if (message.method === undefined) continue;
-
-        if (message.id !== undefined && message.method === "initialize") {
-          send(socket, {
-            id: message.id,
-            result: {
-              userAgent: "codex-companion-broker",
-              codexCompanionHome: resolveIsolatedCodexHome(),
-              codexCompanionRuntime: runtimeIdentity,
-              startupTimings: appClient.startupTimings, startupWarning: appClient.startupWarning ?? null
-            }
-          });
-          continue;
-        }
-
-        if (message.method === "initialized" && message.id === undefined) {
-          continue;
-        }
-
-        if (message.id !== undefined && message.method === "broker/shutdown") {
-          send(socket, { id: message.id, result: {} });
-          await shutdown(server);
-          process.exit(0);
-        }
-
-        if (message.id === undefined) {
-          continue;
-        }
-
-        const allowInterruptDuringActiveStream =
-          isInterruptRequest(message) && activeStreamSocket && activeStreamSocket !== socket && !activeRequestSocket;
-
-        if (
-          ((activeTurns.size && !activeStreamSocket) || (activeRequestSocket && activeRequestSocket !== socket) || (activeStreamSocket && activeStreamSocket !== socket)) &&
-          !allowInterruptDuringActiveStream
-        ) {
-          send(socket, {
-            id: message.id,
-            error: buildJsonRpcError(BROKER_BUSY_RPC_CODE, "Shared Codex broker is busy.")
-          });
-          continue;
-        }
-
-        if (allowInterruptDuringActiveStream) {
-          try {
-            const result = await appClient.request(message.method, message.params ?? {});
-            send(socket, { id: message.id, result });
-          } catch (error) {
-            send(socket, {
-              id: message.id,
-              error: buildJsonRpcError(error.rpcCode ?? -32000, error.message)
-            });
+    async function handleRequest(message) {
+      if (closing || socket.destroyed) return;
+      if (message.id !== undefined && message.method === "initialize") {
+        send(socket, {
+          id: message.id,
+          result: {
+            userAgent: "codex-companion-broker",
+            codexCompanionHome: resolveIsolatedCodexHome(),
+            codexCompanionRuntime: runtimeIdentity,
+            startupTimings: appClient.startupTimings, startupWarning: appClient.startupWarning ?? null
           }
-          continue;
-        }
+        });
+        return;
+      }
 
-        const isStreaming = STREAMING_METHODS.has(message.method);
-        activeRequestSocket = socket;
+      if (message.method === "initialized" && message.id === undefined) {
+        return;
+      }
 
+      if (message.id !== undefined && message.method === "broker/shutdown") {
+        send(socket, { id: message.id, result: {} });
+        await shutdown(server);
+        process.exit(0);
+      }
+
+      if (message.id === undefined) {
+        return;
+      }
+
+      const allowInterruptDuringActiveStream =
+        isInterruptRequest(message) && activeStreamSocket && activeStreamSocket !== socket && !activeRequestSocket;
+
+      if (
+        ((activeTurns.size && !activeStreamSocket) || (activeRequestSocket && activeRequestSocket !== socket) || (activeStreamSocket && activeStreamSocket !== socket)) &&
+        !allowInterruptDuringActiveStream
+      ) {
+        send(socket, {
+          id: message.id,
+          error: buildJsonRpcError(BROKER_BUSY_RPC_CODE, "Shared Codex broker is busy.")
+        });
+        return;
+      }
+
+      if (allowInterruptDuringActiveStream) {
         try {
-          const result = await appClient.request(message.method, message.params ?? {});
+          const result = await forwardRequest(message.method, message.params ?? {});
           send(socket, { id: message.id, result });
-          if (isStreaming) {
-            activeStreamSocket = socket;
-            activeStreamThreadIds = buildStreamThreadIds(message.method, message.params ?? {}, result);
-            if (result.turn?.id) activeTurns.set(message.params.threadId, { id: result.turn.id, owner: socket });
-            if (socket.destroyed) clearSocketOwnership(socket);
-          }
-          if (activeRequestSocket === socket) {
-            activeRequestSocket = null;
-          }
         } catch (error) {
           send(socket, {
             id: message.id,
             error: buildJsonRpcError(error.rpcCode ?? -32000, error.message)
           });
-          if (activeRequestSocket === socket) {
-            activeRequestSocket = null;
-          }
-          if (activeStreamSocket === socket && !isStreaming) {
-            activeStreamSocket = null;
+        }
+        return;
+      }
+
+      const isStreaming = STREAMING_METHODS.has(message.method);
+      // Retain only completions observed while this start is outstanding;
+      // settled requests leave no unbounded history of completed turns.
+      const completedBeforeResponse = new Set();
+      if (isStreaming) pendingStreamStarts.add(completedBeforeResponse);
+      activeRequestSocket = socket;
+
+      try {
+        const result = await forwardRequest(message.method, message.params ?? {});
+        send(socket, { id: message.id, result });
+        if (isStreaming) {
+          const streamThreadIds = buildStreamThreadIds(message.method, message.params ?? {}, result);
+          const alreadyCompleted = [...streamThreadIds].some(threadId => completedBeforeResponse.has(JSON.stringify([threadId, result.turn?.id])));
+          if (!alreadyCompleted) {
+            activeStreamSocket = socket;
+            activeStreamThreadIds = streamThreadIds;
+            if (result.turn?.id) activeTurns.set(message.params.threadId, { id: result.turn.id, owner: socket });
+            if (socket.destroyed) clearSocketOwnership(socket);
           }
         }
+      } catch (error) {
+        send(socket, {
+          id: message.id,
+          error: buildJsonRpcError(error.rpcCode ?? -32000, error.message)
+        });
+        // Stream ownership is installed only after a successful streaming
+        // response. A failed request cannot end an already acknowledged turn.
+      } finally {
+        pendingStreamStarts.delete(completedBeforeResponse);
+        if (activeRequestSocket === socket) activeRequestSocket = null;
       }
-    });
+    }
 
     socket.on("close", () => {
       sockets.delete(socket);
@@ -299,7 +314,10 @@ async function main() {
 
   const idleMs = Math.max(1000, (Number(process.env.CODEX_COMPANION_BROKER_IDLE_SEC) || 60) * 1000);
   const idleTimer = setInterval(() => {
-    if (sockets.size || activeTurns.size || activeRequestSocket || appClient.pending.size) lastBusy = Date.now();
+    // Forwarded requests from disconnected clients are abandoned. Keep their
+    // ownership until settlement, but let idle shutdown reap a hung server.
+    const internalRequests = appClient.pending.size > forwardedRequests.size;
+    if (sockets.size || activeTurns.size || (activeRequestSocket && !activeRequestSocket.destroyed) || internalRequests) lastBusy = Date.now();
     else if (Date.now() - lastBusy >= idleMs) void shutdown(server);
   }, 250);
   for (const signal of signals) process.on(signal, () => { void shutdown(server); });

@@ -4,7 +4,7 @@ import { spawnOwned as spawn } from "../plugins/codex/scripts/lib/process.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildWorkerReport, classifyWorkerOutcome, classifyBrowserBlocker, parseStructuredReport } from "../plugins/codex/scripts/lib/worker-report.mjs";
-import { makeTempDir, run, initGitRepo, waitForCondition } from "./helpers.mjs";
+import { makeTempDir, run, initGitRepo, waitForCondition, readyBroker } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
@@ -434,6 +434,72 @@ test("recovery fetches the exact lost turn, even after a later turn on the same 
   assert.equal(JSON.parse(recovered.stdout).sandbox, "danger-full-access", "the recovered report keeps the sandbox the job actually ran with");
   assert.equal(JSON.parse(f.call("result", "--thread", first.threadId, "--details").stdout).turnId, second.turnId);
   assert.equal(f.state().nextTurnId, 3, "recovery must not submit a third turn");
+
+  // A missing reply cannot claim a foreign turn, including one whose wrapper
+  // died. Incomplete records and two same-second starts remain unconfirmed.
+  const attribution = fixture("lost-turn:inProgress");
+  attribution.env.CODEX_COMPANION_HOME = path.join(attribution.dir, "isolated");
+  const victim = loseTurn(attribution);
+  const other = path.join(attribution.dir, "other"); fs.mkdirSync(other); initGitRepo(other);
+  const seeded = run(process.execPath, ["--input-type=module", "-e", `
+    import fs from "node:fs";
+    import path from "node:path";
+    import { writeJobFile, upsertJob, resolveStateFile, resolveStateRoot } from ${JSON.stringify(stateModule)};
+    import { recordedThreadJobs } from ${JSON.stringify(new URL("../plugins/codex/scripts/lib/job-runtime.mjs", import.meta.url).href)};
+    const cwd = ${JSON.stringify(other)}, job = { ...${JSON.stringify(victim)}, id: "foreign-owner", workspaceRoot: cwd, pid: null };
+    const file = writeJobFile(cwd, job.id, job); upsertJob(cwd, job);
+    // Metadata-only workspaces and damaged private records indexed on other
+    // threads must not make every handle-less recovery ambiguous.
+    const root = resolveStateRoot(), empty = path.join(root, "empty"), unrelated = path.join(root, "unrelated");
+    fs.mkdirSync(path.join(empty, "jobs"), { recursive: true });
+    fs.writeFileSync(path.join(empty, "jobs", "old.result.json"), "{}");
+    fs.mkdirSync(path.join(root, "broker-only"));
+    fs.mkdirSync(path.join(unrelated, "jobs"), { recursive: true });
+    const elsewhere = { id: "elsewhere", workspaceRoot: cwd, threadId: "another-thread" };
+    fs.writeFileSync(path.join(unrelated, "state.json"), JSON.stringify({ jobs: [elsewhere, { ...elsewhere, id: "missing" }] }));
+    fs.writeFileSync(path.join(unrelated, "jobs", "elsewhere.json"), "{");
+    fs.writeFileSync(path.join(unrelated, "jobs", "orphan.json"), JSON.stringify({ ...elsewhere, id: "orphan" }));
+    console.log(JSON.stringify({ file, index: resolveStateFile(cwd), complete: recordedThreadJobs(job.threadId).complete }));
+  `], { cwd: attribution.repo, env: attribution.env });
+  assert.equal(seeded.status, 0, seeded.stderr);
+  const files = JSON.parse(seeded.stdout), originalIndex = fs.readFileSync(files.index), originalJob = fs.readFileSync(files.file);
+  assert.equal(files.complete, true);
+  const requestsFile = path.join(attribution.dir, "fake-codex-state.json.requests.jsonl");
+  for (const status of ["completed", "inProgress"]) {
+    for (const damage of ["readable", "missing-index", "malformed-index", "unreadable-index", "missing-job", "malformed-job", "unreadable-job", "orphan-job", "mismatched-turn", "two-missing"]) {
+      storedFixtureJob(attribution, victim.id, { ...victim, turnId: null, recovered: false, recovery: null,
+        result: { ...victim.result, turnId: null } });
+      const state = attribution.state(); state.threads[0].turns[0].status = status;
+      fs.writeFileSync(path.join(attribution.dir, "fake-codex-state.json"), JSON.stringify(state));
+      const target = damage.endsWith("index") ? files.index : files.file;
+      if (damage.startsWith("missing")) fs.unlinkSync(target);
+      if (damage.startsWith("malformed")) fs.writeFileSync(target, "{");
+      if (damage.startsWith("unreadable")) fs.chmodSync(target, 0);
+      if (damage === "orphan-job") fs.writeFileSync(files.index, JSON.stringify({ ...JSON.parse(originalIndex), jobs: [] }));
+      if (damage === "mismatched-turn") fs.writeFileSync(files.file, JSON.stringify({ ...JSON.parse(originalJob), turnId: "other-turn" }));
+      if (damage === "two-missing") {
+        const owner = JSON.parse(originalJob), index = JSON.parse(originalIndex);
+        owner.turnId = null; index.jobs[0].turnId = null;
+        fs.writeFileSync(files.file, JSON.stringify(owner)); fs.writeFileSync(files.index, JSON.stringify(index));
+      }
+      const offset = fs.readFileSync(requestsFile, "utf8").trim().split("\n").length;
+      try {
+        assert.equal(attribution.call("status", victim.id, "--json").status, 0);
+        const saved = storedFixtureJob(attribution, victim.id);
+        assert.equal(saved.turnId, null, `${status}/${damage}`);
+        assert.equal(saved.recovered === true, damage === "readable", `${status}/${damage}`);
+        const cancelled = attribution.call("cancel", victim.id, "--json"), report = JSON.parse(cancelled.stdout);
+        assert.equal(cancelled.status, damage === "readable" ? 0 : 2, cancelled.stderr);
+        assert.equal(report.confirmation, damage === "readable" ? "confirmed" : "unconfirmed");
+        assert.equal(report.turnInterruptAttempted, false);
+        const requests = fs.readFileSync(requestsFile, "utf8").trim().split("\n").slice(offset).map(JSON.parse);
+        assert.equal(requests.some(request => ["turn/start", "turn/interrupt", "thread/backgroundTerminals/clean"].includes(request.method)), false);
+      } finally {
+        if (fs.existsSync(target)) fs.chmodSync(target, 0o600);
+        fs.writeFileSync(files.index, originalIndex); fs.writeFileSync(files.file, originalJob);
+      }
+    }
+  }
 });
 
 test("early handle and heartbeat survive a killed wrapper; result recovers without rerun", async () => {
@@ -514,7 +580,7 @@ test("direct questions provide executable re-wait and stdin-answer commands and 
   const f = fixture("w5-parent"), launch = json(f.call("task", "--detached", "--json", "--owner", "parent's owner", "fixture"));
   const compact = direct(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--direct"));
   const pending = json(f.call("result", launch.jobId, "--details"));
-  assert.equal(compact.next, `duet answer ${launch.agentName}`);
+  assert.equal(compact.next, `duet answer ${launch.agentName} --question '${pending.question.id}'`);
   assert.equal(pending.status, "needs_answer"); assert.ok(pending.question.id);
   assert.deepEqual(pending.question.options, ["Small", "Broad"]);
   assert.deepEqual(splitRawArgumentString(pending.waitCommand), ["node", script, "wait", launch.jobId, "--cwd", f.repo, "--owner", launch.ownerId, "--direct", "--after-question", pending.question.id]);
@@ -549,7 +615,8 @@ test("direct questions provide executable re-wait and stdin-answer commands and 
   assert.equal(done.status, "completed"); assert.equal(job(f, done.jobId).turnId, pending.turnId);
 });
 
-test("report v2 is decision-first and bounded; result and wait details retain the full report", () => {
+test("report v2 is decision-first and bounded; result and wait details retain the full report", async () => {
+  const usage = { inputTokens: 150, cachedInputTokens: 40, outputTokens: 30, reasoningOutputTokens: 10, totalTokens: 180 };
   for (const [behavior, status, code] of [["slow-task", "completed", 0], ["structured-blocked", "blocked", 2], ["question-only", "needs_input", 2], ["w5-parent", "needs_answer", 0], ["w5-working", "running", 0]]) {
     const f = fixture(behavior), output = f.call("task", "--direct", ...(status === "running" ? ["--timeout-sec", "1"] : []), "fixture");
     const result = direct(output, code);
@@ -559,8 +626,8 @@ test("report v2 is decision-first and bounded; result and wait details retain th
       assert.deepEqual(Object.keys(result).slice(-2), ["next", "details"]);
       const { summary, ...envelope } = result;
       assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
-      assert.equal(result.details, `duet result ${result.worker} --details`);
-      assert.equal(result.next, status === "completed" ? null : status === "needs_answer" ? `duet answer ${result.worker}` : status === "running" ? `duet wait ${result.worker}` : `duet task --to ${result.worker}`);
+      assert.equal(result.details, `duet result '${result.jobId}' --details`);
+      assert.equal(result.next, status === "completed" ? null : status === "needs_answer" ? `duet answer ${result.worker} --question '${result.question.id}'` : status === "running" ? `duet wait ${result.worker}` : `duet task --to ${result.worker}`);
       for (const key of ["waitCommand", "answerCommand", "answerAndWaitCommand", "rawOutputFile", "ownerId"]) assert.equal(Object.hasOwn(result, key), false);
       const details = json(f.call("result", result.jobId, "--details"), code);
       const reread = json(f.call("result", result.jobId), code);
@@ -574,6 +641,10 @@ test("report v2 is decision-first and bounded; result and wait details retain th
           assert.ok(details.answerCommand && details.answerAndWaitCommand);
         }
       } else {
+        assert.deepEqual(result.usage, usage);
+        assert.deepEqual(details.usage, usage);
+        assert.deepEqual(storedFixtureJob(f, result.jobId).result.usage, usage);
+        assert.deepEqual(Object.keys(result).slice(-3), ["usage", "next", "details"]);
         assert.equal(result.summary, fs.readFileSync(details.rawOutputFile, "utf8").trim());
         assert.deepEqual(reread, result);
         const quiet = f.call("wait", result.jobId, "--direct", "--quiet");
@@ -599,6 +670,84 @@ test("report v2 is decision-first and bounded; result and wait details retain th
       if (["running", "needs_answer"].includes(status)) f.call("cancel", result.jobId, "--json");
     }
   }
+  const f = fixture("review-ok");
+  const first = direct(f.call("task", "--direct", "fixture"));
+  assert.deepEqual(first.usage, usage, "usage sums both requests, including the update before turn/start responds");
+  const threadId = storedFixtureJob(f, first.jobId).threadId;
+  const follow = direct(f.call("task", "--thread", threadId, "--direct", "fixture"));
+  assert.deepEqual(follow.usage, usage, "follow-ups report the whole turn's delta from cumulative thread totals");
+  assert.deepEqual(json(f.call("result", follow.worker, "--details")).usage, usage);
+  assert.deepEqual(storedFixtureJob(f, follow.jobId).result.usage, usage);
+  assert.equal(Object.hasOwn(directReport({ status: "completed", summary: "Completed." }), "usage"), false);
+
+  const patchRuntime = (f, marker, replacement) => {
+    const binary = path.join(f.dir, "codex"), source = fs.readFileSync(binary, "utf8");
+    assert.ok(source.includes(marker)); fs.writeFileSync(binary, source.replace(marker, replacement));
+  };
+  const requests = f => fs.readFileSync(path.join(f.dir, "fake-codex-state.json.requests.jsonl"), "utf8")
+    .trim().split("\n").map(line => JSON.parse(line));
+  // Lose turn/start's reply, both with and without an actually started turn.
+  // Admission itself must recover the missing handle before sending new work.
+  for (const active of [true, false]) {
+    const lost = fixture("lost-turn:inProgress");
+    const marker = "const turnId = nextTurnId(state);\n        thread.updatedAt = now();";
+    patchRuntime(lost, marker, `${marker}
+      if (turnId === "turn_1") {
+        thread.turns = ${active ? "[buildTurn(turnId)]" : "[]"};
+        saveState(state); process.exit(0);
+      }
+    `);
+    const failed = lost.call("task", "--fresh", "--report", "--sandbox", "read-only", "--json", "fixture");
+    assert.equal(failed.status, 1);
+    const id = /Job handle: ([^;]+)/.exec(failed.stderr)?.[1]; assert.ok(id);
+    const original = storedFixtureJob(lost, id);
+    assert.ok(original.threadId && !original.turnId);
+    assert.equal(original.result.failureSource, "transport");
+    const offset = requests(lost).length;
+    const next = direct(lost.call("task", "--thread", original.threadId, "--direct", "fixture"), active ? 2 : 0);
+    const admission = requests(lost).slice(offset);
+    assert.ok(admission.some(r => r.method === "thread/read" && r.params.includeTurns));
+    const recovered = storedFixtureJob(lost, id);
+    assert.equal(recovered.recovery.source, "thread/read");
+    if (active) {
+      assert.equal(next.status, "blocked"); assert.equal(next.blockers[0].code, "thread_busy");
+      assert.ok(next.blockers[0].cancelCommand);
+      assert.equal(recovered.turnId, "turn_1");
+      assert.equal(admission.some(r => r.method === "turn/start"), false);
+      const cancelled = json(run("/bin/sh", ["-c", next.blockers[0].cancelCommand], { cwd: lost.repo, env: lost.env }));
+      assert.equal(cancelled.confirmation, "confirmed");
+      assert.equal(direct(lost.call("task", "--thread", original.threadId, "--direct", "fixture")).status, "completed");
+    } else {
+      assert.equal(next.status, "completed");
+      assert.equal(recovered.recovered, true); assert.equal(recovered.status, "failed");
+      assert.equal(recovered.turnResolution, "notStarted");
+      assert.ok(admission.findIndex(r => r.method === "thread/read") < admission.findIndex(r => r.method === "turn/start"));
+    }
+  }
+
+  // A private retry starts a fresh approval lifetime after a busy shared broker.
+  const retry = fixture("computer-use-requests");
+  patchRuntime(retry, 'case "turn/start": {', `case "turn/start": {
+    if (!state.busyRejected) {
+      state.busyRejected = true; saveState(state);
+      send({ id: message.id, error: { code: -32001, message: "Shared Codex broker is busy." } }); break;
+    }
+  `);
+  const broker = await readyBroker(retry.repo, retry.env);
+  let pending;
+  try {
+    pending = direct(retry.call("task", "--fresh", "--direct", "fixture"));
+    assert.equal(pending.status, "needs_answer"); assert.equal(pending.question.kind, "approval");
+    assert.equal(retry.state().appServerStarts, 2);
+    const saved = storedFixtureJob(retry, pending.jobId);
+    json(run(process.execPath, [script, "answer", saved.id, "--owner", saved.ownerId, "--question", pending.question.id, "--json"],
+      { cwd: retry.repo, env: retry.env, input: "task" }));
+    assert.equal(direct(retry.call("wait", saved.id, "--owner", saved.ownerId, "--direct", "--quiet")).status, "completed");
+    assert.equal(fs.existsSync(path.join(retry.env.CODEX_COMPANION_HOME, "computer-use", "sessions", `${saved.threadId}.toml`)), false);
+  } finally {
+    if (pending) retry.call("cancel", pending.jobId, "--json");
+    broker.close();
+  }
 });
 
 test("v2 budgets UTF-8 text and counts omitted files/checks while details keeps expanded lists", () => {
@@ -615,12 +764,12 @@ test("v2 budgets UTF-8 text and counts omitted files/checks while details keeps 
   const compact = direct(output);
   assert.equal(directLines(output.stdout).length, 76, "direct progress has no feed cap");
   assert.equal(compact.summary.length, 8000); assert.equal(compact.summaryTruncated, true);
-  assert.equal(compact.details, `duet result ${id} --details`, "unnamed jobs use the job ID");
+  assert.equal(compact.details, `duet result '${id}' --details`, "unnamed jobs use the job ID");
   const { summary, ...envelope } = compact;
   assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
   assert.equal(compact.changedFiles.length + compact.changedFilesOmitted, entries.length);
   assert.equal(compact.checks.ran.length + compact.checks.claimed.length + compact.checks.omitted, entries.length * 2);
-  assert.deepEqual(compact, directReport(report, { ...record, result: { ...result,
+  assert.deepEqual({ ...compact, details: `duet result '${id}' --cwd '${cwd}' --details` }, directReport(report, { ...record, result: { ...result,
     structured: { ...structured, keyFindings: entries.slice(0, 12), assumptions: entries.slice(0, 12) } } }), "expanded storage preserves compact v2");
   const full = json(run(process.execPath, [script, "wait", id, "--details"], { cwd }));
   const legacy = json(run(process.execPath, [script, "wait", id, "--json"], { cwd }));
@@ -659,7 +808,29 @@ test("v2 budgets UTF-8 text and counts omitted files/checks while details keeps 
   const pending = directReport({ status: "needs_answer", jobId: id, question: { id: "q", text: "字".repeat(1000), options: Array(6).fill("字".repeat(160)), expiresAt: Date.now() + 10000 }, blockers: [{ code: "fixture", message: "字".repeat(500) }] });
   const { summary: pendingSummary, ...pendingEnvelope } = pending;
   assert.ok(Buffer.byteLength(JSON.stringify(pendingEnvelope)) <= 2000);
-  assert.equal(pending.next, `duet answer ${id}`);
+  assert.equal(pending.next, `duet answer ${id} --question 'q'`);
+  for (const options of [Array(165).fill("12345678"), Array(500).fill(""), Array(500).fill("😀".repeat(80))]) {
+    const question = { id: "question-'quoted", text: "Choose a scope.", options };
+    const compact = directReport({ status: "needs_answer", jobId: id, question });
+    const { summary, ...envelope } = compact;
+    assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
+    assert.equal(compact.question.options.length + (compact.question.optionsOmitted ?? 0), options.length);
+    assert.deepEqual(splitRawArgumentString(compact.next), ["duet", "answer", id, "--question", question.id]);
+    assert.equal(question.options.length, options.length, "fitting leaves the full options intact");
+  }
+  const astral = "a".repeat(7999) + "😀";
+  const unicode = directReport({ status: "completed", jobId: id, summary: astral });
+  assert.equal(unicode.summary, astral.slice(0, 7999));
+  assert.equal(unicode.summaryTruncated, true);
+  const astralRecord = { ...record, result: { ...result, structured: { ...structured, summary: astral } } };
+  writeJobFile(cwd, id, astralRecord);
+  assert.equal(json(run(process.execPath, [script, "result", id, "--details"], { cwd })).summary, unicode.summary);
+  const errorReport = buildWorkerReport({ status: 0, rawOutput: "Completed.", error: "Runtime error." });
+  assert.equal(errorReport.status, "blocked");
+  assert.equal(errorReport.blockers[0].code, "error");
+  const recoveryCommand = "duet status predecessor --json";
+  const busy = directReport({ status: "blocked", jobId: id, blockers: [{ code: "thread_busy", message: "Active predecessor.", recoveryCommand }] });
+  assert.equal(busy.blockers[0].recoveryCommand, recoveryCommand);
 });
 
 test("report commands resolve ambiguous, cross-workspace and adopted workers through the duet CLI", t => {
@@ -670,18 +841,22 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
   const save = record => { writeJobFile(cwd, record.id, record); upsertJob(cwd, record); };
   const read = id => json(run(process.execPath, [script, "result", id], { cwd, env: { CODEX_COMPANION_SESSION_ID: "command-session" } }), 2);
   records.forEach(save);
+  const ambiguousLocal = run(process.execPath, [script, "status", "SharedWorker", "--json"], { cwd, env: { CODEX_COMPANION_SESSION_ID: "command-session" } });
+  assert.equal(ambiguousLocal.status, 1);
+  assert.match(ambiguousLocal.stderr, /ambiguous name across threads/);
+  for (const { id } of records) assert.ok(ambiguousLocal.stderr.includes(`jobId=${id} |`));
   for (const { id } of records) {
     const report = read(id);
     assert.equal(report.worker, "SharedWorker");
     assert.equal(report.next, `duet task --to ${id}`);
-    assert.equal(report.details, `duet result ${id} --details`);
+    assert.equal(report.details, `duet result '${id}' --details`);
     const recovered = json(run(process.execPath, [script, ...splitRawArgumentString(report.details).slice(1)], { cwd }), 2);
     assert.equal(recovered.jobId, id);
   }
   save({ ...records[1], threadId: records[0].threadId });
-  assert.equal(read("first").details, "duet result first --details");
+  assert.equal(read("first").details, "duet result 'first' --details");
   assert.equal(read("first").next, "duet task --to first");
-  assert.equal(read("second").details, "duet result SharedWorker --details");
+  assert.equal(read("second").details, "duet result 'second' --details");
   assert.equal(read("second").next, "duet task --to SharedWorker");
 
   const f = fixture("review-ok"), other = path.join(f.dir, "other-workspace");
@@ -698,13 +873,15 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
   for (const { original } of workers) {
     const projected = json(execute(`duet result ${original.id}`), 2);
     assert.equal(projected.worker, "AcrossWorker");
-    assert.equal(projected.details, `duet result ${original.id} --details`);
-    assert.equal(projected.next, `duet task --to ${original.id}`);
+    const cwdFlag = original.workspaceRoot === f.repo ? "" : ` --cwd '${original.workspaceRoot}'`;
+    assert.equal(projected.details, `duet result '${original.id}'${cwdFlag} --details`);
+    assert.equal(projected.next, `duet task --to AcrossWorker${cwdFlag}`);
     assert.equal(json(execute(projected.details), 2).jobId, original.id);
     const continued = direct(execute(projected.next));
     assert.equal(continued.status, "completed");
     const details = json(execute(continued.details));
     assert.equal(details.threadId, original.threadId);
+    assert.equal(json(execute(projected.details), 2).jobId, original.id, "saved details still selects the earlier job after a follow-up");
     assert.equal(continued.next, null);
   }
   const adopted = workers[0];
@@ -717,14 +894,32 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
   const dispatchProjection = json(execute(`duet result ${adopted.original.id}`), 2);
   f.env.CODEX_COMPANION_SESSION_ID = "replacement-session";
   const projected = json(execute(`duet result ${adopted.original.id}`), 2);
-  assert.deepEqual(projected, dispatchProjection, "all projections use the stored owning session");
-  assert.equal(projected.details, "duet result AdoptedWorker --details");
+  assert.deepEqual(dispatchProjection, { ...projected, next: `duet task --to ${adopted.original.id}`,
+    details: `duet result '${adopted.original.id}' --details` }, "foreign-session commands use exact job handles");
+  assert.equal(projected.details, `duet result '${adopted.original.id}' --details`);
   assert.equal(projected.next, "duet task --to AdoptedWorker");
   assert.equal(json(execute(projected.details), 2).jobId, adopted.original.id);
   const continued = direct(execute(projected.next));
   assert.equal(continued.status, "completed");
   assert.equal(json(execute(continued.details)).threadId, adopted.original.threadId);
   assert.equal(continued.next, null);
+
+  const sequence = fixture("parent-question-sequence");
+  sequence.env.PATH = `${path.dirname(new URL("../plugins/codex/bin/duet", import.meta.url).pathname)}${path.delimiter}${sequence.env.PATH}`;
+  const runSequence = command => run("sh", ["-c", command], { cwd: sequence.repo, env: sequence.env, input: "Small" });
+  const firstQuestion = direct(runSequence("duet task --fresh"));
+  const secondQuestion = direct(runSequence(firstQuestion.next));
+  assert.equal(secondQuestion.status, "needs_answer");
+  assert.notEqual(secondQuestion.question.id, firstQuestion.question.id);
+  const replies = sequence.state().serverRequestReplies.length;
+  for (const target of [firstQuestion.worker, firstQuestion.jobId]) {
+    const stale = runSequence(`duet answer ${target} --question '${firstQuestion.question.id}'`);
+    assert.notEqual(stale.status, 0);
+    assert.equal(sequence.state().serverRequestReplies.length, replies);
+    assert.equal(storedFixtureJob(sequence, firstQuestion.jobId).pendingQuestion.id, secondQuestion.question.id);
+  }
+  assert.equal(direct(runSequence(secondQuestion.next)).status, "completed");
+  assert.equal(sequence.state().serverRequestReplies.length, replies + 1);
 
   // Reproduce pre-upgrade duplicate names: one completed worker and one real
   // pending question in another workspace, both in the same Claude session.
@@ -743,45 +938,163 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
   t.diagnostic(JSON.stringify({ scenario: "same-session legacy duplicate", candidates: [ended, pending].map(record => ({
     jobId: record.id, worker: record.agentName, status: record.status, pending: Boolean(record.pendingQuestion), cwd: record.workspaceRoot
   })) }));
-  const ambiguous = (...args) => {
-    const result = command(...args);
-    assert.equal(result.status, 1, result.stdout + result.stderr);
-    assert.match(result.stderr, /ambiguous name across threads/);
-    for (const id of [first.jobId, second.jobId]) assert.ok(result.stderr.includes(id));
-    t.diagnostic(JSON.stringify({ command: `duet ${args.join(" ")}`, status: result.status, error: result.stderr.trim() }));
-  };
+  const resolverModule = new URL("../plugins/codex/scripts/lib/worker-resolve.mjs", import.meta.url).href;
+  const resolveName = options => json(run(process.execPath, ["--input-type=module", "-e", `
+    import { resolveWorkerTarget } from ${JSON.stringify(resolverModule)};
+    console.log(JSON.stringify(resolveWorkerTarget(process.cwd(), "Heisenberg", ${JSON.stringify(options)}).job.id));
+  `], { cwd: p.repo, env: p.env }));
   const before = p.state();
-  for (const args of [["task", "--to", "Heisenberg"], ["result", "Heisenberg"], ["cancel", "Heisenberg"]]) ambiguous(...args);
+  assert.equal(resolveName({}), first.jobId, "a legacy name tie selects the caller's workspace");
+  assert.equal(json(command("result", "Heisenberg")).jobId, first.jobId);
   const waited = direct(command("wait", "heisenberg"));
   assert.equal(waited.jobId, second.jobId); assert.equal(waited.status, "needs_answer");
   t.diagnostic(JSON.stringify({ command: "duet wait heisenberg", ...waited }));
   for (const status of ["queued", "running", "needs_answer"]) {
     storedFixtureJob(p, first.jobId, { status, pendingQuestion: { ...pending.pendingQuestion, id: "legacy-question" } });
-    ambiguous("answer", "Heisenberg");
-    ambiguous("wait", "Heisenberg");
+    for (const options of [{ nameState: "pending", pending: true }, { nameState: "wait" }, { nameState: "cancel" }]) {
+      assert.equal(resolveName(options), first.jobId);
+    }
   }
-  assert.equal(p.state().nextTurnId, before.nextTurnId, "ambiguous task never dispatches");
-  assert.equal(p.state().serverRequestReplies.length, before.serverRequestReplies.length, "ambiguous answer never submits");
+  assert.equal(p.state().nextTurnId, before.nextTurnId, "resolving legacy names never dispatches");
+  assert.equal(p.state().serverRequestReplies.length, before.serverRequestReplies.length, "resolving legacy names never submits an answer");
   assert.equal(storedFixtureJob(remoteFixture, second.jobId).pendingQuestion.answer, undefined);
   // An active job with an already-answered question fits wait but not answer.
   storedFixtureJob(p, first.jobId, { status: "running", pendingQuestion: { ...pending.pendingQuestion, id: "legacy-question", answer: "Already submitted" } });
-  ambiguous("wait", "Heisenberg");
+  assert.equal(resolveName({ nameState: "wait" }), first.jobId);
   const answered = direct(command("answer", "heisenberg"));
   assert.equal(answered.jobId, second.jobId); assert.equal(answered.status, "completed");
   assert.equal(p.state().serverRequestReplies.length, before.serverRequestReplies.length + 1);
   t.diagnostic(JSON.stringify({ command: "duet answer heisenberg", ...answered }));
   storedFixtureJob(p, first.jobId, { status: "completed", pendingQuestion: null });
-  ambiguous("answer", "Heisenberg");
-  ambiguous("wait", "Heisenberg");
+  const noQuestion = command("answer", "Heisenberg");
+  assert.equal(noQuestion.status, 1); assert.match(noQuestion.stderr, /no pending unanswered question/);
+  assert.equal(direct(command("wait", "Heisenberg")).jobId, first.jobId);
   assert.equal(direct(command("wait", first.jobId)).jobId, first.jobId, "explicit completed IDs still work");
   const third = direct(command("task", "--fresh", "--cwd", remote));
   const explicit = storedFixtureJob(remoteFixture, third.jobId, { agentName: "Heisenberg" });
   const explicitAnswer = direct(command("answer", "Heisenberg", "--question", explicit.pendingQuestion.id, "--owner", explicit.ownerId));
   assert.equal(explicitAnswer.jobId, third.jobId); assert.equal(explicitAnswer.status, "completed");
   t.diagnostic(JSON.stringify({ command: "duet answer Heisenberg --question <id> --owner <id>", ...explicitAnswer }));
+
+  const busy = fixture("w5-parent");
+  const launched = direct(busy.call("task", "--fresh", "--direct", "fixture"));
+  const rejected = direct(busy.call("task", "--to", launched.worker, "--direct", "mistaken follow-up"), 2);
+  assert.equal(rejected.blockers[0].code, "thread_busy");
+  const active = direct(busy.call("wait", launched.worker, "--direct"));
+  assert.equal(active.jobId, launched.jobId); assert.equal(active.status, "needs_answer");
+  assert.equal(json(busy.call("cancel", launched.worker, "--json")).jobId, launched.jobId);
+  json(run(process.execPath, ["--input-type=module", "-e", `
+    import { writeJobFile, upsertJob } from ${JSON.stringify(stateModule)};
+    const original = { id: "late-answer-active", workspaceRoot: process.cwd(), jobClass: "task", sessionId: "fixture-session",
+      agentName: "LateAnswer", ownerId: "late-owner", threadId: "late-thread", turnId: "late-turn", status: "running", pid: ${process.pid},
+      createdAt: "2026-01-01T00:00:00Z" };
+    const refused = { ...original, id: "late-answer-refused", ownerId: "refused-owner", turnId: null, status: "blocked", pid: null,
+      createdAt: "2026-01-02T00:00:00Z", result: { blockers: [{ code: "thread_busy" }] } };
+    for (const record of [original, refused]) { writeJobFile(process.cwd(), record.id, record); upsertJob(process.cwd(), record); }
+    console.log("{}");
+  `], { cwd: busy.repo, env: busy.env }));
+  const late = run(process.execPath, [script, "answer", "LateAnswer", "--question", "old-question", "--owner", "late-owner", "--direct"],
+    { cwd: busy.repo, env: busy.env, input: "Small" });
+  assert.equal(late.status, 1); assert.match(late.stderr, /Question is no longer pending/);
+
+  const names = fixture("w5-parent");
+  const resident = direct(names.call("task", "--fresh", "--direct", "fixture"));
+  const answer = id => direct(run(process.execPath, [script, "answer", id, "--direct"], { cwd: names.repo, env: names.env, input: "Small" }));
+  names.env.CODEX_COMPANION_SESSION_ID = "foreign-session";
+  const incoming = direct(names.call("task", "--fresh", "--direct", "fixture"));
+  const foreign = storedFixtureJob(names, incoming.jobId, { agentName: resident.worker });
+  names.env.CODEX_COMPANION_SESSION_ID = "fixture-session";
+  const adoptedName = json(names.call("adopt", incoming.jobId, "--json"));
+  assert.equal(adoptedName.adopted, true); assert.equal(adoptedName.jobId, incoming.jobId);
+  assert.notEqual(adoptedName.agentName.toLowerCase(), resident.worker.toLowerCase());
+  assert.equal(storedFixtureJob(names, incoming.jobId).threadId, foreign.threadId);
+  assert.equal(answer(adoptedName.agentName).jobId, incoming.jobId);
+  names.env.CODEX_COMPANION_SESSION_ID = "third-session";
+  const completedForeign = direct(names.call("task", "--fresh", "--direct", "fixture"));
+  answer(completedForeign.jobId);
+  const threadSource = storedFixtureJob(names, completedForeign.jobId, { agentName: resident.worker });
+  names.env.CODEX_COMPANION_SESSION_ID = "fixture-session";
+  const broughtIn = direct(names.call("task", "--thread", threadSource.threadId, "--direct", "fixture"));
+  assert.equal(broughtIn.status, "needs_answer");
+  assert.notEqual(broughtIn.worker.toLowerCase(), resident.worker.toLowerCase());
+  assert.equal(storedFixtureJob(names, broughtIn.jobId).threadId, threadSource.threadId);
+  answer(broughtIn.worker); answer(resident.worker);
+
+  for (const [session, workspaceBytes] of [["other-session", null], ["", null], ["other-session", 875], ["", 950]]) {
+    const scoped = fixture("review-ok");
+    let remote = path.join(scoped.dir, "quoted ' workspace");
+    while (workspaceBytes && Buffer.byteLength(remote) < workspaceBytes) remote = path.join(remote, "w".repeat(Math.min(180, workspaceBytes - Buffer.byteLength(remote) - 1)));
+    fs.mkdirSync(remote, { recursive: true }); initGitRepo(remote);
+    scoped.env.PATH = f.env.PATH;
+    if (!session) scoped.env.CODEX_COMPANION_SESSION_ID = "";
+    const first = direct(scoped.call("task", "--fresh", "--direct", "--cwd", remote, "fixture"));
+    const remoteFixture = { ...scoped, repo: remote }, saved = storedFixtureJob(remoteFixture, first.jobId);
+    const outcome = workspaceBytes ? { status: "blocked", blockers: [{ code: "fixture_blocker", message: "Review needed before continuing." }],
+      usage: { inputTokens: 100000, cachedInputTokens: 100000, outputTokens: 100000, reasoningOutputTokens: 100000, totalTokens: 300000 } } : { status: "needs_input" };
+    storedFixtureJob(remoteFixture, first.jobId, { status: outcome.status, report: { ...saved.report, ...outcome } });
+    scoped.env.CODEX_COMPANION_SESSION_ID = session;
+    const report = json(scoped.call("result", first.jobId, "--cwd", remote), 2);
+    const { summary, ...envelope } = report;
+    assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
+    const execute = command => run("sh", ["-c", command], { cwd: scoped.repo, env: scoped.env, input: "Follow up." });
+    assert.equal(json(execute(report.details), 2).jobId, first.jobId);
+    const resumed = direct(execute(report.next));
+    assert.equal(json(execute(resumed.details)).threadId, saved.threadId);
+  }
+
+  for (const workspaceBytes of [875, 3000]) {
+    const lost = fixture("lost-turn:inProgress");
+    let remote = path.join(lost.dir, "quoted ' workspace");
+    while (Buffer.byteLength(remote) < workspaceBytes) remote = path.join(remote, "w".repeat(Math.min(180, workspaceBytes - Buffer.byteLength(remote) - 1)));
+    assert.equal(Buffer.byteLength(remote), workspaceBytes);
+    // macOS PATH_MAX is 1024: project the 3 KB report path onto a real job in
+    // a shorter workspace, then execute its compact commands against that job.
+    const actualWorkspace = workspaceBytes === 875 ? remote : lost.repo;
+    if (workspaceBytes === 875) { fs.mkdirSync(remote, { recursive: true }); initGitRepo(remote); }
+    const remoteFixture = { ...lost, repo: actualWorkspace };
+    const failed = direct(lost.call("task", "--fresh", "--direct", "--cwd", actualWorkspace, "--sandbox", "read-only", "fixture"), 1);
+    const predecessor = storedFixtureJob(remoteFixture, failed.jobId);
+    const refused = direct(lost.call("task", "--thread", predecessor.threadId, "--direct", "--cwd", actualWorkspace, "follow-up"), 2);
+    assert.equal(refused.blockers[0].code, "thread_busy");
+    const saved = storedFixtureJob(remoteFixture, refused.jobId);
+    const quote = value => `'${value.replace(/'/g, `'"'"'`)}'`;
+    const payload = { ...saved.report,
+      usage: { inputTokens: 100000, cachedInputTokens: 100000, outputTokens: 100000, reasoningOutputTokens: 100000, totalTokens: 300000 },
+      blockers: saved.report.blockers.map(blocker => ({ ...blocker,
+        cancelCommand: blocker.cancelCommand.replace(`--cwd ${quote(actualWorkspace)}`, `--cwd ${quote(remote)}`),
+        recoveryCommand: blocker.recoveryCommand.replace(`--cwd ${quote(actualWorkspace)}`, `--cwd ${quote(remote)}`)
+      })) };
+    storedFixtureJob(remoteFixture, refused.jobId, { report: payload });
+    lost.env.PATH = `${path.dirname(duet)}${path.delimiter}${lost.env.PATH}`;
+    lost.env.CODEX_COMPANION_SESSION_ID = "other-session";
+    const project = payload => directReport(payload, { ...saved, workspaceRoot: remote, request: { ...saved.request, cwd: remote } }, lost.env);
+    const execute = command => run("sh", ["-c", command], { cwd: lost.repo, env: lost.env });
+    const report = project(payload), { summary, ...envelope } = report;
+    assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
+    const beforeCancel = lost.requests().length;
+    const cancelled = json(execute(report.blockers[0].cancelCommand));
+    assert.equal(cancelled.jobId, predecessor.id);
+    assert.equal(cancelled.confirmation, "confirmed");
+    assert.ok(lost.requests().slice(beforeCancel).some(request => request.method === "turn/interrupt"
+      && request.params.threadId === predecessor.threadId && request.params.turnId === predecessor.turnId));
+    const stillRefused = storedFixtureJob(remoteFixture, refused.jobId);
+    assert.equal(stillRefused.status, "blocked");
+    assert.ok(!stillRefused.cancelRequested);
+    assert.equal(json(execute(report.details), 2).blockers[0].cancelCommand, payload.blockers[0].cancelCommand);
+
+    if (workspaceBytes === 3000) {
+      const legacy = { ...payload, blockers: payload.blockers.map(({ predecessorJobId, ...blocker }) => blocker) };
+      storedFixtureJob(remoteFixture, refused.jobId, { report: legacy });
+      const compact = project(legacy), { summary, ...envelope } = compact;
+      assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
+      assert.equal(Object.hasOwn(compact.blockers[0], "cancelCommand"), false);
+      const details = json(execute(compact.details), 2);
+      for (const key of ["cancelCommand", "recoveryCommand"]) assert.equal(details.blockers[0][key], legacy.blockers[0][key]);
+    }
+  }
 });
 
-test("direct tasks preserve lease precedence, input forms, run settings and continuation inheritance", () => {
+test("direct tasks preserve lease precedence, input forms, run settings and continuation inheritance", async () => {
   const f = fixture("slow-task"); f.env.CODEX_COMPANION_LEASE_SEC = "27";
   const promptFile = path.join(f.repo, "prompt.txt"); fs.writeFileSync(promptFile, "fixture from prompt file");
   const firstOutput = f.call("task", "--direct", "--quiet", "--fresh", "--prompt-file", promptFile, "--model", "spark", "--effort", "high", "--fast", "--write", "--sandbox", "workspace-write", "--approve-browser-origin", "https://example.com", "--approve-computer-app", "com.apple.TextEdit", "--owner", "explicit-owner", "--question-timeout-sec", "42", "--cwd", f.repo);
@@ -807,5 +1120,108 @@ test("direct tasks preserve lease precedence, input forms, run settings and cont
   assert.equal(job(f, threaded.jobId).agentName, first.worker);
   const threadedDetails = json(f.call("result", threaded.jobId, "--details"));
   assert.equal(threadedDetails.threadId, firstDetails.threadId); assert.equal(threadedDetails.serviceTier, null);
+
+  const retained = fixture("review-ok");
+  const older = direct(retained.call("task", "--fresh", "--direct", "--sandbox", "danger-full-access", "--effort", "high", "fixture"));
+  const anchor = direct(retained.call("task", "--to", older.worker, "--direct", "--sandbox", "read-only", "--effort", "low", "--dispatch-nonce", "retained-dispatch", "fixture"));
+  const threadId = storedFixtureJob(retained, anchor.jobId).threadId;
+  const mutate = (f, code) => json(run(process.execPath, ["--input-type=module", "-e", `
+    import { updateState, updateJob, listJobs } from ${JSON.stringify(stateModule)};
+    ${code}
+    console.log(JSON.stringify(listJobs(process.cwd())));
+  `], { cwd: f.repo, env: f.env }));
+  const flood = count => `updateState(process.cwd(), state => state.jobs.push(...Array.from({ length: ${count} }, (_, i) => ({
+    id: "filler-" + i, threadId: "filler-thread-" + i, status: "completed", jobClass: "task", result: { turnEnded: true },
+    sessionId: "fixture-session", createdAt: new Date(Date.now() + i + 1).toISOString(), updatedAt: new Date(Date.now() + i + 1).toISOString()
+  }))));`;
+  mutate(retained, `updateJob(process.cwd(), ${JSON.stringify(older.jobId)}, () => ({ activityCursors: { observer: 1 } }));`);
+  const indexed = mutate(retained, flood(55));
+  assert.ok(indexed.some(record => record.id === anchor.jobId));
+  const visible = json(retained.call("status", "--all", "--json"));
+  assert.equal(visible.recent.length + 1, 50);
+  assert.ok(!visible.recent.some(record => record.id === anchor.jobId));
+  mutate(retained, `updateState(process.cwd(), state => state.jobs.push({ id: "foreign-nonce", threadId: "foreign-thread", jobClass: "task",
+    sessionId: "another-session", dispatchNonce: "retained-dispatch", status: "completed", result: { turnEnded: true }, createdAt: new Date().toISOString() }));`);
+  const nonce = json(retained.call("status", "--all", "--json", "--dispatch-nonce", "retained-dispatch"));
+  assert.deepEqual([...nonce.running, nonce.latestFinished, ...nonce.recent].filter(Boolean).map(record => record.id), [anchor.jobId]);
+  const resumed = direct(retained.call("task", "--thread", threadId, "--direct", "fixture"));
+  const settings = storedFixtureJob(retained, resumed.jobId).request;
+  assert.deepEqual([settings.sandbox, settings.effort], ["read-only", "low"]);
+  mutate(retained, `updateState(process.cwd(), state => { state.jobs = state.jobs.filter(job => job.threadId !== ${JSON.stringify(threadId)}); });`);
+  const turns = retained.state().nextTurnId;
+  const unknown = direct(retained.call("task", "--thread", threadId, "--direct", "fixture"), 2);
+  assert.equal(unknown.blockers[0].code, "thread_settings_unknown");
+  assert.equal(retained.state().nextTurnId, turns);
+  assert.equal(direct(retained.call("task", "--thread", threadId, "--sandbox", "read-only", "--direct", "fixture")).status, "completed");
+
+  const lost = fixture("lost-turn:inProgress");
+  const failed = direct(lost.call("task", "--fresh", "--direct", "--sandbox", "read-only", "fixture"), 1);
+  const original = storedFixtureJob(lost, failed.jobId);
+  storedFixtureJob(lost, failed.jobId, { completedAt: "2000-01-01T00:00:00.000Z" });
+  assert.ok(mutate(lost, flood(210)).some(record => record.id === failed.jobId));
+  const retentionModule = new URL("../plugins/codex/scripts/lib/retention.mjs", import.meta.url).href;
+  const afterRetention = mutate(lost, `import { planRetention, applyRetention } from ${JSON.stringify(retentionModule)};
+    const result = await applyRetention(planRetention({ days: 1 }));
+    if (result.errors.length || result.jobsDeleted) throw new Error(JSON.stringify(result));`);
+  assert.ok(afterRetention.some(record => record.id === failed.jobId));
+  const blocked = direct(lost.call("task", "--thread", original.threadId, "--sandbox", "read-only", "--direct", "fixture"), 2);
+  assert.equal(blocked.blockers[0].code, "thread_busy");
+  const beforeWait = lost.requests().length;
+  assert.equal(direct(lost.call("wait", failed.worker, "--direct"), 1).jobId, failed.jobId);
+  assert.ok(lost.requests().slice(beforeWait).some(request => request.method === "thread/read"));
+  assert.equal(lost.state().nextTurnId, 2);
+
+  const aliases = fixture("review-ok");
+  const initial = direct(aliases.call("task", "--fresh", "--direct", "--sandbox", "read-only", "--model", "gpt-5.4", "--effort", "low", "--fast", "fixture"));
+  const resumedThread = storedFixtureJob(aliases, initial.jobId).threadId;
+  for (const flag of ["--resume", "--resume-last"]) {
+    const follow = direct(aliases.call("task", flag, "--direct", "fixture"));
+    const record = storedFixtureJob(aliases, follow.jobId);
+    assert.equal(record.threadId, resumedThread);
+    assert.deepEqual([record.request.sandbox, record.request.model, record.request.effort, record.request.serviceTier], ["read-only", "gpt-5.4", "low", "priority"]);
+    assert.equal(aliases.state().lastTurnStart.sandboxPolicy.type, "readOnly");
+  }
+  mutate(aliases, `updateState(process.cwd(), state => { state.jobs = [{ id: "unknown-resume", jobClass: "task", status: "completed",
+    sessionId: "fixture-session", threadId: ${JSON.stringify(resumedThread)}, result: { turnEnded: true }, createdAt: new Date().toISOString() }]; });`);
+  const beforeUnknown = aliases.state().nextTurnId;
+  for (const flag of ["--resume", "--resume-last"]) {
+    assert.equal(direct(aliases.call("task", flag, "--direct", "fixture"), 2).blockers[0].code, "thread_settings_unknown");
+  }
+  assert.equal(aliases.state().nextTurnId, beforeUnknown);
+  assert.equal(direct(aliases.call("task", "--resume-last", "--sandbox", "read-only", "--direct", "fixture")).status, "completed");
+
+  const refused = fixture("w5-parent");
+  const live = direct(refused.call("task", "--fresh", "--direct", "--sandbox", "read-only", "--effort", "low", "fixture"));
+  const liveJob = storedFixtureJob(refused, live.jobId);
+  const decline = () => new Promise((resolve, reject) => {
+    const child = spawnOwned(process.execPath, [script, "task", "--thread", liveJob.threadId, "--sandbox", "danger-full-access", "--effort", "xhigh", "--direct", "--quiet", "fixture"],
+      { cwd: refused.repo, env: refused.env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
+    child.on("error", reject); child.on("close", status => { try { resolve(direct({ status, stdout, stderr }, 2)); } catch (error) { reject(error); } });
+  });
+  const attempts = await Promise.all([decline(), decline()]);
+  for (const attempt of attempts) {
+    assert.equal(storedFixtureJob(refused, attempt.jobId).report.blockers[0].predecessorJobId, live.jobId);
+  }
+  assert.equal(refused.state().nextTurnId, 2);
+  const answer = id => direct(run(process.execPath, [script, "answer", id, "--direct"], { cwd: refused.repo, env: refused.env, input: "Small" }));
+  answer(live.jobId);
+  const checkFollow = (selector = ["--to", live.worker]) => {
+    const follow = direct(refused.call("task", ...selector, "--direct", "fixture"));
+    const stored = storedFixtureJob(refused, follow.jobId);
+    assert.deepEqual([stored.request.sandbox, stored.request.effort], ["read-only", "low"]);
+    assert.equal(refused.state().lastTurnStart.sandboxPolicy.type, "readOnly");
+    answer(follow.jobId);
+    return storedFixtureJob(refused, follow.jobId);
+  };
+  checkFollow();
+  const started = checkFollow(["--continue", attempts[0].jobId]);
+  const neverStarted = { ...started, id: "never-started", status: "failed", turnId: null, recovered: true,
+    recovery: { turnStatus: "notStarted" }, result: { turnEnded: true }, report: { status: "failed" },
+    createdAt: new Date(Date.now() + 1000).toISOString(), request: { ...started.request, sandbox: "danger-full-access", effort: "xhigh" } };
+  mutate(refused, `import { writeJobFile, upsertJob } from ${JSON.stringify(stateModule)};
+    const record = ${JSON.stringify(neverStarted)}; writeJobFile(process.cwd(), record.id, record); upsertJob(process.cwd(), record);`);
+  checkFollow();
 });
 }

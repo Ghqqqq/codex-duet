@@ -33,9 +33,9 @@ Forwarding rules:
 - If the user asks for `spark`, map that to `--model gpt-5.3-codex-spark`.
 - If the user asks for a concrete model name such as `gpt-5.4-mini`, pass it through with `--model`.
 - Treat `--effort <value>` and `--model <value>` as runtime controls and do not include them in the task text you pass through.
-- Default to a write-capable Codex run by adding `--write` unless the user explicitly asks for read-only behavior or only wants review, diagnosis, or research without edits.
+- For implementation and fix requests, add `--write`. For read-only requests or review, diagnosis, planning, or research without edits, pass `--sandbox read-only` explicitly instead.
 - Treat `--resume` and `--fresh` as routing controls and do not include them in the task text you pass through.
-- `--resume` means add `--resume-last`.
+- `--resume` means add `--resume-last`. It inherits the selected thread's recorded model, effort, sandbox and speed unless explicitly overridden; missing sandbox settings require explicit `--sandbox`. Only original request grants from the same Claude session are eligible. Never use latest-thread selection for parallel workers.
 - `--fresh` means do not add `--resume-last`.
 - If the user is clearly asking to continue prior Codex work in this repository, such as "continue", "keep going", "resume", "apply the top fix", or "dig deeper", add `--resume-last` unless `--fresh` is present.
 - Otherwise forward the task as a fresh `task` run.
@@ -48,6 +48,6 @@ Response style:
 - Do not add commentary before or after the forwarded `codex-companion` output.
 
 Isolated runtime and collaboration:
-- Pass `--fast` when the caller explicitly selects fast mode, including a parent Claude selection for latency-sensitive work; otherwise use normal mode (omit `--fast` or pass `--normal`). Never inherit fast from an earlier task. These flags are runtime controls, not prompt text. Reasoning effort and speed mode are independent.
+- Pass `--fast` when the caller explicitly selects fast mode, including a parent Claude selection for latency-sensitive work; otherwise fresh tasks use normal mode. Follow-ups inherit recorded speed; pass `--normal` to reset it. These flags are runtime controls, not prompt text. Reasoning effort and speed mode are independent.
 - Use only this plugin runtime and its printed `codex-isolated.mjs` login/resume commands. Never fall back to the ordinary Codex home.
 - During `codex-claude collaboration`, the outer Claude agent owns planning, parallel worker assignments, integration and acceptance. The thin forwarding rules apply only to this rescue subagent; the outer agent must inspect changes and verification evidence.

@@ -5,12 +5,13 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
-import { resolveWorkspaceRoot } from "./workspace.mjs";
+import { nearestGitBoundary, resolveWorkspaceRoot } from "./workspace.mjs";
 
 const STATE_VERSION = 1;
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
+const MAX_THREAD_ANCHORS = 200;
 const STATE_BASELINE = Symbol("stateBaseline");
 const LOCK_TIMEOUT_MS = 10000;
 const LOCK_WAIT = new Int32Array(new SharedArrayBuffer(4));
@@ -36,8 +37,7 @@ function defaultState() {
 
 // One directory per workspace, named by its basename plus a hash of its
 // canonical path; the same key is used under every state root, old or new.
-function workspaceKey(cwd) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
+function workspaceKey(workspaceRoot) {
   let canonicalWorkspaceRoot = workspaceRoot;
   try {
     canonicalWorkspaceRoot = fs.realpathSync.native(workspaceRoot);
@@ -61,7 +61,19 @@ export function resolveStateRoot(env = process.env) {
 }
 
 export function resolveStateDir(cwd, env = process.env) {
-  return path.join(resolveStateRoot(env), workspaceKey(cwd));
+  return resolveStateDirForRoot(resolveWorkspaceRoot(cwd), env);
+}
+
+// Recorded roots are Git toplevels or non-Git folders outside any repository,
+// so mapping them must not spawn Git per job. Older/noncanonical records can
+// contain a subdirectory or symlink instead; those keep Git's resolution,
+// cached per path by resolveWorkspaceRoot.
+export function resolveStateDirForRoot(root, env = process.env) {
+  try {
+    const real = fs.realpathSync.native(root), boundary = nearestGitBoundary(real);
+    if (real !== root || (boundary !== null && boundary !== root)) root = resolveWorkspaceRoot(root);
+  } catch { /* Deleted workspaces retain their original path-based key. */ }
+  return path.join(resolveStateRoot(env), workspaceKey(root));
 }
 
 export function resolveStateFile(cwd) {
@@ -165,7 +177,7 @@ function removeEmptyDirectory(dir) {
   }
 }
 
-function reclaimDeadLock(lockDir) {
+function reclaimDeadLock(lockDir, deadOwnerGraceMs = 0) {
   let owners;
   try { owners = fs.readdirSync(lockDir); }
   catch (error) { if (error.code === "ENOENT") return; throw error; }
@@ -174,11 +186,50 @@ function reclaimDeadLock(lockDir) {
     if (!match) return;
     try { process.kill(Number(match[1]), 0); }
     catch (error) {
-      if (error.code === "ESRCH") removeFileIfExists(path.join(lockDir, owner));
+      if (error.code !== "ESRCH") continue;
+      const marker = path.join(lockDir, owner);
+      if (deadOwnerGraceMs > 0) {
+        // The marker is written once when acquiring the lock, never renewed.
+        // Inspect that unique marker so another reclaimer's new lock is safe.
+        try { if (Date.now() - fs.statSync(marker).mtimeMs < deadOwnerGraceMs) return; }
+        catch (error) { if (error.code === "ENOENT") continue; throw error; }
+      }
+      removeFileIfExists(marker);
     }
   }
   // A new owner's unique marker prevents a concurrent reaper from deleting it.
   removeEmptyDirectory(lockDir);
+}
+
+// Publish the PID marker with the lock, so a crash never leaves an ownerless
+// reservation. The returned release may span async work; contention never waits.
+export function tryAcquirePidLock(lockDir, { deadOwnerGraceMs = 0 } = {}) {
+  const owner = `owner-${process.pid}-${randomUUID()}`;
+  const candidate = `${lockDir}.${owner}`;
+  fs.mkdirSync(candidate, { mode: 0o700 });
+  let acquired = false;
+  try {
+    fs.writeFileSync(path.join(candidate, owner), "", { flag: "wx", mode: 0o600 });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { fs.renameSync(candidate, lockDir); acquired = true; break; }
+      catch (error) {
+        if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(error.code)) throw error;
+        if (attempt === 0) reclaimDeadLock(lockDir, deadOwnerGraceMs);
+      }
+    }
+    if (!acquired) return null;
+    return () => {
+      if (!acquired) return;
+      removeFileIfExists(path.join(lockDir, owner));
+      removeEmptyDirectory(lockDir);
+      acquired = false;
+    };
+  } finally {
+    if (!acquired) {
+      removeFileIfExists(path.join(candidate, owner));
+      removeEmptyDirectory(candidate);
+    }
+  }
 }
 
 // The lock protocol is shared with earlier releases, so a legacy directory can
@@ -246,11 +297,77 @@ function writeJsonAtomically(filePath, value) {
   }
 }
 
-function pruneJobs(jobs) {
+// Shared with admission and retention: a dead wrapper is not proof that its
+// Codex turn ended. Keep the historical predicate's process check unchanged.
+function taskProcessAlive(pid) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error.code !== "ESRCH"; }
+}
+
+export function unresolvedTask(current) {
+  if (!current || current.jobClass !== "task" || current.recovered || taskProcessAlive(current.pid)) return false;
+  if (!current.result) return current.status !== "cancelled";
+  // A stopped job whose interrupt was never confirmed may still own its turn.
+  if (["interrupted", "cancelled"].includes(current.status)) {
+    return Boolean(current.turnId) && current.result.turnEnded === false && current.result.interruptionConfirmed !== true;
+  }
+  const result = current.result;
+  if (current.status !== "failed" || result.turnEnded || result.structured) return false;
+  if (result.failureSource === "transport") return true;
+  // Older wrappers stored only the transport's literal diagnostic. Worker
+  // outcomes carry workerStatus/structured output or an observed turn end.
+  if (result.workerStatus) return false;
+  return result.errorCode === "BROKER_CONNECTION_CLOSED" ||
+    /^(Codex broker connection closed during startup\.|Connection to Codex closed while the turn was running\.|Codex connection closed before turn completion; recover the recorded job\.)$/i.test(result.error ?? current.errorMessage ?? "");
+}
+
+export function startedThreadSettings(job) {
+  if (!job || [job.recovery?.turnStatus, job.result?.turnStatus].includes("notStarted")) return false;
+  if (job.turnId || job.result?.turnId || job.report?.turnId) return true;
+  // A completed thread/start RPC establishes settings when the first turn's
+  // handle was not delivered. Merely requesting/reserving a thread does not.
+  return Boolean(job.threadId) && [job, job.result, job.report].some(source => {
+    const timing = source?.startupTimings?.threadStart;
+    return Number.isFinite(timing) || Number.isFinite(timing?.durationMs);
+  });
+}
+
+// The visible history retains its old count limit; extra thread anchors are
+// available to inheritance and admission, not added to status listings.
+export function visibleJobs(jobs, recordForJob = job => job) {
   let historyCount = 0;
   return [...jobs]
     .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
-    .filter(job => job.status === "queued" || job.status === "running" || historyCount++ < MAX_JOBS);
+    .filter(job => isActiveStatus(job.status) || unresolvedTask(recordForJob(job)) || historyCount++ < MAX_JOBS);
+}
+
+function pruneJobs(jobs, stateDir, imports = new Map()) {
+  // The index intentionally omits result. Consult private records for the
+  // predicate without publishing their output in the index or status views.
+  const records = new Map();
+  const recordFor = job => {
+    if (job.jobClass !== "task") return job;
+    if (!records.has(job.id)) records.set(job.id, { ...job, ...(imports.get(job.id)?.file ?? readJsonOrNull(path.join(stateDir, JOBS_DIR_NAME, `${job.id}.json`))) });
+    return records.get(job.id);
+  };
+  const visible = new Set(visibleJobs(jobs, recordFor).map(job => job.id));
+  const threads = new Map();
+  // Match inheritance's job order: an old job's cursor/lease update must not
+  // displace the later turn that recorded the thread's current settings. A
+  // newer refused or never-started attempt must not displace it either.
+  for (const job of [...jobs].sort((left, right) =>
+    String(right.createdAt ?? right.startedAt ?? right.updatedAt ?? "").localeCompare(String(left.createdAt ?? left.startedAt ?? left.updatedAt ?? "")) || right.id.localeCompare(left.id))) {
+    if (isActiveStatus(job.status) || !job.threadId) continue;
+    const anchor = threads.get(job.threadId);
+    if (!anchor) {
+      if (threads.size < MAX_THREAD_ANCHORS) threads.set(job.threadId, { id: job.id, started: startedThreadSettings(recordFor(job)) });
+    } else if (!anchor.started && startedThreadSettings(recordFor(job))) Object.assign(anchor, { id: job.id, started: true });
+  }
+  const anchors = new Set([...threads.values()].map(anchor => anchor.id));
+  return [...jobs]
+    .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
+    .filter(job => visible.has(job.id) || anchors.has(job.id));
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +472,7 @@ function mergeLegacyRecords(stateDir, legacyDir, legacy, marker, selected = null
   }
   const merged = new Map(current);
   for (const [id, { entry }] of imports) merged.set(id, entry);
-  const retained = new Set(pruneJobs([...merged.values()]).map(job => job.id));
+  const retained = new Set(pruneJobs([...merged.values()], stateDir, imports).map(job => job.id));
   for (const [id, { file }] of imports) {
     if (file && retained.has(id)) writeJsonAtomically(path.join(jobsDir, `${id}.json`), file);
   }
@@ -503,7 +620,7 @@ function mergeSnapshot(state, current) {
 }
 
 function commitState(stateDir, previousState, state) {
-  const nextJobs = pruneJobs(state.jobs ?? []);
+  const nextJobs = pruneJobs(state.jobs ?? [], stateDir);
   const nextState = {
     version: STATE_VERSION,
     config: {
@@ -515,14 +632,21 @@ function commitState(stateDir, previousState, state) {
 
   writeJsonAtomically(path.join(stateDir, STATE_FILE_NAME), nextState);
   const retainedIds = new Set(nextJobs.map((job) => job.id));
-  for (const job of previousState.jobs) {
+  // Include records rejected by this very update, whose private files may
+  // already have been written before their first index publication.
+  const candidates = new Map([...previousState.jobs, ...(state.jobs ?? [])].map(job => [job.id, job]));
+  for (const job of candidates.values()) {
     if (retainedIds.has(job.id)) {
       continue;
     }
-    removeFileIfExists(path.join(stateDir, JOBS_DIR_NAME, `${job.id}.json`));
-    removeFileIfExists(job.logFile);
-    removeFileIfExists(job.rawOutputFile);
-    removeFileIfExists(job.resultFile);
+    // Index paths may be stale legacy paths or aliases of another job. Only
+    // remove this job's canonical files, without following a jobs-dir symlink.
+    const directory = path.join(stateDir, JOBS_DIR_NAME);
+    if (typeof job.id !== "string" || !/^[A-Za-z0-9_-]+$/.test(job.id) || !fs.lstatSync(directory, { throwIfNoEntry: false })?.isDirectory()) continue;
+    for (const suffix of [".json", ".log", ".output.txt", ".result.json"]) {
+      const file = path.join(directory, `${job.id}${suffix}`);
+      if (fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) removeFileIfExists(file);
+    }
   }
 
   return snapshot(nextState);
@@ -547,7 +671,7 @@ export function removeJobsFromState(stateDir, select, options = {}) {
     const jobs = state.jobs.filter(job => !ids.has(job.id));
     // Ordinary updates still enforce the count cap. Cleanup must not let that
     // cap evict additional records outside its checked retention candidates.
-    if (pruneJobs(jobs).length !== jobs.length) throw new Error("Retention would prune unselected jobs.");
+    if (pruneJobs(jobs, stateDir).length !== jobs.length) throw new Error("Retention would prune unselected jobs.");
     if (removed.length) commitState(stateDir, state, { ...state, jobs });
     return removed;
   }, { lockTimeoutMs: 0, ...options, create: false });
@@ -617,7 +741,7 @@ export function listSessionJobs(cwd, sessionId) {
       ...job, workspaceRoot: job.workspaceRoot ?? (directory === ownDir ? cwd : null)
     })).filter(job => {
       if ((job.sessionId === undefined ? job.ownerId : job.sessionId) !== sessionId || typeof job.workspaceRoot !== "string") return false;
-      try { return resolveStateDir(job.workspaceRoot) === directory; } catch { return false; }
+      try { return resolveStateDirForRoot(job.workspaceRoot) === directory; } catch { return false; }
     });
   });
 }

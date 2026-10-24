@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.4.1
+
+Correctness fixes from the 1.4.0 review and release-candidate QA, plus native-agent plan mode, effort and usage support.
+
+**Upgrade or downgrade with no Duet jobs running.** Finish or cancel active jobs before changing versions; mixed-version workers can overwrite shared job state.
+
+### Follow-ups, answers and recovery
+
+- Follow-ups, including `--resume`/`--resume-last`, inherit model, effort, sandbox and speed from started attempts. Refused or never-started attempts cannot replace those settings, and blocked attempts never block the thread or displace its live owner. Symlinked workspaces accept `--cwd .` on continuation.
+- Count pruning keeps the newest ended job that actually started a turn for each of the 200 most recent threads (a newer refused attempt no longer displaces it), alongside active/unresolved jobs and the 50 newest ended jobs. Ended thread anchors still expire by age. Missing sandbox settings produce `thread_settings_unknown` until `--sandbox` is explicit; `--continue` allows that exception but does not override a recorded sandbox.
+- Browser-origin and Computer Use app request grants are inherited only from their original dispatch in the same Claude session. Runtime-only approvals and foreign dispatches after adoption are excluded; an explicit `--thread` may still inherit runtime settings across sessions.
+- Worker names are reserved in the destination session on adoption and cross-session `--thread` follow-ups, with a new name on collision. For 1.3-era duplicate names, command-state preference applies first, then the caller's workspace breaks ties.
+- `duet wait|cancel <worker>` select the active or unresolved job after a refused follow-up, and an answer with a question ID still resolves to the original pending job. Every `needs_answer` report's `next` pins `--question`; use it verbatim or pass the displayed ID explicitly. A bare `duet answer <worker>` selects whatever question is pending now, possibly a newer one. Native SendMessage already protects the displayed question and is unchanged by this CLI recipe fix.
+- Follow-up admission checks the server for any in-progress turn, including external turns and turns in another workspace, without starting a second turn. A per-thread admission reservation in the isolated home covers the interval from that check until the new turn's handle is saved, so concurrent follow-ups from other connections, brokers, the broker-busy direct fallback or other workspaces are refused with `thread_busy` instead of starting overlapping turns, including while a fresh thread's first turn awaits acceptance or just after its wrapper crashed; a reservation left by a dead process is reclaimed after a 30-second settle window. Known limit: a start request left pending in a broker by a killed worker and accepted more than 30 seconds later can still overlap a concurrent cross-workspace follow-up until the broker ends the orphaned turn. `thread_busy` supplies recovery/cancel commands only when a tracked job owns the turn; refused attempts never replace that owner.
+- A dead worker with no thread handle is resolved as failed. Missing turn handles are recovered only from a turn that no other recorded job owns (alive or dead) and that no other handle-less job could have started in the same window; unreadable ownership records or ambiguous history stay unresolved. A missing-handle cancel interrupts only such a uniquely attributed live turn, otherwise it reports `interrupt_unconfirmed` (exit 2).
+- A launch interrupted before its job record was written (for example a stop during dispatch) no longer blocks its thread: once its launcher is gone, the reservation resolves as failed with no turn submitted. Started jobs whose record is missing stay unresolved for recovery but are no longer shown as running.
+- Unresolved turns survive count and age pruning. Expired dead orphan files that are not unresolved can be cleaned, and stale running index entries without private records are removed when not unresolved. Cleanup deletes only artifacts in the job's own directory; legacy/out-of-directory artifacts are retained for review.
+- Stale task-scoped Computer Use grants left by worker death are released at the next start or recovery, and a configuration writer lock left by a killed worker is reclaimed instead of failing later grants. An approval answered after its turn ended cannot leave a lasting task grant.
+- Confirmed cancellation before a turn starts also cleans the thread's background terminals, including earlier-turn servers. Cleanup remains bounded and separate from interruption confirmation. Lost start replies are reported as uncertain turn outcomes rather than proof that startup failed.
+
+### Reports and delivery
+
+- `details` always targets the exact job ID, so saved commands still retrieve the same turn after follow-ups. Running recovery/result reports exit 0; compact recovery reports retain available observational commands.
+- Compact reports stay within the 2,000-byte envelope excluding summary even with long recovery/cancel commands or many choices. Commands use exact IDs or defer to `--details`; `question.optionsOmitted` counts trimmed choices. Summary truncation preserves Unicode characters, and error blockers cannot coexist with `completed`.
+- Report generation and worker-name resolution avoid spawning Git once per recorded job or workspace, for Git and non-Git workspaces alike, and only examine the owning session's jobs. Large homes no longer incur that per-job lookup delay, which could stall the owner wait beyond its five-second grace and interrupt a question with `owner_lost`.
+- Simultaneous completion notifications look up reports concurrently. A dropped notification does not consume its delivery marker; when duplicate notifications overlap and the first is dropped, the other can still carry the report. `duet wait --details` output over 100,000 characters still gets its compact report attached.
+- Delivery-marker cleanup exempts the current session from the seven-day age pass and caps that session at 2,000 markers; old foreign markers are pruned. SessionEnd attempts every marker deletion even if one fails, with bounded retries.
+- Final JSON output survives SIGTERM even with a full pipe or a large details report, without leaving a partial line.
+
+### Native agents
+
+- Plan mode runs workers with `--sandbox read-only`; writable `DUET:` headers are refused (`native_plan_mode_read_only`) without launch. A lost permission binding fails closed (`native_binding_unavailable`) instead of risking writable dispatch.
+- Initial-task effort precedence is `DUET: --effort` > explicitly supplied Agent `effort` (including `max`) > companion default; the shell's `effort: low` is ignored. Follow-ups retain thread settings. Agents support foreground and background calls.
+- Reports optionally carry integer `usage` counts for the turn (`inputTokens`, `cachedInputTokens`, `outputTokens`, `reasoningOutputTokens`, `totalTokens`) between `keyFindings` and `next`. Decreasing counters invalidate usage rather than emitting misleading counts. Native transcripts show a `Codex usage` notice; these tokens never enter Claude's usage or cost.
+- Overlapping native dispatches cannot launch two jobs for one agent. An agent with its binding already available no longer waits for unrelated slow spawns before accepting its brief.
+- Definitive pre-launch failures, including invalid headers, unavailable executables, spawn failures and intent-save failures, leave the agent usable for a corrected message. Reconciliation recognizes definitively failed turns and finds retained jobs beyond the 50-entry visible history.
+- A displayed question remains answerable if the final state write fails. Late SendMessage replies are pinned to the displayed question; if it changed, the current question is returned. Hook/store failures produce bounded blocked reports or preserve the host event instead of escaping the hook.
+- Readiness is announced on the first accepted non-command person prompt after registration (`prompt.submit`), not by SessionStart. codex-live removes a job from the old session after adoption.
+
+### Instruction forwarding and transport
+
+- A valid loaded CLAUDE.md inventory stays authoritative even above the capture budget: omissions are reported without scanning filtered-out files back in. Auto-memory exclusion also holds through symlinked configuration and memory directories.
+- The broker preserves the requesting client's callback ownership until its request settles, including after turn completion or disconnect. A completion received before the start reply no longer leaves stale ownership. Requests remain ordered, and a failed side request does not cut off turn notifications.
+- Client, broker and parent bridge ignore non-object JSON messages such as `null`; resumed-thread questions containing U+2028/U+2029 remain intact. Abandoned cleanup requests no longer keep an idle broker/runtime alive, and concurrent stale-state cleanup tolerates already-removed files.
+- Documentation and help now match pinned answers, grant provenance, retention, recovery and native readiness. Read-only rescue recipes pass `--sandbox read-only` explicitly.
+
 ## 1.4.0
 
 - Call Codex like a native subagent: `Agent(subagent_type: "codex:codex-native", prompt: …)` runs the brief on Codex. A plugin hook answers that agent's turns itself, so the agent makes no Claude model requests; the Codex report is the agent's result, SendMessage to the agent continues the same Codex thread or answers a worker question, and stopping the agent from `/tasks` interrupts the job and ends its commands (reported as interrupted; the confirmation is recorded on the job), after which SendMessage continues the agent. Codex's progress streams live inside the agent and is kept in its transcript, which also keeps jobs longer than ten minutes alive under Claude Code's stall watchdog; the first prompt of each session tells Claude the native workers are ready. An optional first prompt line `DUET: <flags>` sets model, effort, sandbox, speed, working directory or `--fork`. This uses Claude Code's early-access function-hook API; if the hooks are unavailable the agent returns a blocked report instead of doing anything.

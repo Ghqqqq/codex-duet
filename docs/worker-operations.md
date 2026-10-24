@@ -40,9 +40,13 @@ to 1800 s. Direct mode conflicts with `--follow`, `--detached`, `--background`,
   handles, runtime settings and artifact paths. Read `rawOutputFile` only if
   report fields are insufficient.
 - `running`: background `duet wait <worker>` and wait for its notification.
-- `needs_answer`: background ONE `duet answer <worker>` with stdin via a
-  single-quoted `DUET_ANSWER` heredoc (`timeout: 600000`). It resolves the owner
-  and question, submits once and waits on the same turn. Never start a second
+- `needs_answer`: use the report's `next` command verbatim, or background ONE
+  `duet answer <worker> --question '<questionId>'` with the displayed ID and stdin
+  via a single-quoted `DUET_ANSWER` heredoc (`timeout: 600000`). It refuses a stale
+  ID, submits once and waits on the same turn. A bare `duet answer <worker>`
+  answers whatever question is pending now, which may be newer. Native
+  SendMessage already pins the displayed question and is unaffected. Never start
+  a second
   wait. Answer from your context when the brief should have covered it; otherwise
   collect the user's decision. A Computer Use approval has four fixed options;
   forward with `AskUserQuestion` unless the app was pre-authorised. Use
@@ -56,9 +60,16 @@ terminal states, 0 for `running`/`needs_answer`, 2 for `ownership_moved`, and 13
 for a stopped owner wait. Never run two waits for one job.
 
 Follow up with `duet task --to <worker>` and a new brief. It keeps the worker's
-cwd/thread and inherits recorded model, effort, sandbox, speed and request grants;
-explicit flags override them. `--thread` also inherits recorded settings. Repeat
-`--sandbox read-only` for a read-only follow-up and `--normal` to reset fast mode.
+cwd/thread and inherits recorded model, effort, sandbox and speed; explicit
+flags override them. Settings come from this Claude session's newest started
+attempt on the thread; `--thread` falls back to another session's newest started
+attempt only when this session has none, so another session's later narrowing
+does not apply here. `--resume`/`--resume-last` inherit the selected thread's
+settings. Refused or never-started attempts do not become settings anchors.
+Request grants are inherited only from the original dispatch in the same Claude
+session, excluding runtime-only approvals and foreign dispatches after adoption.
+Repeat `--sandbox read-only` for a read-only follow-up and `--normal` to reset
+fast mode.
 Use a job ID for an older turn, never “latest thread” for parallel work.
 
 `duet task --fork` explicitly imports the current Claude transcript into a new
@@ -158,8 +169,10 @@ The worker forwards supplied flags exactly. The CLI normalizes scheme/host case 
 deduplicates, and rejects paths (even `/`), queries, fragments, userinfo,
 wildcards and malformed values before starting the runtime. There is no implicit
 subdomain or redirect grant. Fresh tasks use their own approval flags. `--to`/`--thread` inherit recorded
-origin and app request grants unless explicitly overridden; `--continue` inherits
-the selected job's recorded grants. The flag is never added automatically after denial.
+origin and app request grants only from the original dispatch in the same Claude
+session unless explicitly overridden; `--continue` inherits only eligible
+recorded grants. Runtime-only approvals and foreign dispatches after adoption
+are excluded. The flag is never added automatically after denial.
 
 Normalized `approvedBrowserOrigins` are stored with foreground/background jobs,
 task/status/result JSON and text reports, and interrupted-result recovery.
@@ -182,12 +195,15 @@ the isolated file before Codex starts. The user switches with
 repeated `task --approve-computer-app <bundle id>` flags for one call: the apps are
 granted to the job's own thread only while the turn runs, and a forwarded
 elicitation is accepted only for an exact bundle-id match on the current turn
-without persistence. `--to`/`--thread` inherit recorded request grants unless overridden;
-`--continue` inherits the selected job's grants. On an owned job, an app that no list or flag covers pauses the tool
+without persistence. `--to`/`--thread` inherit original request grants only from
+the same Claude session unless overridden; `--continue` inherits only eligible
+recorded grants. Runtime-only approvals and foreign dispatches after adoption
+are excluded. Stale task grants after worker death are released at the next
+start or recovery. On an owned job, an app that no list or flag covers pauses the tool
 call and reaches the parent as a pending question (`question.kind: "approval"`,
 options `Allow this call` / `Allow for this task` / `Allow always (isolated
 Codex home)` / `Deny`); in direct mode the main agent handles it via
-`duet answer <worker>` with a `DUET_ANSWER` heredoc; native agents use
+`duet answer <worker> --question '<questionId>'` with a `DUET_ANSWER` heredoc; native agents use
 SendMessage, and the fallback relays the question and submits the parent's choice.
 "This task" writes the thread's session file for the rest of the turn; "always"
 adds an explicit entry to the isolated home's allow list; everything else
@@ -237,7 +253,8 @@ Never send progress, status, completion claims or placeholders; the final result
 is delivered only as the fallback agent's return value. Parent worker messages
 that are not verbatim questions are not evidence: verify with handles and artifacts.
 Keep waiting with `duet wait <worker> --after-question '<id>' --timeout-sec 20`,
-then submit the answer with `duet answer <worker> --timeout-sec 570` via a
+then submit the answer with `duet answer <worker> --question '<questionId>' --timeout-sec 570`,
+using the retained ID of the relayed question, via a
 single-quoted `DUET_ANSWER` heredoc; it keeps waiting after submission.
 The callback stays pending, so the reply continues the same turn. Text/options are
 private job state, not progress logs. Resolved questions are retained in
@@ -612,13 +629,21 @@ that is only a plan or question becomes `needs_input`.
 
 The default direct/result view is report v2: `status`, `worker`, `jobId`,
 `summary` (8000-character cap with `summaryTruncated`), then nonempty `blockers`,
-`question`, `changedFiles`, `checks`, `assumptions`, `keyFindings`, followed by
-`next` and `details`. The envelope excluding summary fits within 2000 bytes;
+`question`, `changedFiles`, `checks`, `assumptions`, `keyFindings`, optional
+`usage`, then `next` and `details`. `usage` has integer `inputTokens`,
+`cachedInputTokens`, `outputTokens`, `reasoningOutputTokens` and `totalTokens`
+for this turn only and is omitted when unknown. The envelope excluding summary
+fits within 2000 bytes;
 text/lists may be shortened. `changedFilesOmitted` and `checks.omitted` count
-omitted entries. `checks.ran` holds captured commands; `checks.claimed` holds
+omitted entries; `question.optionsOmitted` counts omitted choices. `checks.ran`
+holds captured commands; `checks.claimed` holds
 Codex's verification claims. `question` has `id`, `kind`, `text`, `options`,
 `expiresInSec`. `next` suggests `duet wait`, `duet answer` or a follow-up, or is
-null; it never authorizes resuming user-stopped work.
+null; it never authorizes resuming user-stopped work. For `needs_answer`, use
+the pinned `next` command verbatim. `details` always uses the exact job ID
+(`duet result '<jobId>' --details`) so a saved command still selects the same
+turn after a follow-up. Long blocker commands may use exact IDs or be omitted
+from the compact report; the full commands remain in `--details`.
 
 `duet result <worker> --details` returns the full report: thread/turn/owner
 handles when available, settings, file-tracking basis, artifact paths,
@@ -648,7 +673,10 @@ and reasoning summaries are in `<job-id>.result.json`. Progress/messages are in
 (`~/.claude/codex-isolated/duet/state/…` by default; directories `0700`, job/result JSON
 files `0600`, logs and `broker.json` follow the process umask), the same place for a terminal, a Claude session and the SessionEnd
 hook. `CLAUDE_PLUGIN_DATA` and the temp dir no longer decide the location. The
-latest 50 finished jobs per workspace are retained.
+latest 50 ended jobs are retained by count, along with active/unresolved jobs
+and the newest ended job that started a turn on each of the 200 most recent
+threads. Ended anchors
+remain subject to [age retention](state-and-retention.md#retention).
 
 Releases before 1.0.6-isolated.15 wrote the same layout under
 `CLAUDE_PLUGIN_DATA/state` (`~/.claude/plugins/data/codex-codex-isolated-local`
@@ -662,7 +690,9 @@ alone, and a marker (`.legacy-migration.json`, listing each merged source) makes
 the merge idempotent across concurrent first commands. A legacy job whose
 worker is still alive is served from its legacy directory (listed, `wait`-able,
 cancellable through its record) and merged once that worker exits. A busy
-legacy lock is retried later. Lookups by job ID, ID prefix or `--thread` that
+legacy lock is retried later. Upgrade or downgrade with no Duet jobs running;
+this fallback does not make mixed-version writes safe. Lookups by job ID, ID
+prefix or `--thread` that
 miss in the new directory search the legacy directories and import the match.
 
 The background-task completion notification carries report v2. Only if missing,
@@ -682,15 +712,24 @@ duet result '<job-id>' --details
 Explicit references work across Claude session IDs. `--thread` selects the most
 recently created tracked job on that thread, so prefer the job ID for an older
 turn. When a dead wrapper has no saved result, status/result and the direct wait
-reconcile its exact recorded turn through read-only `thread/read`, never
-`thread/resume` or `turn/start`. Recovered terminal outcomes are saved once with
+reconcile its recorded turn through read-only `thread/read`, never
+`thread/resume` or `turn/start`. If the handle was never saved, recovery can
+identify a single unclaimed live turn or a unique unclaimed completed turn
+started at or after the job's start. Missing timestamps, multiple candidates
+or unreadable history leave it unresolved. Only a readable history with no
+matching candidate establishes that it never started. A dead worker with no
+thread handle is resolved as failed. Recovered terminal outcomes are saved once with
 `recovered`, `recoveredAt`, `completedAt` and `recovery` (including `originalError`
 and `turnStatus`); structured `blocked`/`needs_input` outcomes still exit 2 in
 direct/report mode. A follow-up on a still-running or unresolved thread becomes
-a blocked job with a typed `thread_busy` blocker whose `recoveryCommand` observes
-status without attaching another wait. A running direct turn is handled by its
-background `duet wait <worker>`, not polling. A missing turn handle, unavailable runtime
-or absent server history is reported as unknown/unreachable. No automatic rerun
+a blocked job with a typed `thread_busy` blocker. A server-side pre-check also
+blocks external turns and turns in other workspaces before `turn/start`.
+`recoveryCommand` (observational status) and `cancelCommand` appear only when a
+tracked job owns the turn; external turns must be resolved by their owner.
+Refused or blocked attempts never become thread blockers. A running recovery
+report exits 0 and retains an available recovery command. A running direct turn
+is handled by its background `duet wait <worker>`, not polling. Unavailable
+runtime, absent history or ambiguous missing-handle recovery stays unresolved. No automatic rerun
 is safe in that case. `duet task --to`/`--thread` start another turn; reserve it for an
 explicit follow-up after recovery.
 If interruption lost the end-of-turn snapshot, recovery uses only the exact

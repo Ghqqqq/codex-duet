@@ -3,6 +3,7 @@ import type { EngineInterface, On, PaneOpenArgs, UiScrollArgs } from 'claude-cod
 import { boundState, clearFinished, visibleJobs, visibleSessions } from '../hooks/model';
 import { feedItems, feedLines, feedWindow, normalizeFeed, scrollFeed, selectedJob } from '../hooks/layout';
 import { createPoller } from '../hooks/poll';
+import { writeView } from '../hooks/runtime';
 import type { CodexLiveState } from '../types';
 
 const epoch = Date.parse('2026-10-18T00:00:00.000Z');
@@ -166,12 +167,14 @@ const historyPane = { title: 'Codex', isFocused: true, bodyColumns: 56, placemen
 const waitingCount = (text: string | undefined) => Number(text?.match(/(\d+) waiting/)?.[1] ?? 0);
 
 test('discovery caches unchanged files, respects closed panes and opens new active jobs', async ($, on) => {
-  const f = fixture(on);
+  let failure: string | undefined;
+  const f = fixture(on, () => failure);
   await $.session.start(start);
   await $.session.start(start); // One timer even after repeated starts.
   await f.clock.advance(5000);
   expect(f.lists.length).toBe(1);
   f.add('a');
+  patchJob(f.files, 'a', { sessionId: 'session-a', request: { prompt: 'Original A task' } });
   await f.clock.advance(1000);
   expect(f.lists.at(-1)).toBe('/canonical/duet/sessions/session-a');
   expect(f.latest()?.selectedId).toBe('a');
@@ -187,11 +190,40 @@ test('discovery caches unchanged files, respects closed panes and opens new acti
   expect(f.opens.length).toBe(2);
   expect(f.latest()?.selectedId).toBe('a');
   expect(f.latest()?.jobs.map(job => job.id)).toEqual(['b', 'a']);
+  f.add('foreign');
+  patchJob(f.files, 'foreign', { sessionId: 'session-b' });
+  await f.clock.advance(1000);
+  expect(f.latest()?.jobs.map(job => job.id)).toEqual(['b', 'a']);
+  expect(f.opens.length).toBe(2);
+  const lines = feedLines(selectedJob(f.latest()!)!, epoch, 60);
+  await writeView($, state => ({ ...state, feeds: { a: scrollFeed(lines, 8, undefined, -1, 16, lines.length) } }));
+  patchJob(f.files, 'a', { sessionId: 'session-b',
+    activity: [{ seq: 1, type: 'dynamicToolCall', tool: 'ask_parent', callId: 'call-a', lifecycle: 'completed' }],
+    questionHistory: [{ callId: 'call-a', text: 'Which answer?', resolution: 'answered', answer: 'B private answer' }],
+  });
+  const transferred = f.files.get('/jobs/a.json')!;
+  failure = 'Simulated state failure during adoption';
+  await f.clock.advance(1000);
+  failure = undefined;
+  f.files.delete('/jobs/a.json');
+  await f.clock.advance(15000);
+  expect(f.latest()?.jobs.map(job => job.id)).toEqual(['b']); // No sessionId: legacy marker scope.
+  expect(f.latest()?.feeds?.a).toBe(undefined);
+  expect(JSON.stringify(f.latest()).includes('Original A task')).toBe(false);
+  expect(JSON.stringify(f.latest()).includes('B private answer')).toBe(false);
+  f.files.set('/jobs/a.json', transferred);
+  await f.clock.advance(15000);
+  expect(f.latest()?.jobs.map(job => job.id)).toEqual(['b']);
+  await createPoller($)(true);
+  expect(f.latest()?.jobs.map(job => job.id)).toEqual(['b']);
   f.switchSession();
   f.add('other');
   await f.clock.advance(1000);
   expect(f.latest()?.jobs.map(job => job.id)).toEqual(['other']);
   expect(f.lists.at(-1)).toBe('/canonical/duet/sessions/session-b');
+  f.files.set('/canonical/duet/sessions/session-b/a.json', f.files.get('/canonical/duet/sessions/session-a/a.json')!);
+  await f.clock.advance(1000);
+  expect(f.latest()?.jobs.some(job => job.id === 'a')).toBe(true);
 });
 
 test('an unrelated worker preserves the following conversation and stays new across reload until viewed', async () => {

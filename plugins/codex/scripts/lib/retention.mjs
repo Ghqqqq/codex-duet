@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
-import { resolveStateRoot, removeJobsFromState } from "./state.mjs";
+import { resolveStateRoot, removeJobsFromState, unresolvedTask } from "./state.mjs";
 import { planSessionMarkers, pruneSessionMarkers } from "./session-markers.mjs";
 import { planRuns, pruneRuns, RUN_SESSIONS_DIR } from "./run-journal.mjs";
 import { CodexAppServerClient } from "./app-server.mjs";
@@ -75,14 +75,24 @@ function readJson(file) {
 function validateJob(job) {
   if (!job || !safeId(job.id) || typeof job.status !== "string" || !job.status) throw new Error("Invalid job record.");
 }
-function expired(job, cutoff) {
+function expired(job, cutoff, record = job, orphan = false) {
   const timestamp = Date.parse(job.completedAt ?? job.updatedAt);
-  return !active(job) && Number.isFinite(timestamp) && timestamp < cutoff && !job.ownerAttached && !alive(job.pid);
+  // Orphan files can precede index publication during startup. Requiring every
+  // recorded start/update time to predate the (at least one day) age cutoff
+  // keeps that window protected even when their stale status is still active.
+  const oldOrphan = orphan && [job.createdAt, job.startedAt, job.updatedAt].filter(value => value != null)
+    .every(value => Number.isFinite(Date.parse(value)) && Date.parse(value) < cutoff);
+  return (!active(job) || oldOrphan) && !unresolvedTask({ ...job, ...record }) && Number.isFinite(timestamp) && timestamp < cutoff && !job.ownerAttached && !alive(job.pid);
+}
+function eligibleRecord(index, record, cutoff) {
+  if (!record) return !unresolvedTask(index) && (active(index) || expired(index, cutoff));
+  return index ? expired(index, cutoff, record) && expired(record, cutoff) : expired(record, cutoff, record, true);
 }
 function protectionReason(...jobs) {
   if (jobs.some(job => job && active(job))) return "active";
   if (jobs.some(job => job?.ownerAttached)) return "owner-attached";
   if (jobs.some(job => alive(job?.pid))) return "pid-alive";
+  if (unresolvedTask(Object.assign({}, ...jobs))) return "unresolved";
   return null;
 }
 function recordRetention(retained, workspace, jobId, reason) {
@@ -122,7 +132,7 @@ function workspaceRecords(workspace, { state = null, locked = false } = {}) {
   for (const job of indexed) {
     validateJob(job);
     if (records.has(job.id)) throw new Error("Duplicate job id in index.");
-    records.set(job.id, { index: job, record: job });
+    records.set(job.id, { index: job, record: null });
   }
   const jobsDir = path.join(workspace, "jobs");
   try {
@@ -156,22 +166,25 @@ function inspectWorkspaces(env, cutoff, { retainAll = false } = {}) {
         const records = workspaceRecords(workspace);
         const candidates = [], protectedRecords = [];
         for (const { index, record } of records.values()) {
-          let candidate = !retainAll && index && expired(index, cutoff) && expired(record, cutoff);
-          let reason = protectionReason(index, record);
-          if (reason) candidate = false;
+          const job = record ?? index;
+          let candidate = !retainAll && eligibleRecord(index, record, cutoff);
+          let reason = candidate ? null : protectionReason(index, record);
           let bytes = 0;
           if (candidate) {
-            try { bytes = artifactFiles(workspace, index).reduce((sum, file) => sum + file.bytes, 0); }
+            try {
+              if (index && record) artifactFiles(workspace, record);
+              bytes = artifactFiles(workspace, index ?? record).reduce((sum, file) => sum + file.bytes, 0);
+            }
             catch (error) {
               if (error.code === RETAIN_ARTIFACT_PATHS) reason = "legacy-paths";
-              else errors.push(errorEntry({ workspace, jobId: index.id }, error));
+              else errors.push(errorEntry({ workspace, jobId: job.id }, error));
               candidate = false;
             }
           }
-          if (candidate) candidates.push({ workspace, jobId: index.id, threadId: record.threadId ?? index.threadId ?? null, bytes });
+          if (candidate) candidates.push({ workspace, jobId: job.id, threadId: record?.threadId ?? index?.threadId ?? null, bytes });
           else {
             protectedRecords.push(index, record);
-            recordRetention(retained, workspace, record.id, reason);
+            recordRetention(retained, workspace, job.id, reason);
           }
         }
         jobs.push(...candidates);
@@ -248,14 +261,24 @@ export async function applyRetention(plan, { deleteThread } = {}) {
           const records = workspaceRecords(workspace, { state, locked: true }), selected = [];
           for (const id of ids) {
             const item = records.get(id);
-            if (!item?.index) continue;
-            if (!expired(item.index, cutoff) || !expired(item.record, cutoff)) {
+            if (!item) continue;
+            if (!eligibleRecord(item.index, item.record, cutoff)) {
               recordRetention(report.retained, workspace, id, protectionReason(item.index, item.record));
               continue;
             }
             try {
-              const artifacts = artifactFiles(workspace, item.index);
-              files.push(...artifacts); selected.push(id);
+              if (item.index && item.record) artifactFiles(workspace, item.record);
+              const artifacts = artifactFiles(workspace, item.index ?? item.record);
+              files.push(...artifacts);
+              if (item.index) selected.push(id);
+              else {
+                // Still unindexed after rechecking under the publication lock:
+                // remove the expired orphan without ever admitting it as a job.
+                for (const file of artifacts) {
+                  try { fs.unlinkSync(file.path); } catch (error) { if (error.code !== "ENOENT") throw error; }
+                }
+                report.jobsDeleted += 1;
+              }
             } catch (error) {
               if (error.code !== RETAIN_ARTIFACT_PATHS) throw error;
               recordRetention(report.retained, workspace, id, "legacy-paths");

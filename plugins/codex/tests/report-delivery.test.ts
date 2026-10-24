@@ -11,6 +11,9 @@ test('host task notifications attach one complete helper report before next, wit
   const seen: PromptSubmitInput[] = [];
   let processes = 0;
   on('session.id', () => ({ value: 'session-a' }));
+  on('clock.now', () => ({ value: 1800000000000 }));
+  on('store.keys', () => ({ value: [...saved.keys()] }));
+  on('store.delete', ($, e) => { saved.delete(e.key); return { value: undefined }; });
   on('store.get', ($, e) => ({ value: saved.get(e.key) }));
   on('store.set', ($, e) => { saved.set(e.key, e.value); return { value: undefined }; });
   on('process.run', ($, e) => {

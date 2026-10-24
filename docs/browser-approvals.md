@@ -127,9 +127,14 @@ matching an origin. The exact response remains:
 {"id":7,"result":{"decision":"accept"}}
 ```
 
-Flags are normalized/persisted/reported for that job and never inherited by a
-`--thread` follow-up. This path is distinct from durable browser consent: opaque
-MCP metadata never triggers an automatic accept.
+Flags are normalized/persisted/reported for that job. Follow-ups (`--to`,
+`--thread`, or `--continue`) inherit recorded request grants (browser origins
+and Computer Use apps) only from jobs in the same Claude session and originally dispatched there. Adoption into another
+session does not re-authorize foreign request grants; runtime-only approvals
+are not inherited. An explicit
+`--thread` may inherit model, effort, sandbox and speed from another session's
+job, but never its grants. This path is distinct from durable browser consent:
+opaque MCP metadata never triggers an automatic accept.
 
 Generated evidence is under ignored `.test-tmp/w5-schema`:
 `ServerRequest.json#/oneOf/0`,

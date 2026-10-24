@@ -32,10 +32,10 @@ function snapshotOf(payload) {
   const inventory = instructionInventory(payload.entries.map(entry => ({ path: entry.path, kind: entry.tier, content: entry.text, parent: entry.importer })));
   const data = { version: 1, sessionId: payload.sessionId, cwd: payload.cwd,
     ...inventory, complete: payload.complete === true && inventory.complete,
-    inventoryAvailable: payload.inventoryAvailable === true,
+    inventoryAvailable: payload.inventoryAvailable === true && inventory.inventoryAvailable,
     omittedPaths: [...(payload.omittedPaths ?? []), ...inventory.omittedPaths].slice(0, 256),
     omittedCount: (payload.omittedCount ?? 0) + inventory.omittedCount,
-    bounded: Boolean(payload.bounded) };
+    bounded: Boolean(payload.bounded || inventory.bounded) };
   return { ...data, hash: digest(data), capturedAt: new Date().toISOString() };
 }
 
@@ -51,7 +51,7 @@ export function writeClaudeSnapshot(payload, env = process.env) {
     const previous = readClaudeSnapshot(payload.sessionId, env);
     if (previous) return previous;
     const snapshot = snapshotOf(payload), serialized = JSON.stringify(snapshot);
-    if (!snapshot.complete) return null;
+    if (!snapshot.inventoryAvailable) return null;
     if (Buffer.byteLength(serialized) > SNAPSHOT_BYTES) throw new Error("Claude instruction snapshot exceeds its storage budget.");
     const temporary = path.join(dir, `.${randomUUID()}.tmp`);
     try {
@@ -134,11 +134,12 @@ const autoMemory = file => /[\\/]\.claude[\\/](?:projects[\\/].*[\\/]memory|agen
 export function scanClaudeInstructions(cwd, env = process.env) {
   const files = [], seen = new Set();
   let bytes = 0, bounded = false, visited = 0;
-  function add(candidate, kind, root = path.dirname(candidate), parent, depth = 0, rule = false) {
+  function add(candidate, kind, root = path.dirname(candidate), parent, depth = 0, rule = false, logical = candidate) {
     if (files.length >= 256 || bytes >= 1000000) { bounded = true; return; }
     try {
       const file = fs.realpathSync(candidate), tree = fs.realpathSync(root);
-      if (!inside(tree, file) || seen.has(file) || autoMemory(file)) return;
+      if (!inside(tree, file) || seen.has(file) || autoMemory(logical) || autoMemory(file)
+          || autoMemory(path.resolve(root, path.relative(tree, file)))) return;
       const stat = fs.statSync(file);
       if (!stat.isFile() || stat.size > 4 * 1024 * 1024) return;
       const raw = fs.readFileSync(file, "utf8"), frontmatter = /^(?:\uFEFF)?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(raw);
@@ -152,7 +153,10 @@ export function scanClaudeInstructions(cwd, env = process.env) {
         // No expansion of ~, absolute imports, or directory traversal outside
         // the original importing file's tree, even through a symlink.
         if (target.startsWith("~") || path.isAbsolute(target)) continue;
-        add(path.resolve(path.dirname(file), target), kind, tree, file, depth + 1, rule);
+        // Keep the logical spelling through imports: realpath can erase a
+        // symlinked .claude or memory directory before the exclusion runs.
+        add(path.resolve(path.dirname(file), target), kind, root, file, depth + 1, rule,
+          path.resolve(path.dirname(logical), target));
       }
     } catch { /* Unreadable policy and missing files are not loaded. */ }
   }

@@ -142,7 +142,7 @@ SessionStart supplies the session ID; `--session <id>` overrides it.
 | `duet task` | Fresh assignment; brief only on stdin; implies `--direct` |
 | `duet task --to <worker>` | New turn on that worker's thread/cwd, inheriting recorded settings unless overridden |
 | `duet task --fork` | Import the current Claude transcript into a new thread, then run the stdin brief; fidelity not verified |
-| `duet answer <worker>` | Answer the pending question from stdin and keep waiting on the same turn |
+| `duet answer <worker> --question '<questionId>'` | Answer the displayed question ID from stdin and keep waiting; prefer the report's `next` verbatim |
 | `duet wait <worker>` | Attach the sole owner wait and renew its lease |
 | `duet result <worker>` | Retrieve report v2 if missing from the completion notification |
 | `duet result <worker> --details` | Full evidence, settings, handles and artifact paths |
@@ -151,10 +151,24 @@ SessionStart supplies the session ID; `--session <id>` overrides it.
 | `duet setup` | Runtime readiness and configuration |
 | `duet journal <start|add|validate|close|show|list>` | Acceptance criteria, verdicts and decisions |
 
-Worker names are unique within a Claude session. Worker commands also accept job
-IDs; use a job ID for an older turn. When a name still matches several jobs,
-`answer` picks the one with a pending question and `wait` the active one. Native
-`codex:codex-native` agents receive follow-ups and answers via SendMessage instead.
+Worker names are reserved within a Claude session, including on adoption and
+cross-session `--thread` follow-ups; collisions receive a different name. For
+1.3-era duplicates, command-state preference applies first, then the caller's
+workspace breaks the tie; unresolved ambiguity requires an exact ID. Worker
+commands also accept job IDs; use a job ID for an older turn. When a name matches several jobs, `answer`
+picks the one with a pending question, and `wait` and `cancel` the active one
+(both fall back to an unresolved turn). A follow-up whose thread has no
+recorded sandbox is blocked (`thread_settings_unknown`) until `--sandbox` is
+passed (including `--resume`/`--resume-last`; `--continue` permits explicit
+`--sandbox` only when the selected job lacks recorded sandbox settings).
+Refused or never-started attempts do not replace started settings anchors.
+Reports' `details` always names the exact job ID, preserving saved commands
+after follow-ups. `next` may use a safely resolved worker name, otherwise the
+job ID, with `--cwd` when needed; for `needs_answer` it pins `--question`. Use
+it verbatim or retain the displayed ID explicitly. A bare `duet answer <worker>`
+answers whatever question is pending now, which may be newer than the one you
+saw. Native `codex:codex-native` agents receive follow-ups and answers via
+SendMessage; that path already pins the displayed question and is unchanged.
 Run task/wait/answer in background Bash; reports arrive with completion
 notifications. Use single-quoted arguments and `DUET_TASK`/`DUET_ANSWER` heredocs.
 Double quotes, pipes, compound commands and flags outside the permission hook's

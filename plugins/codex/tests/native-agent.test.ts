@@ -35,6 +35,7 @@ function fixture(on: any) {
     return { value: agents };
   });
   on('classic.SubagentStart', () => ({}));
+  on('tool.call', () => ({ result: {} }));
   on('agent.spawn', (_: any, e: any) => {
     if (e.subagentType === TYPE) {
       expect(e.prompt).toBe(expectedPrompt);
@@ -80,7 +81,9 @@ function fixture(on: any) {
     // error envelope so the adapter catches the same message. The integration
     // fixture exercises the actual rejected stream and aborted turn signal.
     if (record.error) yield { stream: 'stdout', text: '\n' + JSON.stringify({ status: 'error', summary: record.error }) + '\n' };
-    return { value: record.exit };
+    // A rejected stream supplied no CLI return value. Do not turn this mock
+    // envelope into structural evidence of an exited companion's rejection.
+    return { value: record.error ? { ...record.exit, code: null } : record.exit };
   });
   on('process.run', (_: any, e: any) => ({ value: missingNode
     ? { exitCode: 127, stdout: '', stderr: 'Node unavailable', isStdoutTruncated: false, isStderrTruncated: false }
@@ -144,6 +147,10 @@ function fixture(on: any) {
       for (const failure of ['process', 'hook', 'missing-node']) {
         store = new Map();
         if (failure === 'missing-node') sessionId = 'missing-node-session';
+        // Establish the permission binding before testing unrelated failures.
+        const spawn = captures[0].events.find((event: any) => event.event === 'agent.spawn').input;
+        expectedPrompt = spawn.prompt;
+        await $.agent.spawn(spawn);
         await $.turn.start(dispatch);
         processFailure = failure === 'process'; getFailure = failure === 'hook'; missingNode = failure === 'missing-node';
         const { result } = await drain($.turn.step(captures[0].events[2].input));
@@ -193,12 +200,15 @@ test('progress is bounded, split lines survive, duplicate notices collapse, and 
   const added = ['repeat', 'repeat', ...lines].map(text => ({ kind: 'thinking', index: 0, text }));
   step.chunks.unshift(...added);
   const start = capture.notices[0];
+  // The final usage notice is exempt from the progress cap.
+  const usage = capture.notices.filter((n: any) => n.message.content[0].text.startsWith('Codex usage'));
   capture.notices = [start, ...['repeat', ...lines.slice(0, 198)].map(text => ({ agentId: 'native-agent',
-    message: { type: 'system', content: [{ type: 'text', text }] } }))];
+    message: { type: 'system', content: [{ type: 'text', text }] } })), ...usage];
   const state: any = Object.values(capture.store)[0];
   state.notices = { turnId: 'turn-1', count: 200, last: 'burst 197', started: true };
+  if (usage.length) Object.assign(state.notices, { count: 200 + usage.length, last: usage.at(-1).message.content[0].text, usage: true });
   await fixture(on).replay($, capture);
-  expect(capture.notices).toHaveLength(200);
+  expect(capture.notices).toHaveLength(200 + usage.length);
   expect(step.result.answer.includes('burst')).toBe(false);
   expect(step.result.answer.includes('repeat')).toBe(false);
 });

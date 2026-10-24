@@ -16,9 +16,13 @@ settings, file-tracking basis and artifact paths. A suggested `next` command is
 not permission to continue user-stopped work.
 
 For `running`, background `duet wait <worker>`; for `needs_answer`, background
-`duet answer <worker>` with stdin via a single-quoted `DUET_ANSWER` heredoc.
+the report's `next` command verbatim, or `duet answer <worker> --question '<questionId>'`
+with the displayed ID and stdin via a single-quoted `DUET_ANSWER` heredoc.
+A bare `duet answer <worker>` answers whatever question is pending now, which
+may be newer than the one you saw.
 Never run two waits. Follow up with `duet task --to <worker>` and a `DUET_TASK`
-heredoc. Native agents receive answers and follow-ups via SendMessage instead.
+heredoc. Native agents receive answers and follow-ups via SendMessage instead;
+that answer path already pins the displayed question and is unchanged.
 
 When the helper returns Codex output:
 - Preserve the helper's verdict, summary, findings, and next steps structure.

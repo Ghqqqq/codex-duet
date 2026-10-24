@@ -27,6 +27,7 @@ export const COMMAND_OPTIONS = {
   },
   status: {
     valueOptions: ["cwd", "thread", "timeout-ms", "poll-interval-ms", "owner"],
+    internalValueOptions: ["dispatch-nonce"],
     booleanOptions: ["json", "all", "wait"]
   },
   cancel: { valueOptions: ["cwd"], booleanOptions: ["json"] }

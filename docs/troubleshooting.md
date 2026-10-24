@@ -12,8 +12,9 @@ SessionStart supplies the session ID and dispatch guidance; do not construct a
 second runtime or submit a replacement for a job that may already exist.
 
 **Native agent unavailable.** `Agent(subagent_type: "codex:codex-native")` needs
-the supported function-hook module. SessionStart advertises it only after
-registration. If the model fallback runs, it returns a blocked
+the supported function-hook module. After registration, the adapter advertises
+it on the first accepted non-command person prompt (`prompt.submit`), not
+SessionStart. If the model fallback runs, it returns a blocked
 `native_adapter_unavailable` report and does not solve the assignment. Check
 `duet status` before retrying, then enable the supported hooks/reload or use
 background `duet task`. Do not treat the fallback as zero Claude usage.
@@ -24,9 +25,11 @@ evidence, handles and settings. Do not parse the task output file.
 
 **Claude instructions are approximate.** Managed environments skip user-supplied
 `prompt.context` hooks. If the session's first loaded instruction inventory is
-missing or incomplete, Duet falls back to a startup scan and records
+missing or invalid, Duet falls back to a startup scan and records
 `claudeMd.approximate` in `--details`. Later contexts cannot replace that first attempt.
-The scan cannot reproduce all policy/settings, imports or path-triggered rules.
+A valid inventory over the capture budget stays authoritative, with omissions
+reported instead of a fallback scan. The scan cannot reproduce all
+policy/settings, imports or path-triggered rules.
 Threads keep their original instructions. CLAUDE.md edits require a new Claude
 session and a fresh task to use the new snapshot. Opt out on a fresh task with
 `--no-claude-md`. See [configuration](configuration.md#claude-instructions-and-conversation-imports).
@@ -64,9 +67,17 @@ own final answer declared itself blocked. Blocked tasks exit 2, like `needs_inpu
 **Interrupted worker or lost connection.** Inspect `duet status <worker>` and
 `duet result <worker> --details` in the original workspace: an eligible lost turn
 is reconciled against its exact server record without resubmission, preserving
-its real outcome and recovery provenance. A follow-up on a busy or unresolved
-thread is blocked with `thread_busy`; use its observational status
-`recoveryCommand`. Do not resubmit blindly; that starts a new turn.
+its real outcome and recovery provenance. A missing turn handle can also be
+recovered from a unique unclaimed turn with a suitable start timestamp;
+ambiguous or unreadable history stays unresolved. A dead worker with no thread
+handle is resolved as failed.
+
+A follow-up on a busy or unresolved thread is blocked with `thread_busy`. The
+server pre-check also catches external turns and turns in other workspaces.
+Use `recoveryCommand` or `cancelCommand` when supplied for a tracked owning job;
+external turns have no Duet recovery/cancel command and must be resolved by
+their owner. Commands shortened out of a compact report remain in `--details`.
+Do not resubmit blindly; that starts a new turn.
 
 More: [worker operations](worker-operations.md) and
 [worker lifecycle](worker-lifecycle.md).

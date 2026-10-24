@@ -124,7 +124,7 @@ export function buildWorkerReport(payload, meta = {}) {
   const assumptions = structured ? structured.assumptions.slice(0, 3).map(s => shorten(s)) : assumptionIndex < 0 ? [] : findings.slice(assumptionIndex, assumptionIndex + 2).map(s => shorten(s));
   const omittedBlockers = Math.max(known.length, declared.length) - 3;
   return fitBudget({
-    status,
+    status: status === "completed" && blockers.length ? "blocked" : status,
     // Present when Codex filled the worker-report schema; absent when the final
     // message was prose and status/findings were inferred from it.
     ...(structured ? { reportFormat: "structured", declaredStatus: structured.status } : {}),

@@ -7,6 +7,7 @@ import { itemActivity, planActivity } from "./activity.mjs";
  * @typedef {import("./app-server-protocol").ThreadStartParams} ThreadStartParams
  * @typedef {import("./app-server-protocol").Turn} Turn
  * @typedef {import("./app-server-protocol").UserInput} UserInput
+ * @typedef {{ inputTokens: number, cachedInputTokens: number, outputTokens: number, reasoningOutputTokens: number, totalTokens: number }} TurnTokenUsage
  * @typedef {((update: string | { message: string, phase: string | null, threadId?: string | null, turnId?: string | null, stderrMessage?: string | null, logTitle?: string | null, logBody?: string | null }) => void)} ProgressReporter
  * @typedef {{
  *   threadId: string,
@@ -15,6 +16,9 @@ import { itemActivity, planActivity } from "./activity.mjs";
  *   threadTurnIds: Map<string, string>,
  *   threadLabels: Map<string, string>,
  *   turnId: string | null,
+ *   usage: TurnTokenUsage | null,
+ *   usageBaseline: TurnTokenUsage | null,
+ *   usageUnavailable: boolean,
  *   bufferedNotifications: AppServerNotification[],
  *   completion: Promise<TurnCaptureState>,
  *   resolveCompletion: (state: TurnCaptureState) => void,
@@ -39,7 +43,7 @@ import { itemActivity, planActivity } from "./activity.mjs";
  *   onProgress: ProgressReporter | null
  * }} TurnCaptureState
  */
-import { ASK_PARENT, PARENT_BRIDGE_ENV, PARENT_BRIDGE_SERVER, recordBackgroundTerminals, safeItem } from "./job-runtime.mjs";
+import { ACTIVE, ASK_PARENT, PARENT_BRIDGE_ENV, PARENT_BRIDGE_SERVER, recordBackgroundTerminals, recordedThreadJobs, turnInJobStartWindow, uniqueTurnAttribution, safeItem } from "./job-runtime.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { resolveIsolatedCodexHome, resolveCodexBinary, isolatedCodexEnv } from "./codex-home.mjs";
@@ -53,7 +57,8 @@ import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from 
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable } from "./process.mjs";
 import { classifyRuntimeError } from "./runtime-errors.mjs";
-import { computerUseSetup, grantComputerAppsForThread } from "./setup-config.mjs";
+import { computerUseSetup, computerUseSessionFile, grantComputerAppsForThread, readTomlField, setTomlField } from "./setup-config.mjs";
+import { withJournalLock, tryAcquirePidLock, updateJob, unresolvedTask } from "./state.mjs";
 import { APPROVAL_CHOICES } from "./server-requests.mjs";
 import { dedupeBlockers, toolCallBlockers } from "./blockers.mjs";
 
@@ -63,6 +68,72 @@ const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 const EXTERNAL_AGENT_IMPORT_COMPLETED = "externalAgentConfig/import/completed";
 const EXTERNAL_AGENT_IMPORT_TIMEOUT_MS = 2 * 60 * 1000;
+// A dead admission holder may still have a broker turn/start awaiting acceptance.
+// Let it settle before reclaiming the lock and checking the server for that turn.
+const THREAD_ADMISSION_SETTLE_MS = 30_000;
+
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return error.code !== "ESRCH"; }
+}
+
+// Persist the original session file before exposing any task-scoped grant.
+// A separate short-lived lock serializes recovery with a new turn's grant;
+// its PID-aware lock reclamation also survives a hard-killed worker.
+function withTaskGrant(threadId, action) {
+  const home = resolveIsolatedCodexHome(), file = computerUseSessionFile(home, threadId);
+  const directory = path.join(home, "duet", "task-grants"), journal = path.join(directory, `${threadId}.json`);
+  for (const target of [file, journal]) {
+    let part = home;
+    for (const name of path.relative(home, target).split(path.sep)) {
+      part = path.join(part, name);
+      try { if (fs.lstatSync(part).isSymbolicLink()) throw new Error("Task grant cleanup refuses symlinked paths."); }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
+  }
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  return withJournalLock(directory, () => {
+    let record = null;
+    try { record = JSON.parse(fs.readFileSync(journal, "utf8")); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    const read = () => { try { return fs.readFileSync(file, "utf8"); } catch (error) { if (error.code === "ENOENT") return null; throw error; } };
+    const write = (target, text) => {
+      const temp = `${target}.${crypto.randomUUID()}.tmp`;
+      try { fs.writeFileSync(temp, text, { flag: "wx", mode: 0o600 }); fs.renameSync(temp, target); }
+      finally { fs.rmSync(temp, { force: true }); }
+    };
+    const release = () => {
+      if (!record) return;
+      const current = read();
+      if (current !== null) {
+        const allowed = readTomlField(current, ["apps", "allowed"]) ?? [];
+        const remaining = allowed.filter(app => !record.added.includes(app));
+        const expected = setTomlField(record.before ?? "", ["apps", "allowed"], [...new Set([...(readTomlField(record.before ?? "", ["apps", "allowed"]) ?? []), ...record.added])]);
+        const restored = current === expected ? record.before : setTomlField(current, ["apps", "allowed"], remaining);
+        if (restored === null) fs.rmSync(file, { force: true });
+        else write(file, restored);
+      }
+      fs.rmSync(journal, { force: true });
+      record = null;
+    };
+    if (record && !processAlive(record.pid)) release();
+    return action({ record, read, release, save: next => write(journal, JSON.stringify(next)) });
+  });
+}
+
+export function releaseStaleTaskComputerGrants(threadId) {
+  if (threadId) withTaskGrant(threadId, () => {});
+}
+
+function grantTaskComputerApps(threadId, apps, owner) {
+  withTaskGrant(threadId, ({ record, read, save }) => {
+    if (record && record.token !== owner.token) throw new Error("Another live turn owns this thread's Computer Use grants.");
+    const before = record ? record.before : read();
+    const original = readTomlField(before ?? "", ["apps", "allowed"]) ?? [];
+    save({ ...owner, pid: process.pid, before, added: [...new Set([...(record?.added ?? []), ...apps.filter(app => !original.includes(app))])] });
+    grantComputerAppsForThread(threadId, apps);
+  });
+  return () => withTaskGrant(threadId, ({ record, release }) => { if (record?.token === owner.token) release(); });
+}
 
 function cleanCodexStderr(stderr) {
   return stderr
@@ -369,6 +440,9 @@ function createTurnCaptureState(threadId, options = {}) {
     threadTurnIds: new Map(),
     threadLabels: new Map(),
     turnId: null,
+    usage: null,
+    usageBaseline: null,
+    usageUnavailable: false,
     bufferedNotifications: [],
     completion,
     resolveCompletion,
@@ -561,6 +635,28 @@ function applyTurnNotification(state, message) {
     if (activity.length) emitProgress(state.onProgress, "Activity recorded.", null, { activity });
   }
   switch (message.method) {
+    case "thread/tokenUsage/updated": {
+      if (message.params.threadId !== state.rootThreadId || message.params.turnId !== state.turnId) break;
+      if (state.usageUnavailable) break;
+      // `last` covers one model request, while `total` includes thread history.
+      // The first response gives the total before this turn as total - last;
+      // subsequent responses (including tool loops) retain that same baseline.
+      const last = message.params.tokenUsage?.last;
+      const total = message.params.tokenUsage?.total;
+      const keys = ["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens", "totalTokens"];
+      if (!total || keys.some(key => !Number.isSafeInteger(total[key]) || total[key] < 0) ||
+          (!state.usageBaseline && (!last || keys.some(key => !Number.isSafeInteger(last[key]) || last[key] < 0 || total[key] < last[key]))) ||
+          (state.usageBaseline && keys.some(key => total[key] < state.usageBaseline[key] + (state.usage?.[key] ?? 0)))) {
+        // Do not rebase on a later request or retain partial usage after an
+        // invalid update: either would risk presenting an under-count as final.
+        state.usageUnavailable = true;
+        state.usage = null;
+        break;
+      }
+      state.usageBaseline ??= /** @type {TurnTokenUsage} */ (Object.fromEntries(keys.map(key => [key, total[key] - last[key]])));
+      state.usage = /** @type {TurnTokenUsage} */ (Object.fromEntries(keys.map(key => [key, total[key] - state.usageBaseline[key]])));
+      break;
+    }
     case "thread/started":
       registerThread(state, message.params.thread.id, {
         threadName: message.params.thread.name,
@@ -706,6 +802,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       // The response can precede notifications (or they may be dropped).
       emitProgress(options.onProgress, `Turn handle: ${state.turnId}.`, "starting", { threadId: state.threadId, turnId: state.turnId });
     }
+    options.onStarted?.(state.turnId);
     if (options.signal?.aborted) interrupt();
     for (const message of state.bufferedNotifications) {
       if (belongsToTurn(state, message)) {
@@ -732,7 +829,8 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       error.failureSource = "transport";
       error.threadId = threadId;
       error.turnId = state.turnId ?? client.serverRequestPolicy.turnId;
-      if (error.turnId) error.message = "Connection to Codex closed while the turn was running.";
+      error.message = error.turnId ? "Connection to Codex closed while the turn was running."
+        : "Connection to Codex closed while the turn was running or awaiting acceptance; its start reply was not received. Recover the recorded job before continuing.";
     }
     throw error;
   } finally {
@@ -1164,6 +1262,16 @@ async function cleanBackgroundTerminals(client, threadId) {
   }
 }
 
+export async function cleanAppServerBackgroundTerminals(cwd, threadId) {
+  const abort = new AbortController(), timeout = setTimeout(() => abort.abort(), 10000);
+  let client;
+  try {
+    client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true, signal: abort.signal });
+    return await cleanBackgroundTerminals(client, threadId);
+  } catch (error) { return { cleaned: false, detail: error.message }; }
+  finally { clearTimeout(timeout); await client?.close(); }
+}
+
 export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
   const backgroundTerminals = { cleaned: false, detail: "No turn interrupt was sent." };
   if (!threadId || !turnId) {
@@ -1373,7 +1481,6 @@ export async function runAppServerTurn(cwd, options = {}) {
     throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
   }
 
-  let releaseComputerApps = () => {};
   const serverRequestBlockers = [];
   const onServerRequestLog = summary => {
     emitProgress(options.onProgress, `Server request ${JSON.stringify(summary)}`, null);
@@ -1382,18 +1489,24 @@ export async function runAppServerTurn(cwd, options = {}) {
     }
   };
   const approvalPolicy = approvalPolicyFor(options);
-  // Mid-turn grants the parent made for the rest of this task; withdrawn with
-  // the per-call grants when the turn ends.
-  const taskGrants = [];
-  const onApprovalRequest = options.onApprovalRequest ? async request => {
-    const choice = await options.onApprovalRequest(request);
-    if (!APPROVAL_CHOICES.includes(choice) || choice === "deny") return { action: "cancel", reason: choice === "deny" ? "parent-denied" : "parent-unavailable" };
-    if (choice === "task") taskGrants.push(grantComputerAppsForThread(request.threadId, [request.app]));
-    if (choice === "always") computerUseSetup({ allow: [request.app] });
-    emitProgress(options.onProgress, `Computer Use app ${request.app} approved by the parent (${choice}).`, null);
-    return { action: "accept", reason: `parent-${choice}` };
-  } : undefined;
   return withAppServer(cwd, async (client) => {
+    // A busy broker can retry this callback with a private client. Each
+    // attempt owns its approval closure and grants, including late answers.
+    let releaseComputerApps = () => {};
+    const taskGrants = [];
+    const grantOwner = { token: crypto.randomUUID(), jobId: options.jobId ?? null, cwd };
+    let turnFinishing = false;
+    const onApprovalRequest = options.onApprovalRequest ? async request => {
+      if (turnFinishing) return { action: "cancel", reason: "turn-ended" };
+      const choice = await options.onApprovalRequest(request);
+      if (turnFinishing) return { action: "cancel", reason: "turn-ended" };
+      if (!APPROVAL_CHOICES.includes(choice) || choice === "deny") return { action: "cancel", reason: choice === "deny" ? "parent-denied" : "parent-unavailable" };
+      if (choice === "task") taskGrants.push(grantTaskComputerApps(request.threadId, [request.app], grantOwner));
+      if (choice === "always") computerUseSetup({ allow: [request.app] });
+      emitProgress(options.onProgress, `Computer Use app ${request.app} approved by the parent (${choice}).`, null);
+      return { action: "accept", reason: `parent-${choice}` };
+    } : undefined;
+    client.options = { ...client.options, onApprovalRequest };
     if (options.signal?.aborted) throw new Error("Task interrupted during startup.");
     let threadId;
     let threadPolicy;
@@ -1460,9 +1573,40 @@ export async function runAppServerTurn(cwd, options = {}) {
     // allowed for this thread while the turn runs and withdrawn afterwards.
     const approvedComputerApps = options.approvedComputerApps ?? [];
     let turnState;
+    let releaseAdmission = null;
+    const busy = turnIds => {
+      const blocker = options.onThreadBusy?.(threadId, turnIds) ?? {
+        code: "thread_busy", message: `Codex thread ${threadId} already has a turn running or awaiting acceptance.`
+      };
+      return { status: 0, threadId, turnId: null, finalMessage: blocker.message, blockers: [blocker], turnEnded: true };
+    };
+    const recordedJobs = () => recordedThreadJobs(threadId).jobs.filter(job => job.id !== options.jobId);
+    const recordedTurns = jobs => jobs.filter(job =>
+      job.turnId && (ACTIVE.has(job.status) || unresolvedTask(job))).map(job => job.turnId);
     try {
+      if (options.resumeThreadId) {
+        const directory = path.join(resolveIsolatedCodexHome(), "duet", "thread-admission");
+        fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+        releaseAdmission = tryAcquirePidLock(path.join(directory, `${crypto.createHash("sha256").update(threadId).digest("hex")}.lock`),
+          { deadOwnerGraceMs: THREAD_ADMISSION_SETTLE_MS });
+        if (!releaseAdmission) return busy(recordedTurns(recordedJobs()));
+        // Every connection, including the broker-busy direct retry, reserves
+        // this interval. Recheck both the server and durable accepted handles.
+        const response = await client.request("thread/read", { threadId, includeTurns: true });
+        if (response.thread?.id !== threadId || !Array.isArray(response.thread.turns)) throw new Error("Cannot read existing thread turns; refusing to start another turn.");
+        const recorded = recordedJobs();
+        const active = [...new Set([...response.thread.turns.filter(turn => turn.status === "inProgress").map(turn => turn.id), ...recordedTurns(recorded)])];
+        // Fresh threads publish their live job before submitting the first
+        // turn. A terminal wrapper still exiting must not block a continuation.
+        // A wrapper that crashed moments ago, before recording a turn or any
+        // outcome, may still have its turn/start awaiting acceptance.
+        const settling = job => !job.turnId && ACTIVE.has(job.status) &&
+          Date.now() - Date.parse(job.startedAt ?? job.createdAt) < THREAD_ADMISSION_SETTLE_MS;
+        if (active.length || recorded.some(job => (ACTIVE.has(job.status) && processAlive(job.pid)) || settling(job))) return busy(active);
+      }
+      releaseStaleTaskComputerGrants(threadId);
       if (approvedComputerApps.length) {
-        releaseComputerApps = grantComputerAppsForThread(threadId, approvedComputerApps);
+        releaseComputerApps = grantTaskComputerApps(threadId, approvedComputerApps, grantOwner);
         emitProgress(options.onProgress, `Computer Use apps approved for this call: ${approvedComputerApps.join(", ")}.`, "starting");
       }
       turnState = await captureTurn(
@@ -1479,11 +1623,19 @@ export async function runAppServerTurn(cwd, options = {}) {
             approvalPolicy,
             ...(options.explicitSandbox ? { sandboxPolicy: turnPolicy } : {})
           }),
-        { onProgress: options.onProgress, safeProgress: true, onTiming, signal: options.signal }
+        { onProgress: options.onProgress, safeProgress: true, onTiming, signal: options.signal,
+          onStarted: turnId => {
+            if (!turnId) throw new Error("Codex did not return a turn handle; recover this job before continuing.");
+            if (options.jobId) updateJob(cwd, options.jobId, job => job.threadId === threadId && job.turnId === turnId ? null : { threadId, turnId });
+            releaseAdmission?.();
+            releaseAdmission = null;
+          } }
       );
     } finally {
-      // Newest grant first: each release restores the file as it was before
-      // that grant, so the per-call grant's release removes the file last.
+      releaseAdmission?.();
+      turnFinishing = true;
+      // The durable journal restores this attempt's baseline once; subsequent
+      // releases are no-ops, including the per-call grant below.
       for (const release of taskGrants.reverse()) release();
       releaseComputerApps();
     }
@@ -1510,13 +1662,13 @@ export async function runAppServerTurn(cwd, options = {}) {
       fileChanges: turnState.fileChanges,
       touchedFiles: collectTouchedFiles(turnState.fileChanges),
       commandExecutions: turnState.commandExecutions,
+      ...(turnState.usage ? { usage: turnState.usage } : {}),
       startupTimings, startupWarning, turnEnded: Boolean(turnState.turnEndedObserved)
     };
   }, {
     approvedBrowserOrigins: options.approvedBrowserOrigins ?? [],
     approvedComputerApps: options.approvedComputerApps ?? [],
     onParentQuestion: options.onParentQuestion,
-    onApprovalRequest,
     signal: options.signal,
     onRuntimeEvent: runtimeEvent,
     onServerRequestLog
@@ -1524,13 +1676,31 @@ export async function runAppServerTurn(cwd, options = {}) {
 }
 
 // Recovery is read-only: never resume a thread or submit another turn.
-export async function readAppServerTurn(cwd, { threadId, turnId }) {
+export async function readAppServerTurn(cwd, job, { admittingJobId = null } = {}) {
+  let { threadId, turnId } = job;
   const abort = new AbortController();
   const timeout = setTimeout(() => abort.abort(), 10000);
   let client;
   try {
     client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true, signal: abort.signal });
     const response = await client.request("thread/read", { threadId, includeTurns: true });
+    if (!turnId) {
+      // A dead wrapper may have stopped before turn/start, or after sending it
+      // but before saving its reply. Never infer absence from an unreadable list.
+      if (response.thread?.id !== threadId || !Array.isArray(response.thread.turns)) return null;
+      const inventory = recordedThreadJobs(threadId);
+      if (!inventory.complete) return null;
+      const owned = new Set(inventory.jobs.filter(candidate => candidate.id !== job.id || candidate.workspaceRoot !== job.workspaceRoot).map(candidate => candidate.turnId).filter(Boolean));
+      const unclaimed = response.thread.turns.filter(turn => !owned.has(turn.id));
+      // Null timestamps, multiple turns, or overlapping wrapper start windows
+      // cannot establish provenance, regardless of whether a turn has ended.
+      if (turnInJobStartWindow(job, 0) === null || unclaimed.some(turn => !Number.isFinite(turn.startedAt))) return null;
+      const candidates = unclaimed.filter(turn => turnInJobStartWindow(job, turn.startedAt));
+      if (candidates.length > 1) return null;
+      if (!candidates.length) return { threadId, turnId: null, turnStatus: "notStarted" };
+      if (!uniqueTurnAttribution(job, candidates[0], inventory, admittingJobId)) return null;
+      turnId = candidates[0].id;
+    }
     return appServerTurnResult(response, threadId, turnId);
   } finally { clearTimeout(timeout); await client?.close(); }
 }
@@ -1543,6 +1713,7 @@ function appServerTurnResult(response, threadId, turnId) {
     return {
       status: turn.status === "completed" ? 0 : 1,
       turnStatus: turn.status,
+      turnStartedAt: turn.startedAt ?? null,
       turnEnded: ["completed", "failed", "interrupted"].includes(turn.status),
       turnEndedAt: typeof turn.completedAt === "number" && Number.isFinite(turn.completedAt) ? new Date(turn.completedAt * 1000).toISOString() : null,
       threadId,

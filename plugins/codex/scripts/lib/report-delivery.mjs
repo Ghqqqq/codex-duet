@@ -12,7 +12,8 @@ const object = value => value !== null && typeof value === "object" && !Array.is
 const strings = value => Array.isArray(value) && value.every(item => typeof item === "string");
 const count = value => Number.isSafeInteger(value) && value >= 0;
 const nullableString = value => value === null || typeof value === "string";
-const fields = new Set(["status", "worker", "jobId", "summary", "summaryTruncated", "blockers", "question", "changedFiles", "changedFilesOmitted", "checks", "assumptions", "keyFindings", "next", "details"]);
+const fields = new Set(["status", "worker", "jobId", "summary", "summaryTruncated", "blockers", "question", "changedFiles", "changedFilesOmitted", "checks", "assumptions", "keyFindings", "usage", "next", "details"]);
+const usageFields = ["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens", "totalTokens"];
 
 export function isC2Report(value) {
   if (!object(value) || Object.keys(value).some(key => !fields.has(key))
@@ -24,6 +25,8 @@ export function isC2Report(value) {
   if ("changedFilesOmitted" in value && !count(value.changedFilesOmitted)) return false;
   if ("blockers" in value && (!Array.isArray(value.blockers) || !value.blockers.every(b => object(b) && typeof b.code === "string" && typeof b.message === "string"))) return false;
   if ("checks" in value && (!object(value.checks) || !strings(value.checks.ran) || !strings(value.checks.claimed) || !count(value.checks.omitted))) return false;
+  if ("usage" in value && (!object(value.usage) || Object.keys(value.usage).length !== usageFields.length
+      || !usageFields.every(key => count(value.usage[key])))) return false;
   if ("question" in value) {
     const q = value.question;
     if (!object(q) || !nullableString(q.id) || typeof q.kind !== "string" || typeof q.text !== "string" || !strings(q.options)
@@ -93,7 +96,9 @@ function outputTail(notification, sessionId, env) {
   const spelled = path.relative(path.join(env.CLAUDE_CODE_TMPDIR || "/tmp", `claude-${process.getuid?.() ?? 0}`), file);
   if (spelled !== relative.join(path.sep) && file !== canonical) return null;
   if (fs.lstatSync(file).isSymbolicLink()) return null;
-  return readRegular(canonical, { tail: true, limit: 400_004 });
+  // Details can be much larger than the compact attachment. Keep the same
+  // bounded read budget as a stored job, without parsing that much output.
+  return readRegular(canonical, { tail: true, limit: 16 * 1024 * 1024 });
 }
 
 function dispatchedHere(jobId, sessionId, toolUseId, env) {
@@ -143,11 +148,15 @@ export function readDelivery({ text, sessionId }, env = process.env) {
     if (!notification) return null;
     const tail = outputTail(notification, sessionId, env);
     const line = tail?.split("\n").findLast(line => line.startsWith("{"));
-    if (!line || line.length > 100000) return null;
+    if (!line) return null;
     // The untrusted file is only a job locator, never the report authority.
-    const locator = JSON.parse(line);
-    if (!object(locator) || !id(locator.jobId)) return null;
-    const job = dispatchedHere(locator.jobId, sessionId, notification.toolUseId, env);
+    // Details start with status, optional structured-report tags, then jobId;
+    // report v2 uses status/worker/jobId. Inspect only a bounded JSON prefix.
+    const jobId = line.length > 100000
+      ? /^\{"status":"[a-z_]+",(?:(?:"worker":(?:null|"(?:[^"\\\u0000-\u001f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*")|"reportFormat":"structured","declaredStatus":"(?:completed|needs_input|blocked)"),)?"jobId":"([A-Za-z0-9_-]{1,128})"[,}]/.exec(line.slice(0, 2048))?.[1]
+      : JSON.parse(line)?.jobId;
+    if (!id(jobId)) return null;
+    const job = dispatchedHere(jobId, sessionId, notification.toolUseId, env);
     if (!job) return null;
     const report = storedReport(job, env);
     if (!isC2Report(report)) return null;

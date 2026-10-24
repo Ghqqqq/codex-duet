@@ -2,27 +2,30 @@
 // crosses stdin to the host helper; conversation blocks/messages never do.
 // prompt.context has no agent attribution in 2.1.302. Only the session's first
 // context may capture instructions; later main/subagent contexts are ignored.
-// CLAUDE.md edits therefore apply from the next Claude session. An incomplete
-// first capture leaves no snapshot and dispatch uses the approximate fallback.
+// CLAUDE.md edits therefore apply from the next Claude session. An unknown or
+// invalid inventory uses the fallback; a valid bounded inventory stays authoritative.
 export function instructionInventory(files) {
   const entries = [], omittedPaths = [];
-  let complete = Array.isArray(files), omittedCount = 0, size = 0, stopped = false;
-  for (const file of files ?? []) {
-    if (file.kind === "memory") continue;
-    if (typeof file.path !== "string" || file.path.length > 4096 ||
+  let valid = Array.isArray(files), omittedCount = 0, size = 0, omittedSize = 0, stopped = false;
+  for (const file of Array.isArray(files) ? files : []) {
+    if (file?.kind === "memory") continue;
+    if (!file || typeof file.path !== "string" ||
         typeof file.content !== "string" || !["managed", "user", "project", "local"].includes(file.kind) ||
-        (file.parent != null && (typeof file.parent !== "string" || file.parent.length > 4096))) {
-      complete = false;
+        (file.parent != null && typeof file.parent !== "string")) {
+      valid = false;
       continue;
     }
     const entry = { path: file.path, tier: file.kind, text: file.content, importer: file.parent ?? null };
     const length = JSON.stringify(entry).length;
-    if (stopped || entries.length >= 256 || size + length > 1000000) {
-      complete = false; stopped = true; omittedCount++;
-      if (omittedPaths.length < 256) omittedPaths.push(file.path);
+    if (stopped || file.path.length > 4096 || file.parent?.length > 4096 || entries.length >= 256 || size + length > 1000000) {
+      stopped = true; omittedCount++;
+      const pathSize = JSON.stringify(file.path).length;
+      if (file.path.length <= 4096 && omittedPaths.length < 256 && omittedSize + pathSize <= 1000000) {
+        omittedPaths.push(file.path); omittedSize += pathSize;
+      }
     } else { entries.push(entry); size += length; }
   }
-  return { entries, complete, inventoryAvailable: Array.isArray(files), omittedPaths, omittedCount };
+  return { entries, complete: valid && !stopped, inventoryAvailable: valid, bounded: stopped, omittedPaths, omittedCount };
 }
 
 export const register = on => {
@@ -53,7 +56,8 @@ export const register = on => {
       const block = value => JSON.stringify(value.blocks.filter(item => item.name === "claudeMd"));
       const files = result.instructionFiles ?? (block(e) === block(result) ? e.instructionFiles : undefined);
       const inventory = instructionInventory(files);
-      if (result.instructionFiles && JSON.stringify(result.instructionFiles) !== JSON.stringify(e.instructionFiles)) inventory.complete = false;
+      // The host keeps explicit inventories in step with claudeMd. A valid
+      // final list is authoritative, including files a downstream hook drops.
       const payload = { sessionId, cwd: await $.session.cwd(), ...inventory };
       await $.process.run(["node", `${$.plugin.root}/scripts/lib/claude-memory.mjs`, "capture"], {
         stdin: JSON.stringify(payload), timeoutMs: 5000

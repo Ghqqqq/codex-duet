@@ -22,9 +22,9 @@ id>.json`, keyed by the Claude session id that the SessionStart hook exports as
 one-line versioned reminder to every prompt (shown with the repository-relative
 protocol path):
 
-> Ultra-codex mode on (thorough, max 4 workers). Apply protocol v5eb371e7 to
+> Ultra-codex mode on (thorough, max 4 workers). Apply protocol va8498869 to
 > substantive tasks; re-read plugins/codex/prompts/ultra-codex-protocol.md only if
-> v5eb371e7 is not in your context.
+> va8498869 is not in your context.
 
 Control-only invocations (`on`, `off`, `status` or no arguments) do not load the
 protocol; task invocations, including `on` with task text, use Read on its path.
@@ -93,15 +93,19 @@ or background Bash and direct Codex jobs, so it works at any effort level withou
 Use the [dispatch recipe](direct-mode.md): a named native agent with an optional
 first prompt line `DUET: <flags>`, or `duet task` with a single-quoted `DUET_TASK`
 heredoc in background Bash. Investigators and reviewers use `--sandbox read-only`.
-SessionStart supplies invocation guidance and advertises native workers only
-when the adapter registered. If `duet` is not on PATH, reload/start a new session
+SessionStart supplies invocation guidance. After registration, the native
+adapter advertises readiness on the first accepted non-command person prompt
+(`prompt.submit`). If `duet` is not on PATH, reload/start a new session
 or use the absolute `bin/duet` launcher. Native-hook failure returns a blocked
 report; check `duet status` before retrying.
 
 Native follow-ups and answers use SendMessage to the agent's name. Bash
 follow-ups use `duet task --to <worker>` and a new stdin brief; `running` uses
 one background `duet wait <worker>`, and `needs_answer` uses one background
-`duet answer <worker>` with a single-quoted `DUET_ANSWER` heredoc. Never run two
+`duet answer <worker> --question '<questionId>'` with the displayed ID and a
+single-quoted `DUET_ANSWER` heredoc; prefer the report's `next` command verbatim.
+A bare `duet answer <worker>` can answer a newer pending question; native
+SendMessage already pins the displayed question. Never run two
 waits. Reports arrive with the completion notification; only if missing, run
 `duet result <worker>`. Use `--details` for shortened evidence or questions.
 Direct waits default to 3600 s (maximum 3600), the lease to 1800 s; `--quiet`
@@ -222,11 +226,15 @@ arrives with the completion notification:
 - `status`, `worker`, `jobId`, `summary` come first. The summary is capped at
   8000 characters with `summaryTruncated` when cut; the rest fits within 2000 bytes.
 - Nonempty `blockers`, `question`, `changedFiles`, `checks`, `assumptions` and
-  `keyFindings` follow. Lists/text may be shortened; `changedFilesOmitted` and
-  `checks.omitted` count omissions. `checks.ran` is captured command evidence;
+  `keyFindings` follow, then optional `usage` (integer `inputTokens`,
+  `cachedInputTokens`, `outputTokens`, `reasoningOutputTokens`, `totalTokens` for
+  this turn only; omitted when unknown). Lists/text may be shortened;
+  `changedFilesOmitted`, `checks.omitted` and `question.optionsOmitted` count
+  omissions. `checks.ran` is captured command evidence;
   `checks.claimed` is Codex's account.
-- `next` suggests an action or is null; `details` supplies `duet result <worker>
-  --details` for handles, settings, tracking basis, artifact paths and fuller evidence.
+- `next` suggests an action or is null; `details` supplies `duet result '<jobId>'
+  --details`, always targeting the exact job even after a follow-up, for handles,
+  settings, tracking basis, artifact paths and fuller evidence.
 - A runtime refusal forces `blocked`; a `completed` response that is only a plan
   or question becomes `needs_input`. Neither counts as accepted work.
 

@@ -8,6 +8,7 @@ import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
 import { spawnBrokerProcess, waitForBrokerEndpoint, sendBrokerShutdown } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { resolveCodexRuntimeIdentity, resolveIsolatedCodexHome } from "../plugins/codex/scripts/lib/codex-home.mjs";
+import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === "ESRCH") return false; throw error; } };
@@ -122,6 +123,10 @@ test("a failed detached launcher falls back once and records the target PID", as
 test("broker handshake EOF retries one private spawn; both transports preserve large JSONL", { timeout: 30000 }, async t => {
   if (!await requireLocalSockets(t)) return;
   const f = fixture("large-jsonl"), methods = [];
+  const executable = path.join(f.dir, "codex");
+  const source = fs.readFileSync(executable, "utf8"), inputMarker = 'process.stdin.setEncoding("utf8");';
+  assert.ok(source.includes(inputMarker));
+  fs.writeFileSync(executable, source.replace(inputMarker, `process.stdout.write('null\\n[]\\ntrue\\n42\\n"text"\\n');\n${inputMarker}`));
   const close = await serve(f, (socket, message) => { methods.push(message.method); socket.destroy(); });
   t.after(close);
   const payload = "x".repeat(438000) + "\u2028\u2029世界🚀\r\n" + "z".repeat(4 * 1024 * 1024);
@@ -154,12 +159,149 @@ test("broker handshake EOF retries one private spawn; both transports preserve l
     assert.ok(events.some(e => e.brokerStartupRetry === true));
     await roundTrip(client, thread.id);
   } finally { await client.close(); }
+  // Extend only this temporary runtime. The callback holds an RPC open until
+  // later socket chunks arrive, without relying on sleeps or response timing.
+  const completionGate = path.join(f.dir, "complete-turn"), auxiliaryGate = path.join(f.dir, "auxiliary-callback");
+  const abandoned = path.join(f.dir, "abandoned-request");
+  const original = fs.readFileSync(executable, "utf8"), marker = '    switch (message.method) {';
+  assert.ok(original.includes(marker));
+  fs.writeFileSync(executable, original.replace(marker, `
+    if (message.method === undefined && message.id === "transport-callback") {
+      send({ id: globalThis.transportPending, result: message.result }); return;
+    }
+    if (message.method === "turn/start" && message.params.fixtureFail) throw new Error("Fixture start failed");
+    if (message.method === "turn/start" && message.params.fixtureEarly) {
+      send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: buildTurn("early-turn", "completed") } });
+      send({ id: message.id, result: { turn: buildTurn("early-turn") } }); return;
+    }
+    if (message.method === "turn/start" && message.params.fixtureHold) {
+      globalThis.transportThread = message.params.threadId;
+      send({ id: message.id, result: { turn: buildTurn("transport-turn") } });
+      send({ method: "turn/started", params: { threadId: message.params.threadId, turn: buildTurn("transport-turn") } }); return;
+    }
+    switch (message.method) {
+      case "fixture/abandon": fs.writeFileSync(${JSON.stringify(abandoned)}, String(process.pid)); return;
+      case "fixture/complete-during-aux": {
+        globalThis.transportPending = message.id;
+        send({ method: "turn/completed", params: { threadId: globalThis.transportThread, turn: buildTurn("transport-turn", "completed") } });
+        const timer = setInterval(() => {
+          if (!fs.existsSync(${JSON.stringify(auxiliaryGate)})) return;
+          clearInterval(timer);
+          send({ id: "transport-callback", method: "item/tool/call", params: { tool: "ask_parent" } });
+        }, 10); return;
+      }
+      case "fixture/hold":
+        globalThis.transportPending = message.id;
+        send({ id: "transport-callback", method: "item/tool/call", params: { tool: "ask_parent" } }); return;
+      case "fixture/echo": send({ id: message.id, result: message.params }); return;
+      case "fixture/fail": {
+        send({ id: message.id, error: { code: -32000, message: "Fixture auxiliary failure" } });
+        const timer = setInterval(() => {
+          if (!fs.existsSync(${JSON.stringify(completionGate)})) return;
+          clearInterval(timer);
+          send({ method: "item/completed", params: { threadId: globalThis.transportThread, turnId: "transport-turn", item: { type: "agentMessage", id: "transport-item", text: "after failure" } } });
+          send({ method: "turn/completed", params: { threadId: globalThis.transportThread, turn: buildTurn("transport-turn", "completed") } });
+        }, 10); return;
+      }
+  `));
   const broker = await readyBroker(f.dir, f.env); t.after(broker.close);
   const relayed = await CodexAppServerClient.connect(f.dir, { env: f.env, brokerEndpoint: broker.endpoint });
   try {
     assert.equal(relayed.transport, "broker", "large-message coverage must use the real broker relay");
     const { thread } = await relayed.request("thread/start", { cwd: f.dir });
     await roundTrip(relayed, thread.id);
+
+    const socket = net.createConnection(parseBrokerEndpoint(broker.endpoint).path);
+    t.after(() => socket.destroy());
+    socket.setEncoding("utf8");
+    const messages = []; let buffer = "";
+    socket.on("data", chunk => {
+      buffer += chunk;
+      for (let at; (at = buffer.indexOf("\n")) !== -1;) {
+        messages.push(JSON.parse(buffer.slice(0, at))); buffer = buffer.slice(at + 1);
+      }
+    });
+    await new Promise((resolve, reject) => { socket.once("connect", resolve); socket.once("error", reject); });
+    const line = message => JSON.stringify(message) + "\n";
+    const reply = async id => { await until(() => messages.some(message => message.id === id)); return messages.find(message => message.id === id); };
+    async function callbackResponse() {
+      await until(() => messages.some(message => message.method === "item/tool/call"));
+      const callback = messages.find(message => message.method === "item/tool/call");
+      return Buffer.from(line({ id: callback.id, result: { success: true, contentItems: [{ type: "inputText", text: "release" }] } }));
+    }
+    const echo = { text: "split\u2028\u2029世界🚀" };
+    socket.write('null\n[]\ntrue\n42\n"text"\n');
+    const second = Buffer.from(line({ id: 2, method: "fixture/echo", params: echo }));
+    const cut = second.indexOf(Buffer.from("\u2028")) + 1;
+    socket.write(Buffer.concat([Buffer.from(line({ id: 1, method: "fixture/hold" })), second.subarray(0, cut)]));
+    const callbackReply = await callbackResponse();
+    socket.write(Buffer.concat([second.subarray(cut), callbackReply]));
+    await reply(2);
+    assert.deepEqual(messages.filter(message => typeof message.id === "number").map(message => message.id), [1, 2]);
+    assert.deepEqual((await reply(2)).result, echo);
+
+    // A complete queued record plus another chunk used to leave a stale LF
+    // index behind the awaiting handler, truncating the next partial record.
+    messages.length = 0;
+    const third = Buffer.from(line({ id: 3, method: "fixture/echo", params: echo }));
+    socket.write(line({ id: 1, method: "fixture/hold" }) + line({ id: 2, method: "fixture/echo", params: {} }));
+    const nextCallbackReply = await callbackResponse();
+    socket.write(Buffer.concat([nextCallbackReply, third.subarray(0, cut)]));
+    await reply(1);
+    socket.write(Buffer.concat([third.subarray(cut), Buffer.from(line({ id: 4, method: "fixture/echo", params: {} }))]));
+    await reply(4);
+    assert.deepEqual(messages.filter(message => typeof message.id === "number").map(message => message.id), [1, 2, 3, 4]);
+    assert.deepEqual((await reply(3)).result, echo);
+    assert.equal(messages.some(message => message.error), false);
+
+    messages.length = 0;
+    socket.write(line({ id: 5, method: "turn/start", params: { threadId: thread.id, fixtureHold: true } }));
+    await reply(5);
+    socket.write(line({ id: 6, method: "fixture/fail" }));
+    assert.equal((await reply(6)).error.code, -32000);
+    // A second failed start must also leave the acknowledged turn owned.
+    socket.write(line({ id: 7, method: "turn/start", params: { threadId: thread.id, fixtureFail: true } }));
+    assert.equal((await reply(7)).error.code, -32000);
+    await assert.rejects(relayed.request("account/read", {}), error => error.rpcCode === -32001);
+    fs.writeFileSync(completionGate, "complete");
+    await until(() => messages.some(message => message.method === "turn/completed"));
+    assert.deepEqual(messages.filter(message => message.method).map(message => message.method), ["turn/started", "item/completed", "turn/completed"]);
+    assert.equal(messages.find(message => message.method === "item/completed").params.item.text, "after failure");
+    assert.equal(messages.find(message => message.method === "turn/completed").params.turn.id, "transport-turn");
+    assert.equal((await relayed.request("account/read", {})).account.type, "chatgpt", "completion releases the stream owner");
+    socket.write(line({ id: 8, method: "turn/start", params: { threadId: thread.id, fixtureFail: true } }));
+    assert.equal((await reply(8)).error.code, -32000);
+    assert.equal((await relayed.request("account/read", {})).account.type, "chatgpt", "a failed initial start leaves no stream owner");
+
+    messages.length = 0;
+    socket.write(line({ id: 9, method: "turn/start", params: { threadId: thread.id, fixtureEarly: true } }));
+    await reply(9);
+    assert.equal(messages[0].method, "turn/completed");
+    assert.equal((await relayed.request("account/read", {})).account.type, "chatgpt", "a late response cannot restore completed stream ownership");
+
+    messages.length = 0;
+    socket.write(line({ id: 10, method: "turn/start", params: { threadId: thread.id, fixtureHold: true } }));
+    await reply(10);
+    socket.write(line({ id: 11, method: "fixture/complete-during-aux" }));
+    await until(() => messages.some(message => message.method === "turn/completed"));
+    await assert.rejects(relayed.request("account/read", {}), error => error.rpcCode === -32001);
+    fs.writeFileSync(auxiliaryGate, "release");
+    const ownedReply = await callbackResponse();
+    const callback = messages.find(message => message.method === "item/tool/call");
+    relayed.sendMessage({ id: callback.id, result: { success: true, contentItems: [{ type: "inputText", text: "wrong owner" }] } });
+    await relayed.request("initialize", {}); // Fence the forged reply on the peer socket.
+    assert.equal(messages.some(message => message.id === 11), false, "a peer cannot answer the outstanding request's callback");
+    socket.write(ownedReply);
+    assert.equal((await reply(11)).result.contentItems[0].text, "release");
+    assert.equal((await relayed.request("account/read", {})).account.type, "chatgpt", "settlement releases the auxiliary owner");
+
+    socket.write(line({ id: 12, method: "fixture/abandon" }));
+    await until(() => fs.existsSync(abandoned));
+    const serverPid = Number(fs.readFileSync(abandoned, "utf8"));
+    socket.destroy();
+    await relayed.close();
+    broker.close();
+    await until(() => !alive(broker.pid) && !alive(serverPid));
   } finally { await relayed.close(); }
 });
 

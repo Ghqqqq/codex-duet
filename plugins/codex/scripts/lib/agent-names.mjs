@@ -16,20 +16,21 @@ export const AGENT_NAMES = Object.freeze([
 ]);
 
 export function pickAgentName(usedNames, random = Math.random) {
-  const used = new Set(usedNames);
-  const available = AGENT_NAMES.filter(name => !used.has(name));
+  const used = new Set([...usedNames].map(name => name.toLowerCase()));
+  const available = AGENT_NAMES.filter(name => !used.has(name.toLowerCase()));
   if (available.length) return available[Math.floor(random() * available.length)];
   const base = AGENT_NAMES[Math.floor(random() * AGENT_NAMES.length)];
   let suffix = 2;
-  while (used.has(`${base}-${suffix}`)) suffix++;
+  while (used.has(`${base}-${suffix}`.toLowerCase())) suffix++;
   return `${base}-${suffix}`;
 }
 
 // Keep session reservations outside the pruned workspace indexes. Exclusive
 // creation reserves a name before its job is published, even across workspaces.
 // Reservations have no age limit: a long-lived session must never recycle them.
-export function reserveAgentName(usedNames, { cwd, sessionId }, random = Math.random) {
-  if (!sessionId) return pickAgentName(usedNames, random);
+export function reserveAgentName(usedNames, { cwd, sessionId, preferredName = null, threadId = null }, random = Math.random) {
+  const used = new Set([...usedNames].map(name => name.toLowerCase()));
+  if (!sessionId) return preferredName && !used.has(preferredName.toLowerCase()) ? preferredName : pickAgentName(used, random);
   const hash = value => createHash("sha256").update(value).digest("hex");
   const directory = path.join(path.dirname(resolveStateRoot()), "agent-names", hash(sessionId));
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -42,15 +43,20 @@ export function reserveAgentName(usedNames, { cwd, sessionId }, random = Math.ra
       throw error;
     }
   };
-  const used = new Set(usedNames);
-  for (const job of listSessionJobs(cwd, sessionId)) {
+  const jobs = listSessionJobs(cwd, sessionId);
+  for (const job of jobs) {
     if (!job.agentName) continue;
-    used.add(job.agentName);
+    used.add(job.agentName.toLowerCase());
     reserve(job.agentName);
+  }
+  if (preferredName) {
+    const owners = jobs.filter(job => job.agentName?.toLowerCase() === preferredName.toLowerCase());
+    if (threadId && owners.length && owners.every(job => job.threadId === threadId)) return preferredName;
+    if (!used.has(preferredName.toLowerCase()) && reserve(preferredName)) return preferredName;
   }
   for (;;) {
     const name = pickAgentName(used, random);
     if (reserve(name)) return name;
-    used.add(name);
+    used.add(name.toLowerCase());
   }
 }

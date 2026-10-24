@@ -1,13 +1,114 @@
 import { fileURLToPath } from "node:url";
 import { snippet, activityReader, redactActivity } from "./activity.mjs";
 import { randomUUID } from "node:crypto";
-import { listJobs, updateJob, readJobFile, resolveJobFile } from "./state.mjs";
+import fs from "node:fs";
+import path from "node:path";
+import { listJobs, updateJob, readJobFile, resolveJobFile, resolveStateRoot, resolveStateDirForRoot, unresolvedTask } from "./state.mjs";
 import { APPROVAL_OPTIONS, parseApprovalAnswer } from "./server-requests.mjs";
 import { finishJournalJob } from "./run-journal.mjs";
 import { buildWorkerReport } from "./worker-report.mjs";
 import { reportJobs, reportWorkerTarget } from "./worker-resolve.mjs";
+import { resolveWorkspaceRoot } from "./workspace.mjs";
+import { reserveAgentName } from "./agent-names.mjs";
 
 export const ACTIVE = new Set(["queued", "running"]);
+// Thread IDs are global to the isolated runtime, unlike workspace job indexes.
+// Read matching records and check for unindexed owners across workspaces.
+export function recordedThreadJobs(threadId) {
+  const inventory = { jobs: [], complete: true }, root = resolveStateRoot();
+  let directories;
+  try { directories = fs.readdirSync(root, { withFileTypes: true }); }
+  catch { inventory.complete = false; return inventory; }
+  for (const entry of directories) {
+    if (!entry.isDirectory()) continue;
+    const directory = path.join(root, entry.name);
+    const indexed = new Map();
+    let indexMissing = false;
+    try {
+      const index = JSON.parse(fs.readFileSync(path.join(directory, "state.json"), "utf8"));
+      if (!Array.isArray(index?.jobs)) throw new Error("Invalid job index");
+      for (const job of index.jobs) {
+        if (!job || typeof job.id !== "string" || !/^[\w-]+$/.test(job.id) || typeof job.workspaceRoot !== "string" || !job.workspaceRoot) {
+          inventory.complete = false;
+          continue;
+        }
+        if (indexed.has(job.id)) inventory.complete = false;
+        indexed.set(job.id, job);
+      }
+    } catch (error) {
+      if (error.code === "ENOENT") indexMissing = true;
+      else inventory.complete = false;
+    }
+    let files = [];
+    try {
+      files = fs.readdirSync(path.join(directory, "jobs")).filter(name => /^[\w-]+\.json$/.test(name));
+    } catch (error) { if (error.code !== "ENOENT") inventory.complete = false; }
+    // Broker/journal-only workspaces need no index. An index is required once
+    // private records exist, even when the readable orphans belong elsewhere.
+    if (indexMissing && files.length) inventory.complete = false;
+    const present = new Set(files.map(name => name.slice(0, -5)));
+    for (const job of indexed.values()) {
+      if (job.threadId === threadId && !present.has(job.id)) inventory.complete = false;
+    }
+    for (const name of files) {
+      const job = indexed.get(name.slice(0, -5));
+      if (job && job.threadId !== threadId) continue;
+      try {
+        const stored = readJobFile(path.join(directory, "jobs", name));
+        if (!job) {
+          if (!stored || typeof stored !== "object" || Array.isArray(stored) ||
+              (stored.threadId != null && (typeof stored.threadId !== "string" || !stored.threadId))) {
+            inventory.complete = false;
+            continue;
+          }
+          if (stored.threadId !== threadId) continue;
+        }
+        if (!stored || stored.id !== name.slice(0, -5) || typeof stored.workspaceRoot !== "string" || !stored.workspaceRoot ||
+            typeof stored.status !== "string" || !stored.status ||
+            (stored.threadId != null && (typeof stored.threadId !== "string" || !stored.threadId)) ||
+            (stored.turnId != null && (typeof stored.turnId !== "string" || !stored.turnId))) {
+          inventory.complete = false;
+          continue;
+        }
+        // updateJob publishes the private record before the index. A target
+        // mismatch during that interval defers handle-less recovery until retry.
+        if (job && (job.workspaceRoot !== stored.workspaceRoot || job.threadId !== stored.threadId || job.turnId !== stored.turnId)) inventory.complete = false;
+        if (stored.threadId !== threadId) continue;
+        if (resolveStateDirForRoot(stored.workspaceRoot) !== directory) { inventory.complete = false; continue; }
+        if (!job) {
+          // Pruning publishes the index before unlinking old private records.
+          // A resolved orphan still owns its turn, but cannot hide another start.
+          if (ACTIVE.has(stored.status) || unresolvedTask(stored)) inventory.complete = false;
+          else if (!stored.turnId) continue;
+        }
+        inventory.jobs.push(stored);
+      } catch { inventory.complete = false; }
+    }
+  }
+  return inventory;
+}
+
+// Codex timestamps turn starts in seconds. A dead wrapper's request may still
+// be accepted later, so its exit cannot close the possible start window.
+export function turnInJobStartWindow(job, startedAt) {
+  const since = Math.floor(Date.parse(job.startedAt ?? job.createdAt) / 1000);
+  if (!Number.isFinite(since) || !Number.isFinite(startedAt)) return null;
+  return startedAt >= since;
+}
+
+export function uniqueTurnAttribution(job, turn, inventory = recordedThreadJobs(job.threadId), admittingJobId = null) {
+  if (!inventory.complete || turnInJobStartWindow(job, turn.startedAt) !== true) return false;
+  return !inventory.jobs.some(candidate => {
+    if (candidate.id === job.id && candidate.workspaceRoot === job.workspaceRoot) return false;
+    if (candidate.turnId) return candidate.turnId === turn.id;
+    // The caller may be recovering its predecessor before attempting admission;
+    // that particular invocation has not submitted any turn yet.
+    if (candidate.id === admittingJobId && candidate.workspaceRoot === job.workspaceRoot) return false;
+    if (candidate.recovery?.turnStatus === "notStarted" || candidate.result?.blockers?.some(blocker =>
+      ["thread_busy", "thread_settings_unknown"].includes(blocker.code))) return false;
+    return turnInJobStartWindow(candidate, turn.startedAt) !== false;
+  });
+}
 export function recordFinishedJob(job) {
   if (!job?.runId || ACTIVE.has(job.status) || job.journalFinishedStatus === job.status) return;
   try {
@@ -83,6 +184,7 @@ export function continuationReport(job) {
 // summary and expanded lists. JSON/feed callers keep their existing payloads.
 export function fullReport(payload, job = {}) {
   const report = { ...payload,
+    ...((payload.usage ?? job.result?.usage) ? { usage: payload.usage ?? job.result.usage } : {}),
     ...(job.backgroundTerminals ? { backgroundTerminals: job.backgroundTerminals } : {}),
     ...(job.request?.claudeMd ? { claudeMd: job.request.claudeMd } : {}),
     ...(job.request?.settingsInheritance ? { settingsInheritance: job.request.settingsInheritance } : {}),
@@ -134,7 +236,7 @@ export function fullReport(payload, job = {}) {
     }
     const text = redactActivity(job.result?.structured?.summary ?? job.result?.rawOutput ?? job.result?.codex?.stdout ?? "").trim();
     if (text) {
-      report.summary = text.slice(0, DIRECT_SUMMARY_LIMIT);
+      report.summary = truncate(text, DIRECT_SUMMARY_LIMIT);
       if (text.length > DIRECT_SUMMARY_LIMIT) report.summaryTruncated = true;
     }
   }
@@ -142,10 +244,15 @@ export function fullReport(payload, job = {}) {
 }
 const DIRECT_SUMMARY_LIMIT = 8000;
 const DETAILS_LIST_LIMIT = 500;
+// Keep the UTF-16 limit without cutting an astral character in half.
+function truncate(text, limit) {
+  const end = text.charCodeAt(limit - 1), next = text.charCodeAt(limit);
+  return text.slice(0, end >= 0xd800 && end <= 0xdbff && next >= 0xdc00 && next <= 0xdfff ? limit - 1 : limit);
+}
 
 const duetTarget = value => /^[\w.-]+$/.test(value) ? value : quote(value);
 const envelopeBytes = ({ summary, ...envelope }) => Buffer.byteLength(JSON.stringify(envelope));
-const brief = value => redactActivity(value).replace(/\s+/g, " ").trim().slice(0, 240);
+const brief = value => truncate(redactActivity(value).replace(/\s+/g, " ").trim(), 240);
 
 // Budget serialized UTF-8, not JS character counts: escaping and multibyte text
 // both count. Details always retains the unabridged report behind this view.
@@ -153,6 +260,7 @@ function fitDirectEnvelope(report) {
   const lists = [
     [report, "keyFindings"], [report, "assumptions"],
     [report.checks, "ran"], [report.checks, "claimed"], [report, "changedFiles"],
+    [report.question, "options"],
     [report, "blockers", 1]
   ];
   while (envelopeBytes(report) > 2000) {
@@ -161,6 +269,7 @@ function fitDirectEnvelope(report) {
     const [object, key] = candidates.sort(([a, ak], [b, bk]) => Buffer.byteLength(JSON.stringify(b[bk])) - Buffer.byteLength(JSON.stringify(a[ak])))[0];
     object[key].pop();
     if (key === "changedFiles") report.changedFilesOmitted = (report.changedFilesOmitted ?? 0) + 1;
+    else if (key === "options") report.question.optionsOmitted = (report.question.optionsOmitted ?? 0) + 1;
     else if (object === report.checks) report.checks.omitted += 1;
     else if (!object[key].length) delete object[key];
   }
@@ -183,21 +292,24 @@ export function directReport(payload, job = {}, env = process.env) {
   const jobId = full.jobId ?? job.id ?? null;
   let target = jobId;
   if (worker && jobId) {
-    try { target = reportWorkerTarget(job, reportJobs(job, env), worker, jobId); }
+    try { target = reportWorkerTarget(job, reportJobs(job, env), worker, jobId, env); }
     catch { /* Unavailable or invalid records must use the exact job ID. */ }
   }
-  const command = target ? duetTarget(target) : null;
+  const workspace = job.workspaceRoot ?? job.request?.cwd;
+  const cwdOption = workspace && resolveWorkspaceRoot(workspace) !== resolveWorkspaceRoot(process.cwd()) ? ` --cwd ${quote(workspace)}` : "";
+  const command = target ? `${duetTarget(target)}${cwdOption}` : null;
   const summary = redactActivity(full.summary ?? full.headline ?? full.message ?? full.error ?? "");
-  /** @type {Record<string, any>} */
+  /** @type {Record<string, any> & { summary: string }} */
   const report = {
     status: full.status,
     worker,
     jobId,
-    summary: summary.slice(0, DIRECT_SUMMARY_LIMIT),
+    summary: truncate(summary, DIRECT_SUMMARY_LIMIT),
     ...(full.summaryTruncated || summary.length > DIRECT_SUMMARY_LIMIT ? { summaryTruncated: true } : {})
   };
   if (full.blockers?.length) report.blockers = full.blockers.map(blocker => ({ code: blocker.code, message: brief(blocker.message ?? ""),
-    ...(blocker.code === "thread_busy" && blocker.cancelCommand ? { cancelCommand: blocker.cancelCommand } : {}) }));
+    ...(blocker.code === "thread_busy" && blocker.cancelCommand ? { cancelCommand: blocker.cancelCommand } : {}),
+    ...(blocker.code === "thread_busy" && blocker.recoveryCommand ? { recoveryCommand: blocker.recoveryCommand } : {}) }));
   if (full.question) {
     const question = typeof full.question === "string" ? { text: full.question } : full.question;
     report.question = { id: question.id ?? null, kind: question.kind ?? "question", text: redactActivity(question.text),
@@ -216,12 +328,44 @@ export function directReport(payload, job = {}, env = process.env) {
   }
   if (full.assumptions?.length) report.assumptions = full.assumptions.slice(0, 12).map(brief);
   if (full.keyFindings?.length) report.keyFindings = full.keyFindings.slice(0, 12).map(brief);
-  report.next = !command || ["completed", "ownership_moved"].includes(full.status) ? null
-    : full.status === "needs_answer" ? `duet answer ${command}`
-    : ACTIVE.has(full.status) ? `duet wait ${command}`
-    : `duet task --to ${command}`;
-  report.details = command ? `duet result ${command} --details` : null;
-  return fitDirectEnvelope(report);
+  if (full.usage) report.usage = full.usage;
+  const nextCommand = target => !target || ["completed", "ownership_moved"].includes(full.status) ? null
+    : full.status === "needs_answer" ? full.question?.id ? `duet answer ${target} --question ${quote(full.question.id)}` : null
+    : ACTIVE.has(full.status) ? `duet wait ${target}`
+    : `duet task --to ${target}`;
+  report.next = nextCommand(command);
+  report.details = jobId ? `duet result ${quote(jobId)}${cwdOption} --details` : null;
+  if (envelopeBytes(report) > 2000) {
+    // Blocker commands act on the predecessor, not the refused job. Use its
+    // recorded ID without parsing shell text; full details keep the originals.
+    report.blockers?.forEach((blocker, index) => {
+      const predecessor = full.blockers[index].predecessorJobId;
+      if (typeof predecessor !== "string" || !predecessor) return;
+      for (const [key, action] of [["cancelCommand", "cancel"], ["recoveryCommand", "status"]]) {
+        if (blocker[key]) blocker[key] = `duet ${action} ${duetTarget(predecessor)} --json`;
+      }
+    });
+  }
+  fitDirectEnvelope(report);
+  // Long workspace paths can exceed the fixed-field budget even after text
+  // fitting. Exact IDs resolve across stored workspaces without a cwd hint.
+  if (cwdOption && jobId && envelopeBytes(report) > 2000) {
+    const exact = duetTarget(jobId);
+    report.next = nextCommand(exact);
+    if (envelopeBytes(report) > 2000) report.details = `duet result ${quote(jobId)} --details`;
+  }
+  if (envelopeBytes(report) > 2000) {
+    // Legacy blockers may have no target metadata. Omit an oversized command
+    // from this compact view rather than truncate it into an invalid command.
+    const commands = (report.blockers ?? []).flatMap(blocker => ["cancelCommand", "recoveryCommand"]
+      .filter(key => blocker[key]).map(key => [blocker, key]))
+      .sort(([a, ak], [b, bk]) => Buffer.byteLength(b[bk]) - Buffer.byteLength(a[ak]));
+    for (const [blocker, key] of commands) {
+      delete blocker[key];
+      if (envelopeBytes(report) <= 2000) break;
+    }
+  }
+  return report;
 }
 export function ownershipNotice(job, owner) {
   if (!owner || job.ownerId === owner || !job.retiredOwnerIds?.includes(owner)) return null;
@@ -239,12 +383,14 @@ export function adoptJob(cwd, id, sessionId) {
     if (current.leaseExpiresAt <= now || current.cancelRequested?.reason === "lease_expired") { status = "lease_expired"; return null; }
     if (current.cancelRequested || current.phase === "interrupting") { status = "interrupting"; return null; }
     if (current.jobClass !== "task" || !Number.isFinite(current.leaseExpiresAt)) { status = "not_adoptable"; return null; }
+    const destinationSession = sessionId || (current.sessionId === undefined ? current.ownerId : current.sessionId) || null;
+    const agentName = current.agentName ? reserveAgentName([], { cwd, sessionId: destinationSession, preferredName: current.agentName, threadId: current.threadId }) : undefined;
     const nextOwner = ownerId(id);
     status = "adopted";
-    return { ownerId: nextOwner, retiredOwnerIds: [...new Set([...(current.retiredOwnerIds ?? []), current.ownerId].filter(Boolean))],
+    return { ownerId: nextOwner, agentName, retiredOwnerIds: [...new Set([...(current.retiredOwnerIds ?? []), current.ownerId].filter(Boolean))],
       // A replacement launched in another Claude session takes over cleanup.
       // Without a caller session, preserve the original (including legacy) scope.
-      sessionId: sessionId || (current.sessionId === undefined ? current.ownerId : current.sessionId) || null,
+      sessionId: destinationSession,
       leaseRenewedAt: now, leaseExpiresAt: now + (current.leaseSec ?? 180) * 1000,
       ownerAttached: false, ownerDetachedAt: null, ownerDetachReason: null,
       activityCursors: { ...current.activityCursors, [activityReader(nextOwner)]: current.activityCursors?.[activityReader(current.ownerId)] ?? 0 }

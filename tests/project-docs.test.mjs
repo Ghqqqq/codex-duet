@@ -92,7 +92,7 @@ test("first prompt.context wins, preserves loaded instructions, and leaves incom
   const before = structuredClone(event);
   const $ = { plugin: { root: path.dirname(path.dirname(script)) }, env: { get: async name => f.env[name] },
     session: { id: async () => sessionId, cwd: async () => f.repo },
-    store: { get: async key => store.get(key), set: async (key, value) => store.set(key, value), delete: async key => store.delete(key) },
+    store: { get: async key => store.get(key), set: async (key, value) => store.set(key, value), delete: async key => store.delete(key), keys: async () => [...store.keys()] },
     process: { run: async (argv, init) => {
       captures++;
       assert.doesNotMatch(init.stdin, /AUTO_MEMORY_SECRET|PRIVATE_CONTEXT/);
@@ -145,7 +145,7 @@ test("first prompt.context wins, preserves loaded instructions, and leaves incom
   await observe($, edited, async forwarded => { await observe($, event, async other => other); return forwarded; });
   assert.deepEqual(readClaudeSnapshot(sessionId, f.env).entries, instructionInventory(edited.instructionFiles).entries);
   for (const [index, incomplete] of [{ blocks: event.blocks }, { ...event, instructionFiles: [
-    { path: "/oversized/CLAUDE.md", kind: "user", content: "x".repeat(1000001) }
+    { path: "/unreadable/CLAUDE.md", kind: "user", content: undefined }
   ] }].entries()) {
     sessionId = `incomplete-session-${index}`;
     await observe($, incomplete, async forwarded => forwarded);
@@ -158,7 +158,82 @@ test("first prompt.context wins, preserves loaded instructions, and leaves incom
     assert.equal(fallback.claudeMd.source, "scan");
   }
   assert.equal(captures, 4, "one attempt per session even when the first capture is incomplete");
-  for (const session_id of ["captured-session", "next-session", "incomplete-session-0", "incomplete-session-1"]) {
+  const removed = { path: path.join(f.repo, "CLAUDE.md"), kind: "project", content: "FILTERED_FROM_CONTEXT" };
+  fs.writeFileSync(removed.path, removed.content);
+  const input = { blocks: [{ name: "claudeMd", text: "Loaded instructions" }], instructionFiles: [files[0], removed] };
+  const filteredSessions = [];
+  for (const [index, instructionFiles] of [[files[0]], []].entries()) {
+    sessionId = `filtered-session-${index}`; filteredSessions.push(sessionId);
+    const filtered = { blocks: instructionFiles.length ? [{ name: "claudeMd", text: files[0].content }] : [], instructionFiles };
+    assert.equal(await observe($, input, async () => filtered), filtered);
+    const snapshot = readClaudeSnapshot(sessionId, f.env);
+    assert.equal(snapshot.complete, true);
+    assert.deepEqual(snapshot.entries, instructionInventory(instructionFiles).entries);
+    load();
+    await observe($, input, async forwarded => forwarded);
+    assert.deepEqual(readClaudeSnapshot(sessionId, f.env), snapshot, "a reload cannot restore filtered files");
+    const prepared = prepareClaudeInstructions({ sessionId, cwd: f.repo }, f.env);
+    assert.equal(prepared.claudeMd.source, "capture");
+    assert.equal(prepared.claudeMd.approximate, false);
+    assert.equal(prepared.developerInstructions.includes(removed.content), false);
+    assert.equal(prepared.developerInstructions.includes(files[0].content), instructionFiles.length > 0);
+  }
+  for (const [index, result] of [{ blocks: [] }, { blocks: [], instructionFiles: [{ ...removed, content: undefined }] }].entries()) {
+    sessionId = `rewritten-incomplete-${index}`; filteredSessions.push(sessionId);
+    await observe($, input, async () => result);
+    assert.equal(readClaudeSnapshot(sessionId, f.env), null, "rewritten text without an inventory and unreadable content remain incomplete");
+    assert.equal(prepareClaudeInstructions({ sessionId, cwd: f.repo }, f.env).claudeMd.source, "scan");
+  }
+  assert.equal(captures, 8);
+  for (const [index, instructionFiles] of [
+    Array.from({ length: 257 }, (_, i) => ({ path: `/virtual/${i}.md`, kind: "project", content: `Allowed ${i}` })),
+    [{ path: "/oversized/CLAUDE.md", kind: "user", content: "x".repeat(1000001) }],
+    [{ path: `/${"long/".repeat(1000)}CLAUDE.md`, kind: "project", content: "Long virtual path" }]
+  ].entries()) {
+    sessionId = `bounded-session-${index}`; filteredSessions.push(sessionId);
+    await observe($, { ...input, instructionFiles: [...instructionFiles, removed] }, async () => ({ blocks: [], instructionFiles }));
+    const snapshot = readClaudeSnapshot(sessionId, f.env);
+    assert.equal(snapshot.inventoryAvailable, true);
+    assert.equal(snapshot.complete, false);
+    assert.equal(snapshot.bounded, true);
+    assert.equal(snapshot.entries.length, index === 0 ? 256 : 0);
+    assert.equal(snapshot.omittedCount, 1);
+    assert.deepEqual(snapshot.omittedPaths, index === 2 ? [] : [instructionFiles.at(-1).path]);
+    load(); await observe($, input, async forwarded => forwarded);
+    assert.deepEqual(readClaudeSnapshot(sessionId, f.env), snapshot);
+    const prepared = prepareClaudeInstructions({ sessionId, cwd: f.repo }, f.env);
+    assert.equal(prepared.claudeMd.source, "capture");
+    assert.equal(prepared.claudeMd.approximate, false);
+    assert.equal(prepared.claudeMd.bounded, true);
+    assert.equal(prepared.claudeMd.omittedCount, 1);
+    assert.equal(prepared.developerInstructions.includes(removed.content), false);
+  }
+  // Both logical memory paths and aliases resolving into real memory paths
+  // are excluded, including when .claude itself is a directory symlink.
+  for (const linkedConfig of [false, true]) {
+    const home = path.join(f.dir, `scan-home-${linkedConfig}`), config = path.join(home, ".claude");
+    fs.mkdirSync(home);
+    if (linkedConfig) {
+      const target = path.join(home, "config-target"); fs.mkdirSync(target); fs.symlinkSync(target, config);
+    } else fs.mkdirSync(config);
+    for (const name of ["projects/p/memory", "agent-memory/reviewer", "agent-memory-local/reviewer"]) {
+      const storage = path.join(config, name.replaceAll("/", "-"));
+      fs.mkdirSync(storage); fs.writeFileSync(path.join(storage, "MEMORY.md"), "EXCLUDED_AUTO_MEMORY");
+      fs.mkdirSync(path.dirname(path.join(config, name)), { recursive: true });
+      fs.symlinkSync(storage, path.join(config, name));
+    }
+    const realMemory = path.join(config, "projects/real/memory"); fs.mkdirSync(realMemory, { recursive: true });
+    fs.writeFileSync(path.join(realMemory, "MEMORY.md"), "EXCLUDED_AUTO_MEMORY");
+    fs.symlinkSync(realMemory, path.join(config, "alias"));
+    fs.writeFileSync(path.join(config, "CLAUDE.md"), "USER_SCAN_RULE\n@inside.md\n@projects/p/memory/MEMORY.md\n@agent-memory/reviewer/MEMORY.md\n@agent-memory-local/reviewer/MEMORY.md\n@alias/MEMORY.md");
+    fs.writeFileSync(path.join(config, "inside.md"), "SAFE_IMPORT");
+    const prepared = prepareClaudeInstructions({ sessionId: `scan-links-${linkedConfig}`, cwd: f.repo }, { ...f.env, HOME: home });
+    assert.equal(prepared.claudeMd.source, "scan");
+    assert.match(prepared.developerInstructions, /USER_SCAN_RULE/);
+    assert.match(prepared.developerInstructions, /SAFE_IMPORT/);
+    assert.doesNotMatch(prepared.developerInstructions, /EXCLUDED_AUTO_MEMORY/);
+  }
+  for (const session_id of ["captured-session", "next-session", "incomplete-session-0", "incomplete-session-1", ...filteredSessions]) {
     const ended = { session_id, hook_event_name: "SessionEnd" };
     assert.equal(await hooks.get("classic.SessionEnd")($, ended, async forwarded => forwarded), ended);
   }

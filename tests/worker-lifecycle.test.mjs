@@ -67,7 +67,7 @@ async function cleanupBackpressure(dir, env) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-async function backpressureScenario(script, { timeoutSec = 30 } = {}) {
+async function backpressureScenario(script, { timeoutSec = 30, signalStop = false } = {}) {
   const dir = makeTempDir("bp-"), repo = path.join(dir, "repo");
   fs.mkdirSync(repo); initGitRepo(repo);
   const gate = installBurstCodex(dir);
@@ -87,14 +87,17 @@ async function backpressureScenario(script, { timeoutSec = 30 } = {}) {
     let stdout = "", stderr = "", code;
     const closed = new Promise((resolve, reject) => { owner.once("error", reject); owner.once("close", status => { code = status; resolve(); }); });
     owner.stderr.on("data", chunk => { stderr += chunk; });
-    // No stdout data listener until after the grace. The read end stays open.
+    // Keep stdout undrained, but retain data if Node resumes it on child exit.
+    owner.stdout.on("data", chunk => { stdout += chunk; });
+    owner.stdout.pause();
     const attached = await until(() => { const current = read(); return current.ownerAttached && current.turnId && current; });
     const pausedAt = Date.now();
     fs.writeFileSync(gate, "start");
     await delay(6500);
     const beforeDrain = read(), undrainedMs = Date.now() - pausedAt;
     const heartbeatAgeMs = Date.now() - beforeDrain.leaseRenewedAt;
-    owner.stdout.on("data", chunk => { stdout += chunk; });
+    if (signalStop) { owner.kill("SIGTERM"); await delay(300); }
+    owner.stdout.resume();
     let deadline;
     try {
       await Promise.race([closed, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("Owner did not finish after draining stdout")), 15000); })]);
@@ -145,6 +148,97 @@ test("simultaneous dispatches reserve different names while both jobs are active
     }
   } finally {
     for (const launch of launches) json(f.call("cancel", launch.jobId, "--json"));
+  }
+
+  // Hold one connection's empty pre-check snapshot while another workspace
+  // attempts admission. The second caller must finish without entering it.
+  const race = fixture("review-ok");
+  const other = path.join(race.dir, "other"), ready = path.join(race.dir, "reads"), gate = path.join(race.dir, "release-read");
+  const armed = path.join(race.dir, "hold-reads");
+  fs.mkdirSync(other); initGitRepo(other); fs.mkdirSync(ready);
+  const binary = path.join(race.dir, "codex"), source = fs.readFileSync(binary, "utf8");
+  const reply = 'send({ id: message.id, result: { thread: { ...buildThread(thread), turns: thread.turns || [] } } });';
+  assert.ok(source.includes(reply));
+  fs.writeFileSync(binary, source.replace(reply, `
+    if (!fs.existsSync(${JSON.stringify(armed)})) { ${reply} return; }
+    fs.writeFileSync(${JSON.stringify(ready)} + '/' + process.pid, 'ready');
+    const snapshot = { thread: { ...buildThread(thread), turns: thread.turns || [] } };
+    const timer = setInterval(() => {
+      if (fs.existsSync(${JSON.stringify(gate)})) { clearInterval(timer); send({ id: message.id, result: snapshot }); }
+    }, 20);
+  `));
+  // Install the gate before starting the seed thread: its broker may stay warm
+  // for the race, so replacing the executable afterwards misses that process.
+  const first = direct(race.call("task", "--fresh", "--direct", "fixture"));
+  const threadId = job(race, first.jobId).threadId;
+  fs.writeFileSync(armed, "armed");
+  const start = cwd => {
+    const child = spawnOwned(process.execPath, [script, "task", "--thread", threadId, "--sandbox", "read-only", "--direct", "--quiet", "fixture"],
+      { cwd, env: race.env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", data => { stdout += data; }); child.stderr.on("data", data => { stderr += data; });
+    return { child, done: new Promise(resolve => child.once("close", status => resolve({ status, stdout, stderr }))) };
+  };
+  const offset = race.requests().length, a = start(race.repo);
+  let b;
+  try {
+    await waitUntil(() => fs.readdirSync(ready).length === 1);
+    b = start(other);
+    let secondDone = false;
+    b.done.then(() => { secondDone = true; });
+    await waitUntil(() => secondDone || fs.readdirSync(ready).length === 2);
+    fs.writeFileSync(gate, "release");
+    const results = await Promise.all([a.done, b.done]);
+    const reports = results.map(result => direct(result, result.status));
+    assert.deepEqual(reports.map(report => report.status).sort(), ["blocked", "completed"]);
+    assert.equal(reports.find(report => report.status === "blocked").blockers[0].code, "thread_busy");
+    assert.equal(race.requests().slice(offset).filter(request => request.method === "turn/start").length, 1);
+  } finally {
+    fs.writeFileSync(gate, "release");
+    if (a.child.exitCode === null) a.child.kill("SIGTERM");
+    if (b?.child.exitCode === null) b.child.kill("SIGTERM");
+    await Promise.all([a.done, b?.done]);
+  }
+
+  // A fresh thread is published before its first turn is accepted. Its live
+  // job must also exclude a cross-workspace follow-up without a turn handle.
+  const fresh = fixture("review-ok"), remote = path.join(fresh.dir, "remote");
+  fs.mkdirSync(remote); initGitRepo(remote);
+  const freshBinary = path.join(fresh.dir, "codex"), freshSource = fs.readFileSync(freshBinary, "utf8");
+  const held = path.join(fresh.dir, "first-start"), release = path.join(fresh.dir, "release-start");
+  const startCase = 'case "turn/start": {';
+  assert.ok(freshSource.includes(startCase));
+  fs.writeFileSync(freshBinary, freshSource.replace(startCase, `${startCase}
+    if (!fs.existsSync(${JSON.stringify(held)})) {
+      fs.writeFileSync(${JSON.stringify(held)}, 'held');
+      await new Promise(resolve => {
+        const timer = setInterval(() => {
+          if (fs.existsSync(${JSON.stringify(release)})) { clearInterval(timer); resolve(); }
+        }, 20);
+      });
+    }
+  `));
+  const initial = json(fresh.call("task", "--fresh", "--detached", "--json", "fixture"));
+  try {
+    await waitUntil(() => fs.existsSync(held));
+    const pending = job(fresh, initial.jobId);
+    assert.ok(pending.threadId && !pending.turnId && alive(pending.pid));
+    const refused = run(process.execPath, [script, "task", "--thread", pending.threadId, "--cwd", remote, "--sandbox", "read-only", "--direct", "--quiet", "fixture"],
+      { cwd: remote, env: fresh.env });
+    assert.equal(direct(refused, 2).blockers[0].code, "thread_busy");
+    assert.equal(fresh.requests().filter(request => request.method === "turn/start").length, 1);
+    fs.writeFileSync(release, "release");
+    await waitUntil(() => job(fresh, initial.jobId).status === "completed");
+    // A terminal predecessor can still have a live wrapper during teardown.
+    patchJob(fresh, initial.jobId, { pid: process.pid });
+    const continued = direct(fresh.call("task", "--to", initial.jobId, "--direct", "--quiet", "fixture"));
+    assert.equal(continued.status, "completed");
+    const cross = direct(run(process.execPath, [script, "task", "--thread", pending.threadId, "--cwd", remote, "--sandbox", "read-only", "--direct", "--quiet", "fixture"],
+      { cwd: remote, env: fresh.env }));
+    assert.equal(cross.status, "completed");
+  } finally {
+    fs.writeFileSync(release, "release");
+    await waitUntil(() => ["completed", "failed"].includes(job(fresh, initial.jobId).status));
   }
 });
 
@@ -204,11 +298,11 @@ test("names stay unique across a session's workspaces, preserve local reservatio
   const fake = f.state();
   fake.threads.push(...["known-thread", "legacy-thread"].map(id => ({ ...fake.threads[0], id, turns: [] })));
   fs.writeFileSync(path.join(f.dir, "fake-codex-state.json"), JSON.stringify(fake));
-  const threaded = direct(f.call("task", "--thread", "known-thread", "--direct", "fixture"));
+  const threaded = direct(f.call("task", "--thread", "known-thread", "--sandbox", "read-only", "--direct", "fixture"));
   assert.equal(threaded.worker, "Noether");
-  const continued = direct(f.call("task", "--continue", "thread-old", "--direct", "fixture"));
+  const continued = direct(f.call("task", "--continue", "thread-old", "--sandbox", "read-only", "--direct", "fixture"));
   assert.equal(continued.worker, "Curie", "continue names the specified job, not the newest job on its thread");
-  const legacy = direct(f.call("task", "--continue", "legacy", "--direct", "fixture"));
+  const legacy = direct(f.call("task", "--continue", "legacy", "--sandbox", "read-only", "--direct", "fixture"));
   assert.ok(AGENT_NAMES.includes(legacy.worker));
   assert.deepEqual(files.map(file => fs.readFileSync(file, "utf8")), originals);
   assert.equal(fs.readFileSync(legacyMarker, "utf8"), markerText);
@@ -222,7 +316,8 @@ test("names stay unique across a session's workspaces, preserve local reservatio
     }
     console.log(JSON.stringify(listSessionJobs(process.cwd(), "fixture-session").map(job => job.agentName).filter(Boolean)));
   `], { cwd: f.repo, env: f.env }));
-  assert.deepEqual(pruned, []);
+  assert.deepEqual(new Set(pruned), new Set([...records.filter(record => record.sessionId === "fixture-session").map(record => record.agentName),
+    fresh.worker, ...concurrent.map(result => result.worker), legacy.worker].filter(Boolean)));
   const retained = direct(run(process.execPath, ["--import", preload, script, "task", "--fresh", "--direct", "fixture"], { cwd: other, env: f.env }));
   assert.ok(![...records.filter(record => record.sessionId === "fixture-session").map(record => record.agentName),
     fresh.worker, ...concurrent.map(result => result.worker), legacy.worker].includes(retained.worker));
@@ -658,7 +753,7 @@ test("a signalled owner wait stops the worker immediately; only a silent owner g
       assert.ok(requests.indexOf(reads.at(-1)) < requests.indexOf(cleans[0]));
       for (const request of reads) assert.equal(request.serverId, cleans[0].serverId);
     } else assert.equal(cleans[0].serverId, requests.find(request => request.method === "turn/start").serverId);
-    const code = stored.turnResolution === "in_progress" ? 2 : 1;
+    const code = stored.turnResolution === "in_progress" ? 0 : 1;
     assert.deepEqual(json(f.call("result", id, "--details"), code).backgroundTerminals, outcome);
     assert.equal(Object.hasOwn(json(f.call("result", id, "--report", "--json"), code), "backgroundTerminals"), false);
     const transcript = [];
@@ -685,7 +780,7 @@ test("a signalled owner wait stops the worker immediately; only a silent owner g
   assert.ok(lines.length > 1, "progress precedes the owner_stopped report"); assert.equal(stderr, "");
   const stopped = JSON.parse(lines.at(-1));
   assert.deepEqual(stopped, { status: "owner_stopped", worker: launch.agentName, jobId: launch.jobId, summary: "",
-    next: `duet task --to ${launch.agentName}`, details: `duet result ${launch.agentName} --details` });
+    next: `duet task --to ${launch.agentName}`, details: `duet result '${launch.jobId}' --details` });
   const result = json(f.call("wait", launch.jobId, "--timeout-sec", "10", "--json", "--report"), 1);
   assert.equal(result.status, "interrupted"); assert.equal(result.interruptionReason, "owner_stopped"); assert.equal(result.interruptionConfirmed, true);
 
@@ -741,6 +836,26 @@ test("a signalled owner wait stops the worker immediately; only a silent owner g
   assert.equal(Object.hasOwn(storedJob(normal, completed.jobId), "backgroundTerminals"), false);
   assert.equal(normal.requests().some(request => ["turn/interrupt", cleanMethod].includes(request.method)), false);
   t.diagnostic(JSON.stringify({ scenario: "normal_completion", requests: normal.requests() }));
+
+  // A killed worker cannot run its grant releases. Recovery restores the
+  // preexisting session grant, while a live worker retains its task approval.
+  const grant = fixture("computer-use-requests"), binary = path.join(grant.dir, "codex");
+  fs.writeFileSync(binary, fs.readFileSync(binary, "utf8").replace("if (pending.questionItem) {", "if (BEHAVIOR === 'computer-use-requests') return;\n      if (pending.questionItem) {"));
+  const granted = json(grant.call("task", "--detached", "--json", "fixture"));
+  const question = await waitUntil(() => storedJob(grant, granted.jobId).pendingQuestion);
+  const grantJob = storedJob(grant, granted.jobId);
+  const grantFile = path.join(grant.env.CODEX_COMPANION_HOME, "computer-use", "sessions", `${grantJob.threadId}.toml`);
+  const baseline = '[apps]\nallowed = ["com.apple.TextEdit"]\n';
+  fs.mkdirSync(path.dirname(grantFile), { recursive: true }); fs.writeFileSync(grantFile, baseline);
+  json(grant.answer(granted.jobId, question.id, "Allow for this task"));
+  await waitUntil(() => fs.readFileSync(grantFile, "utf8").includes("com.google.Chrome"));
+  json(grant.call("status", granted.jobId, "--json"));
+  assert.ok(fs.readFileSync(grantFile, "utf8").includes("com.google.Chrome"));
+  process.kill(grantJob.pid, "SIGKILL"); await waitUntil(() => !alive(grantJob.pid));
+  json(grant.call("status", granted.jobId, "--json"));
+  assert.equal(fs.readFileSync(grantFile, "utf8"), baseline);
+  assert.equal(storedJob(grant, granted.jobId).status, "failed");
+  grant.call("cancel", granted.jobId, "--json");
 });
 
 test("closed stdout during direct progress stops the owner without a crash", async () => {
@@ -817,7 +932,11 @@ test("a direct wait whose parent exits stops its worker; unconfirmed interruptio
   const resumed = direct(confirmed.f.call("task", "--continue", confirmed.launch.jobId, "--direct", "follow up"));
   assert.equal(resumed.status, "completed");
   assert.equal(confirmed.f.requests().slice(offset).filter(request => request.method === "turn/start").length, 1);
-  assert.equal(confirmed.f.requests().slice(offset).some(request => request.method === "thread/read"), false);
+  const admission = confirmed.f.requests().slice(offset);
+  const check = admission.find(request => request.method === "thread/read");
+  assert.equal(check.params.includeTurns, true);
+  assert.equal(check.serverId, admission.find(request => request.method === "turn/start").serverId);
+  assert.ok(admission.indexOf(check) < admission.findIndex(request => request.method === "turn/start"));
   transcript("confirmed_followup", confirmed.f, offset, { status: resumed.status });
 
   const { f, launch, original } = await stopOwner(false);
@@ -893,6 +1012,133 @@ test("a direct wait whose parent exits stops its worker; unconfirmed interruptio
       transcript(`${stopped.status}_observed_${turnStatus}`, runtime, offset, { status: status.status, turnEnded: true, interruptionConfirmed: status.interruptionConfirmed });
     }
   }
+
+  // Server admission also covers another workspace, even after an exact
+  // terminal recovery has released the local predecessor's index entry.
+  const cross = fixture("lost-turn:completed");
+  const failed = cross.call("task", "--report", "--json", "fixture");
+  assert.equal(failed.status, 1);
+  const id = /Job handle: ([^;]+)/.exec(failed.stderr)[1], originalCross = stored(cross, id);
+  patchJob(cross, id, { turnId: null, result: { ...originalCross.result, turnId: null } });
+  const recovered = json(cross.call("status", id, "--json")).job;
+  assert.equal(recovered.status, "completed"); assert.equal(recovered.turnId, originalCross.turnId);
+  const state = cross.state();
+  state.threads[0].turns.push({ id: "other-live-turn", status: "inProgress", items: [] });
+  changeServer(cross, state);
+  const other = path.join(cross.dir, "other"); fs.mkdirSync(other); initGitRepo(other);
+  offset = cross.requests().length;
+  const refused = direct(cross.call("task", "--thread", originalCross.threadId, "--cwd", other, "--sandbox", "read-only", "--direct", "fixture"), 2);
+  assert.equal(refused.status, "blocked"); assert.equal(refused.blockers[0].code, "thread_busy");
+  assert.equal(cross.requests().slice(offset).some(request => request.method === "turn/start"), false);
+  assert.equal(cross.state().nextTurnId, 2);
+
+  // Unreadable and ambiguous missing handles must produce an honest cancel
+  // result, without submitting work or guessing which turn to interrupt.
+  const missing = fixture("lost-turn:inProgress"), lost = missing.call("task", "--report", "--json", "fixture");
+  const missingId = /Job handle: ([^;]+)/.exec(lost.stderr)[1], missingJob = stored(missing, missingId);
+  patchJob(missing, missingId, { turnId: null, result: { ...missingJob.result, turnId: null } });
+  changeServer(missing, { unreadable: true });
+  assert.equal(json(missing.call("cancel", missingId, "--json"), 2).status, "interrupt_unconfirmed");
+  const ambiguous = missing.state(); ambiguous.unreadable = false;
+  ambiguous.threads[0].turns.push({ id: "another-turn", status: "inProgress", items: [] }); changeServer(missing, ambiguous);
+  assert.equal(json(missing.call("cancel", missingId, "--json"), 2).status, "interrupt_unconfirmed");
+  ambiguous.threads[0].turns.pop(); changeServer(missing, ambiguous);
+  assert.equal(json(missing.call("cancel", missingId, "--json")).confirmation, "confirmed");
+
+  // Dispatch can die after publishing its reservation but before writing the
+  // private record. A live launcher is protected; abandoned launches release
+  // admission without reading or claiming an earlier turn on the thread.
+  const reservations = fixture("task-ok");
+  const seed = direct(reservations.call("task", "--direct", "fixture"));
+  const threadId = stored(reservations, seed.jobId).threadId;
+  const stateModule = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
+  const { unresolvedTask } = await import(stateModule);
+  const reserve = record => {
+    const result = run(process.execPath, ["--input-type=module", "-e", `
+      import { upsertJob } from ${JSON.stringify(stateModule)};
+      upsertJob(process.cwd(), ${JSON.stringify(record)});
+    `], { cwd: reservations.repo, env: reservations.env });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  const reservation = (id, patch = {}) => ({ id, jobClass: "task", kind: "task", workspaceRoot: reservations.repo,
+    sessionId: reservations.env.CODEX_COMPANION_SESSION_ID, status: "queued", phase: "queued", threadId,
+    pid: null, turnId: null, createdAt: new Date().toISOString(), ...patch });
+  const privateFile = (f, id) => path.join(resolveStateDir(f.repo, f.env), "jobs", `${id}.json`);
+  const launcher = spawnOwned(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: reservations.repo, env: reservations.env, stdio: "ignore" });
+  const launcherClosed = new Promise(resolve => launcher.once("close", resolve));
+  const live = reservation("task-live-reservation", { launcherPid: launcher.pid });
+  try {
+    reserve(live);
+    assert.equal(json(reservations.call("status", live.id, "--json")).job.status, "queued");
+    assert.equal(fs.existsSync(privateFile(reservations, live.id)), false);
+    assert.equal(json(reservations.call("status", "--all", "--json")).running.some(job => job.id === live.id), false);
+    const protectedFollowup = direct(reservations.call("task", "--thread", threadId, "--sandbox", "read-only", "--direct", "fixture"), 2);
+    assert.equal(protectedFollowup.blockers[0].code, "thread_busy");
+    assert.equal(reservations.state().nextTurnId, 2);
+    assert.equal(fs.existsSync(privateFile(reservations, live.id)), false);
+  } finally {
+    launcher.kill("SIGKILL");
+    await launcherClosed;
+  }
+  assert.equal(alive(launcher.pid), false);
+  assert.equal(direct(reservations.call("task", "--thread", threadId, "--sandbox", "read-only", "--direct", "fixture")).status, "completed");
+  const abandoned = stored(reservations, live.id);
+  assert.equal(abandoned.status, "failed"); assert.equal(abandoned.recovery.turnStatus, "notStarted");
+  assert.equal(unresolvedTask(abandoned), false); assert.ok(abandoned.errorMessage);
+  assert.equal(json(reservations.call("result", live.id), 1).status, "failed");
+  assert.equal(json(reservations.call("result", live.id, "--details"), 1).status, "failed");
+  assert.equal(json(reservations.call("cancel", live.id, "--json")).confirmation, "confirmed");
+
+  const legacy = reservation("task-aged-reservation", { createdAt: "2000-01-01T00:00:00.000Z" });
+  reserve(legacy);
+  const listed = json(reservations.call("status", "--all", "--json"));
+  assert.equal(listed.running.some(job => job.id === legacy.id), false);
+  assert.equal(stored(reservations, legacy.id).status, "failed");
+  assert.equal(unresolvedTask(stored(reservations, legacy.id)), false);
+  assert.equal(json(reservations.call("result", legacy.id, "--details"), 1).status, "failed");
+  assert.equal(direct(reservations.call("task", "--thread", threadId, "--sandbox", "read-only", "--direct", "fixture")).status, "completed");
+
+  const noThread = reservation("task-missing-before-thread", { status: "running", pid: launcher.pid, threadId: null });
+  reserve(noThread);
+  const notStarted = json(reservations.call("status", noThread.id, "--json")).job;
+  assert.equal(notStarted.status, "failed"); assert.equal(notStarted.recovery.turnStatus, "notStarted");
+  assert.equal(json(reservations.call("cancel", noThread.id, "--json")).confirmation, "confirmed");
+
+  // Losing a started job's private record does not resolve its live server
+  // turn. Exact views expose recovery, and the advertised cancel releases it.
+  const indexOnly = fixture("lost-turn:owner-stop"), indexLaunch = json(indexOnly.call("task", "--detached", "--json", "fixture"));
+  await waitUntil(() => stored(indexOnly, indexLaunch.jobId).turnId);
+  const indexJob = stored(indexOnly, indexLaunch.jobId);
+  changeServer(indexOnly, { ignoreInterrupt: true });
+  process.kill(indexJob.pid, "SIGKILL");
+  await waitUntil(() => !alive(indexJob.pid));
+  await waitUntil(() => !alive(indexOnly.requests()[0].serverId));
+  fs.unlinkSync(privateFile(indexOnly, indexJob.id));
+  const missingStatus = json(indexOnly.call("status", indexJob.id, "--json"));
+  assert.equal(missingStatus.job.status, "failed"); assert.ok(missingStatus.recovery.recoveryCommand);
+  assert.equal(unresolvedTask(stored(indexOnly, indexJob.id)), true);
+  const pending = json(indexOnly.call("result", indexJob.id), 2);
+  assert.equal(pending.status, "unknown"); assert.ok(pending.blockers[0].recoveryCommand);
+  assert.equal(json(indexOnly.call("result", indexJob.id, "--details"), 2).status, "unknown");
+  assert.equal(direct(indexOnly.call("task", "--thread", indexJob.threadId, "--direct", "fixture"), 2).blockers[0].code, "thread_busy");
+  changeServer(indexOnly, { ignoreInterrupt: false });
+  const cancelMissing = json(run("/bin/sh", ["-c", pending.blockers[0].cancelCommand], { cwd: indexOnly.repo, env: indexOnly.env }));
+  assert.equal(cancelMissing.confirmation, "confirmed");
+  assert.equal(direct(indexOnly.call("task", "--thread", indexJob.threadId, "--direct", "fixture")).status, "completed");
+
+  const reset = fixture("review-ok"), resetBinary = path.join(reset.dir, "codex");
+  const resetSource = fs.readFileSync(resetBinary, "utf8");
+  const usageMarker = 'if (BEHAVIOR === "large-jsonl") {\n          emitTurnCompleted';
+  assert.ok(resetSource.includes(usageMarker));
+  fs.writeFileSync(resetBinary, resetSource.replace(usageMarker, `
+        const resetUsage = { inputTokens: 25, cachedInputTokens: 5, cacheWriteInputTokens: 0,
+          outputTokens: 5, reasoningOutputTokens: 2, totalTokens: 30 };
+        for (const key of Object.keys(resetUsage)) thread.tokenUsage[key] -= 2 * resetUsage[key];
+        emitUsage(resetUsage);
+        ${usageMarker}`));
+  const resetResult = direct(reset.call("task", "--fresh", "--direct", "fixture"));
+  assert.equal(Object.hasOwn(resetResult, "usage"), false);
+  assert.equal(Object.hasOwn(stored(reset, resetResult.jobId).result, "usage"), false);
 });
 
 test("a direct owner renews while stdout is undrained longer than the owner grace", async t => {
@@ -910,6 +1156,11 @@ test("a direct owner renews while stdout is undrained longer than the owner grac
   assert.ok(result.omissionLines.length >= 1, "the undrained pipe overflows the progress queue");
   assert.ok(result.measurements.omittedLines > 200, "the bounded queue sheds excess progress");
   assert.equal(result.measurements.progressLines - result.omissionLines.length + result.measurements.omittedLines, result.saved.activity.length, "display omissions do not lose event accounting");
+  const stopped = await backpressureScenario(script, { signalStop: true });
+  const final = direct({ status: stopped.code, stdout: stopped.stdout, stderr: stopped.stderr }, 130);
+  assert.equal(final.status, "owner_stopped");
+  assert.equal(final.jobId, stopped.saved.id);
+  assert.equal(stopped.stderr, "");
 });
 
 test("a direct wait replaces a previously stored follow continuation after cancellation", () => {
@@ -982,16 +1233,18 @@ test("task --continue resumes the job's thread with its recorded authorization a
   json(active.call("cancel", running.jobId, "--json"));
 });
 
-test("the parent bridge answers ask_parent through the job file and reports cancellation", async () => {
+test("the parent bridge answers ask_parent through the job file and reports cancellation", async t => {
   const cwd = makeTempDir(), id = "bridge-job", threadId = "thread-bridge";
   writeJobFile(cwd, id, { id, status: "running", jobClass: "task", workspaceRoot: cwd, ownerId: "owner", questionTimeoutSec: 5, threadId });
   upsertJob(cwd, { id, status: "running", jobClass: "task", workspaceRoot: cwd, threadId, createdAt: "2026-01-01T00:00:00.000Z" });
   const env = { ...process.env, [PARENT_BRIDGE_ENV.cwd]: cwd, [PARENT_BRIDGE_ENV.threadId]: threadId };
   const bridge = spawnOwned(process.execPath, [bridgeScript], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+  t.after(() => { if (alive(bridge.pid)) bridge.kill(); });
   const replies = []; let buffer = "";
   bridge.stdout.on("data", chunk => { buffer += chunk; let i; while ((i = buffer.indexOf("\n")) >= 0) { replies.push(JSON.parse(buffer.slice(0, i))); buffer = buffer.slice(i + 1); } });
   const send = message => bridge.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
   const reply = id => waitUntil(() => replies.find(r => r.id === id));
+  bridge.stdin.write('null\n[]\ntrue\n42\n"text"\n');
   send({ id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" } } });
   assert.equal((await reply(1)).result.serverInfo.name, "duet-parent-bridge");
   send({ method: "notifications/initialized" });
@@ -1003,6 +1256,21 @@ test("the parent bridge answers ask_parent through the job file and reports canc
   answerQuestion(cwd, id, pending.id, "Go with A", "owner");
   const answered = await reply(3);
   assert.equal(answered.result.isError, false); assert.equal(answered.result.content[0].text, "Go with A");
+  for (const [requestId, separator] of [[8, "\u2028"], [9, "\u2029"]]) {
+    const question = `Which${separator}way?`;
+    const wire = Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: requestId, method: "tools/call", params: { name: "ask_parent", arguments: { question } } })}\r\n`);
+    const cut = wire.indexOf(Buffer.from(separator)) + 1;
+    bridge.stdin.write(wire.subarray(0, cut));
+    bridge.stdin.write(wire.subarray(cut));
+    const unicodePending = await waitUntil(() => {
+      const current = readJobFile(resolveJobFile(cwd, id)).pendingQuestion;
+      return current?.text === question && current;
+    });
+    answerQuestion(cwd, id, unicodePending.id, "Go with B", "owner");
+    const unicodeReply = await reply(requestId);
+    assert.equal(unicodeReply.result.isError, false);
+    assert.equal(unicodeReply.result.content[0].text, "Go with B");
+  }
   send({ id: 4, method: "tools/call", params: { name: "ask_parent", arguments: { question: "x".repeat(1001) } } });
   assert.equal((await reply(4)).result.isError, true);
   updateJob(cwd, id, () => ({ cancelRequested: { reason: "cancelled_by_user", at: new Date().toISOString() } }));

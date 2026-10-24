@@ -16,6 +16,7 @@ export const captures = [
           },
           "parentModel": "haiku",
           "background": true,
+          "permissionMode": "default",
           "fork": false,
           "name": "native-worker",
           "cwd": "/private/tmp/duet14-g-fixture/repo"
@@ -43,128 +44,129 @@ export const captures = [
           "turnId": "turn-1",
           "index": 0,
           "model": "haiku",
+          "effort": "low",
           "messageCount": 1
         },
         "chunks": [
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 30s"
+            "text": "Codex worker Ohm running · 30s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 1m 0s"
+            "text": "Codex worker Ohm running · 1m 0s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 1m 30s"
+            "text": "Codex worker Ohm running · 1m 30s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 2m 0s"
+            "text": "Codex worker Ohm running · 2m 0s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 2m 30s"
+            "text": "Codex worker Ohm running · 2m 30s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 3m 0s"
+            "text": "Codex worker Ohm running · 3m 0s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 3m 30s"
+            "text": "Codex worker Ohm running · 3m 30s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 4m 0s"
+            "text": "Codex worker Ohm running · 4m 0s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 4m 30s"
+            "text": "Codex worker Ohm running · 4m 30s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 5m 0s"
+            "text": "Codex worker Ohm running · 5m 0s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 5m 30s"
+            "text": "Codex worker Ohm running · 5m 30s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 6m 0s"
+            "text": "Codex worker Ohm running · 6m 0s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 6m 30s"
+            "text": "Codex worker Ohm running · 6m 30s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 7m 0s"
+            "text": "Codex worker Ohm running · 7m 0s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 7m 30s"
+            "text": "Codex worker Ohm running · 7m 30s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 8m 0s"
+            "text": "Codex worker Ohm running · 8m 0s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 8m 30s"
+            "text": "Codex worker Ohm running · 8m 30s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 9m 0s"
+            "text": "Codex worker Ohm running · 9m 0s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 9m 30s"
+            "text": "Codex worker Ohm running · 9m 30s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 10m 0s"
+            "text": "Codex worker Ohm running · 10m 0s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 10m 30s"
+            "text": "Codex worker Ohm running · 10m 30s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 11m 0s"
+            "text": "Codex worker Ohm running · 11m 0s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 11m 30s"
+            "text": "Codex worker Ohm running · 11m 30s"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "Codex worker Laplace running · 12m 0s"
+            "text": "Codex worker Ohm running · 12m 0s"
           },
           {
             "kind": "thinking",
@@ -174,7 +176,7 @@ export const captures = [
           {
             "kind": "text",
             "index": 1,
-            "text": "{\"status\":\"completed\",\"worker\":\"Laplace\",\"jobId\":\"task-mvkwuomx-6n1rhp\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Laplace --details\"}"
+            "text": "{\"status\":\"completed\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl805x6-ccoegz\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl805x6-ccoegz' --details\"}"
           },
           {
             "kind": "stop",
@@ -185,7 +187,7 @@ export const captures = [
         "result": {
           "turnId": "turn-1",
           "index": 0,
-          "answer": "{\"status\":\"completed\",\"worker\":\"Laplace\",\"jobId\":\"task-mvkwuomx-6n1rhp\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Laplace --details\"}",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl805x6-ccoegz\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl805x6-ccoegz' --details\"}",
           "toolUses": [],
           "stopReason": "end_turn",
           "usage": null
@@ -197,30 +199,32 @@ export const captures = [
         "input": {
           "agentId": "native-agent",
           "turnId": "turn-1",
-          "answer": "{\"status\":\"completed\",\"worker\":\"Laplace\",\"jobId\":\"task-mvkwuomx-6n1rhp\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Laplace --details\"}",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl805x6-ccoegz\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl805x6-ccoegz' --details\"}",
           "durationMs": 1,
           "isAborted": false,
           "reason": "answer"
         },
         "result": {
-          "text": "{\"status\":\"completed\",\"worker\":\"Laplace\",\"jobId\":\"task-mvkwuomx-6n1rhp\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Laplace --details\"}"
+          "text": "{\"status\":\"completed\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl805x6-ccoegz\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl805x6-ccoegz' --details\"}"
         }
       },
       {
         "event": "reload",
         "store": {
           "native:v2:native-session:native-agent": {
-            "v": 2,
             "type": "codex:codex-native",
             "session": "native-session",
             "agentId": "native-agent",
             "name": "native-worker",
+            "permissionMode": "default",
+            "v": 2,
             "cwd": "/private/tmp/duet14-g-fixture/repo",
             "notices": {
               "turnId": "turn-1",
-              "count": 2,
-              "last": "Codex: [completed] Handled the requested task. Task prompt accepted.",
-              "started": true
+              "count": 3,
+              "last": "Codex usage · 150 input (40 cached) · 30 output tokens",
+              "started": true,
+              "usage": true
             },
             "intent": {
               "session": "native-session",
@@ -229,16 +233,15 @@ export const captures = [
               "kind": "task",
               "nonce": "native-session:native-agent:turn-1"
             },
-            "jobId": "task-mvkwuomx-6n1rhp",
-            "ownerId": "task-mvkwuomx-6n1rhp-d93b135d-35de-4628-8e73-9f98ef7b67f9",
+            "jobId": "task-mvl805x6-ccoegz",
+            "ownerId": "task-mvl805x6-ccoegz-d25611cf-5361-4796-aeee-1db5b8ebcc1e",
             "threadId": "thr_1",
-            "worker": "Laplace",
+            "worker": "Ohm",
             "status": "completed",
-            "questionId": null,
             "answer": {
               "status": "completed",
-              "worker": "Laplace",
-              "jobId": "task-mvkwuomx-6n1rhp",
+              "worker": "Ohm",
+              "jobId": "task-mvl805x6-ccoegz",
               "summary": "Handled the requested task.\nTask prompt accepted.",
               "checks": {
                 "ran": [],
@@ -254,8 +257,15 @@ export const captures = [
                 "Fixture finding one",
                 "Fixture finding two"
               ],
+              "usage": {
+                "inputTokens": 150,
+                "cachedInputTokens": 40,
+                "outputTokens": 30,
+                "reasoningOutputTokens": 10,
+                "totalTokens": 180
+              },
               "next": "SendMessage to native-worker to continue",
-              "details": "duet result Laplace --details"
+              "details": "duet result 'task-mvl805x6-ccoegz' --details"
             },
             "answeredTurn": "turn-1",
             "finishedAt": 1800000720000
@@ -275,6 +285,7 @@ export const captures = [
           },
           "parentModel": "haiku",
           "background": true,
+          "permissionMode": "default",
           "fork": false,
           "name": "native-worker",
           "cwd": "/private/tmp/duet14-g-fixture/repo",
@@ -305,6 +316,7 @@ export const captures = [
           "turnId": "turn-2",
           "index": 0,
           "model": "haiku",
+          "effort": "low",
           "messageCount": 1
         },
         "chunks": [
@@ -316,7 +328,7 @@ export const captures = [
           {
             "kind": "text",
             "index": 1,
-            "text": "{\"status\":\"completed\",\"worker\":\"Laplace\",\"jobId\":\"task-mvkwury7-us5t0l\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Laplace --details\"}"
+            "text": "{\"status\":\"completed\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl809cd-9pwywg\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl809cd-9pwywg' --details\"}"
           },
           {
             "kind": "stop",
@@ -327,7 +339,7 @@ export const captures = [
         "result": {
           "turnId": "turn-2",
           "index": 0,
-          "answer": "{\"status\":\"completed\",\"worker\":\"Laplace\",\"jobId\":\"task-mvkwury7-us5t0l\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Laplace --details\"}",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl809cd-9pwywg\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl809cd-9pwywg' --details\"}",
           "toolUses": [],
           "stopReason": "end_turn",
           "usage": null
@@ -339,13 +351,13 @@ export const captures = [
         "input": {
           "agentId": "native-agent",
           "turnId": "turn-2",
-          "answer": "{\"status\":\"completed\",\"worker\":\"Laplace\",\"jobId\":\"task-mvkwury7-us5t0l\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Laplace --details\"}",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl809cd-9pwywg\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl809cd-9pwywg' --details\"}",
           "durationMs": 1,
           "isAborted": false,
           "reason": "answer"
         },
         "result": {
-          "text": "{\"status\":\"completed\",\"worker\":\"Laplace\",\"jobId\":\"task-mvkwury7-us5t0l\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Laplace --details\"}"
+          "text": "{\"status\":\"completed\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl809cd-9pwywg\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl809cd-9pwywg' --details\"}"
         }
       }
     ],
@@ -399,7 +411,7 @@ export const captures = [
           },
           {
             "stream": "stdout",
-            "text": "{\"status\":\"completed\",\"worker\":\"Laplace\",\"jobId\":\"task-mvkwuomx-6n1rhp\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":null,\"details\":\"duet result Laplace --details\"}\n"
+            "text": "{\"status\":\"completed\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl805x6-ccoegz\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":null,\"details\":\"duet result 'task-mvl805x6-ccoegz' --details\"}\n"
           }
         ],
         "timeline": [
@@ -448,7 +460,7 @@ export const captures = [
           {
             "chunk": {
               "stream": "stdout",
-              "text": "{\"status\":\"completed\",\"worker\":\"Laplace\",\"jobId\":\"task-mvkwuomx-6n1rhp\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":null,\"details\":\"duet result Laplace --details\"}\n"
+              "text": "{\"status\":\"completed\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl805x6-ccoegz\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":null,\"details\":\"duet result 'task-mvl805x6-ccoegz' --details\"}\n"
             }
           }
         ],
@@ -466,6 +478,8 @@ export const captures = [
             "status",
             "--all",
             "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-1",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
             "--session",
@@ -477,7 +491,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-iVuybR/cxc-vO0caK/broker.sock\"\n  },\n  \"running\": [\n    {\n      \"id\": \"task-mvkwuomx-6n1rhp\",\n      \"kind\": \"task\",\n      \"kindLabel\": \"rescue\",\n      \"title\": \"Codex Task\",\n      \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"jobClass\": \"task\",\n      \"summary\": \"Perform the first fake assignment.\",\n      \"write\": true,\n      \"createdAt\": \"2026-10-23T11:52:45.369Z\",\n      \"sessionId\": \"native-session\",\n      \"dispatchSessionId\": \"native-session\",\n      \"ownerId\": \"task-mvkwuomx-6n1rhp-d93b135d-35de-4628-8e73-9f98ef7b67f9\",\n      \"leaseRenewedAt\": 1792756368578,\n      \"leaseSec\": 1800,\n      \"questionTimeoutSec\": 900,\n      \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n      \"leaseExpiresAt\": 1792758168578,\n      \"sandbox\": \"danger-full-access\",\n      \"approvalPolicy\": \"never+elicitations\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.output.txt\",\n      \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.result.json\",\n      \"agentName\": \"Laplace\",\n      \"status\": \"running\",\n      \"direct\": true,\n      \"phase\": \"starting\",\n      \"pid\": 78808,\n      \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.log\",\n      \"request\": {\n        \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"model\": \"gpt-6-astra\",\n        \"effort\": \"xhigh\",\n        \"serviceTier\": null,\n        \"prompt\": \"Perform the first fake assignment.\",\n        \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n        \"claudeMd\": {\n          \"version\": 1,\n          \"source\": \"scan\",\n          \"approximate\": true,\n          \"complete\": false,\n          \"snapshotHash\": \"d61013ae13ac6bcd5c70fbe3af777a1407d15f8af33c3ebb7d3101e3cd29a1cf\",\n          \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n          \"capturedAt\": \"2026-10-23T11:52:44.825Z\",\n          \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n          \"sessionCwdSource\": \"flag\",\n          \"bounded\": false,\n          \"omittedPaths\": [],\n          \"omittedCount\": 0,\n          \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n        },\n        \"write\": true,\n        \"sandbox\": \"danger-full-access\",\n        \"approvedBrowserOrigins\": [],\n        \"approvedComputerApps\": [],\n        \"resumeLast\": false,\n        \"threadId\": null,\n        \"jobId\": \"task-mvkwuomx-6n1rhp\",\n        \"report\": true,\n        \"detached\": true\n      },\n      \"updatedAt\": \"2026-10-23T11:52:48.578Z\",\n      \"ownerAttached\": true,\n      \"ownerAttachedAt\": 1792756365528,\n      \"ownerDetachedAt\": null,\n      \"ownerDetachReason\": null,\n      \"ownerWaitPid\": 78740,\n      \"ownerWaitToken\": \"e58601aa-b984-4a36-81c1-2eb50ebe1f5d\",\n      \"startedAt\": \"2026-10-23T11:52:45.563Z\",\n      \"preExistingChanges\": [],\n      \"startupTimings\": {\n        \"brokerConnectSpawn\": {\n          \"phase\": \"brokerConnectSpawn\",\n          \"elapsedMs\": 270,\n          \"durationMs\": 184\n        },\n        \"appServerInitialize\": {\n          \"phase\": \"appServerInitialize\",\n          \"elapsedMs\": 280,\n          \"durationMs\": 43\n        },\n        \"brokerHandshake\": {\n          \"phase\": \"brokerHandshake\",\n          \"elapsedMs\": 290,\n          \"durationMs\": 11\n        },\n        \"threadStart\": {\n          \"phase\": \"threadStart\",\n          \"elapsedMs\": 318,\n          \"durationMs\": 18\n        },\n        \"turnStart\": {\n          \"phase\": \"turnStart\",\n          \"elapsedMs\": 328,\n          \"durationMs\": 1\n        }\n      },\n      \"threadId\": \"thr_1\",\n      \"turnId\": \"turn_1\",\n      \"orphaned\": false,\n      \"leaseRemainingSec\": 1800,\n      \"progressPreview\": [\n        \"Thread ready (thr_1).\",\n        \"Startup timing: turnStart {\\\"phase\\\":\\\"turnStart\\\",\\\"elapsedMs\\\":328,\\\"durationMs\\\":1}\",\n        \"Turn handle: turn_1.\",\n        \"Turn started (turn_1).\"\n      ],\n      \"elapsed\": \"3s\",\n      \"duration\": null,\n      \"sessionLabel\": \"native-s…sion\"\n    }\n  ],\n  \"latestFinished\": null,\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-DDgfmT/broker.sock\"\n  },\n  \"running\": [\n    {\n      \"id\": \"task-mvl805x6-ccoegz\",\n      \"kind\": \"task\",\n      \"kindLabel\": \"rescue\",\n      \"title\": \"Codex Task\",\n      \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"jobClass\": \"task\",\n      \"summary\": \"Perform the first fake assignment.\",\n      \"write\": true,\n      \"createdAt\": \"2026-10-23T17:04:56.826Z\",\n      \"sessionId\": \"native-session\",\n      \"dispatchSessionId\": \"native-session\",\n      \"ownerId\": \"task-mvl805x6-ccoegz-d25611cf-5361-4796-aeee-1db5b8ebcc1e\",\n      \"leaseRenewedAt\": 1792775100055,\n      \"leaseSec\": 1800,\n      \"questionTimeoutSec\": 900,\n      \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n      \"leaseExpiresAt\": 1792776900055,\n      \"sandbox\": \"danger-full-access\",\n      \"approvalPolicy\": \"never+elicitations\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl805x6-ccoegz.output.txt\",\n      \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl805x6-ccoegz.result.json\",\n      \"agentName\": \"Ohm\",\n      \"status\": \"running\",\n      \"direct\": true,\n      \"phase\": \"starting\",\n      \"pid\": 2586,\n      \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl805x6-ccoegz.log\",\n      \"request\": {\n        \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"model\": \"gpt-6-astra\",\n        \"effort\": \"xhigh\",\n        \"serviceTier\": null,\n        \"prompt\": \"Perform the first fake assignment.\",\n        \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n        \"claudeMd\": {\n          \"version\": 1,\n          \"source\": \"scan\",\n          \"approximate\": true,\n          \"complete\": false,\n          \"snapshotHash\": \"157ddcf68b05d36950a70219262001d2ca9d70a618e7d4b56471f45df67248c0\",\n          \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n          \"capturedAt\": \"2026-10-23T17:04:56.279Z\",\n          \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n          \"sessionCwdSource\": \"flag\",\n          \"bounded\": false,\n          \"omittedPaths\": [],\n          \"omittedCount\": 0,\n          \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n        },\n        \"write\": true,\n        \"sandbox\": \"danger-full-access\",\n        \"approvedBrowserOrigins\": [],\n        \"approvedComputerApps\": [],\n        \"resumeLast\": false,\n        \"threadId\": null,\n        \"jobId\": \"task-mvl805x6-ccoegz\",\n        \"report\": true,\n        \"detached\": true\n      },\n      \"updatedAt\": \"2026-10-23T17:05:00.055Z\",\n      \"ownerAttached\": true,\n      \"ownerAttachedAt\": 1792775096988,\n      \"ownerDetachedAt\": null,\n      \"ownerDetachReason\": null,\n      \"ownerWaitPid\": 2514,\n      \"ownerWaitToken\": \"3f01b796-4b08-4d66-8cb6-b450c6d00073\",\n      \"startedAt\": \"2026-10-23T17:04:57.024Z\",\n      \"preExistingChanges\": [],\n      \"startupTimings\": {\n        \"brokerConnectSpawn\": {\n          \"phase\": \"brokerConnectSpawn\",\n          \"elapsedMs\": 274,\n          \"durationMs\": 188\n        },\n        \"appServerInitialize\": {\n          \"phase\": \"appServerInitialize\",\n          \"elapsedMs\": 286,\n          \"durationMs\": 46\n        },\n        \"brokerHandshake\": {\n          \"phase\": \"brokerHandshake\",\n          \"elapsedMs\": 295,\n          \"durationMs\": 11\n        },\n        \"threadStart\": {\n          \"phase\": \"threadStart\",\n          \"elapsedMs\": 324,\n          \"durationMs\": 19\n        },\n        \"turnStart\": {\n          \"phase\": \"turnStart\",\n          \"elapsedMs\": 335,\n          \"durationMs\": 1\n        }\n      },\n      \"threadId\": \"thr_1\",\n      \"turnId\": \"turn_1\",\n      \"orphaned\": false,\n      \"leaseRemainingSec\": 1800,\n      \"progressPreview\": [\n        \"Thread ready (thr_1).\",\n        \"Startup timing: turnStart {\\\"phase\\\":\\\"turnStart\\\",\\\"elapsedMs\\\":335,\\\"durationMs\\\":1}\",\n        \"Turn handle: turn_1.\",\n        \"Turn started (turn_1).\"\n      ],\n      \"elapsed\": \"3s\",\n      \"duration\": null,\n      \"sessionLabel\": \"native-s…sion\"\n    }\n  ],\n  \"latestFinished\": null,\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
           }
         ],
         "exit": {
@@ -492,7 +506,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwuomx-6n1rhp",
+            "task-mvl805x6-ccoegz",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -505,7 +519,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwuomx-6n1rhp\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Perform the first fake assignment.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:45.369Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwuomx-6n1rhp-d93b135d-35de-4628-8e73-9f98ef7b67f9\",\n    \"leaseRenewedAt\": 1792756368578,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758168578,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.result.json\",\n    \"agentName\": \"Laplace\",\n    \"status\": \"running\",\n    \"direct\": true,\n    \"phase\": \"starting\",\n    \"pid\": 78808,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Perform the first fake assignment.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"d61013ae13ac6bcd5c70fbe3af777a1407d15f8af33c3ebb7d3101e3cd29a1cf\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:44.825Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwuomx-6n1rhp\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:48.578Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792756365528,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 78740,\n    \"ownerWaitToken\": \"e58601aa-b984-4a36-81c1-2eb50ebe1f5d\",\n    \"startedAt\": \"2026-10-23T11:52:45.563Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 270,\n        \"durationMs\": 184\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 280,\n        \"durationMs\": 43\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 290,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 318,\n        \"durationMs\": 18\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 328,\n        \"durationMs\": 1\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"orphaned\": false,\n    \"leaseRemainingSec\": 1800,\n    \"progressPreview\": [\n      \"Thread ready (thr_1).\",\n      \"Startup timing: turnStart {\\\"phase\\\":\\\"turnStart\\\",\\\"elapsedMs\\\":328,\\\"durationMs\\\":1}\",\n      \"Turn handle: turn_1.\",\n      \"Turn started (turn_1).\"\n    ],\n    \"elapsed\": \"3s\",\n    \"duration\": null\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl805x6-ccoegz\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Perform the first fake assignment.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:04:56.826Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl805x6-ccoegz-d25611cf-5361-4796-aeee-1db5b8ebcc1e\",\n    \"leaseRenewedAt\": 1792775100055,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776900055,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl805x6-ccoegz.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl805x6-ccoegz.result.json\",\n    \"agentName\": \"Ohm\",\n    \"status\": \"running\",\n    \"direct\": true,\n    \"phase\": \"starting\",\n    \"pid\": 2586,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl805x6-ccoegz.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Perform the first fake assignment.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"157ddcf68b05d36950a70219262001d2ca9d70a618e7d4b56471f45df67248c0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:04:56.279Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl805x6-ccoegz\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:00.055Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792775096988,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 2514,\n    \"ownerWaitToken\": \"3f01b796-4b08-4d66-8cb6-b450c6d00073\",\n    \"startedAt\": \"2026-10-23T17:04:57.024Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 274,\n        \"durationMs\": 188\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 286,\n        \"durationMs\": 46\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 295,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 324,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 335,\n        \"durationMs\": 1\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"orphaned\": false,\n    \"leaseRemainingSec\": 1800,\n    \"progressPreview\": [\n      \"Thread ready (thr_1).\",\n      \"Startup timing: turnStart {\\\"phase\\\":\\\"turnStart\\\",\\\"elapsedMs\\\":335,\\\"durationMs\\\":1}\",\n      \"Turn handle: turn_1.\",\n      \"Turn started (turn_1).\"\n    ],\n    \"elapsed\": \"3s\",\n    \"duration\": null\n  }\n}\n"
           }
         ],
         "exit": {
@@ -522,6 +536,8 @@ export const captures = [
             "status",
             "--all",
             "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-1",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
             "--session",
@@ -533,7 +549,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-iVuybR/cxc-vO0caK/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvkwuomx-6n1rhp\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:45.369Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwuomx-6n1rhp-d93b135d-35de-4628-8e73-9f98ef7b67f9\",\n    \"leaseRenewedAt\": 1792756368578,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758168578,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.result.json\",\n    \"agentName\": \"Laplace\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Perform the first fake assignment.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"d61013ae13ac6bcd5c70fbe3af777a1407d15f8af33c3ebb7d3101e3cd29a1cf\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:44.825Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwuomx-6n1rhp\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:49.169Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756365528,\n    \"ownerDetachedAt\": 1792756369169,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 78740,\n    \"ownerWaitToken\": \"e58601aa-b984-4a36-81c1-2eb50ebe1f5d\",\n    \"startedAt\": \"2026-10-23T11:52:45.563Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 270,\n        \"durationMs\": 184\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 280,\n        \"durationMs\": 43\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 290,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 318,\n        \"durationMs\": 18\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 328,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 3159\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:52:49.010Z\",\n    \"activityCursors\": {\n      \"306939bb5c132ddba0e615ceb870a05143b1accaf4821a5b0fe699a974e60073\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"3s\",\n    \"duration\": \"3s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-DDgfmT/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl805x6-ccoegz\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:04:56.826Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl805x6-ccoegz-d25611cf-5361-4796-aeee-1db5b8ebcc1e\",\n    \"leaseRenewedAt\": 1792775100055,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776900055,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl805x6-ccoegz.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl805x6-ccoegz.result.json\",\n    \"agentName\": \"Ohm\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl805x6-ccoegz.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Perform the first fake assignment.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"157ddcf68b05d36950a70219262001d2ca9d70a618e7d4b56471f45df67248c0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:04:56.279Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl805x6-ccoegz\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:00.695Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775096988,\n    \"ownerDetachedAt\": 1792775100695,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 2514,\n    \"ownerWaitToken\": \"3f01b796-4b08-4d66-8cb6-b450c6d00073\",\n    \"startedAt\": \"2026-10-23T17:04:57.024Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 274,\n        \"durationMs\": 188\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 286,\n        \"durationMs\": 46\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 295,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 324,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 335,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 3217\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:00.535Z\",\n    \"activityCursors\": {\n      \"62764050ead30f4f1f995b0117bd3175643839636d393082a153d39b0af38308\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"4s\",\n    \"duration\": \"4s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
           }
         ],
         "exit": {
@@ -548,7 +564,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwuomx-6n1rhp",
+            "task-mvl805x6-ccoegz",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -561,7 +577,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwuomx-6n1rhp\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:45.369Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwuomx-6n1rhp-d93b135d-35de-4628-8e73-9f98ef7b67f9\",\n    \"leaseRenewedAt\": 1792756368578,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758168578,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.result.json\",\n    \"agentName\": \"Laplace\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Perform the first fake assignment.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"d61013ae13ac6bcd5c70fbe3af777a1407d15f8af33c3ebb7d3101e3cd29a1cf\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:44.825Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwuomx-6n1rhp\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:49.169Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756365528,\n    \"ownerDetachedAt\": 1792756369169,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 78740,\n    \"ownerWaitToken\": \"e58601aa-b984-4a36-81c1-2eb50ebe1f5d\",\n    \"startedAt\": \"2026-10-23T11:52:45.563Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 270,\n        \"durationMs\": 184\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 280,\n        \"durationMs\": 43\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 290,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 318,\n        \"durationMs\": 18\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 328,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 3159\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:52:49.010Z\",\n    \"activityCursors\": {\n      \"306939bb5c132ddba0e615ceb870a05143b1accaf4821a5b0fe699a974e60073\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"3s\",\n    \"duration\": \"3s\"\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl805x6-ccoegz\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:04:56.826Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl805x6-ccoegz-d25611cf-5361-4796-aeee-1db5b8ebcc1e\",\n    \"leaseRenewedAt\": 1792775100055,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776900055,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl805x6-ccoegz.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl805x6-ccoegz.result.json\",\n    \"agentName\": \"Ohm\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl805x6-ccoegz.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Perform the first fake assignment.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"157ddcf68b05d36950a70219262001d2ca9d70a618e7d4b56471f45df67248c0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:04:56.279Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl805x6-ccoegz\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:00.695Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775096988,\n    \"ownerDetachedAt\": 1792775100695,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 2514,\n    \"ownerWaitToken\": \"3f01b796-4b08-4d66-8cb6-b450c6d00073\",\n    \"startedAt\": \"2026-10-23T17:04:57.024Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 274,\n        \"durationMs\": 188\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 286,\n        \"durationMs\": 46\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 295,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 324,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 335,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 3217\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:00.535Z\",\n    \"activityCursors\": {\n      \"62764050ead30f4f1f995b0117bd3175643839636d393082a153d39b0af38308\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"4s\",\n    \"duration\": \"4s\"\n  }\n}\n"
           }
         ],
         "exit": {
@@ -619,7 +635,7 @@ export const captures = [
           },
           {
             "stream": "stdout",
-            "text": "{\"status\":\"completed\",\"worker\":\"Laplace\",\"jobId\":\"task-mvkwury7-us5t0l\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":null,\"details\":\"duet result Laplace --details\"}\n"
+            "text": "{\"status\":\"completed\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl809cd-9pwywg\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":null,\"details\":\"duet result 'task-mvl809cd-9pwywg' --details\"}\n"
           }
         ],
         "exit": {
@@ -636,6 +652,8 @@ export const captures = [
             "status",
             "--all",
             "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-2",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
             "--session",
@@ -647,7 +665,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-iVuybR/cxc-vO0caK/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvkwury7-us5t0l\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:49.663Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwury7-us5t0l-16fa4ca7-15b6-47fb-bc63-3955af4735ba\",\n    \"leaseRenewedAt\": 1792756369824,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-2\",\n    \"leaseExpiresAt\": 1792758169824,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwury7-us5t0l.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwury7-us5t0l.result.json\",\n    \"agentName\": \"Laplace\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvkwuomx-6n1rhp\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwury7-us5t0l.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue the same fake assignment.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"d61013ae13ac6bcd5c70fbe3af777a1407d15f8af33c3ebb7d3101e3cd29a1cf\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:44.825Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvkwury7-us5t0l\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvkwuomx-6n1rhp\",\n        \"scope\": \"session\",\n        \"note\": \"Inherited settings and recorded request grants from this job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T11:52:50.362Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792756369814,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 79692,\n    \"ownerWaitToken\": \"da2f9930-68e4-4cf1-83ab-e0f6270bd3be\",\n    \"startedAt\": \"2026-10-23T11:52:49.848Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 93,\n        \"durationMs\": 11\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 104,\n        \"durationMs\": 43\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 114,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 133,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 152,\n        \"durationMs\": 0\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 170\n      }\n    },\n    \"turnId\": \"turn_2\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:52:50.353Z\",\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [\n    {\n      \"id\": \"task-mvkwuomx-6n1rhp\",\n      \"kind\": \"task\",\n      \"kindLabel\": \"rescue\",\n      \"title\": \"Codex Task\",\n      \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"jobClass\": \"task\",\n      \"summary\": \"Handled the requested task.\",\n      \"write\": true,\n      \"createdAt\": \"2026-10-23T11:52:45.369Z\",\n      \"sessionId\": \"native-session\",\n      \"dispatchSessionId\": \"native-session\",\n      \"ownerId\": \"task-mvkwuomx-6n1rhp-d93b135d-35de-4628-8e73-9f98ef7b67f9\",\n      \"leaseRenewedAt\": 1792756368578,\n      \"leaseSec\": 1800,\n      \"questionTimeoutSec\": 900,\n      \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n      \"leaseExpiresAt\": 1792758168578,\n      \"sandbox\": \"danger-full-access\",\n      \"approvalPolicy\": \"never+elicitations\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.output.txt\",\n      \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.result.json\",\n      \"agentName\": \"Laplace\",\n      \"status\": \"completed\",\n      \"direct\": true,\n      \"phase\": \"done\",\n      \"pid\": null,\n      \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.log\",\n      \"request\": {\n        \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"model\": \"gpt-6-astra\",\n        \"effort\": \"xhigh\",\n        \"serviceTier\": null,\n        \"prompt\": \"Perform the first fake assignment.\",\n        \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n        \"claudeMd\": {\n          \"version\": 1,\n          \"source\": \"scan\",\n          \"approximate\": true,\n          \"complete\": false,\n          \"snapshotHash\": \"d61013ae13ac6bcd5c70fbe3af777a1407d15f8af33c3ebb7d3101e3cd29a1cf\",\n          \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n          \"capturedAt\": \"2026-10-23T11:52:44.825Z\",\n          \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n          \"sessionCwdSource\": \"flag\",\n          \"bounded\": false,\n          \"omittedPaths\": [],\n          \"omittedCount\": 0,\n          \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n        },\n        \"write\": true,\n        \"sandbox\": \"danger-full-access\",\n        \"approvedBrowserOrigins\": [],\n        \"approvedComputerApps\": [],\n        \"resumeLast\": false,\n        \"threadId\": null,\n        \"jobId\": \"task-mvkwuomx-6n1rhp\",\n        \"report\": true,\n        \"detached\": true\n      },\n      \"updatedAt\": \"2026-10-23T11:52:49.169Z\",\n      \"ownerAttached\": false,\n      \"ownerAttachedAt\": 1792756365528,\n      \"ownerDetachedAt\": 1792756369169,\n      \"ownerDetachReason\": \"returned\",\n      \"ownerWaitPid\": 78740,\n      \"ownerWaitToken\": \"e58601aa-b984-4a36-81c1-2eb50ebe1f5d\",\n      \"startedAt\": \"2026-10-23T11:52:45.563Z\",\n      \"preExistingChanges\": [],\n      \"startupTimings\": {\n        \"brokerConnectSpawn\": {\n          \"phase\": \"brokerConnectSpawn\",\n          \"elapsedMs\": 270,\n          \"durationMs\": 184\n        },\n        \"appServerInitialize\": {\n          \"phase\": \"appServerInitialize\",\n          \"elapsedMs\": 280,\n          \"durationMs\": 43\n        },\n        \"brokerHandshake\": {\n          \"phase\": \"brokerHandshake\",\n          \"elapsedMs\": 290,\n          \"durationMs\": 11\n        },\n        \"threadStart\": {\n          \"phase\": \"threadStart\",\n          \"elapsedMs\": 318,\n          \"durationMs\": 18\n        },\n        \"turnStart\": {\n          \"phase\": \"turnStart\",\n          \"elapsedMs\": 328,\n          \"durationMs\": 1\n        },\n        \"firstModelEvent\": {\n          \"phase\": \"firstModelEvent\",\n          \"elapsedMs\": 3159\n        }\n      },\n      \"threadId\": \"thr_1\",\n      \"turnId\": \"turn_1\",\n      \"activitySeq\": 1,\n      \"completedAt\": \"2026-10-23T11:52:49.010Z\",\n      \"activityCursors\": {\n        \"306939bb5c132ddba0e615ceb870a05143b1accaf4821a5b0fe699a974e60073\": 1\n      },\n      \"progressPreview\": [],\n      \"elapsed\": \"3s\",\n      \"duration\": \"3s\",\n      \"sessionLabel\": \"native-s…sion\"\n    }\n  ],\n  \"needsReview\": false\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-DDgfmT/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl809cd-9pwywg\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:01.261Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl809cd-9pwywg-0935243f-c1a7-41d8-8a0d-afc3eb540711\",\n    \"leaseRenewedAt\": 1792775101424,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-2\",\n    \"leaseExpiresAt\": 1792776901424,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl809cd-9pwywg.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl809cd-9pwywg.result.json\",\n    \"agentName\": \"Ohm\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl805x6-ccoegz\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl809cd-9pwywg.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue the same fake assignment.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"157ddcf68b05d36950a70219262001d2ca9d70a618e7d4b56471f45df67248c0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:04:56.279Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl809cd-9pwywg\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl805x6-ccoegz\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:01.989Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792775101414,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 3560,\n    \"ownerWaitToken\": \"f8176e5a-f21e-4f30-bcaa-e6d95ce3b001\",\n    \"startedAt\": \"2026-10-23T17:05:01.449Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 98,\n        \"durationMs\": 11\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 109,\n        \"durationMs\": 46\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 119,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 139,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 159,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 178\n      }\n    },\n    \"turnId\": \"turn_2\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:01.970Z\",\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
           }
         ],
         "exit": {
@@ -662,7 +680,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwury7-us5t0l",
+            "task-mvl809cd-9pwywg",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -675,7 +693,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwury7-us5t0l\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:49.663Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwury7-us5t0l-16fa4ca7-15b6-47fb-bc63-3955af4735ba\",\n    \"leaseRenewedAt\": 1792756369824,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-2\",\n    \"leaseExpiresAt\": 1792758169824,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwury7-us5t0l.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwury7-us5t0l.result.json\",\n    \"agentName\": \"Laplace\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvkwuomx-6n1rhp\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwury7-us5t0l.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue the same fake assignment.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"d61013ae13ac6bcd5c70fbe3af777a1407d15f8af33c3ebb7d3101e3cd29a1cf\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:44.825Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvkwury7-us5t0l\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvkwuomx-6n1rhp\",\n        \"scope\": \"session\",\n        \"note\": \"Inherited settings and recorded request grants from this job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T11:52:50.449Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756369814,\n    \"ownerDetachedAt\": 1792756370449,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 79692,\n    \"ownerWaitToken\": \"da2f9930-68e4-4cf1-83ab-e0f6270bd3be\",\n    \"startedAt\": \"2026-10-23T11:52:49.848Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 93,\n        \"durationMs\": 11\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 104,\n        \"durationMs\": 43\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 114,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 133,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 152,\n        \"durationMs\": 0\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 170\n      }\n    },\n    \"turnId\": \"turn_2\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:52:50.353Z\",\n    \"activityCursors\": {\n      \"dac7d17310eb334668e8b18385c7986d2fb4600442601b3c8e581250d5a890a1\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl809cd-9pwywg\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:01.261Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl809cd-9pwywg-0935243f-c1a7-41d8-8a0d-afc3eb540711\",\n    \"leaseRenewedAt\": 1792775101424,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-2\",\n    \"leaseExpiresAt\": 1792776901424,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl809cd-9pwywg.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl809cd-9pwywg.result.json\",\n    \"agentName\": \"Ohm\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl805x6-ccoegz\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl809cd-9pwywg.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue the same fake assignment.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"157ddcf68b05d36950a70219262001d2ca9d70a618e7d4b56471f45df67248c0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:04:56.279Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl809cd-9pwywg\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl805x6-ccoegz\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:02.084Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775101414,\n    \"ownerDetachedAt\": 1792775102084,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 3560,\n    \"ownerWaitToken\": \"f8176e5a-f21e-4f30-bcaa-e6d95ce3b001\",\n    \"startedAt\": \"2026-10-23T17:05:01.449Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 98,\n        \"durationMs\": 11\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 109,\n        \"durationMs\": 46\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 119,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 139,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 159,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 178\n      }\n    },\n    \"turnId\": \"turn_2\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:01.970Z\",\n    \"activityCursors\": {\n      \"758bdc6ad105721462e196acad9a693ffe0cd4cde477289e18342f16ed13234a\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
           }
         ],
         "exit": {
@@ -692,6 +710,8 @@ export const captures = [
             "status",
             "--all",
             "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-2",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
             "--session",
@@ -703,7 +723,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-iVuybR/cxc-vO0caK/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvkwury7-us5t0l\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:49.663Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwury7-us5t0l-16fa4ca7-15b6-47fb-bc63-3955af4735ba\",\n    \"leaseRenewedAt\": 1792756369824,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-2\",\n    \"leaseExpiresAt\": 1792758169824,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwury7-us5t0l.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwury7-us5t0l.result.json\",\n    \"agentName\": \"Laplace\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvkwuomx-6n1rhp\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwury7-us5t0l.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue the same fake assignment.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"d61013ae13ac6bcd5c70fbe3af777a1407d15f8af33c3ebb7d3101e3cd29a1cf\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:44.825Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvkwury7-us5t0l\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvkwuomx-6n1rhp\",\n        \"scope\": \"session\",\n        \"note\": \"Inherited settings and recorded request grants from this job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T11:52:50.449Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756369814,\n    \"ownerDetachedAt\": 1792756370449,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 79692,\n    \"ownerWaitToken\": \"da2f9930-68e4-4cf1-83ab-e0f6270bd3be\",\n    \"startedAt\": \"2026-10-23T11:52:49.848Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 93,\n        \"durationMs\": 11\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 104,\n        \"durationMs\": 43\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 114,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 133,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 152,\n        \"durationMs\": 0\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 170\n      }\n    },\n    \"turnId\": \"turn_2\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:52:50.353Z\",\n    \"activityCursors\": {\n      \"dac7d17310eb334668e8b18385c7986d2fb4600442601b3c8e581250d5a890a1\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [\n    {\n      \"id\": \"task-mvkwuomx-6n1rhp\",\n      \"kind\": \"task\",\n      \"kindLabel\": \"rescue\",\n      \"title\": \"Codex Task\",\n      \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"jobClass\": \"task\",\n      \"summary\": \"Handled the requested task.\",\n      \"write\": true,\n      \"createdAt\": \"2026-10-23T11:52:45.369Z\",\n      \"sessionId\": \"native-session\",\n      \"dispatchSessionId\": \"native-session\",\n      \"ownerId\": \"task-mvkwuomx-6n1rhp-d93b135d-35de-4628-8e73-9f98ef7b67f9\",\n      \"leaseRenewedAt\": 1792756368578,\n      \"leaseSec\": 1800,\n      \"questionTimeoutSec\": 900,\n      \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n      \"leaseExpiresAt\": 1792758168578,\n      \"sandbox\": \"danger-full-access\",\n      \"approvalPolicy\": \"never+elicitations\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.output.txt\",\n      \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.result.json\",\n      \"agentName\": \"Laplace\",\n      \"status\": \"completed\",\n      \"direct\": true,\n      \"phase\": \"done\",\n      \"pid\": null,\n      \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwuomx-6n1rhp.log\",\n      \"request\": {\n        \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"model\": \"gpt-6-astra\",\n        \"effort\": \"xhigh\",\n        \"serviceTier\": null,\n        \"prompt\": \"Perform the first fake assignment.\",\n        \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n        \"claudeMd\": {\n          \"version\": 1,\n          \"source\": \"scan\",\n          \"approximate\": true,\n          \"complete\": false,\n          \"snapshotHash\": \"d61013ae13ac6bcd5c70fbe3af777a1407d15f8af33c3ebb7d3101e3cd29a1cf\",\n          \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n          \"capturedAt\": \"2026-10-23T11:52:44.825Z\",\n          \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n          \"sessionCwdSource\": \"flag\",\n          \"bounded\": false,\n          \"omittedPaths\": [],\n          \"omittedCount\": 0,\n          \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n        },\n        \"write\": true,\n        \"sandbox\": \"danger-full-access\",\n        \"approvedBrowserOrigins\": [],\n        \"approvedComputerApps\": [],\n        \"resumeLast\": false,\n        \"threadId\": null,\n        \"jobId\": \"task-mvkwuomx-6n1rhp\",\n        \"report\": true,\n        \"detached\": true\n      },\n      \"updatedAt\": \"2026-10-23T11:52:49.169Z\",\n      \"ownerAttached\": false,\n      \"ownerAttachedAt\": 1792756365528,\n      \"ownerDetachedAt\": 1792756369169,\n      \"ownerDetachReason\": \"returned\",\n      \"ownerWaitPid\": 78740,\n      \"ownerWaitToken\": \"e58601aa-b984-4a36-81c1-2eb50ebe1f5d\",\n      \"startedAt\": \"2026-10-23T11:52:45.563Z\",\n      \"preExistingChanges\": [],\n      \"startupTimings\": {\n        \"brokerConnectSpawn\": {\n          \"phase\": \"brokerConnectSpawn\",\n          \"elapsedMs\": 270,\n          \"durationMs\": 184\n        },\n        \"appServerInitialize\": {\n          \"phase\": \"appServerInitialize\",\n          \"elapsedMs\": 280,\n          \"durationMs\": 43\n        },\n        \"brokerHandshake\": {\n          \"phase\": \"brokerHandshake\",\n          \"elapsedMs\": 290,\n          \"durationMs\": 11\n        },\n        \"threadStart\": {\n          \"phase\": \"threadStart\",\n          \"elapsedMs\": 318,\n          \"durationMs\": 18\n        },\n        \"turnStart\": {\n          \"phase\": \"turnStart\",\n          \"elapsedMs\": 328,\n          \"durationMs\": 1\n        },\n        \"firstModelEvent\": {\n          \"phase\": \"firstModelEvent\",\n          \"elapsedMs\": 3159\n        }\n      },\n      \"threadId\": \"thr_1\",\n      \"turnId\": \"turn_1\",\n      \"activitySeq\": 1,\n      \"completedAt\": \"2026-10-23T11:52:49.010Z\",\n      \"activityCursors\": {\n        \"306939bb5c132ddba0e615ceb870a05143b1accaf4821a5b0fe699a974e60073\": 1\n      },\n      \"progressPreview\": [],\n      \"elapsed\": \"3s\",\n      \"duration\": \"3s\",\n      \"sessionLabel\": \"native-s…sion\"\n    }\n  ],\n  \"needsReview\": false\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-DDgfmT/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl809cd-9pwywg\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:01.261Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl809cd-9pwywg-0935243f-c1a7-41d8-8a0d-afc3eb540711\",\n    \"leaseRenewedAt\": 1792775101424,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-2\",\n    \"leaseExpiresAt\": 1792776901424,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl809cd-9pwywg.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl809cd-9pwywg.result.json\",\n    \"agentName\": \"Ohm\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl805x6-ccoegz\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl809cd-9pwywg.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue the same fake assignment.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"157ddcf68b05d36950a70219262001d2ca9d70a618e7d4b56471f45df67248c0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:04:56.279Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl809cd-9pwywg\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl805x6-ccoegz\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:02.084Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775101414,\n    \"ownerDetachedAt\": 1792775102084,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 3560,\n    \"ownerWaitToken\": \"f8176e5a-f21e-4f30-bcaa-e6d95ce3b001\",\n    \"startedAt\": \"2026-10-23T17:05:01.449Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 98,\n        \"durationMs\": 11\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 109,\n        \"durationMs\": 46\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 119,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 139,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 159,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 178\n      }\n    },\n    \"turnId\": \"turn_2\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:01.970Z\",\n    \"activityCursors\": {\n      \"758bdc6ad105721462e196acad9a693ffe0cd4cde477289e18342f16ed13234a\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
           }
         ],
         "exit": {
@@ -718,7 +738,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwury7-us5t0l",
+            "task-mvl809cd-9pwywg",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -731,7 +751,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwury7-us5t0l\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:49.663Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwury7-us5t0l-16fa4ca7-15b6-47fb-bc63-3955af4735ba\",\n    \"leaseRenewedAt\": 1792756369824,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-2\",\n    \"leaseExpiresAt\": 1792758169824,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwury7-us5t0l.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwury7-us5t0l.result.json\",\n    \"agentName\": \"Laplace\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvkwuomx-6n1rhp\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-941e3d823b316f19/jobs/task-mvkwury7-us5t0l.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue the same fake assignment.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"d61013ae13ac6bcd5c70fbe3af777a1407d15f8af33c3ebb7d3101e3cd29a1cf\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:44.825Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvkwury7-us5t0l\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvkwuomx-6n1rhp\",\n        \"scope\": \"session\",\n        \"note\": \"Inherited settings and recorded request grants from this job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T11:52:50.449Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756369814,\n    \"ownerDetachedAt\": 1792756370449,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 79692,\n    \"ownerWaitToken\": \"da2f9930-68e4-4cf1-83ab-e0f6270bd3be\",\n    \"startedAt\": \"2026-10-23T11:52:49.848Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 93,\n        \"durationMs\": 11\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 104,\n        \"durationMs\": 43\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 114,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 133,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 152,\n        \"durationMs\": 0\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 170\n      }\n    },\n    \"turnId\": \"turn_2\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:52:50.353Z\",\n    \"activityCursors\": {\n      \"dac7d17310eb334668e8b18385c7986d2fb4600442601b3c8e581250d5a890a1\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl809cd-9pwywg\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:01.261Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl809cd-9pwywg-0935243f-c1a7-41d8-8a0d-afc3eb540711\",\n    \"leaseRenewedAt\": 1792775101424,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-2\",\n    \"leaseExpiresAt\": 1792776901424,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl809cd-9pwywg.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl809cd-9pwywg.result.json\",\n    \"agentName\": \"Ohm\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl805x6-ccoegz\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-2e3ded52b919d3a0/jobs/task-mvl809cd-9pwywg.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue the same fake assignment.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"157ddcf68b05d36950a70219262001d2ca9d70a618e7d4b56471f45df67248c0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:04:56.279Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl809cd-9pwywg\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl805x6-ccoegz\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:02.084Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775101414,\n    \"ownerDetachedAt\": 1792775102084,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 3560,\n    \"ownerWaitToken\": \"f8176e5a-f21e-4f30-bcaa-e6d95ce3b001\",\n    \"startedAt\": \"2026-10-23T17:05:01.449Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 98,\n        \"durationMs\": 11\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 109,\n        \"durationMs\": 46\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 119,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 139,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 159,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 178\n      }\n    },\n    \"turnId\": \"turn_2\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:01.970Z\",\n    \"activityCursors\": {\n      \"758bdc6ad105721462e196acad9a693ffe0cd4cde477289e18342f16ed13234a\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
           }
         ],
         "exit": {
@@ -748,7 +768,7 @@ export const captures = [
           "content": [
             {
               "type": "text",
-              "text": "Codex worker Laplace started · job task-mvkwuomx-6n1rhp · gpt-6-astra / xhigh / danger-full-access"
+              "text": "Codex worker Ohm started · job task-mvl805x6-ccoegz · gpt-6-astra / xhigh / danger-full-access"
             }
           ]
         }
@@ -772,7 +792,19 @@ export const captures = [
           "content": [
             {
               "type": "text",
-              "text": "Codex worker Laplace started · job task-mvkwury7-us5t0l · gpt-6-astra / xhigh / danger-full-access"
+              "text": "Codex usage · 150 input (40 cached) · 30 output tokens"
+            }
+          ]
+        }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex worker Ohm started · job task-mvl809cd-9pwywg · gpt-6-astra / xhigh / danger-full-access"
             }
           ]
         }
@@ -785,6 +817,18 @@ export const captures = [
             {
               "type": "text",
               "text": "Codex: [completed] Handled the requested task. Task prompt accepted."
+            }
+          ]
+        }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex usage · 150 input (40 cached) · 30 output tokens"
             }
           ]
         }
@@ -792,17 +836,19 @@ export const captures = [
     ],
     "store": {
       "native:v2:native-session:native-agent": {
-        "v": 2,
         "type": "codex:codex-native",
         "session": "native-session",
         "agentId": "native-agent",
         "name": "native-worker",
+        "permissionMode": "default",
+        "v": 2,
         "cwd": "/private/tmp/duet14-g-fixture/repo",
         "notices": {
           "turnId": "turn-2",
-          "count": 2,
-          "last": "Codex: [completed] Handled the requested task. Task prompt accepted.",
-          "started": true
+          "count": 3,
+          "last": "Codex usage · 150 input (40 cached) · 30 output tokens",
+          "started": true,
+          "usage": true
         },
         "intent": {
           "session": "native-session",
@@ -812,16 +858,15 @@ export const captures = [
           "nonce": "native-session:native-agent:turn-2"
         },
         "threadId": "thr_1",
-        "worker": "Laplace",
+        "worker": "Ohm",
         "answeredTurn": "turn-2",
-        "jobId": "task-mvkwury7-us5t0l",
-        "ownerId": "task-mvkwury7-us5t0l-16fa4ca7-15b6-47fb-bc63-3955af4735ba",
+        "jobId": "task-mvl809cd-9pwywg",
+        "ownerId": "task-mvl809cd-9pwywg-0935243f-c1a7-41d8-8a0d-afc3eb540711",
         "status": "completed",
-        "questionId": null,
         "answer": {
           "status": "completed",
-          "worker": "Laplace",
-          "jobId": "task-mvkwury7-us5t0l",
+          "worker": "Ohm",
+          "jobId": "task-mvl809cd-9pwywg",
           "summary": "Handled the requested task.\nTask prompt accepted.",
           "checks": {
             "ran": [],
@@ -837,15 +882,22 @@ export const captures = [
             "Fixture finding one",
             "Fixture finding two"
           ],
+          "usage": {
+            "inputTokens": 150,
+            "cachedInputTokens": 40,
+            "outputTokens": 30,
+            "reasoningOutputTokens": 10,
+            "totalTokens": 180
+          },
           "next": "SendMessage to native-worker to continue",
-          "details": "duet result Laplace --details"
+          "details": "duet result 'task-mvl809cd-9pwywg' --details"
         },
         "finishedAt": 1800000720000
       }
     }
   },
   {
-    "behavior": "w5-parent",
+    "behavior": "parent-question-sequence",
     "events": [
       {
         "event": "agent.spawn",
@@ -860,6 +912,7 @@ export const captures = [
           },
           "parentModel": "haiku",
           "background": true,
+          "permissionMode": "default",
           "fork": false,
           "name": "native-worker",
           "cwd": "/private/tmp/duet14-g-fixture/repo"
@@ -887,33 +940,24 @@ export const captures = [
           "turnId": "turn-1",
           "index": 0,
           "model": "haiku",
+          "effort": "low",
           "messageCount": 1
         },
         "chunks": [
           {
             "kind": "thinking",
             "index": 0,
-            "text": "▸ npm test TOKEN=SHOWN_FIXTURE_ARGUMENT"
+            "text": "Tool dynamic/ask_parent: inProgress (duration unknown)"
           },
           {
             "kind": "thinking",
             "index": 0,
-            "text": "✓ exit 0 · 0.0s · npm test TOKEN=SHOWN_FIXTURE_ARGUMENT"
-          },
-          {
-            "kind": "thinking",
-            "index": 0,
-            "text": "plan 1/1"
-          },
-          {
-            "kind": "thinking",
-            "index": 0,
-            "text": "? Waiting for Claude: Which fixture approach?"
+            "text": "? Waiting for Claude: Which fixture fallback?"
           },
           {
             "kind": "text",
             "index": 1,
-            "text": "{\"status\":\"needs_answer\",\"worker\":\"Hamming\",\"jobId\":\"task-mvkwutd3-ogc0v6\",\"summary\":\"waiting for parent · 0m0s\",\"question\":{\"id\":\"question-bc29df47-26fc-46f5-be37-622046e22193\",\"kind\":\"question\",\"text\":\"Which fixture approach?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"SendMessage to native-worker with the answer\",\"details\":\"duet result Hamming --details\"}"
+            "text": "{\"status\":\"needs_answer\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"waiting for parent · 0m0s\",\"question\":{\"id\":\"question-750fb86a-203d-4319-a423-accc1aadb44c\",\"kind\":\"question\",\"text\":\"Which fixture fallback?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"SendMessage to native-worker with the answer\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}"
           },
           {
             "kind": "stop",
@@ -924,7 +968,7 @@ export const captures = [
         "result": {
           "turnId": "turn-1",
           "index": 0,
-          "answer": "{\"status\":\"needs_answer\",\"worker\":\"Hamming\",\"jobId\":\"task-mvkwutd3-ogc0v6\",\"summary\":\"waiting for parent · 0m0s\",\"question\":{\"id\":\"question-bc29df47-26fc-46f5-be37-622046e22193\",\"kind\":\"question\",\"text\":\"Which fixture approach?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"SendMessage to native-worker with the answer\",\"details\":\"duet result Hamming --details\"}",
+          "answer": "{\"status\":\"needs_answer\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"waiting for parent · 0m0s\",\"question\":{\"id\":\"question-750fb86a-203d-4319-a423-accc1aadb44c\",\"kind\":\"question\",\"text\":\"Which fixture fallback?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"SendMessage to native-worker with the answer\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}",
           "toolUses": [],
           "stopReason": "end_turn",
           "usage": null
@@ -936,29 +980,30 @@ export const captures = [
         "input": {
           "agentId": "native-agent",
           "turnId": "turn-1",
-          "answer": "{\"status\":\"needs_answer\",\"worker\":\"Hamming\",\"jobId\":\"task-mvkwutd3-ogc0v6\",\"summary\":\"waiting for parent · 0m0s\",\"question\":{\"id\":\"question-bc29df47-26fc-46f5-be37-622046e22193\",\"kind\":\"question\",\"text\":\"Which fixture approach?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"SendMessage to native-worker with the answer\",\"details\":\"duet result Hamming --details\"}",
+          "answer": "{\"status\":\"needs_answer\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"waiting for parent · 0m0s\",\"question\":{\"id\":\"question-750fb86a-203d-4319-a423-accc1aadb44c\",\"kind\":\"question\",\"text\":\"Which fixture fallback?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"SendMessage to native-worker with the answer\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}",
           "durationMs": 1,
           "isAborted": false,
           "reason": "answer"
         },
         "result": {
-          "text": "{\"status\":\"needs_answer\",\"worker\":\"Hamming\",\"jobId\":\"task-mvkwutd3-ogc0v6\",\"summary\":\"waiting for parent · 0m0s\",\"question\":{\"id\":\"question-bc29df47-26fc-46f5-be37-622046e22193\",\"kind\":\"question\",\"text\":\"Which fixture approach?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"SendMessage to native-worker with the answer\",\"details\":\"duet result Hamming --details\"}"
+          "text": "{\"status\":\"needs_answer\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"waiting for parent · 0m0s\",\"question\":{\"id\":\"question-750fb86a-203d-4319-a423-accc1aadb44c\",\"kind\":\"question\",\"text\":\"Which fixture fallback?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"SendMessage to native-worker with the answer\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}"
         }
       },
       {
         "event": "reload",
         "store": {
           "native:v2:native-session:native-agent": {
-            "v": 2,
             "type": "codex:codex-native",
             "session": "native-session",
             "agentId": "native-agent",
             "name": "native-worker",
+            "permissionMode": "default",
+            "v": 2,
             "cwd": "/private/tmp/duet14-g-fixture/repo",
             "notices": {
               "turnId": "turn-1",
-              "count": 5,
-              "last": "? Waiting for Claude: Which fixture approach?",
+              "count": 3,
+              "last": "? Waiting for Claude: Which fixture fallback?",
               "started": true
             },
             "intent": {
@@ -968,21 +1013,20 @@ export const captures = [
               "kind": "task",
               "nonce": "native-session:native-agent:turn-1"
             },
-            "jobId": "task-mvkwutd3-ogc0v6",
-            "ownerId": "task-mvkwutd3-ogc0v6-b4c822f6-0a28-44f7-a686-52802ed5c763",
+            "jobId": "task-mvl80b8x-rslb9y",
+            "ownerId": "task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5",
             "threadId": "thr_1",
-            "worker": "Hamming",
+            "worker": "Backus",
             "status": "needs_answer",
-            "questionId": "question-bc29df47-26fc-46f5-be37-622046e22193",
             "answer": {
               "status": "needs_answer",
-              "worker": "Hamming",
-              "jobId": "task-mvkwutd3-ogc0v6",
+              "worker": "Backus",
+              "jobId": "task-mvl80b8x-rslb9y",
               "summary": "waiting for parent · 0m0s",
               "question": {
-                "id": "question-bc29df47-26fc-46f5-be37-622046e22193",
+                "id": "question-750fb86a-203d-4319-a423-accc1aadb44c",
                 "kind": "question",
-                "text": "Which fixture approach?",
+                "text": "Which fixture fallback?",
                 "options": [
                   "Small",
                   "Broad"
@@ -990,9 +1034,10 @@ export const captures = [
                 "expiresInSec": 900
               },
               "next": "SendMessage to native-worker with the answer",
-              "details": "duet result Hamming --details"
+              "details": "duet result 'task-mvl80b8x-rslb9y' --details"
             },
-            "answeredTurn": "turn-1"
+            "answeredTurn": "turn-1",
+            "questionId": "question-750fb86a-203d-4319-a423-accc1aadb44c"
           }
         }
       },
@@ -1000,7 +1045,7 @@ export const captures = [
         "event": "agent.spawn",
         "input": {
           "tool_use_id": "spawn-2",
-          "prompt": "Small",
+          "prompt": "Do not resume writes from plan mode.",
           "description": "Native fake task",
           "subagentType": "codex:codex-native",
           "provider": {
@@ -1009,6 +1054,7 @@ export const captures = [
           },
           "parentModel": "haiku",
           "background": true,
+          "permissionMode": "plan",
           "fork": false,
           "name": "native-worker",
           "cwd": "/private/tmp/duet14-g-fixture/repo",
@@ -1026,7 +1072,7 @@ export const captures = [
         "input": {
           "agentId": "native-agent",
           "turnId": "turn-2",
-          "text": "Small"
+          "text": "Do not resume writes from plan mode."
         },
         "result": {
           "turnId": "turn-2"
@@ -1039,18 +1085,14 @@ export const captures = [
           "turnId": "turn-2",
           "index": 0,
           "model": "haiku",
+          "effort": "low",
           "messageCount": 1
         },
         "chunks": [
           {
-            "kind": "thinking",
-            "index": 0,
-            "text": "Codex: Completed fixture request handling."
-          },
-          {
             "kind": "text",
             "index": 1,
-            "text": "{\"status\":\"completed\",\"worker\":\"Hamming\",\"jobId\":\"task-mvkwutd3-ogc0v6\",\"summary\":\"Completed fixture request handling.\",\"checks\":{\"ran\":[\"npm test TOKEN=SHOWN_FIXTURE_ARGUMENT: exit 0, completed\"],\"claimed\":[],\"omitted\":0},\"keyFindings\":[\"Completed fixture request handling.\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Hamming --details\"}"
+            "text": "{\"status\":\"blocked\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"Plan mode cannot resume a writable Codex turn; answer outside plan mode or start a read-only agent.\",\"blockers\":[{\"code\":\"native_plan_mode_read_only\",\"message\":\"Plan mode cannot resume a writable Codex turn; answer outside plan mode or start a read-only agent.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}"
           },
           {
             "kind": "stop",
@@ -1061,25 +1103,206 @@ export const captures = [
         "result": {
           "turnId": "turn-2",
           "index": 0,
-          "answer": "{\"status\":\"completed\",\"worker\":\"Hamming\",\"jobId\":\"task-mvkwutd3-ogc0v6\",\"summary\":\"Completed fixture request handling.\",\"checks\":{\"ran\":[\"npm test TOKEN=SHOWN_FIXTURE_ARGUMENT: exit 0, completed\"],\"claimed\":[],\"omitted\":0},\"keyFindings\":[\"Completed fixture request handling.\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Hamming --details\"}",
+          "answer": "{\"status\":\"blocked\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"Plan mode cannot resume a writable Codex turn; answer outside plan mode or start a read-only agent.\",\"blockers\":[{\"code\":\"native_plan_mode_read_only\",\"message\":\"Plan mode cannot resume a writable Codex turn; answer outside plan mode or start a read-only agent.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}",
           "toolUses": [],
           "stopReason": "end_turn",
           "usage": null
         },
-        "processCount": 11
+        "processCount": 8
       },
       {
         "event": "turn.complete",
         "input": {
           "agentId": "native-agent",
           "turnId": "turn-2",
-          "answer": "{\"status\":\"completed\",\"worker\":\"Hamming\",\"jobId\":\"task-mvkwutd3-ogc0v6\",\"summary\":\"Completed fixture request handling.\",\"checks\":{\"ran\":[\"npm test TOKEN=SHOWN_FIXTURE_ARGUMENT: exit 0, completed\"],\"claimed\":[],\"omitted\":0},\"keyFindings\":[\"Completed fixture request handling.\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Hamming --details\"}",
+          "answer": "{\"status\":\"blocked\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"Plan mode cannot resume a writable Codex turn; answer outside plan mode or start a read-only agent.\",\"blockers\":[{\"code\":\"native_plan_mode_read_only\",\"message\":\"Plan mode cannot resume a writable Codex turn; answer outside plan mode or start a read-only agent.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}",
           "durationMs": 1,
           "isAborted": false,
           "reason": "answer"
         },
         "result": {
-          "text": "{\"status\":\"completed\",\"worker\":\"Hamming\",\"jobId\":\"task-mvkwutd3-ogc0v6\",\"summary\":\"Completed fixture request handling.\",\"checks\":{\"ran\":[\"npm test TOKEN=SHOWN_FIXTURE_ARGUMENT: exit 0, completed\"],\"claimed\":[],\"omitted\":0},\"keyFindings\":[\"Completed fixture request handling.\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Hamming --details\"}"
+          "text": "{\"status\":\"blocked\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"Plan mode cannot resume a writable Codex turn; answer outside plan mode or start a read-only agent.\",\"blockers\":[{\"code\":\"native_plan_mode_read_only\",\"message\":\"Plan mode cannot resume a writable Codex turn; answer outside plan mode or start a read-only agent.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}"
+        }
+      },
+      {
+        "event": "agent.spawn",
+        "input": {
+          "tool_use_id": "spawn-3",
+          "prompt": "Late Q1 answer",
+          "description": "Native fake task",
+          "subagentType": "codex:codex-native",
+          "provider": {
+            "plugin": "codex",
+            "tier": "user"
+          },
+          "parentModel": "haiku",
+          "background": true,
+          "permissionMode": "default",
+          "fork": false,
+          "name": "native-worker",
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "resume": {
+            "agentId": "native-agent"
+          }
+        },
+        "result": {
+          "model": "haiku",
+          "agentId": "native-agent"
+        }
+      },
+      {
+        "event": "turn.start",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-3",
+          "text": "Late Q1 answer"
+        },
+        "result": {
+          "turnId": "turn-3"
+        }
+      },
+      {
+        "event": "turn.step",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-3",
+          "index": 0,
+          "model": "haiku",
+          "effort": "low",
+          "messageCount": 1
+        },
+        "chunks": [
+          {
+            "kind": "thinking",
+            "index": 0,
+            "text": "? Waiting for Claude: Which fixture approach?"
+          },
+          {
+            "kind": "text",
+            "index": 1,
+            "text": "{\"status\":\"needs_answer\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"waiting for parent · 0m2s\",\"question\":{\"id\":\"question-590345e9-a894-4edf-a577-a47041a5117d\",\"kind\":\"question\",\"text\":\"Which fixture approach?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"SendMessage to native-worker with the answer\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}"
+          },
+          {
+            "kind": "stop",
+            "stopReason": "end_turn",
+            "usage": null
+          }
+        ],
+        "result": {
+          "turnId": "turn-3",
+          "index": 0,
+          "answer": "{\"status\":\"needs_answer\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"waiting for parent · 0m2s\",\"question\":{\"id\":\"question-590345e9-a894-4edf-a577-a47041a5117d\",\"kind\":\"question\",\"text\":\"Which fixture approach?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"SendMessage to native-worker with the answer\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}",
+          "toolUses": [],
+          "stopReason": "end_turn",
+          "usage": null
+        },
+        "processCount": 12
+      },
+      {
+        "event": "turn.complete",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-3",
+          "answer": "{\"status\":\"needs_answer\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"waiting for parent · 0m2s\",\"question\":{\"id\":\"question-590345e9-a894-4edf-a577-a47041a5117d\",\"kind\":\"question\",\"text\":\"Which fixture approach?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"SendMessage to native-worker with the answer\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}",
+          "durationMs": 1,
+          "isAborted": false,
+          "reason": "answer"
+        },
+        "result": {
+          "text": "{\"status\":\"needs_answer\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"waiting for parent · 0m2s\",\"question\":{\"id\":\"question-590345e9-a894-4edf-a577-a47041a5117d\",\"kind\":\"question\",\"text\":\"Which fixture approach?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"SendMessage to native-worker with the answer\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}"
+        }
+      },
+      {
+        "event": "agent.spawn",
+        "input": {
+          "tool_use_id": "spawn-4",
+          "prompt": "Small",
+          "description": "Native fake task",
+          "subagentType": "codex:codex-native",
+          "provider": {
+            "plugin": "codex",
+            "tier": "user"
+          },
+          "parentModel": "haiku",
+          "background": true,
+          "permissionMode": "default",
+          "fork": false,
+          "name": "native-worker",
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "resume": {
+            "agentId": "native-agent"
+          }
+        },
+        "result": {
+          "model": "haiku",
+          "agentId": "native-agent"
+        }
+      },
+      {
+        "event": "turn.start",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-4",
+          "text": "Small"
+        },
+        "result": {
+          "turnId": "turn-4"
+        }
+      },
+      {
+        "event": "turn.step",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-4",
+          "index": 0,
+          "model": "haiku",
+          "effort": "low",
+          "messageCount": 1
+        },
+        "chunks": [
+          {
+            "kind": "thinking",
+            "index": 0,
+            "text": "Tool dynamic/ask_parent: completed (1185ms)"
+          },
+          {
+            "kind": "thinking",
+            "index": 0,
+            "text": "Codex: Completed fixture request handling."
+          },
+          {
+            "kind": "text",
+            "index": 1,
+            "text": "{\"status\":\"completed\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"Completed fixture request handling.\",\"keyFindings\":[\"Completed fixture request handling.\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}"
+          },
+          {
+            "kind": "stop",
+            "stopReason": "end_turn",
+            "usage": null
+          }
+        ],
+        "result": {
+          "turnId": "turn-4",
+          "index": 0,
+          "answer": "{\"status\":\"completed\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"Completed fixture request handling.\",\"keyFindings\":[\"Completed fixture request handling.\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}",
+          "toolUses": [],
+          "stopReason": "end_turn",
+          "usage": null
+        },
+        "processCount": 16
+      },
+      {
+        "event": "turn.complete",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-4",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"Completed fixture request handling.\",\"keyFindings\":[\"Completed fixture request handling.\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}",
+          "durationMs": 1,
+          "isAborted": false,
+          "reason": "answer"
+        },
+        "result": {
+          "text": "{\"status\":\"completed\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"Completed fixture request handling.\",\"keyFindings\":[\"Completed fixture request handling.\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}"
         }
       }
     ],
@@ -1129,15 +1352,11 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "[1] ▸ npm test TOKEN=SHOWN_FIXTURE_ARGUMENT\n"
+            "text": "[1] Tool dynamic/ask_parent: inProgress (duration unknown)\n"
           },
           {
             "stream": "stdout",
-            "text": "[2] ✓ exit 0 · 0.0s · npm test TOKEN=SHOWN_FIXTURE_ARGUMENT\n"
-          },
-          {
-            "stream": "stdout",
-            "text": "[3] plan 1/1\n{\"status\":\"needs_answer\",\"worker\":\"Hamming\",\"jobId\":\"task-mvkwutd3-ogc0v6\",\"summary\":\"waiting for parent · 0m0s\",\"question\":{\"id\":\"question-bc29df47-26fc-46f5-be37-622046e22193\",\"kind\":\"question\",\"text\":\"Which fixture approach?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"duet answer Hamming\",\"details\":\"duet result Hamming --details\"}\n"
+            "text": "{\"status\":\"needs_answer\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"waiting for parent · 0m0s\",\"question\":{\"id\":\"question-750fb86a-203d-4319-a423-accc1aadb44c\",\"kind\":\"question\",\"text\":\"Which fixture fallback?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"duet answer Backus --question 'question-750fb86a-203d-4319-a423-accc1aadb44c'\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}\n"
           }
         ],
         "exit": {
@@ -1154,6 +1373,8 @@ export const captures = [
             "status",
             "--all",
             "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-1",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
             "--session",
@@ -1165,7 +1386,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-iVuybR/cxc-wLSLrd/broker.sock\"\n  },\n  \"running\": [\n    {\n      \"id\": \"task-mvkwutd3-ogc0v6\",\n      \"kind\": \"task\",\n      \"kindLabel\": \"rescue\",\n      \"title\": \"Codex Task\",\n      \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"jobClass\": \"task\",\n      \"summary\": \"Ask the fake parent a question.\",\n      \"write\": true,\n      \"createdAt\": \"2026-10-23T11:52:51.495Z\",\n      \"sessionId\": \"native-session\",\n      \"dispatchSessionId\": \"native-session\",\n      \"ownerId\": \"task-mvkwutd3-ogc0v6-b4c822f6-0a28-44f7-a686-52802ed5c763\",\n      \"leaseRenewedAt\": 1792756371666,\n      \"leaseSec\": 1800,\n      \"questionTimeoutSec\": 900,\n      \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n      \"leaseExpiresAt\": 1792758171666,\n      \"sandbox\": \"danger-full-access\",\n      \"approvalPolicy\": \"never+elicitations\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.output.txt\",\n      \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.result.json\",\n      \"agentName\": \"Hamming\",\n      \"status\": \"running\",\n      \"direct\": true,\n      \"phase\": \"needs_answer\",\n      \"pid\": 80493,\n      \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.log\",\n      \"request\": {\n        \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"model\": \"gpt-6-astra\",\n        \"effort\": \"xhigh\",\n        \"serviceTier\": null,\n        \"prompt\": \"Ask the fake parent a question.\",\n        \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n        \"claudeMd\": {\n          \"version\": 1,\n          \"source\": \"scan\",\n          \"approximate\": true,\n          \"complete\": false,\n          \"snapshotHash\": \"7b5e781da554b49daf57d5c4716063c3db567193125f7dc9e7e9074a05506dd5\",\n          \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n          \"capturedAt\": \"2026-10-23T11:52:50.965Z\",\n          \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n          \"sessionCwdSource\": \"flag\",\n          \"bounded\": false,\n          \"omittedPaths\": [],\n          \"omittedCount\": 0,\n          \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n        },\n        \"write\": true,\n        \"sandbox\": \"danger-full-access\",\n        \"approvedBrowserOrigins\": [],\n        \"approvedComputerApps\": [],\n        \"resumeLast\": false,\n        \"threadId\": null,\n        \"jobId\": \"task-mvkwutd3-ogc0v6\",\n        \"report\": true,\n        \"detached\": true\n      },\n      \"updatedAt\": \"2026-10-23T11:52:52.393Z\",\n      \"ownerAttached\": false,\n      \"ownerAttachedAt\": 1792756371655,\n      \"ownerDetachedAt\": 1792756372393,\n      \"ownerDetachReason\": \"returned\",\n      \"ownerWaitPid\": 80425,\n      \"ownerWaitToken\": \"706f698b-886d-4171-ab93-d9c73ea98b9b\",\n      \"startedAt\": \"2026-10-23T11:52:51.688Z\",\n      \"preExistingChanges\": [],\n      \"startupTimings\": {\n        \"brokerConnectSpawn\": {\n          \"phase\": \"brokerConnectSpawn\",\n          \"elapsedMs\": 273,\n          \"durationMs\": 188\n        },\n        \"appServerInitialize\": {\n          \"phase\": \"appServerInitialize\",\n          \"elapsedMs\": 283,\n          \"durationMs\": 44\n        },\n        \"brokerHandshake\": {\n          \"phase\": \"brokerHandshake\",\n          \"elapsedMs\": 292,\n          \"durationMs\": 10\n        },\n        \"threadStart\": {\n          \"phase\": \"threadStart\",\n          \"elapsedMs\": 322,\n          \"durationMs\": 20\n        },\n        \"turnStart\": {\n          \"phase\": \"turnStart\",\n          \"elapsedMs\": 333,\n          \"durationMs\": 1\n        },\n        \"mcpReady\": {\n          \"phase\": \"mcpReady\",\n          \"elapsedMs\": 352\n        },\n        \"firstModelEvent\": {\n          \"phase\": \"firstModelEvent\",\n          \"elapsedMs\": 362\n        },\n        \"firstToolCall\": {\n          \"phase\": \"firstToolCall\",\n          \"elapsedMs\": 373\n        }\n      },\n      \"threadId\": \"thr_1\",\n      \"turnId\": \"turn_1\",\n      \"activitySeq\": 3,\n      \"currentItem\": null,\n      \"startupWarning\": \"WebSocket retry/fallback observed. Consider setup --transport http after reviewing the transport trade-offs; restart the runtime. Defaults were not changed.\",\n      \"completedItems\": [\n        {\n          \"type\": \"commandExecution\",\n          \"summary\": \"running tests/checks\",\n          \"lifecycle\": \"completed\",\n          \"exitCode\": 0\n        },\n        {\n          \"type\": \"plan\",\n          \"summary\": \"plan updated\",\n          \"lifecycle\": \"completed\",\n          \"steps\": 1\n        }\n      ],\n      \"pendingQuestion\": {\n        \"id\": \"question-bc29df47-26fc-46f5-be37-622046e22193\",\n        \"callId\": \"fixture-call\",\n        \"kind\": \"question\",\n        \"text\": \"Which fixture approach?\",\n        \"options\": [\n          \"Small\",\n          \"Broad\"\n        ],\n        \"askedAt\": \"2026-10-23T11:52:52.308Z\",\n        \"expiresAt\": 1792757272316\n      },\n      \"activityCursors\": {\n        \"ba1e0c966890af0f797b15ec495efdfccc23e027423f6cf98c98e2d3f5265636\": 3\n      },\n      \"orphaned\": false,\n      \"leaseRemainingSec\": 1800,\n      \"progressPreview\": [\n        \"running tests/checks completed (exit 0).\",\n        \"Plan updated.\",\n        \"Server request {\\\"method\\\":\\\"item/tool/call\\\",\\\"requestId\\\":\\\"sha256:a57ea13026e006f3\\\",\\\"kind\\\":\\\"parent-question\\\",\\\"decision\\\":\\\"pending\\\",\\\"reason\\\":\\\"ask-parent\\\"}\",\n        \"Parent question pending: question-bc29df47-26fc-46f5-be37-622046e22193.\"\n      ],\n      \"elapsed\": \"1s\",\n      \"duration\": null,\n      \"sessionLabel\": \"native-s…sion\"\n    }\n  ],\n  \"latestFinished\": null,\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-ZGJowT/broker.sock\"\n  },\n  \"running\": [\n    {\n      \"id\": \"task-mvl80b8x-rslb9y\",\n      \"kind\": \"task\",\n      \"kindLabel\": \"rescue\",\n      \"title\": \"Codex Task\",\n      \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"jobClass\": \"task\",\n      \"summary\": \"Ask the fake parent a question.\",\n      \"write\": true,\n      \"createdAt\": \"2026-10-23T17:05:03.729Z\",\n      \"sessionId\": \"native-session\",\n      \"dispatchSessionId\": \"native-session\",\n      \"ownerId\": \"task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5\",\n      \"leaseRenewedAt\": 1792775103903,\n      \"leaseSec\": 1800,\n      \"questionTimeoutSec\": 900,\n      \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n      \"leaseExpiresAt\": 1792776903903,\n      \"sandbox\": \"danger-full-access\",\n      \"approvalPolicy\": \"never+elicitations\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.output.txt\",\n      \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.result.json\",\n      \"agentName\": \"Backus\",\n      \"status\": \"running\",\n      \"direct\": true,\n      \"phase\": \"needs_answer\",\n      \"pid\": 4486,\n      \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.log\",\n      \"request\": {\n        \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"model\": \"gpt-6-astra\",\n        \"effort\": \"xhigh\",\n        \"serviceTier\": null,\n        \"prompt\": \"Ask the fake parent a question.\",\n        \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n        \"claudeMd\": {\n          \"version\": 1,\n          \"source\": \"scan\",\n          \"approximate\": true,\n          \"complete\": false,\n          \"snapshotHash\": \"3179f70952180a4873c0f6336238bd151f699b01b95b631fc84ce6fd5eea5da0\",\n          \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n          \"capturedAt\": \"2026-10-23T17:05:02.722Z\",\n          \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n          \"sessionCwdSource\": \"flag\",\n          \"bounded\": false,\n          \"omittedPaths\": [],\n          \"omittedCount\": 0,\n          \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n        },\n        \"write\": true,\n        \"sandbox\": \"danger-full-access\",\n        \"approvedBrowserOrigins\": [],\n        \"approvedComputerApps\": [],\n        \"resumeLast\": false,\n        \"threadId\": null,\n        \"jobId\": \"task-mvl80b8x-rslb9y\",\n        \"report\": true,\n        \"detached\": true\n      },\n      \"updatedAt\": \"2026-10-23T17:05:04.675Z\",\n      \"ownerAttached\": false,\n      \"ownerAttachedAt\": 1792775103893,\n      \"ownerDetachedAt\": 1792775104675,\n      \"ownerDetachReason\": \"returned\",\n      \"ownerWaitPid\": 4417,\n      \"ownerWaitToken\": \"8bfe0212-27d3-485b-a7ae-9b0597a388e4\",\n      \"startedAt\": \"2026-10-23T17:05:03.927Z\",\n      \"preExistingChanges\": [],\n      \"startupTimings\": {\n        \"brokerConnectSpawn\": {\n          \"phase\": \"brokerConnectSpawn\",\n          \"elapsedMs\": 271,\n          \"durationMs\": 182\n        },\n        \"appServerInitialize\": {\n          \"phase\": \"appServerInitialize\",\n          \"elapsedMs\": 281,\n          \"durationMs\": 45\n        },\n        \"brokerHandshake\": {\n          \"phase\": \"brokerHandshake\",\n          \"elapsedMs\": 291,\n          \"durationMs\": 11\n        },\n        \"threadStart\": {\n          \"phase\": \"threadStart\",\n          \"elapsedMs\": 321,\n          \"durationMs\": 20\n        },\n        \"turnStart\": {\n          \"phase\": \"turnStart\",\n          \"elapsedMs\": 332,\n          \"durationMs\": 1\n        },\n        \"firstModelEvent\": {\n          \"phase\": \"firstModelEvent\",\n          \"elapsedMs\": 351\n        },\n        \"firstToolCall\": {\n          \"phase\": \"firstToolCall\",\n          \"elapsedMs\": 361\n        }\n      },\n      \"threadId\": \"thr_1\",\n      \"turnId\": \"turn_1\",\n      \"activitySeq\": 1,\n      \"currentItem\": {\n        \"type\": \"dynamicToolCall\",\n        \"summary\": \"tool ask_parent\",\n        \"lifecycle\": \"started\"\n      },\n      \"pendingQuestion\": {\n        \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n        \"callId\": \"fixture-call-1\",\n        \"kind\": \"question\",\n        \"text\": \"Which fixture fallback?\",\n        \"options\": [\n          \"Small\",\n          \"Broad\"\n        ],\n        \"askedAt\": \"2026-10-23T17:05:04.507Z\",\n        \"expiresAt\": 1792776004515\n      },\n      \"activityCursors\": {\n        \"e40ef6b7a3676702f916e2c09bd0f7d702df2787d1708242e5672df2a1acd0e5\": 1\n      },\n      \"orphaned\": false,\n      \"leaseRemainingSec\": 1800,\n      \"progressPreview\": [\n        \"Activity recorded.\",\n        \"tool ask_parent\",\n        \"Server request {\\\"method\\\":\\\"item/tool/call\\\",\\\"requestId\\\":\\\"sha256:a57ea13026e006f3\\\",\\\"kind\\\":\\\"parent-question\\\",\\\"decision\\\":\\\"pending\\\",\\\"reason\\\":\\\"ask-parent\\\"}\",\n        \"Parent question pending: question-750fb86a-203d-4319-a423-accc1aadb44c.\"\n      ],\n      \"elapsed\": \"1s\",\n      \"duration\": null,\n      \"sessionLabel\": \"native-s…sion\"\n    }\n  ],\n  \"latestFinished\": null,\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
           }
         ],
         "exit": {
@@ -1180,7 +1401,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwutd3-ogc0v6",
+            "task-mvl80b8x-rslb9y",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -1193,7 +1414,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwutd3-ogc0v6\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Ask the fake parent a question.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:51.495Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwutd3-ogc0v6-b4c822f6-0a28-44f7-a686-52802ed5c763\",\n    \"leaseRenewedAt\": 1792756371666,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758171666,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.result.json\",\n    \"agentName\": \"Hamming\",\n    \"status\": \"running\",\n    \"direct\": true,\n    \"phase\": \"needs_answer\",\n    \"pid\": 80493,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Ask the fake parent a question.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"7b5e781da554b49daf57d5c4716063c3db567193125f7dc9e7e9074a05506dd5\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:50.965Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwutd3-ogc0v6\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:52.393Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756371655,\n    \"ownerDetachedAt\": 1792756372393,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 80425,\n    \"ownerWaitToken\": \"706f698b-886d-4171-ab93-d9c73ea98b9b\",\n    \"startedAt\": \"2026-10-23T11:52:51.688Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 273,\n        \"durationMs\": 188\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 283,\n        \"durationMs\": 44\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 292,\n        \"durationMs\": 10\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 322,\n        \"durationMs\": 20\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 333,\n        \"durationMs\": 1\n      },\n      \"mcpReady\": {\n        \"phase\": \"mcpReady\",\n        \"elapsedMs\": 352\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 362\n      },\n      \"firstToolCall\": {\n        \"phase\": \"firstToolCall\",\n        \"elapsedMs\": 373\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 3,\n    \"currentItem\": null,\n    \"startupWarning\": \"WebSocket retry/fallback observed. Consider setup --transport http after reviewing the transport trade-offs; restart the runtime. Defaults were not changed.\",\n    \"completedItems\": [\n      {\n        \"type\": \"commandExecution\",\n        \"summary\": \"running tests/checks\",\n        \"lifecycle\": \"completed\",\n        \"exitCode\": 0\n      },\n      {\n        \"type\": \"plan\",\n        \"summary\": \"plan updated\",\n        \"lifecycle\": \"completed\",\n        \"steps\": 1\n      }\n    ],\n    \"pendingQuestion\": {\n      \"id\": \"question-bc29df47-26fc-46f5-be37-622046e22193\",\n      \"callId\": \"fixture-call\",\n      \"kind\": \"question\",\n      \"text\": \"Which fixture approach?\",\n      \"options\": [\n        \"Small\",\n        \"Broad\"\n      ],\n      \"askedAt\": \"2026-10-23T11:52:52.308Z\",\n      \"expiresAt\": 1792757272316\n    },\n    \"activityCursors\": {\n      \"ba1e0c966890af0f797b15ec495efdfccc23e027423f6cf98c98e2d3f5265636\": 3\n    },\n    \"orphaned\": false,\n    \"leaseRemainingSec\": 1800,\n    \"progressPreview\": [\n      \"running tests/checks completed (exit 0).\",\n      \"Plan updated.\",\n      \"Server request {\\\"method\\\":\\\"item/tool/call\\\",\\\"requestId\\\":\\\"sha256:a57ea13026e006f3\\\",\\\"kind\\\":\\\"parent-question\\\",\\\"decision\\\":\\\"pending\\\",\\\"reason\\\":\\\"ask-parent\\\"}\",\n      \"Parent question pending: question-bc29df47-26fc-46f5-be37-622046e22193.\"\n    ],\n    \"elapsed\": \"1s\",\n    \"duration\": null\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80b8x-rslb9y\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Ask the fake parent a question.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:03.729Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5\",\n    \"leaseRenewedAt\": 1792775103903,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776903903,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.result.json\",\n    \"agentName\": \"Backus\",\n    \"status\": \"running\",\n    \"direct\": true,\n    \"phase\": \"needs_answer\",\n    \"pid\": 4486,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Ask the fake parent a question.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"3179f70952180a4873c0f6336238bd151f699b01b95b631fc84ce6fd5eea5da0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:02.722Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80b8x-rslb9y\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:04.675Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775103893,\n    \"ownerDetachedAt\": 1792775104675,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 4417,\n    \"ownerWaitToken\": \"8bfe0212-27d3-485b-a7ae-9b0597a388e4\",\n    \"startedAt\": \"2026-10-23T17:05:03.927Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 182\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 291,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 321,\n        \"durationMs\": 20\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 332,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 351\n      },\n      \"firstToolCall\": {\n        \"phase\": \"firstToolCall\",\n        \"elapsedMs\": 361\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"currentItem\": {\n      \"type\": \"dynamicToolCall\",\n      \"summary\": \"tool ask_parent\",\n      \"lifecycle\": \"started\"\n    },\n    \"pendingQuestion\": {\n      \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n      \"callId\": \"fixture-call-1\",\n      \"kind\": \"question\",\n      \"text\": \"Which fixture fallback?\",\n      \"options\": [\n        \"Small\",\n        \"Broad\"\n      ],\n      \"askedAt\": \"2026-10-23T17:05:04.507Z\",\n      \"expiresAt\": 1792776004515\n    },\n    \"activityCursors\": {\n      \"e40ef6b7a3676702f916e2c09bd0f7d702df2787d1708242e5672df2a1acd0e5\": 1\n    },\n    \"orphaned\": false,\n    \"leaseRemainingSec\": 1800,\n    \"progressPreview\": [\n      \"Activity recorded.\",\n      \"tool ask_parent\",\n      \"Server request {\\\"method\\\":\\\"item/tool/call\\\",\\\"requestId\\\":\\\"sha256:a57ea13026e006f3\\\",\\\"kind\\\":\\\"parent-question\\\",\\\"decision\\\":\\\"pending\\\",\\\"reason\\\":\\\"ask-parent\\\"}\",\n      \"Parent question pending: question-750fb86a-203d-4319-a423-accc1aadb44c.\"\n    ],\n    \"elapsed\": \"1s\",\n    \"duration\": null\n  }\n}\n"
           }
         ],
         "exit": {
@@ -1210,6 +1431,8 @@ export const captures = [
             "status",
             "--all",
             "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-1",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
             "--session",
@@ -1221,7 +1444,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-iVuybR/cxc-wLSLrd/broker.sock\"\n  },\n  \"running\": [\n    {\n      \"id\": \"task-mvkwutd3-ogc0v6\",\n      \"kind\": \"task\",\n      \"kindLabel\": \"rescue\",\n      \"title\": \"Codex Task\",\n      \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"jobClass\": \"task\",\n      \"summary\": \"Ask the fake parent a question.\",\n      \"write\": true,\n      \"createdAt\": \"2026-10-23T11:52:51.495Z\",\n      \"sessionId\": \"native-session\",\n      \"dispatchSessionId\": \"native-session\",\n      \"ownerId\": \"task-mvkwutd3-ogc0v6-b4c822f6-0a28-44f7-a686-52802ed5c763\",\n      \"leaseRenewedAt\": 1792756371666,\n      \"leaseSec\": 1800,\n      \"questionTimeoutSec\": 900,\n      \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n      \"leaseExpiresAt\": 1792758171666,\n      \"sandbox\": \"danger-full-access\",\n      \"approvalPolicy\": \"never+elicitations\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.output.txt\",\n      \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.result.json\",\n      \"agentName\": \"Hamming\",\n      \"status\": \"running\",\n      \"direct\": true,\n      \"phase\": \"needs_answer\",\n      \"pid\": 80493,\n      \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.log\",\n      \"request\": {\n        \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"model\": \"gpt-6-astra\",\n        \"effort\": \"xhigh\",\n        \"serviceTier\": null,\n        \"prompt\": \"Ask the fake parent a question.\",\n        \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n        \"claudeMd\": {\n          \"version\": 1,\n          \"source\": \"scan\",\n          \"approximate\": true,\n          \"complete\": false,\n          \"snapshotHash\": \"7b5e781da554b49daf57d5c4716063c3db567193125f7dc9e7e9074a05506dd5\",\n          \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n          \"capturedAt\": \"2026-10-23T11:52:50.965Z\",\n          \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n          \"sessionCwdSource\": \"flag\",\n          \"bounded\": false,\n          \"omittedPaths\": [],\n          \"omittedCount\": 0,\n          \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n        },\n        \"write\": true,\n        \"sandbox\": \"danger-full-access\",\n        \"approvedBrowserOrigins\": [],\n        \"approvedComputerApps\": [],\n        \"resumeLast\": false,\n        \"threadId\": null,\n        \"jobId\": \"task-mvkwutd3-ogc0v6\",\n        \"report\": true,\n        \"detached\": true\n      },\n      \"updatedAt\": \"2026-10-23T11:52:52.393Z\",\n      \"ownerAttached\": false,\n      \"ownerAttachedAt\": 1792756371655,\n      \"ownerDetachedAt\": 1792756372393,\n      \"ownerDetachReason\": \"returned\",\n      \"ownerWaitPid\": 80425,\n      \"ownerWaitToken\": \"706f698b-886d-4171-ab93-d9c73ea98b9b\",\n      \"startedAt\": \"2026-10-23T11:52:51.688Z\",\n      \"preExistingChanges\": [],\n      \"startupTimings\": {\n        \"brokerConnectSpawn\": {\n          \"phase\": \"brokerConnectSpawn\",\n          \"elapsedMs\": 273,\n          \"durationMs\": 188\n        },\n        \"appServerInitialize\": {\n          \"phase\": \"appServerInitialize\",\n          \"elapsedMs\": 283,\n          \"durationMs\": 44\n        },\n        \"brokerHandshake\": {\n          \"phase\": \"brokerHandshake\",\n          \"elapsedMs\": 292,\n          \"durationMs\": 10\n        },\n        \"threadStart\": {\n          \"phase\": \"threadStart\",\n          \"elapsedMs\": 322,\n          \"durationMs\": 20\n        },\n        \"turnStart\": {\n          \"phase\": \"turnStart\",\n          \"elapsedMs\": 333,\n          \"durationMs\": 1\n        },\n        \"mcpReady\": {\n          \"phase\": \"mcpReady\",\n          \"elapsedMs\": 352\n        },\n        \"firstModelEvent\": {\n          \"phase\": \"firstModelEvent\",\n          \"elapsedMs\": 362\n        },\n        \"firstToolCall\": {\n          \"phase\": \"firstToolCall\",\n          \"elapsedMs\": 373\n        }\n      },\n      \"threadId\": \"thr_1\",\n      \"turnId\": \"turn_1\",\n      \"activitySeq\": 3,\n      \"currentItem\": null,\n      \"startupWarning\": \"WebSocket retry/fallback observed. Consider setup --transport http after reviewing the transport trade-offs; restart the runtime. Defaults were not changed.\",\n      \"completedItems\": [\n        {\n          \"type\": \"commandExecution\",\n          \"summary\": \"running tests/checks\",\n          \"lifecycle\": \"completed\",\n          \"exitCode\": 0\n        },\n        {\n          \"type\": \"plan\",\n          \"summary\": \"plan updated\",\n          \"lifecycle\": \"completed\",\n          \"steps\": 1\n        }\n      ],\n      \"pendingQuestion\": {\n        \"id\": \"question-bc29df47-26fc-46f5-be37-622046e22193\",\n        \"callId\": \"fixture-call\",\n        \"kind\": \"question\",\n        \"text\": \"Which fixture approach?\",\n        \"options\": [\n          \"Small\",\n          \"Broad\"\n        ],\n        \"askedAt\": \"2026-10-23T11:52:52.308Z\",\n        \"expiresAt\": 1792757272316\n      },\n      \"activityCursors\": {\n        \"ba1e0c966890af0f797b15ec495efdfccc23e027423f6cf98c98e2d3f5265636\": 3\n      },\n      \"orphaned\": false,\n      \"leaseRemainingSec\": 1799,\n      \"progressPreview\": [\n        \"running tests/checks completed (exit 0).\",\n        \"Plan updated.\",\n        \"Server request {\\\"method\\\":\\\"item/tool/call\\\",\\\"requestId\\\":\\\"sha256:a57ea13026e006f3\\\",\\\"kind\\\":\\\"parent-question\\\",\\\"decision\\\":\\\"pending\\\",\\\"reason\\\":\\\"ask-parent\\\"}\",\n        \"Parent question pending: question-bc29df47-26fc-46f5-be37-622046e22193.\"\n      ],\n      \"elapsed\": \"1s\",\n      \"duration\": null,\n      \"sessionLabel\": \"native-s…sion\"\n    }\n  ],\n  \"latestFinished\": null,\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-ZGJowT/broker.sock\"\n  },\n  \"running\": [\n    {\n      \"id\": \"task-mvl80b8x-rslb9y\",\n      \"kind\": \"task\",\n      \"kindLabel\": \"rescue\",\n      \"title\": \"Codex Task\",\n      \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"jobClass\": \"task\",\n      \"summary\": \"Ask the fake parent a question.\",\n      \"write\": true,\n      \"createdAt\": \"2026-10-23T17:05:03.729Z\",\n      \"sessionId\": \"native-session\",\n      \"dispatchSessionId\": \"native-session\",\n      \"ownerId\": \"task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5\",\n      \"leaseRenewedAt\": 1792775103903,\n      \"leaseSec\": 1800,\n      \"questionTimeoutSec\": 900,\n      \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n      \"leaseExpiresAt\": 1792776903903,\n      \"sandbox\": \"danger-full-access\",\n      \"approvalPolicy\": \"never+elicitations\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.output.txt\",\n      \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.result.json\",\n      \"agentName\": \"Backus\",\n      \"status\": \"running\",\n      \"direct\": true,\n      \"phase\": \"needs_answer\",\n      \"pid\": 4486,\n      \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.log\",\n      \"request\": {\n        \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"model\": \"gpt-6-astra\",\n        \"effort\": \"xhigh\",\n        \"serviceTier\": null,\n        \"prompt\": \"Ask the fake parent a question.\",\n        \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n        \"claudeMd\": {\n          \"version\": 1,\n          \"source\": \"scan\",\n          \"approximate\": true,\n          \"complete\": false,\n          \"snapshotHash\": \"3179f70952180a4873c0f6336238bd151f699b01b95b631fc84ce6fd5eea5da0\",\n          \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n          \"capturedAt\": \"2026-10-23T17:05:02.722Z\",\n          \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n          \"sessionCwdSource\": \"flag\",\n          \"bounded\": false,\n          \"omittedPaths\": [],\n          \"omittedCount\": 0,\n          \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n        },\n        \"write\": true,\n        \"sandbox\": \"danger-full-access\",\n        \"approvedBrowserOrigins\": [],\n        \"approvedComputerApps\": [],\n        \"resumeLast\": false,\n        \"threadId\": null,\n        \"jobId\": \"task-mvl80b8x-rslb9y\",\n        \"report\": true,\n        \"detached\": true\n      },\n      \"updatedAt\": \"2026-10-23T17:05:04.675Z\",\n      \"ownerAttached\": false,\n      \"ownerAttachedAt\": 1792775103893,\n      \"ownerDetachedAt\": 1792775104675,\n      \"ownerDetachReason\": \"returned\",\n      \"ownerWaitPid\": 4417,\n      \"ownerWaitToken\": \"8bfe0212-27d3-485b-a7ae-9b0597a388e4\",\n      \"startedAt\": \"2026-10-23T17:05:03.927Z\",\n      \"preExistingChanges\": [],\n      \"startupTimings\": {\n        \"brokerConnectSpawn\": {\n          \"phase\": \"brokerConnectSpawn\",\n          \"elapsedMs\": 271,\n          \"durationMs\": 182\n        },\n        \"appServerInitialize\": {\n          \"phase\": \"appServerInitialize\",\n          \"elapsedMs\": 281,\n          \"durationMs\": 45\n        },\n        \"brokerHandshake\": {\n          \"phase\": \"brokerHandshake\",\n          \"elapsedMs\": 291,\n          \"durationMs\": 11\n        },\n        \"threadStart\": {\n          \"phase\": \"threadStart\",\n          \"elapsedMs\": 321,\n          \"durationMs\": 20\n        },\n        \"turnStart\": {\n          \"phase\": \"turnStart\",\n          \"elapsedMs\": 332,\n          \"durationMs\": 1\n        },\n        \"firstModelEvent\": {\n          \"phase\": \"firstModelEvent\",\n          \"elapsedMs\": 351\n        },\n        \"firstToolCall\": {\n          \"phase\": \"firstToolCall\",\n          \"elapsedMs\": 361\n        }\n      },\n      \"threadId\": \"thr_1\",\n      \"turnId\": \"turn_1\",\n      \"activitySeq\": 1,\n      \"currentItem\": {\n        \"type\": \"dynamicToolCall\",\n        \"summary\": \"tool ask_parent\",\n        \"lifecycle\": \"started\"\n      },\n      \"pendingQuestion\": {\n        \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n        \"callId\": \"fixture-call-1\",\n        \"kind\": \"question\",\n        \"text\": \"Which fixture fallback?\",\n        \"options\": [\n          \"Small\",\n          \"Broad\"\n        ],\n        \"askedAt\": \"2026-10-23T17:05:04.507Z\",\n        \"expiresAt\": 1792776004515\n      },\n      \"activityCursors\": {\n        \"e40ef6b7a3676702f916e2c09bd0f7d702df2787d1708242e5672df2a1acd0e5\": 1\n      },\n      \"orphaned\": false,\n      \"leaseRemainingSec\": 1799,\n      \"progressPreview\": [\n        \"Activity recorded.\",\n        \"tool ask_parent\",\n        \"Server request {\\\"method\\\":\\\"item/tool/call\\\",\\\"requestId\\\":\\\"sha256:a57ea13026e006f3\\\",\\\"kind\\\":\\\"parent-question\\\",\\\"decision\\\":\\\"pending\\\",\\\"reason\\\":\\\"ask-parent\\\"}\",\n        \"Parent question pending: question-750fb86a-203d-4319-a423-accc1aadb44c.\"\n      ],\n      \"elapsed\": \"1s\",\n      \"duration\": null,\n      \"sessionLabel\": \"native-s…sion\"\n    }\n  ],\n  \"latestFinished\": null,\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
           }
         ],
         "exit": {
@@ -1236,7 +1459,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwutd3-ogc0v6",
+            "task-mvl80b8x-rslb9y",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -1249,7 +1472,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwutd3-ogc0v6\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Ask the fake parent a question.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:51.495Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwutd3-ogc0v6-b4c822f6-0a28-44f7-a686-52802ed5c763\",\n    \"leaseRenewedAt\": 1792756371666,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758171666,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.result.json\",\n    \"agentName\": \"Hamming\",\n    \"status\": \"running\",\n    \"direct\": true,\n    \"phase\": \"needs_answer\",\n    \"pid\": 80493,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Ask the fake parent a question.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"7b5e781da554b49daf57d5c4716063c3db567193125f7dc9e7e9074a05506dd5\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:50.965Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwutd3-ogc0v6\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:52.393Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756371655,\n    \"ownerDetachedAt\": 1792756372393,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 80425,\n    \"ownerWaitToken\": \"706f698b-886d-4171-ab93-d9c73ea98b9b\",\n    \"startedAt\": \"2026-10-23T11:52:51.688Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 273,\n        \"durationMs\": 188\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 283,\n        \"durationMs\": 44\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 292,\n        \"durationMs\": 10\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 322,\n        \"durationMs\": 20\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 333,\n        \"durationMs\": 1\n      },\n      \"mcpReady\": {\n        \"phase\": \"mcpReady\",\n        \"elapsedMs\": 352\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 362\n      },\n      \"firstToolCall\": {\n        \"phase\": \"firstToolCall\",\n        \"elapsedMs\": 373\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 3,\n    \"currentItem\": null,\n    \"startupWarning\": \"WebSocket retry/fallback observed. Consider setup --transport http after reviewing the transport trade-offs; restart the runtime. Defaults were not changed.\",\n    \"completedItems\": [\n      {\n        \"type\": \"commandExecution\",\n        \"summary\": \"running tests/checks\",\n        \"lifecycle\": \"completed\",\n        \"exitCode\": 0\n      },\n      {\n        \"type\": \"plan\",\n        \"summary\": \"plan updated\",\n        \"lifecycle\": \"completed\",\n        \"steps\": 1\n      }\n    ],\n    \"pendingQuestion\": {\n      \"id\": \"question-bc29df47-26fc-46f5-be37-622046e22193\",\n      \"callId\": \"fixture-call\",\n      \"kind\": \"question\",\n      \"text\": \"Which fixture approach?\",\n      \"options\": [\n        \"Small\",\n        \"Broad\"\n      ],\n      \"askedAt\": \"2026-10-23T11:52:52.308Z\",\n      \"expiresAt\": 1792757272316\n    },\n    \"activityCursors\": {\n      \"ba1e0c966890af0f797b15ec495efdfccc23e027423f6cf98c98e2d3f5265636\": 3\n    },\n    \"orphaned\": false,\n    \"leaseRemainingSec\": 1799,\n    \"progressPreview\": [\n      \"running tests/checks completed (exit 0).\",\n      \"Plan updated.\",\n      \"Server request {\\\"method\\\":\\\"item/tool/call\\\",\\\"requestId\\\":\\\"sha256:a57ea13026e006f3\\\",\\\"kind\\\":\\\"parent-question\\\",\\\"decision\\\":\\\"pending\\\",\\\"reason\\\":\\\"ask-parent\\\"}\",\n      \"Parent question pending: question-bc29df47-26fc-46f5-be37-622046e22193.\"\n    ],\n    \"elapsed\": \"1s\",\n    \"duration\": null\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80b8x-rslb9y\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Ask the fake parent a question.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:03.729Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5\",\n    \"leaseRenewedAt\": 1792775103903,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776903903,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.result.json\",\n    \"agentName\": \"Backus\",\n    \"status\": \"running\",\n    \"direct\": true,\n    \"phase\": \"needs_answer\",\n    \"pid\": 4486,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Ask the fake parent a question.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"3179f70952180a4873c0f6336238bd151f699b01b95b631fc84ce6fd5eea5da0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:02.722Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80b8x-rslb9y\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:04.675Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775103893,\n    \"ownerDetachedAt\": 1792775104675,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 4417,\n    \"ownerWaitToken\": \"8bfe0212-27d3-485b-a7ae-9b0597a388e4\",\n    \"startedAt\": \"2026-10-23T17:05:03.927Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 182\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 291,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 321,\n        \"durationMs\": 20\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 332,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 351\n      },\n      \"firstToolCall\": {\n        \"phase\": \"firstToolCall\",\n        \"elapsedMs\": 361\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"currentItem\": {\n      \"type\": \"dynamicToolCall\",\n      \"summary\": \"tool ask_parent\",\n      \"lifecycle\": \"started\"\n    },\n    \"pendingQuestion\": {\n      \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n      \"callId\": \"fixture-call-1\",\n      \"kind\": \"question\",\n      \"text\": \"Which fixture fallback?\",\n      \"options\": [\n        \"Small\",\n        \"Broad\"\n      ],\n      \"askedAt\": \"2026-10-23T17:05:04.507Z\",\n      \"expiresAt\": 1792776004515\n    },\n    \"activityCursors\": {\n      \"e40ef6b7a3676702f916e2c09bd0f7d702df2787d1708242e5672df2a1acd0e5\": 1\n    },\n    \"orphaned\": false,\n    \"leaseRemainingSec\": 1799,\n    \"progressPreview\": [\n      \"Activity recorded.\",\n      \"tool ask_parent\",\n      \"Server request {\\\"method\\\":\\\"item/tool/call\\\",\\\"requestId\\\":\\\"sha256:a57ea13026e006f3\\\",\\\"kind\\\":\\\"parent-question\\\",\\\"decision\\\":\\\"pending\\\",\\\"reason\\\":\\\"ask-parent\\\"}\",\n      \"Parent question pending: question-750fb86a-203d-4319-a423-accc1aadb44c.\"\n    ],\n    \"elapsed\": \"1s\",\n    \"duration\": null\n  }\n}\n"
           }
         ],
         "exit": {
@@ -1284,7 +1507,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwutd3-ogc0v6",
+            "task-mvl80b8x-rslb9y",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -1297,7 +1520,150 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwutd3-ogc0v6\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Ask the fake parent a question.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:51.495Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwutd3-ogc0v6-b4c822f6-0a28-44f7-a686-52802ed5c763\",\n    \"leaseRenewedAt\": 1792756371666,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758171666,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.result.json\",\n    \"agentName\": \"Hamming\",\n    \"status\": \"running\",\n    \"direct\": true,\n    \"phase\": \"needs_answer\",\n    \"pid\": 80493,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Ask the fake parent a question.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"7b5e781da554b49daf57d5c4716063c3db567193125f7dc9e7e9074a05506dd5\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:50.965Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwutd3-ogc0v6\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:52.393Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756371655,\n    \"ownerDetachedAt\": 1792756372393,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 80425,\n    \"ownerWaitToken\": \"706f698b-886d-4171-ab93-d9c73ea98b9b\",\n    \"startedAt\": \"2026-10-23T11:52:51.688Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 273,\n        \"durationMs\": 188\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 283,\n        \"durationMs\": 44\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 292,\n        \"durationMs\": 10\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 322,\n        \"durationMs\": 20\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 333,\n        \"durationMs\": 1\n      },\n      \"mcpReady\": {\n        \"phase\": \"mcpReady\",\n        \"elapsedMs\": 352\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 362\n      },\n      \"firstToolCall\": {\n        \"phase\": \"firstToolCall\",\n        \"elapsedMs\": 373\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 3,\n    \"currentItem\": null,\n    \"startupWarning\": \"WebSocket retry/fallback observed. Consider setup --transport http after reviewing the transport trade-offs; restart the runtime. Defaults were not changed.\",\n    \"completedItems\": [\n      {\n        \"type\": \"commandExecution\",\n        \"summary\": \"running tests/checks\",\n        \"lifecycle\": \"completed\",\n        \"exitCode\": 0\n      },\n      {\n        \"type\": \"plan\",\n        \"summary\": \"plan updated\",\n        \"lifecycle\": \"completed\",\n        \"steps\": 1\n      }\n    ],\n    \"pendingQuestion\": {\n      \"id\": \"question-bc29df47-26fc-46f5-be37-622046e22193\",\n      \"callId\": \"fixture-call\",\n      \"kind\": \"question\",\n      \"text\": \"Which fixture approach?\",\n      \"options\": [\n        \"Small\",\n        \"Broad\"\n      ],\n      \"askedAt\": \"2026-10-23T11:52:52.308Z\",\n      \"expiresAt\": 1792757272316\n    },\n    \"activityCursors\": {\n      \"ba1e0c966890af0f797b15ec495efdfccc23e027423f6cf98c98e2d3f5265636\": 3\n    },\n    \"orphaned\": false,\n    \"leaseRemainingSec\": 1799,\n    \"progressPreview\": [\n      \"running tests/checks completed (exit 0).\",\n      \"Plan updated.\",\n      \"Server request {\\\"method\\\":\\\"item/tool/call\\\",\\\"requestId\\\":\\\"sha256:a57ea13026e006f3\\\",\\\"kind\\\":\\\"parent-question\\\",\\\"decision\\\":\\\"pending\\\",\\\"reason\\\":\\\"ask-parent\\\"}\",\n      \"Parent question pending: question-bc29df47-26fc-46f5-be37-622046e22193.\"\n    ],\n    \"elapsed\": \"1s\",\n    \"duration\": null\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80b8x-rslb9y\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Ask the fake parent a question.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:03.729Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5\",\n    \"leaseRenewedAt\": 1792775103903,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776903903,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.result.json\",\n    \"agentName\": \"Backus\",\n    \"status\": \"running\",\n    \"direct\": true,\n    \"phase\": \"needs_answer\",\n    \"pid\": 4486,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Ask the fake parent a question.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"3179f70952180a4873c0f6336238bd151f699b01b95b631fc84ce6fd5eea5da0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:02.722Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80b8x-rslb9y\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:04.675Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775103893,\n    \"ownerDetachedAt\": 1792775104675,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 4417,\n    \"ownerWaitToken\": \"8bfe0212-27d3-485b-a7ae-9b0597a388e4\",\n    \"startedAt\": \"2026-10-23T17:05:03.927Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 182\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 291,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 321,\n        \"durationMs\": 20\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 332,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 351\n      },\n      \"firstToolCall\": {\n        \"phase\": \"firstToolCall\",\n        \"elapsedMs\": 361\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"currentItem\": {\n      \"type\": \"dynamicToolCall\",\n      \"summary\": \"tool ask_parent\",\n      \"lifecycle\": \"started\"\n    },\n    \"pendingQuestion\": {\n      \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n      \"callId\": \"fixture-call-1\",\n      \"kind\": \"question\",\n      \"text\": \"Which fixture fallback?\",\n      \"options\": [\n        \"Small\",\n        \"Broad\"\n      ],\n      \"askedAt\": \"2026-10-23T17:05:04.507Z\",\n      \"expiresAt\": 1792776004515\n    },\n    \"activityCursors\": {\n      \"e40ef6b7a3676702f916e2c09bd0f7d702df2787d1708242e5672df2a1acd0e5\": 1\n    },\n    \"orphaned\": false,\n    \"leaseRemainingSec\": 1799,\n    \"progressPreview\": [\n      \"Activity recorded.\",\n      \"tool ask_parent\",\n      \"Server request {\\\"method\\\":\\\"item/tool/call\\\",\\\"requestId\\\":\\\"sha256:a57ea13026e006f3\\\",\\\"kind\\\":\\\"parent-question\\\",\\\"decision\\\":\\\"pending\\\",\\\"reason\\\":\\\"ask-parent\\\"}\",\n      \"Parent question pending: question-750fb86a-203d-4319-a423-accc1aadb44c.\"\n    ],\n    \"elapsed\": \"1s\",\n    \"duration\": null\n  }\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "task-mvl80b8x-rslb9y",
+            "--json",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80b8x-rslb9y\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Ask the fake parent a question.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:03.729Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5\",\n    \"leaseRenewedAt\": 1792775105541,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776905541,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.result.json\",\n    \"agentName\": \"Backus\",\n    \"status\": \"running\",\n    \"direct\": true,\n    \"phase\": \"needs_answer\",\n    \"pid\": 4486,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Ask the fake parent a question.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"3179f70952180a4873c0f6336238bd151f699b01b95b631fc84ce6fd5eea5da0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:02.722Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80b8x-rslb9y\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:05.723Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775105530,\n    \"ownerDetachedAt\": 1792775105723,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 5297,\n    \"ownerWaitToken\": \"e1be6de9-e2bc-4f92-bd38-cae13534e87d\",\n    \"startedAt\": \"2026-10-23T17:05:03.927Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 182\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 291,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 321,\n        \"durationMs\": 20\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 332,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 351\n      },\n      \"firstToolCall\": {\n        \"phase\": \"firstToolCall\",\n        \"elapsedMs\": 361\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 3,\n    \"currentItem\": {\n      \"type\": \"dynamicToolCall\",\n      \"summary\": \"tool ask_parent\",\n      \"lifecycle\": \"started\"\n    },\n    \"pendingQuestion\": {\n      \"id\": \"question-590345e9-a894-4edf-a577-a47041a5117d\",\n      \"callId\": \"fixture-call-2\",\n      \"kind\": \"question\",\n      \"text\": \"Which fixture approach?\",\n      \"options\": [\n        \"Small\",\n        \"Broad\"\n      ],\n      \"askedAt\": \"2026-10-23T17:05:05.608Z\",\n      \"expiresAt\": 1792776005616\n    },\n    \"activityCursors\": {\n      \"e40ef6b7a3676702f916e2c09bd0f7d702df2787d1708242e5672df2a1acd0e5\": 3\n    },\n    \"questionHistory\": [\n      {\n        \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n        \"callId\": \"fixture-call-1\",\n        \"kind\": \"question\",\n        \"text\": \"Which fixture fallback?\",\n        \"options\": [\n          \"Small\",\n          \"Broad\"\n        ],\n        \"askedAt\": \"2026-10-23T17:05:04.507Z\",\n        \"answeredAt\": \"2026-10-23T17:05:05.571Z\",\n        \"answer\": \"Small\",\n        \"resolution\": \"answered\"\n      }\n    ],\n    \"lastQuestion\": {\n      \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n      \"resolution\": \"answered\"\n    },\n    \"completedItems\": [\n      {\n        \"type\": \"dynamicToolCall\",\n        \"summary\": \"tool ask_parent\",\n        \"lifecycle\": \"completed\"\n      }\n    ],\n    \"orphaned\": false,\n    \"leaseRemainingSec\": 1800,\n    \"progressPreview\": [\n      \"Activity recorded.\",\n      \"tool ask_parent\",\n      \"Server request {\\\"method\\\":\\\"item/tool/call\\\",\\\"requestId\\\":\\\"sha256:1007c98f8766c187\\\",\\\"kind\\\":\\\"parent-question\\\",\\\"decision\\\":\\\"pending\\\",\\\"reason\\\":\\\"ask-parent\\\"}\",\n      \"Parent question pending: question-590345e9-a894-4edf-a577-a47041a5117d.\"\n    ],\n    \"elapsed\": \"2s\",\n    \"duration\": null\n  }\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "wait",
+            "task-mvl80b8x-rslb9y",
+            "--owner",
+            "task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5",
+            "--timeout-sec",
+            "3600",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\"status\":\"needs_answer\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"waiting for parent · 0m2s\",\"question\":{\"id\":\"question-590345e9-a894-4edf-a577-a47041a5117d\",\"kind\":\"question\",\"text\":\"Which fixture approach?\",\"options\":[\"Small\",\"Broad\"],\"expiresInSec\":900},\"next\":\"duet answer Backus --question 'question-590345e9-a894-4edf-a577-a47041a5117d'\",\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "task-mvl80b8x-rslb9y",
+            "--json",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80b8x-rslb9y\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Ask the fake parent a question.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:03.729Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5\",\n    \"leaseRenewedAt\": 1792775106033,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776906033,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.result.json\",\n    \"agentName\": \"Backus\",\n    \"status\": \"running\",\n    \"direct\": true,\n    \"phase\": \"needs_answer\",\n    \"pid\": 4486,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Ask the fake parent a question.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"3179f70952180a4873c0f6336238bd151f699b01b95b631fc84ce6fd5eea5da0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:02.722Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80b8x-rslb9y\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:06.093Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775106023,\n    \"ownerDetachedAt\": 1792775106093,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 5608,\n    \"ownerWaitToken\": \"3d0d685f-a3de-4c40-b2be-3535fbb45e09\",\n    \"startedAt\": \"2026-10-23T17:05:03.927Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 182\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 291,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 321,\n        \"durationMs\": 20\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 332,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 351\n      },\n      \"firstToolCall\": {\n        \"phase\": \"firstToolCall\",\n        \"elapsedMs\": 361\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 3,\n    \"currentItem\": {\n      \"type\": \"dynamicToolCall\",\n      \"summary\": \"tool ask_parent\",\n      \"lifecycle\": \"started\"\n    },\n    \"pendingQuestion\": {\n      \"id\": \"question-590345e9-a894-4edf-a577-a47041a5117d\",\n      \"callId\": \"fixture-call-2\",\n      \"kind\": \"question\",\n      \"text\": \"Which fixture approach?\",\n      \"options\": [\n        \"Small\",\n        \"Broad\"\n      ],\n      \"askedAt\": \"2026-10-23T17:05:05.608Z\",\n      \"expiresAt\": 1792776005616\n    },\n    \"activityCursors\": {\n      \"e40ef6b7a3676702f916e2c09bd0f7d702df2787d1708242e5672df2a1acd0e5\": 3\n    },\n    \"questionHistory\": [\n      {\n        \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n        \"callId\": \"fixture-call-1\",\n        \"kind\": \"question\",\n        \"text\": \"Which fixture fallback?\",\n        \"options\": [\n          \"Small\",\n          \"Broad\"\n        ],\n        \"askedAt\": \"2026-10-23T17:05:04.507Z\",\n        \"answeredAt\": \"2026-10-23T17:05:05.571Z\",\n        \"answer\": \"Small\",\n        \"resolution\": \"answered\"\n      }\n    ],\n    \"lastQuestion\": {\n      \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n      \"resolution\": \"answered\"\n    },\n    \"completedItems\": [\n      {\n        \"type\": \"dynamicToolCall\",\n        \"summary\": \"tool ask_parent\",\n        \"lifecycle\": \"completed\"\n      }\n    ],\n    \"orphaned\": false,\n    \"leaseRemainingSec\": 1800,\n    \"progressPreview\": [\n      \"Activity recorded.\",\n      \"tool ask_parent\",\n      \"Server request {\\\"method\\\":\\\"item/tool/call\\\",\\\"requestId\\\":\\\"sha256:1007c98f8766c187\\\",\\\"kind\\\":\\\"parent-question\\\",\\\"decision\\\":\\\"pending\\\",\\\"reason\\\":\\\"ask-parent\\\"}\",\n      \"Parent question pending: question-590345e9-a894-4edf-a577-a47041a5117d.\"\n    ],\n    \"elapsed\": \"2s\",\n    \"duration\": null\n  }\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "task-mvl80b8x-rslb9y",
+            "--json",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80b8x-rslb9y\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Ask the fake parent a question.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:03.729Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5\",\n    \"leaseRenewedAt\": 1792775106033,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776906033,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.result.json\",\n    \"agentName\": \"Backus\",\n    \"status\": \"running\",\n    \"direct\": true,\n    \"phase\": \"needs_answer\",\n    \"pid\": 4486,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Ask the fake parent a question.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"3179f70952180a4873c0f6336238bd151f699b01b95b631fc84ce6fd5eea5da0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:02.722Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80b8x-rslb9y\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:06.093Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775106023,\n    \"ownerDetachedAt\": 1792775106093,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 5608,\n    \"ownerWaitToken\": \"3d0d685f-a3de-4c40-b2be-3535fbb45e09\",\n    \"startedAt\": \"2026-10-23T17:05:03.927Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 182\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 291,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 321,\n        \"durationMs\": 20\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 332,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 351\n      },\n      \"firstToolCall\": {\n        \"phase\": \"firstToolCall\",\n        \"elapsedMs\": 361\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 3,\n    \"currentItem\": {\n      \"type\": \"dynamicToolCall\",\n      \"summary\": \"tool ask_parent\",\n      \"lifecycle\": \"started\"\n    },\n    \"pendingQuestion\": {\n      \"id\": \"question-590345e9-a894-4edf-a577-a47041a5117d\",\n      \"callId\": \"fixture-call-2\",\n      \"kind\": \"question\",\n      \"text\": \"Which fixture approach?\",\n      \"options\": [\n        \"Small\",\n        \"Broad\"\n      ],\n      \"askedAt\": \"2026-10-23T17:05:05.608Z\",\n      \"expiresAt\": 1792776005616\n    },\n    \"activityCursors\": {\n      \"e40ef6b7a3676702f916e2c09bd0f7d702df2787d1708242e5672df2a1acd0e5\": 3\n    },\n    \"questionHistory\": [\n      {\n        \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n        \"callId\": \"fixture-call-1\",\n        \"kind\": \"question\",\n        \"text\": \"Which fixture fallback?\",\n        \"options\": [\n          \"Small\",\n          \"Broad\"\n        ],\n        \"askedAt\": \"2026-10-23T17:05:04.507Z\",\n        \"answeredAt\": \"2026-10-23T17:05:05.571Z\",\n        \"answer\": \"Small\",\n        \"resolution\": \"answered\"\n      }\n    ],\n    \"lastQuestion\": {\n      \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n      \"resolution\": \"answered\"\n    },\n    \"completedItems\": [\n      {\n        \"type\": \"dynamicToolCall\",\n        \"summary\": \"tool ask_parent\",\n        \"lifecycle\": \"completed\"\n      }\n    ],\n    \"orphaned\": false,\n    \"leaseRemainingSec\": 1800,\n    \"progressPreview\": [\n      \"Activity recorded.\",\n      \"tool ask_parent\",\n      \"Server request {\\\"method\\\":\\\"item/tool/call\\\",\\\"requestId\\\":\\\"sha256:1007c98f8766c187\\\",\\\"kind\\\":\\\"parent-question\\\",\\\"decision\\\":\\\"pending\\\",\\\"reason\\\":\\\"ask-parent\\\"}\",\n      \"Parent question pending: question-590345e9-a894-4edf-a577-a47041a5117d.\"\n    ],\n    \"elapsed\": \"2s\",\n    \"duration\": null\n  }\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "task-mvl80b8x-rslb9y",
+            "--json",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80b8x-rslb9y\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Ask the fake parent a question.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:03.729Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5\",\n    \"leaseRenewedAt\": 1792775106033,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776906033,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.result.json\",\n    \"agentName\": \"Backus\",\n    \"status\": \"running\",\n    \"direct\": true,\n    \"phase\": \"needs_answer\",\n    \"pid\": 4486,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Ask the fake parent a question.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"3179f70952180a4873c0f6336238bd151f699b01b95b631fc84ce6fd5eea5da0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:02.722Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80b8x-rslb9y\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:06.093Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775106023,\n    \"ownerDetachedAt\": 1792775106093,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 5608,\n    \"ownerWaitToken\": \"3d0d685f-a3de-4c40-b2be-3535fbb45e09\",\n    \"startedAt\": \"2026-10-23T17:05:03.927Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 182\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 291,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 321,\n        \"durationMs\": 20\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 332,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 351\n      },\n      \"firstToolCall\": {\n        \"phase\": \"firstToolCall\",\n        \"elapsedMs\": 361\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 3,\n    \"currentItem\": {\n      \"type\": \"dynamicToolCall\",\n      \"summary\": \"tool ask_parent\",\n      \"lifecycle\": \"started\"\n    },\n    \"pendingQuestion\": {\n      \"id\": \"question-590345e9-a894-4edf-a577-a47041a5117d\",\n      \"callId\": \"fixture-call-2\",\n      \"kind\": \"question\",\n      \"text\": \"Which fixture approach?\",\n      \"options\": [\n        \"Small\",\n        \"Broad\"\n      ],\n      \"askedAt\": \"2026-10-23T17:05:05.608Z\",\n      \"expiresAt\": 1792776005616\n    },\n    \"activityCursors\": {\n      \"e40ef6b7a3676702f916e2c09bd0f7d702df2787d1708242e5672df2a1acd0e5\": 3\n    },\n    \"questionHistory\": [\n      {\n        \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n        \"callId\": \"fixture-call-1\",\n        \"kind\": \"question\",\n        \"text\": \"Which fixture fallback?\",\n        \"options\": [\n          \"Small\",\n          \"Broad\"\n        ],\n        \"askedAt\": \"2026-10-23T17:05:04.507Z\",\n        \"answeredAt\": \"2026-10-23T17:05:05.571Z\",\n        \"answer\": \"Small\",\n        \"resolution\": \"answered\"\n      }\n    ],\n    \"lastQuestion\": {\n      \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n      \"resolution\": \"answered\"\n    },\n    \"completedItems\": [\n      {\n        \"type\": \"dynamicToolCall\",\n        \"summary\": \"tool ask_parent\",\n        \"lifecycle\": \"completed\"\n      }\n    ],\n    \"orphaned\": false,\n    \"leaseRemainingSec\": 1800,\n    \"progressPreview\": [\n      \"Activity recorded.\",\n      \"tool ask_parent\",\n      \"Server request {\\\"method\\\":\\\"item/tool/call\\\",\\\"requestId\\\":\\\"sha256:1007c98f8766c187\\\",\\\"kind\\\":\\\"parent-question\\\",\\\"decision\\\":\\\"pending\\\",\\\"reason\\\":\\\"ask-parent\\\"}\",\n      \"Parent question pending: question-590345e9-a894-4edf-a577-a47041a5117d.\"\n    ],\n    \"elapsed\": \"3s\",\n    \"duration\": null\n  }\n}\n"
           }
         ],
         "exit": {
@@ -1312,11 +1678,11 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "answer",
-            "task-mvkwutd3-ogc0v6",
+            "task-mvl80b8x-rslb9y",
             "--question",
-            "question-bc29df47-26fc-46f5-be37-622046e22193",
+            "question-590345e9-a894-4edf-a577-a47041a5117d",
             "--owner",
-            "task-mvkwutd3-ogc0v6-b4c822f6-0a28-44f7-a686-52802ed5c763",
+            "task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5",
             "--timeout-sec",
             "3600",
             "--cwd",
@@ -1330,11 +1696,15 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "[4] Codex: Completed fixture request handling.\n"
+            "text": "[4] Tool dynamic/ask_parent: completed (1185ms)\n"
           },
           {
             "stream": "stdout",
-            "text": "{\"status\":\"completed\",\"worker\":\"Hamming\",\"jobId\":\"task-mvkwutd3-ogc0v6\",\"summary\":\"Completed fixture request handling.\",\"checks\":{\"ran\":[\"npm test TOKEN=SHOWN_FIXTURE_ARGUMENT: exit 0, completed\"],\"claimed\":[],\"omitted\":0},\"keyFindings\":[\"Completed fixture request handling.\"],\"next\":null,\"details\":\"duet result Hamming --details\"}\n"
+            "text": "[5] Codex: Completed fixture request handling.\n"
+          },
+          {
+            "stream": "stdout",
+            "text": "{\"status\":\"completed\",\"worker\":\"Backus\",\"jobId\":\"task-mvl80b8x-rslb9y\",\"summary\":\"Completed fixture request handling.\",\"keyFindings\":[\"Completed fixture request handling.\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":null,\"details\":\"duet result 'task-mvl80b8x-rslb9y' --details\"}\n"
           }
         ],
         "exit": {
@@ -1349,7 +1719,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwutd3-ogc0v6",
+            "task-mvl80b8x-rslb9y",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -1362,7 +1732,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwutd3-ogc0v6\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Completed fixture request handling.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:51.495Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwutd3-ogc0v6-b4c822f6-0a28-44f7-a686-52802ed5c763\",\n    \"leaseRenewedAt\": 1792756373206,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758173206,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.result.json\",\n    \"agentName\": \"Hamming\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Ask the fake parent a question.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"7b5e781da554b49daf57d5c4716063c3db567193125f7dc9e7e9074a05506dd5\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:50.965Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwutd3-ogc0v6\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:53.451Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792756373194,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 81249,\n    \"ownerWaitToken\": \"d5f43ed7-8949-49c9-9561-4dfa18427843\",\n    \"startedAt\": \"2026-10-23T11:52:51.688Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 273,\n        \"durationMs\": 188\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 283,\n        \"durationMs\": 44\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 292,\n        \"durationMs\": 10\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 322,\n        \"durationMs\": 20\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 333,\n        \"durationMs\": 1\n      },\n      \"mcpReady\": {\n        \"phase\": \"mcpReady\",\n        \"elapsedMs\": 352\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 362\n      },\n      \"firstToolCall\": {\n        \"phase\": \"firstToolCall\",\n        \"elapsedMs\": 373\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 4,\n    \"currentItem\": null,\n    \"startupWarning\": \"WebSocket retry/fallback observed. Consider setup --transport http after reviewing the transport trade-offs; restart the runtime. Defaults were not changed.\",\n    \"completedItems\": [\n      {\n        \"type\": \"commandExecution\",\n        \"summary\": \"running tests/checks\",\n        \"lifecycle\": \"completed\",\n        \"exitCode\": 0\n      },\n      {\n        \"type\": \"plan\",\n        \"summary\": \"plan updated\",\n        \"lifecycle\": \"completed\",\n        \"steps\": 1\n      }\n    ],\n    \"pendingQuestion\": null,\n    \"activityCursors\": {\n      \"ba1e0c966890af0f797b15ec495efdfccc23e027423f6cf98c98e2d3f5265636\": 4\n    },\n    \"questionHistory\": [\n      {\n        \"id\": \"question-bc29df47-26fc-46f5-be37-622046e22193\",\n        \"callId\": \"fixture-call\",\n        \"kind\": \"question\",\n        \"text\": \"Which fixture approach?\",\n        \"options\": [\n          \"Small\",\n          \"Broad\"\n        ],\n        \"askedAt\": \"2026-10-23T11:52:52.308Z\",\n        \"answeredAt\": \"2026-10-23T11:52:53.253Z\",\n        \"answer\": \"Small\",\n        \"resolution\": \"answered\"\n      }\n    ],\n    \"lastQuestion\": {\n      \"id\": \"question-bc29df47-26fc-46f5-be37-622046e22193\",\n      \"resolution\": \"answered\"\n    },\n    \"completedAt\": \"2026-10-23T11:52:53.366Z\",\n    \"progressPreview\": [],\n    \"elapsed\": \"2s\",\n    \"duration\": \"2s\"\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80b8x-rslb9y\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Completed fixture request handling.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:03.729Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5\",\n    \"leaseRenewedAt\": 1792775106704,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776906704,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.result.json\",\n    \"agentName\": \"Backus\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Ask the fake parent a question.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"3179f70952180a4873c0f6336238bd151f699b01b95b631fc84ce6fd5eea5da0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:02.722Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80b8x-rslb9y\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:06.948Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792775106694,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 6005,\n    \"ownerWaitToken\": \"975f5a78-a365-4f36-8a0e-69d825531b25\",\n    \"startedAt\": \"2026-10-23T17:05:03.927Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 182\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 291,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 321,\n        \"durationMs\": 20\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 332,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 351\n      },\n      \"firstToolCall\": {\n        \"phase\": \"firstToolCall\",\n        \"elapsedMs\": 361\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 5,\n    \"currentItem\": null,\n    \"pendingQuestion\": null,\n    \"activityCursors\": {\n      \"e40ef6b7a3676702f916e2c09bd0f7d702df2787d1708242e5672df2a1acd0e5\": 5\n    },\n    \"questionHistory\": [\n      {\n        \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n        \"callId\": \"fixture-call-1\",\n        \"kind\": \"question\",\n        \"text\": \"Which fixture fallback?\",\n        \"options\": [\n          \"Small\",\n          \"Broad\"\n        ],\n        \"askedAt\": \"2026-10-23T17:05:04.507Z\",\n        \"answeredAt\": \"2026-10-23T17:05:05.571Z\",\n        \"answer\": \"Small\",\n        \"resolution\": \"answered\"\n      },\n      {\n        \"id\": \"question-590345e9-a894-4edf-a577-a47041a5117d\",\n        \"callId\": \"fixture-call-2\",\n        \"kind\": \"question\",\n        \"text\": \"Which fixture approach?\",\n        \"options\": [\n          \"Small\",\n          \"Broad\"\n        ],\n        \"askedAt\": \"2026-10-23T17:05:05.608Z\",\n        \"answeredAt\": \"2026-10-23T17:05:06.774Z\",\n        \"answer\": \"Small\",\n        \"resolution\": \"answered\"\n      }\n    ],\n    \"lastQuestion\": {\n      \"id\": \"question-590345e9-a894-4edf-a577-a47041a5117d\",\n      \"resolution\": \"answered\"\n    },\n    \"completedItems\": [\n      {\n        \"type\": \"dynamicToolCall\",\n        \"summary\": \"tool ask_parent\",\n        \"lifecycle\": \"completed\"\n      },\n      {\n        \"type\": \"dynamicToolCall\",\n        \"summary\": \"tool ask_parent\",\n        \"lifecycle\": \"completed\"\n      }\n    ],\n    \"completedAt\": \"2026-10-23T17:05:06.910Z\",\n    \"progressPreview\": [],\n    \"elapsed\": \"3s\",\n    \"duration\": \"3s\"\n  }\n}\n"
           }
         ],
         "exit": {
@@ -1377,7 +1747,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwutd3-ogc0v6",
+            "task-mvl80b8x-rslb9y",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -1390,7 +1760,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwutd3-ogc0v6\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Completed fixture request handling.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:51.495Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwutd3-ogc0v6-b4c822f6-0a28-44f7-a686-52802ed5c763\",\n    \"leaseRenewedAt\": 1792756373206,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758173206,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.result.json\",\n    \"agentName\": \"Hamming\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d1b6b86593e6d863/jobs/task-mvkwutd3-ogc0v6.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Ask the fake parent a question.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"7b5e781da554b49daf57d5c4716063c3db567193125f7dc9e7e9074a05506dd5\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:50.965Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwutd3-ogc0v6\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:53.495Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756373194,\n    \"ownerDetachedAt\": 1792756373495,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 81249,\n    \"ownerWaitToken\": \"d5f43ed7-8949-49c9-9561-4dfa18427843\",\n    \"startedAt\": \"2026-10-23T11:52:51.688Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 273,\n        \"durationMs\": 188\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 283,\n        \"durationMs\": 44\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 292,\n        \"durationMs\": 10\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 322,\n        \"durationMs\": 20\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 333,\n        \"durationMs\": 1\n      },\n      \"mcpReady\": {\n        \"phase\": \"mcpReady\",\n        \"elapsedMs\": 352\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 362\n      },\n      \"firstToolCall\": {\n        \"phase\": \"firstToolCall\",\n        \"elapsedMs\": 373\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 4,\n    \"currentItem\": null,\n    \"startupWarning\": \"WebSocket retry/fallback observed. Consider setup --transport http after reviewing the transport trade-offs; restart the runtime. Defaults were not changed.\",\n    \"completedItems\": [\n      {\n        \"type\": \"commandExecution\",\n        \"summary\": \"running tests/checks\",\n        \"lifecycle\": \"completed\",\n        \"exitCode\": 0\n      },\n      {\n        \"type\": \"plan\",\n        \"summary\": \"plan updated\",\n        \"lifecycle\": \"completed\",\n        \"steps\": 1\n      }\n    ],\n    \"pendingQuestion\": null,\n    \"activityCursors\": {\n      \"ba1e0c966890af0f797b15ec495efdfccc23e027423f6cf98c98e2d3f5265636\": 4\n    },\n    \"questionHistory\": [\n      {\n        \"id\": \"question-bc29df47-26fc-46f5-be37-622046e22193\",\n        \"callId\": \"fixture-call\",\n        \"kind\": \"question\",\n        \"text\": \"Which fixture approach?\",\n        \"options\": [\n          \"Small\",\n          \"Broad\"\n        ],\n        \"askedAt\": \"2026-10-23T11:52:52.308Z\",\n        \"answeredAt\": \"2026-10-23T11:52:53.253Z\",\n        \"answer\": \"Small\",\n        \"resolution\": \"answered\"\n      }\n    ],\n    \"lastQuestion\": {\n      \"id\": \"question-bc29df47-26fc-46f5-be37-622046e22193\",\n      \"resolution\": \"answered\"\n    },\n    \"completedAt\": \"2026-10-23T11:52:53.366Z\",\n    \"progressPreview\": [],\n    \"elapsed\": \"2s\",\n    \"duration\": \"2s\"\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80b8x-rslb9y\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Completed fixture request handling.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:03.729Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5\",\n    \"leaseRenewedAt\": 1792775106704,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776906704,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.result.json\",\n    \"agentName\": \"Backus\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-c00c213f06102026/jobs/task-mvl80b8x-rslb9y.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Ask the fake parent a question.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"3179f70952180a4873c0f6336238bd151f699b01b95b631fc84ce6fd5eea5da0\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:02.722Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80b8x-rslb9y\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:07.004Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775106694,\n    \"ownerDetachedAt\": 1792775107004,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 6005,\n    \"ownerWaitToken\": \"975f5a78-a365-4f36-8a0e-69d825531b25\",\n    \"startedAt\": \"2026-10-23T17:05:03.927Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 182\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 291,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 321,\n        \"durationMs\": 20\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 332,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 351\n      },\n      \"firstToolCall\": {\n        \"phase\": \"firstToolCall\",\n        \"elapsedMs\": 361\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 5,\n    \"currentItem\": null,\n    \"pendingQuestion\": null,\n    \"activityCursors\": {\n      \"e40ef6b7a3676702f916e2c09bd0f7d702df2787d1708242e5672df2a1acd0e5\": 5\n    },\n    \"questionHistory\": [\n      {\n        \"id\": \"question-750fb86a-203d-4319-a423-accc1aadb44c\",\n        \"callId\": \"fixture-call-1\",\n        \"kind\": \"question\",\n        \"text\": \"Which fixture fallback?\",\n        \"options\": [\n          \"Small\",\n          \"Broad\"\n        ],\n        \"askedAt\": \"2026-10-23T17:05:04.507Z\",\n        \"answeredAt\": \"2026-10-23T17:05:05.571Z\",\n        \"answer\": \"Small\",\n        \"resolution\": \"answered\"\n      },\n      {\n        \"id\": \"question-590345e9-a894-4edf-a577-a47041a5117d\",\n        \"callId\": \"fixture-call-2\",\n        \"kind\": \"question\",\n        \"text\": \"Which fixture approach?\",\n        \"options\": [\n          \"Small\",\n          \"Broad\"\n        ],\n        \"askedAt\": \"2026-10-23T17:05:05.608Z\",\n        \"answeredAt\": \"2026-10-23T17:05:06.774Z\",\n        \"answer\": \"Small\",\n        \"resolution\": \"answered\"\n      }\n    ],\n    \"lastQuestion\": {\n      \"id\": \"question-590345e9-a894-4edf-a577-a47041a5117d\",\n      \"resolution\": \"answered\"\n    },\n    \"completedItems\": [\n      {\n        \"type\": \"dynamicToolCall\",\n        \"summary\": \"tool ask_parent\",\n        \"lifecycle\": \"completed\"\n      },\n      {\n        \"type\": \"dynamicToolCall\",\n        \"summary\": \"tool ask_parent\",\n        \"lifecycle\": \"completed\"\n      }\n    ],\n    \"completedAt\": \"2026-10-23T17:05:06.910Z\",\n    \"progressPreview\": [],\n    \"elapsed\": \"3s\",\n    \"duration\": \"3s\"\n  }\n}\n"
           }
         ],
         "exit": {
@@ -1407,7 +1777,7 @@ export const captures = [
           "content": [
             {
               "type": "text",
-              "text": "Codex worker Hamming started · job task-mvkwutd3-ogc0v6 · gpt-6-astra / xhigh / danger-full-access"
+              "text": "Codex worker Backus started · job task-mvl80b8x-rslb9y · gpt-6-astra / xhigh / danger-full-access"
             }
           ]
         }
@@ -1419,7 +1789,7 @@ export const captures = [
           "content": [
             {
               "type": "text",
-              "text": "▸ npm test TOKEN=SHOWN_FIXTURE_ARGUMENT"
+              "text": "Tool dynamic/ask_parent: inProgress (duration unknown)"
             }
           ]
         }
@@ -1431,7 +1801,7 @@ export const captures = [
           "content": [
             {
               "type": "text",
-              "text": "✓ exit 0 · 0.0s · npm test TOKEN=SHOWN_FIXTURE_ARGUMENT"
+              "text": "? Waiting for Claude: Which fixture fallback?"
             }
           ]
         }
@@ -1443,7 +1813,7 @@ export const captures = [
           "content": [
             {
               "type": "text",
-              "text": "plan 1/1"
+              "text": "Codex worker Backus started · job task-mvl80b8x-rslb9y · gpt-6-astra / xhigh / danger-full-access"
             }
           ]
         }
@@ -1467,7 +1837,19 @@ export const captures = [
           "content": [
             {
               "type": "text",
-              "text": "Codex worker Hamming started · job task-mvkwutd3-ogc0v6 · gpt-6-astra / xhigh / danger-full-access"
+              "text": "Codex worker Backus started · job task-mvl80b8x-rslb9y · gpt-6-astra / xhigh / danger-full-access"
+            }
+          ]
+        }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Tool dynamic/ask_parent: completed (1185ms)"
             }
           ]
         }
@@ -1483,53 +1865,67 @@ export const captures = [
             }
           ]
         }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex usage · 150 input (40 cached) · 30 output tokens"
+            }
+          ]
+        }
       }
     ],
     "store": {
       "native:v2:native-session:native-agent": {
-        "v": 2,
         "type": "codex:codex-native",
         "session": "native-session",
         "agentId": "native-agent",
         "name": "native-worker",
+        "permissionMode": "default",
+        "v": 2,
         "cwd": "/private/tmp/duet14-g-fixture/repo",
         "notices": {
-          "turnId": "turn-2",
-          "count": 2,
-          "last": "Codex: Completed fixture request handling.",
-          "started": true
+          "turnId": "turn-4",
+          "count": 4,
+          "last": "Codex usage · 150 input (40 cached) · 30 output tokens",
+          "started": true,
+          "usage": true
         },
         "intent": {
           "session": "native-session",
           "agentId": "native-agent",
-          "turnId": "turn-2",
+          "turnId": "turn-4",
           "kind": "answer",
-          "nonce": "native-session:native-agent:turn-2"
+          "nonce": "native-session:native-agent:turn-4"
         },
-        "jobId": "task-mvkwutd3-ogc0v6",
-        "ownerId": "task-mvkwutd3-ogc0v6-b4c822f6-0a28-44f7-a686-52802ed5c763",
+        "jobId": "task-mvl80b8x-rslb9y",
+        "ownerId": "task-mvl80b8x-rslb9y-57497f49-ab80-43f1-b0d5-a9b82d90f6f5",
         "threadId": "thr_1",
-        "worker": "Hamming",
+        "worker": "Backus",
         "status": "completed",
-        "questionId": null,
-        "answeredTurn": "turn-2",
+        "answeredTurn": "turn-4",
+        "questionId": "question-590345e9-a894-4edf-a577-a47041a5117d",
         "answer": {
           "status": "completed",
-          "worker": "Hamming",
-          "jobId": "task-mvkwutd3-ogc0v6",
+          "worker": "Backus",
+          "jobId": "task-mvl80b8x-rslb9y",
           "summary": "Completed fixture request handling.",
-          "checks": {
-            "ran": [
-              "npm test TOKEN=SHOWN_FIXTURE_ARGUMENT: exit 0, completed"
-            ],
-            "claimed": [],
-            "omitted": 0
-          },
           "keyFindings": [
             "Completed fixture request handling."
           ],
+          "usage": {
+            "inputTokens": 150,
+            "cachedInputTokens": 40,
+            "outputTokens": 30,
+            "reasoningOutputTokens": 10,
+            "totalTokens": 180
+          },
           "next": "SendMessage to native-worker to continue",
-          "details": "duet result Hamming --details"
+          "details": "duet result 'task-mvl80b8x-rslb9y' --details"
         },
         "finishedAt": 1800000000000
       }
@@ -1551,6 +1947,7 @@ export const captures = [
           },
           "parentModel": "haiku",
           "background": true,
+          "permissionMode": "default",
           "fork": false,
           "name": "native-worker",
           "cwd": "/private/tmp/duet14-g-fixture/repo"
@@ -1578,13 +1975,14 @@ export const captures = [
           "turnId": "turn-1",
           "index": 0,
           "model": "haiku",
+          "effort": "low",
           "messageCount": 1
         },
         "chunks": [
           {
             "kind": "text",
             "index": 1,
-            "text": "{\"status\":\"interrupted\",\"worker\":\"Galileo\",\"jobId\":\"task-mvkwuvkj-76tydb\",\"summary\":\"Stopped from /tasks. The owner wait was stopped, so the worker interrupts the Codex turn and ends the commands it started; duet status Galileo shows the recorded confirmation.\",\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Galileo --details\"}"
+            "text": "{\"status\":\"interrupted\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl80m61-rw8e7s\",\"summary\":\"Stopped from /tasks. The owner wait was stopped, so the worker interrupts the Codex turn and ends the commands it started; duet status Ohm shows the recorded confirmation.\",\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80m61-rw8e7s' --details\"}"
           },
           {
             "kind": "stop",
@@ -1595,7 +1993,7 @@ export const captures = [
         "result": {
           "turnId": "turn-1",
           "index": 0,
-          "answer": "{\"status\":\"interrupted\",\"worker\":\"Galileo\",\"jobId\":\"task-mvkwuvkj-76tydb\",\"summary\":\"Stopped from /tasks. The owner wait was stopped, so the worker interrupts the Codex turn and ends the commands it started; duet status Galileo shows the recorded confirmation.\",\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Galileo --details\"}",
+          "answer": "{\"status\":\"interrupted\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl80m61-rw8e7s\",\"summary\":\"Stopped from /tasks. The owner wait was stopped, so the worker interrupts the Codex turn and ends the commands it started; duet status Ohm shows the recorded confirmation.\",\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80m61-rw8e7s' --details\"}",
           "toolUses": [],
           "stopReason": "end_turn",
           "usage": null
@@ -1663,7 +2061,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\"status\":\"owner_stopped\",\"worker\":\"Galileo\",\"jobId\":\"task-mvkwuvkj-76tydb\",\"summary\":\"\",\"next\":\"duet task --to Galileo\",\"details\":\"duet result Galileo --details\"}\n"
+            "text": "{\"status\":\"owner_stopped\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl80m61-rw8e7s\",\"summary\":\"\",\"next\":\"duet task --to Ohm\",\"details\":\"duet result 'task-mvl80m61-rw8e7s' --details\"}\n"
           }
         ],
         "timeline": [
@@ -1673,7 +2071,7 @@ export const captures = [
           {
             "chunk": {
               "stream": "stdout",
-              "text": "{\"status\":\"owner_stopped\",\"worker\":\"Galileo\",\"jobId\":\"task-mvkwuvkj-76tydb\",\"summary\":\"\",\"next\":\"duet task --to Galileo\",\"details\":\"duet result Galileo --details\"}\n"
+              "text": "{\"status\":\"owner_stopped\",\"worker\":\"Ohm\",\"jobId\":\"task-mvl80m61-rw8e7s\",\"summary\":\"\",\"next\":\"duet task --to Ohm\",\"details\":\"duet result 'task-mvl80m61-rw8e7s' --details\"}\n"
             }
           }
         ],
@@ -1692,6 +2090,8 @@ export const captures = [
             "status",
             "--all",
             "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-1",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
             "--session",
@@ -1703,7 +2103,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-iVuybR/cxc-uViZ0G/broker.sock\"\n  },\n  \"running\": [\n    {\n      \"id\": \"task-mvkwuvkj-76tydb\",\n      \"kind\": \"task\",\n      \"kindLabel\": \"rescue\",\n      \"title\": \"Codex Task\",\n      \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"jobClass\": \"task\",\n      \"summary\": \"Run until stopped.\",\n      \"write\": true,\n      \"createdAt\": \"2026-10-23T11:52:54.355Z\",\n      \"sessionId\": \"native-session\",\n      \"dispatchSessionId\": \"native-session\",\n      \"ownerId\": \"task-mvkwuvkj-76tydb-2e74e5ab-8e54-4a15-a1ca-1db42d38cec6\",\n      \"leaseRenewedAt\": 1792756374527,\n      \"leaseSec\": 1800,\n      \"questionTimeoutSec\": 900,\n      \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n      \"leaseExpiresAt\": 1792758174527,\n      \"sandbox\": \"danger-full-access\",\n      \"approvalPolicy\": \"never+elicitations\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-4bc1d67a83ce3900/jobs/task-mvkwuvkj-76tydb.output.txt\",\n      \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-4bc1d67a83ce3900/jobs/task-mvkwuvkj-76tydb.result.json\",\n      \"agentName\": \"Galileo\",\n      \"status\": \"running\",\n      \"direct\": true,\n      \"phase\": \"starting\",\n      \"pid\": 81740,\n      \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-4bc1d67a83ce3900/jobs/task-mvkwuvkj-76tydb.log\",\n      \"request\": {\n        \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"model\": \"gpt-6-astra\",\n        \"effort\": \"xhigh\",\n        \"serviceTier\": null,\n        \"prompt\": \"Run until stopped.\",\n        \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n        \"claudeMd\": {\n          \"version\": 1,\n          \"source\": \"scan\",\n          \"approximate\": true,\n          \"complete\": false,\n          \"snapshotHash\": \"43c477dd302510b640c94014ff05334a9e392c2cb1a8118186b429e82a21c7d6\",\n          \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n          \"capturedAt\": \"2026-10-23T11:52:53.814Z\",\n          \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n          \"sessionCwdSource\": \"flag\",\n          \"bounded\": false,\n          \"omittedPaths\": [],\n          \"omittedCount\": 0,\n          \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n        },\n        \"write\": true,\n        \"sandbox\": \"danger-full-access\",\n        \"approvedBrowserOrigins\": [],\n        \"approvedComputerApps\": [],\n        \"resumeLast\": false,\n        \"threadId\": null,\n        \"jobId\": \"task-mvkwuvkj-76tydb\",\n        \"report\": true,\n        \"detached\": true\n      },\n      \"updatedAt\": \"2026-10-23T11:52:55.088Z\",\n      \"ownerAttached\": true,\n      \"ownerAttachedAt\": 1792756374515,\n      \"ownerDetachedAt\": null,\n      \"ownerDetachReason\": null,\n      \"ownerWaitPid\": 81661,\n      \"ownerWaitToken\": \"e01c4e79-7f99-4ec9-8c4a-a4f8f6b42692\",\n      \"startedAt\": \"2026-10-23T11:52:54.551Z\",\n      \"preExistingChanges\": [],\n      \"startupTimings\": {\n        \"brokerConnectSpawn\": {\n          \"phase\": \"brokerConnectSpawn\",\n          \"elapsedMs\": 275,\n          \"durationMs\": 187\n        },\n        \"appServerInitialize\": {\n          \"phase\": \"appServerInitialize\",\n          \"elapsedMs\": 285,\n          \"durationMs\": 42\n        },\n        \"brokerHandshake\": {\n          \"phase\": \"brokerHandshake\",\n          \"elapsedMs\": 295,\n          \"durationMs\": 11\n        },\n        \"threadStart\": {\n          \"phase\": \"threadStart\",\n          \"elapsedMs\": 325,\n          \"durationMs\": 21\n        },\n        \"turnStart\": {\n          \"phase\": \"turnStart\",\n          \"elapsedMs\": 335,\n          \"durationMs\": 0\n        }\n      },\n      \"threadId\": \"thr_1\",\n      \"turnId\": \"turn_1\",\n      \"orphaned\": false,\n      \"leaseRemainingSec\": 1800,\n      \"progressPreview\": [\n        \"Thread ready (thr_1).\",\n        \"Startup timing: turnStart {\\\"phase\\\":\\\"turnStart\\\",\\\"elapsedMs\\\":335,\\\"durationMs\\\":0}\",\n        \"Turn handle: turn_1.\",\n        \"Turn started (turn_1).\"\n      ],\n      \"elapsed\": \"1s\",\n      \"duration\": null,\n      \"sessionLabel\": \"native-s…sion\"\n    }\n  ],\n  \"latestFinished\": null,\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-GsN9L0/broker.sock\"\n  },\n  \"running\": [\n    {\n      \"id\": \"task-mvl80m61-rw8e7s\",\n      \"kind\": \"task\",\n      \"kindLabel\": \"rescue\",\n      \"title\": \"Codex Task\",\n      \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"jobClass\": \"task\",\n      \"summary\": \"Run until stopped.\",\n      \"write\": true,\n      \"createdAt\": \"2026-10-23T17:05:17.881Z\",\n      \"sessionId\": \"native-session\",\n      \"dispatchSessionId\": \"native-session\",\n      \"ownerId\": \"task-mvl80m61-rw8e7s-e4f4c71e-50b7-4726-9d33-c5742a7a24c2\",\n      \"leaseRenewedAt\": 1792775118055,\n      \"leaseSec\": 1800,\n      \"questionTimeoutSec\": 900,\n      \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n      \"leaseExpiresAt\": 1792776918055,\n      \"sandbox\": \"danger-full-access\",\n      \"approvalPolicy\": \"never+elicitations\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-93df5e295c2eac89/jobs/task-mvl80m61-rw8e7s.output.txt\",\n      \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-93df5e295c2eac89/jobs/task-mvl80m61-rw8e7s.result.json\",\n      \"agentName\": \"Ohm\",\n      \"status\": \"running\",\n      \"direct\": true,\n      \"phase\": \"starting\",\n      \"pid\": 12237,\n      \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-93df5e295c2eac89/jobs/task-mvl80m61-rw8e7s.log\",\n      \"request\": {\n        \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"model\": \"gpt-6-astra\",\n        \"effort\": \"xhigh\",\n        \"serviceTier\": null,\n        \"prompt\": \"Run until stopped.\",\n        \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n        \"claudeMd\": {\n          \"version\": 1,\n          \"source\": \"scan\",\n          \"approximate\": true,\n          \"complete\": false,\n          \"snapshotHash\": \"25f4840a935453e1fbd9cceb4e8a0b13cbb19c075e254d7119c66b451461f339\",\n          \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n          \"capturedAt\": \"2026-10-23T17:05:17.356Z\",\n          \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n          \"sessionCwdSource\": \"flag\",\n          \"bounded\": false,\n          \"omittedPaths\": [],\n          \"omittedCount\": 0,\n          \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n        },\n        \"write\": true,\n        \"sandbox\": \"danger-full-access\",\n        \"approvedBrowserOrigins\": [],\n        \"approvedComputerApps\": [],\n        \"resumeLast\": false,\n        \"threadId\": null,\n        \"jobId\": \"task-mvl80m61-rw8e7s\",\n        \"report\": true,\n        \"detached\": true\n      },\n      \"updatedAt\": \"2026-10-23T17:05:18.623Z\",\n      \"ownerAttached\": true,\n      \"ownerAttachedAt\": 1792775118044,\n      \"ownerDetachedAt\": null,\n      \"ownerDetachReason\": null,\n      \"ownerWaitPid\": 11958,\n      \"ownerWaitToken\": \"a3a8c654-be1f-45bd-9b66-cbb287349d8d\",\n      \"startedAt\": \"2026-10-23T17:05:18.080Z\",\n      \"preExistingChanges\": [],\n      \"startupTimings\": {\n        \"brokerConnectSpawn\": {\n          \"phase\": \"brokerConnectSpawn\",\n          \"elapsedMs\": 274,\n          \"durationMs\": 186\n        },\n        \"appServerInitialize\": {\n          \"phase\": \"appServerInitialize\",\n          \"elapsedMs\": 285,\n          \"durationMs\": 44\n        },\n        \"brokerHandshake\": {\n          \"phase\": \"brokerHandshake\",\n          \"elapsedMs\": 295,\n          \"durationMs\": 11\n        },\n        \"threadStart\": {\n          \"phase\": \"threadStart\",\n          \"elapsedMs\": 324,\n          \"durationMs\": 19\n        },\n        \"turnStart\": {\n          \"phase\": \"turnStart\",\n          \"elapsedMs\": 335,\n          \"durationMs\": 1\n        }\n      },\n      \"threadId\": \"thr_1\",\n      \"turnId\": \"turn_1\",\n      \"orphaned\": false,\n      \"leaseRemainingSec\": 1800,\n      \"progressPreview\": [\n        \"Thread ready (thr_1).\",\n        \"Startup timing: turnStart {\\\"phase\\\":\\\"turnStart\\\",\\\"elapsedMs\\\":335,\\\"durationMs\\\":1}\",\n        \"Turn handle: turn_1.\",\n        \"Turn started (turn_1).\"\n      ],\n      \"elapsed\": \"1s\",\n      \"duration\": null,\n      \"sessionLabel\": \"native-s…sion\"\n    }\n  ],\n  \"latestFinished\": null,\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
           }
         ],
         "exit": {
@@ -1718,7 +2118,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwuvkj-76tydb",
+            "task-mvl80m61-rw8e7s",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -1731,7 +2131,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwuvkj-76tydb\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Run until stopped.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:54.355Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwuvkj-76tydb-2e74e5ab-8e54-4a15-a1ca-1db42d38cec6\",\n    \"leaseRenewedAt\": 1792756374527,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758174527,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-4bc1d67a83ce3900/jobs/task-mvkwuvkj-76tydb.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-4bc1d67a83ce3900/jobs/task-mvkwuvkj-76tydb.result.json\",\n    \"agentName\": \"Galileo\",\n    \"status\": \"running\",\n    \"direct\": true,\n    \"phase\": \"starting\",\n    \"pid\": 81740,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-4bc1d67a83ce3900/jobs/task-mvkwuvkj-76tydb.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Run until stopped.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"43c477dd302510b640c94014ff05334a9e392c2cb1a8118186b429e82a21c7d6\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:53.814Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwuvkj-76tydb\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:55.088Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792756374515,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 81661,\n    \"ownerWaitToken\": \"e01c4e79-7f99-4ec9-8c4a-a4f8f6b42692\",\n    \"startedAt\": \"2026-10-23T11:52:54.551Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 275,\n        \"durationMs\": 187\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 285,\n        \"durationMs\": 42\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 295,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 325,\n        \"durationMs\": 21\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 335,\n        \"durationMs\": 0\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"orphaned\": false,\n    \"leaseRemainingSec\": 1800,\n    \"progressPreview\": [\n      \"Thread ready (thr_1).\",\n      \"Startup timing: turnStart {\\\"phase\\\":\\\"turnStart\\\",\\\"elapsedMs\\\":335,\\\"durationMs\\\":0}\",\n      \"Turn handle: turn_1.\",\n      \"Turn started (turn_1).\"\n    ],\n    \"elapsed\": \"1s\",\n    \"duration\": null\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80m61-rw8e7s\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Run until stopped.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:17.881Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80m61-rw8e7s-e4f4c71e-50b7-4726-9d33-c5742a7a24c2\",\n    \"leaseRenewedAt\": 1792775118055,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776918055,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-93df5e295c2eac89/jobs/task-mvl80m61-rw8e7s.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-93df5e295c2eac89/jobs/task-mvl80m61-rw8e7s.result.json\",\n    \"agentName\": \"Ohm\",\n    \"status\": \"running\",\n    \"direct\": true,\n    \"phase\": \"starting\",\n    \"pid\": 12237,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-93df5e295c2eac89/jobs/task-mvl80m61-rw8e7s.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Run until stopped.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"25f4840a935453e1fbd9cceb4e8a0b13cbb19c075e254d7119c66b451461f339\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:17.356Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80m61-rw8e7s\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:18.623Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792775118044,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 11958,\n    \"ownerWaitToken\": \"a3a8c654-be1f-45bd-9b66-cbb287349d8d\",\n    \"startedAt\": \"2026-10-23T17:05:18.080Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 274,\n        \"durationMs\": 186\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 285,\n        \"durationMs\": 44\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 295,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 324,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 335,\n        \"durationMs\": 1\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"orphaned\": false,\n    \"leaseRemainingSec\": 1800,\n    \"progressPreview\": [\n      \"Thread ready (thr_1).\",\n      \"Startup timing: turnStart {\\\"phase\\\":\\\"turnStart\\\",\\\"elapsedMs\\\":335,\\\"durationMs\\\":1}\",\n      \"Turn handle: turn_1.\",\n      \"Turn started (turn_1).\"\n    ],\n    \"elapsed\": \"1s\",\n    \"duration\": null\n  }\n}\n"
           }
         ],
         "exit": {
@@ -1746,7 +2146,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "cancel",
-            "task-mvkwuvkj-76tydb",
+            "task-mvl80m61-rw8e7s",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -1760,7 +2160,7 @@ export const captures = [
         },
         "value": {
           "exitCode": 0,
-          "stdout": "{\n  \"jobId\": \"task-mvkwuvkj-76tydb\",\n  \"agentName\": \"Galileo\",\n  \"status\": \"cancelled\",\n  \"confirmation\": \"confirmed\",\n  \"turnInterruptAttempted\": true,\n  \"turnInterrupted\": true,\n  \"reason\": \"cancelled_by_user\",\n  \"backgroundTerminals\": {\n    \"cleaned\": true,\n    \"detail\": null\n  }\n}\n",
+          "stdout": "{\n  \"jobId\": \"task-mvl80m61-rw8e7s\",\n  \"agentName\": \"Ohm\",\n  \"status\": \"cancelled\",\n  \"confirmation\": \"confirmed\",\n  \"turnInterruptAttempted\": true,\n  \"turnInterrupted\": true,\n  \"reason\": \"cancelled_by_user\",\n  \"backgroundTerminals\": {\n    \"cleaned\": true,\n    \"detail\": null\n  }\n}\n",
           "stderr": "",
           "isStdoutTruncated": false,
           "isStderrTruncated": false
@@ -1773,7 +2173,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwuvkj-76tydb",
+            "task-mvl80m61-rw8e7s",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -1787,7 +2187,7 @@ export const captures = [
         },
         "value": {
           "exitCode": 0,
-          "stdout": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwuvkj-76tydb\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Codex Task finished.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:54.355Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwuvkj-76tydb-2e74e5ab-8e54-4a15-a1ca-1db42d38cec6\",\n    \"leaseRenewedAt\": 1792756374527,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758174527,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-4bc1d67a83ce3900/jobs/task-mvkwuvkj-76tydb.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-4bc1d67a83ce3900/jobs/task-mvkwuvkj-76tydb.result.json\",\n    \"agentName\": \"Galileo\",\n    \"status\": \"interrupted\",\n    \"direct\": true,\n    \"phase\": \"interrupted\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-4bc1d67a83ce3900/jobs/task-mvkwuvkj-76tydb.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Run until stopped.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"43c477dd302510b640c94014ff05334a9e392c2cb1a8118186b429e82a21c7d6\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:53.814Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwuvkj-76tydb\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:55.639Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756374515,\n    \"ownerDetachedAt\": 1792756375354,\n    \"ownerDetachReason\": \"signal\",\n    \"ownerWaitPid\": 81661,\n    \"ownerWaitToken\": \"e01c4e79-7f99-4ec9-8c4a-a4f8f6b42692\",\n    \"startedAt\": \"2026-10-23T11:52:54.551Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 275,\n        \"durationMs\": 187\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 285,\n        \"durationMs\": 42\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 295,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 325,\n        \"durationMs\": 21\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 335,\n        \"durationMs\": 0\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"backgroundTerminals\": {\n      \"cleaned\": true,\n      \"detail\": null\n    },\n    \"cancelRequested\": {\n      \"reason\": \"cancelled_by_user\",\n      \"at\": \"2026-10-23T11:52:55.550Z\"\n    },\n    \"completedAt\": \"2026-10-23T11:52:55.621Z\",\n    \"interruptionReason\": \"owner_stopped\",\n    \"interruptionConfirmed\": true,\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": null\n  }\n}\n",
+          "stdout": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80m61-rw8e7s\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Codex Task finished.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:17.881Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80m61-rw8e7s-e4f4c71e-50b7-4726-9d33-c5742a7a24c2\",\n    \"leaseRenewedAt\": 1792775118055,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776918055,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-93df5e295c2eac89/jobs/task-mvl80m61-rw8e7s.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-93df5e295c2eac89/jobs/task-mvl80m61-rw8e7s.result.json\",\n    \"agentName\": \"Ohm\",\n    \"status\": \"interrupted\",\n    \"direct\": true,\n    \"phase\": \"interrupted\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-93df5e295c2eac89/jobs/task-mvl80m61-rw8e7s.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Run until stopped.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"25f4840a935453e1fbd9cceb4e8a0b13cbb19c075e254d7119c66b451461f339\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:17.356Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80m61-rw8e7s\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:19.169Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775118044,\n    \"ownerDetachedAt\": 1792775118944,\n    \"ownerDetachReason\": \"signal\",\n    \"ownerWaitPid\": 11958,\n    \"ownerWaitToken\": \"a3a8c654-be1f-45bd-9b66-cbb287349d8d\",\n    \"startedAt\": \"2026-10-23T17:05:18.080Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 274,\n        \"durationMs\": 186\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 285,\n        \"durationMs\": 44\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 295,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 324,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 335,\n        \"durationMs\": 1\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"backgroundTerminals\": {\n      \"cleaned\": true,\n      \"detail\": null\n    },\n    \"completedAt\": \"2026-10-23T17:05:19.150Z\",\n    \"interruptionReason\": \"owner_stopped\",\n    \"interruptionConfirmed\": true,\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": null\n  }\n}\n",
           "stderr": "",
           "isStdoutTruncated": false,
           "isStderrTruncated": false
@@ -1802,7 +2202,7 @@ export const captures = [
           "content": [
             {
               "type": "text",
-              "text": "Codex worker Galileo started · job task-mvkwuvkj-76tydb · gpt-6-astra / xhigh / danger-full-access"
+              "text": "Codex worker Ohm started · job task-mvl80m61-rw8e7s · gpt-6-astra / xhigh / danger-full-access"
             }
           ]
         }
@@ -1810,16 +2210,17 @@ export const captures = [
     ],
     "store": {
       "native:v2:native-session:native-agent": {
-        "v": 2,
         "type": "codex:codex-native",
         "session": "native-session",
         "agentId": "native-agent",
         "name": "native-worker",
+        "permissionMode": "default",
+        "v": 2,
         "cwd": "/private/tmp/duet14-g-fixture/repo",
         "notices": {
           "turnId": "turn-1",
           "count": 1,
-          "last": "Codex worker Galileo started · job task-mvkwuvkj-76tydb · gpt-6-astra / xhigh / danger-full-access",
+          "last": "Codex worker Ohm started · job task-mvl80m61-rw8e7s · gpt-6-astra / xhigh / danger-full-access",
           "started": true
         },
         "intent": {
@@ -1829,23 +2230,22 @@ export const captures = [
           "kind": "task",
           "nonce": "native-session:native-agent:turn-1"
         },
-        "jobId": "task-mvkwuvkj-76tydb",
-        "ownerId": "task-mvkwuvkj-76tydb-2e74e5ab-8e54-4a15-a1ca-1db42d38cec6",
+        "jobId": "task-mvl80m61-rw8e7s",
+        "ownerId": "task-mvl80m61-rw8e7s-e4f4c71e-50b7-4726-9d33-c5742a7a24c2",
         "threadId": "thr_1",
-        "worker": "Galileo",
+        "worker": "Ohm",
         "status": "interrupted",
-        "questionId": null,
         "answer": {
           "status": "interrupted",
-          "worker": "Galileo",
-          "jobId": "task-mvkwuvkj-76tydb",
-          "summary": "Stopped from /tasks. The owner wait was stopped, so the worker interrupts the Codex turn and ends the commands it started; duet status Galileo shows the recorded confirmation.",
+          "worker": "Ohm",
+          "jobId": "task-mvl80m61-rw8e7s",
+          "summary": "Stopped from /tasks. The owner wait was stopped, so the worker interrupts the Codex turn and ends the commands it started; duet status Ohm shows the recorded confirmation.",
           "next": "SendMessage to native-worker to continue",
-          "details": "duet result Galileo --details"
+          "details": "duet result 'task-mvl80m61-rw8e7s' --details"
         },
         "cancellation": {
-          "jobId": "task-mvkwuvkj-76tydb",
-          "agentName": "Galileo",
+          "jobId": "task-mvl80m61-rw8e7s",
+          "agentName": "Ohm",
           "status": "cancelled",
           "confirmation": "confirmed",
           "turnInterruptAttempted": true,
@@ -1880,6 +2280,7 @@ export const captures = [
           },
           "parentModel": "haiku",
           "background": true,
+          "permissionMode": "default",
           "fork": false,
           "name": "native-worker",
           "cwd": "/private/tmp/duet14-g-fixture/repo"
@@ -1907,6 +2308,7 @@ export const captures = [
           "turnId": "turn-1",
           "index": 0,
           "model": "haiku",
+          "effort": "low",
           "messageCount": 1
         },
         "chunks": [
@@ -1918,7 +2320,7 @@ export const captures = [
           {
             "kind": "text",
             "index": 1,
-            "text": "{\"status\":\"completed\",\"worker\":\"Engelbart\",\"jobId\":\"task-mvkwux8y-6oldy3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Engelbart --details\"}"
+            "text": "{\"status\":\"completed\",\"worker\":\"Archimedes\",\"jobId\":\"task-mvl80nt7-p0audu\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80nt7-p0audu' --details\"}"
           },
           {
             "kind": "stop",
@@ -1929,7 +2331,7 @@ export const captures = [
         "result": {
           "turnId": "turn-1",
           "index": 0,
-          "answer": "{\"status\":\"completed\",\"worker\":\"Engelbart\",\"jobId\":\"task-mvkwux8y-6oldy3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Engelbart --details\"}",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Archimedes\",\"jobId\":\"task-mvl80nt7-p0audu\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80nt7-p0audu' --details\"}",
           "toolUses": [],
           "stopReason": "end_turn",
           "usage": null
@@ -1941,30 +2343,32 @@ export const captures = [
         "input": {
           "agentId": "native-agent",
           "turnId": "turn-1",
-          "answer": "{\"status\":\"completed\",\"worker\":\"Engelbart\",\"jobId\":\"task-mvkwux8y-6oldy3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Engelbart --details\"}",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Archimedes\",\"jobId\":\"task-mvl80nt7-p0audu\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80nt7-p0audu' --details\"}",
           "durationMs": 1,
           "isAborted": false,
           "reason": "answer"
         },
         "result": {
-          "text": "{\"status\":\"completed\",\"worker\":\"Engelbart\",\"jobId\":\"task-mvkwux8y-6oldy3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Engelbart --details\"}"
+          "text": "{\"status\":\"completed\",\"worker\":\"Archimedes\",\"jobId\":\"task-mvl80nt7-p0audu\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80nt7-p0audu' --details\"}"
         }
       },
       {
         "event": "reload",
         "store": {
           "native:v2:native-session:native-agent": {
-            "v": 2,
             "type": "codex:codex-native",
             "session": "native-session",
             "agentId": "native-agent",
             "name": "native-worker",
+            "permissionMode": "default",
+            "v": 2,
             "cwd": "/private/tmp/duet14-g-fixture/repo",
             "notices": {
               "turnId": "turn-1",
-              "count": 2,
-              "last": "Codex: [completed] Handled the requested task. Task prompt accepted.",
-              "started": true
+              "count": 3,
+              "last": "Codex usage · 150 input (40 cached) · 30 output tokens",
+              "started": true,
+              "usage": true
             },
             "intent": {
               "session": "native-session",
@@ -1989,6 +2393,7 @@ export const captures = [
           },
           "parentModel": "haiku",
           "background": true,
+          "permissionMode": "default",
           "fork": false,
           "name": "native-worker",
           "cwd": "/private/tmp/duet14-g-fixture/repo"
@@ -2016,13 +2421,14 @@ export const captures = [
           "turnId": "turn-1",
           "index": 0,
           "model": "haiku",
+          "effort": "low",
           "messageCount": 1
         },
         "chunks": [
           {
             "kind": "text",
             "index": 1,
-            "text": "{\"status\":\"completed\",\"worker\":\"Engelbart\",\"jobId\":\"task-mvkwux8y-6oldy3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Engelbart --details\"}"
+            "text": "{\"status\":\"completed\",\"worker\":\"Archimedes\",\"jobId\":\"task-mvl80nt7-p0audu\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80nt7-p0audu' --details\"}"
           },
           {
             "kind": "stop",
@@ -2033,7 +2439,7 @@ export const captures = [
         "result": {
           "turnId": "turn-1",
           "index": 0,
-          "answer": "{\"status\":\"completed\",\"worker\":\"Engelbart\",\"jobId\":\"task-mvkwux8y-6oldy3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Engelbart --details\"}",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Archimedes\",\"jobId\":\"task-mvl80nt7-p0audu\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80nt7-p0audu' --details\"}",
           "toolUses": [],
           "stopReason": "end_turn",
           "usage": null
@@ -2045,13 +2451,13 @@ export const captures = [
         "input": {
           "agentId": "native-agent",
           "turnId": "turn-1",
-          "answer": "{\"status\":\"completed\",\"worker\":\"Engelbart\",\"jobId\":\"task-mvkwux8y-6oldy3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Engelbart --details\"}",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Archimedes\",\"jobId\":\"task-mvl80nt7-p0audu\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80nt7-p0audu' --details\"}",
           "durationMs": 1,
           "isAborted": false,
           "reason": "answer"
         },
         "result": {
-          "text": "{\"status\":\"completed\",\"worker\":\"Engelbart\",\"jobId\":\"task-mvkwux8y-6oldy3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Engelbart --details\"}"
+          "text": "{\"status\":\"completed\",\"worker\":\"Archimedes\",\"jobId\":\"task-mvl80nt7-p0audu\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80nt7-p0audu' --details\"}"
         }
       }
     ],
@@ -2105,7 +2511,7 @@ export const captures = [
           },
           {
             "stream": "stdout",
-            "text": "{\"status\":\"completed\",\"worker\":\"Engelbart\",\"jobId\":\"task-mvkwux8y-6oldy3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":null,\"details\":\"duet result Engelbart --details\"}\n"
+            "text": "{\"status\":\"completed\",\"worker\":\"Archimedes\",\"jobId\":\"task-mvl80nt7-p0audu\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":null,\"details\":\"duet result 'task-mvl80nt7-p0audu' --details\"}\n"
           }
         ],
         "exit": {
@@ -2122,6 +2528,8 @@ export const captures = [
             "status",
             "--all",
             "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-1",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
             "--session",
@@ -2133,7 +2541,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-iVuybR/cxc-Le509W/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvkwux8y-6oldy3\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:56.530Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwux8y-6oldy3-b0d15627-50b4-4938-85d6-31163748f019\",\n    \"leaseRenewedAt\": 1792756377713,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758177713,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.result.json\",\n    \"agentName\": \"Engelbart\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Dispatch exactly once.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"2b53887956841990407be2ded738f7742cb6b11af7ea56c6123a5774904bfa68\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:55.993Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwux8y-6oldy3\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:57.794Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792756376690,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 82443,\n    \"ownerWaitToken\": \"f9bb1030-92c7-4376-aee0-60ccd015766b\",\n    \"startedAt\": \"2026-10-23T11:52:56.724Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 187\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 290,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 318,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 328,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 732\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:52:57.773Z\",\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-KzZgSK/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl80nt7-p0audu\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:20.011Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80nt7-p0audu-eb279b6a-97a7-4184-9e85-8042ab4bf02c\",\n    \"leaseRenewedAt\": 1792775121195,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776921195,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.result.json\",\n    \"agentName\": \"Archimedes\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Dispatch exactly once.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"110da24c8452392d0c7b3d45151cea3172784b9c730c684e62e08a668c9294c4\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:19.500Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80nt7-p0audu\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:21.277Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792775120174,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 13401,\n    \"ownerWaitToken\": \"60d01a1f-da2a-4bff-a0fd-8b8c8cf2db20\",\n    \"startedAt\": \"2026-10-23T17:05:20.210Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 275,\n        \"durationMs\": 186\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 285,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 295,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 323,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 334,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 737\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:21.257Z\",\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
           }
         ],
         "exit": {
@@ -2148,7 +2556,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwux8y-6oldy3",
+            "task-mvl80nt7-p0audu",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -2161,7 +2569,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwux8y-6oldy3\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:56.530Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwux8y-6oldy3-b0d15627-50b4-4938-85d6-31163748f019\",\n    \"leaseRenewedAt\": 1792756377713,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758177713,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.result.json\",\n    \"agentName\": \"Engelbart\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Dispatch exactly once.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"2b53887956841990407be2ded738f7742cb6b11af7ea56c6123a5774904bfa68\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:55.993Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwux8y-6oldy3\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:57.890Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756376690,\n    \"ownerDetachedAt\": 1792756377890,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 82443,\n    \"ownerWaitToken\": \"f9bb1030-92c7-4376-aee0-60ccd015766b\",\n    \"startedAt\": \"2026-10-23T11:52:56.724Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 187\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 290,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 318,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 328,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 732\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:52:57.773Z\",\n    \"activityCursors\": {\n      \"df11d6743b7ea38b71914c612563856abc15d2bed9c7855f3c15788e31099f45\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80nt7-p0audu\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:20.011Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80nt7-p0audu-eb279b6a-97a7-4184-9e85-8042ab4bf02c\",\n    \"leaseRenewedAt\": 1792775121195,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776921195,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.result.json\",\n    \"agentName\": \"Archimedes\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Dispatch exactly once.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"110da24c8452392d0c7b3d45151cea3172784b9c730c684e62e08a668c9294c4\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:19.500Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80nt7-p0audu\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:21.415Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775120174,\n    \"ownerDetachedAt\": 1792775121415,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 13401,\n    \"ownerWaitToken\": \"60d01a1f-da2a-4bff-a0fd-8b8c8cf2db20\",\n    \"startedAt\": \"2026-10-23T17:05:20.210Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 275,\n        \"durationMs\": 186\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 285,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 295,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 323,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 334,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 737\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:21.257Z\",\n    \"activityCursors\": {\n      \"369d0349c5dc5007fe590f03ed2bea8a648f6701c9dce0671fc7a726ed5864a7\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
           }
         ],
         "exit": {
@@ -2178,6 +2586,8 @@ export const captures = [
             "status",
             "--all",
             "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-1",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
             "--session",
@@ -2189,7 +2599,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-iVuybR/cxc-Le509W/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvkwux8y-6oldy3\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:56.530Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwux8y-6oldy3-b0d15627-50b4-4938-85d6-31163748f019\",\n    \"leaseRenewedAt\": 1792756377713,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758177713,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.result.json\",\n    \"agentName\": \"Engelbart\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Dispatch exactly once.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"2b53887956841990407be2ded738f7742cb6b11af7ea56c6123a5774904bfa68\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:55.993Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwux8y-6oldy3\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:57.890Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756376690,\n    \"ownerDetachedAt\": 1792756377890,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 82443,\n    \"ownerWaitToken\": \"f9bb1030-92c7-4376-aee0-60ccd015766b\",\n    \"startedAt\": \"2026-10-23T11:52:56.724Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 187\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 290,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 318,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 328,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 732\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:52:57.773Z\",\n    \"activityCursors\": {\n      \"df11d6743b7ea38b71914c612563856abc15d2bed9c7855f3c15788e31099f45\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-KzZgSK/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl80nt7-p0audu\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:20.011Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80nt7-p0audu-eb279b6a-97a7-4184-9e85-8042ab4bf02c\",\n    \"leaseRenewedAt\": 1792775121195,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776921195,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.result.json\",\n    \"agentName\": \"Archimedes\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Dispatch exactly once.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"110da24c8452392d0c7b3d45151cea3172784b9c730c684e62e08a668c9294c4\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:19.500Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80nt7-p0audu\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:21.415Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775120174,\n    \"ownerDetachedAt\": 1792775121415,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 13401,\n    \"ownerWaitToken\": \"60d01a1f-da2a-4bff-a0fd-8b8c8cf2db20\",\n    \"startedAt\": \"2026-10-23T17:05:20.210Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 275,\n        \"durationMs\": 186\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 285,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 295,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 323,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 334,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 737\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:21.257Z\",\n    \"activityCursors\": {\n      \"369d0349c5dc5007fe590f03ed2bea8a648f6701c9dce0671fc7a726ed5864a7\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
           }
         ],
         "exit": {
@@ -2204,7 +2614,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwux8y-6oldy3",
+            "task-mvl80nt7-p0audu",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -2217,7 +2627,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwux8y-6oldy3\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:56.530Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwux8y-6oldy3-b0d15627-50b4-4938-85d6-31163748f019\",\n    \"leaseRenewedAt\": 1792756377713,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758177713,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.result.json\",\n    \"agentName\": \"Engelbart\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Dispatch exactly once.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"2b53887956841990407be2ded738f7742cb6b11af7ea56c6123a5774904bfa68\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:55.993Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwux8y-6oldy3\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:57.890Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756376690,\n    \"ownerDetachedAt\": 1792756377890,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 82443,\n    \"ownerWaitToken\": \"f9bb1030-92c7-4376-aee0-60ccd015766b\",\n    \"startedAt\": \"2026-10-23T11:52:56.724Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 187\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 290,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 318,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 328,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 732\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:52:57.773Z\",\n    \"activityCursors\": {\n      \"df11d6743b7ea38b71914c612563856abc15d2bed9c7855f3c15788e31099f45\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80nt7-p0audu\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:20.011Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80nt7-p0audu-eb279b6a-97a7-4184-9e85-8042ab4bf02c\",\n    \"leaseRenewedAt\": 1792775121195,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776921195,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.result.json\",\n    \"agentName\": \"Archimedes\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Dispatch exactly once.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"110da24c8452392d0c7b3d45151cea3172784b9c730c684e62e08a668c9294c4\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:19.500Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80nt7-p0audu\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:21.415Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775120174,\n    \"ownerDetachedAt\": 1792775121415,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 13401,\n    \"ownerWaitToken\": \"60d01a1f-da2a-4bff-a0fd-8b8c8cf2db20\",\n    \"startedAt\": \"2026-10-23T17:05:20.210Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 275,\n        \"durationMs\": 186\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 285,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 295,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 323,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 334,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 737\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:21.257Z\",\n    \"activityCursors\": {\n      \"369d0349c5dc5007fe590f03ed2bea8a648f6701c9dce0671fc7a726ed5864a7\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
           }
         ],
         "exit": {
@@ -2254,6 +2664,8 @@ export const captures = [
             "status",
             "--all",
             "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-1",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
             "--session",
@@ -2265,7 +2677,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-iVuybR/cxc-Le509W/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvkwux8y-6oldy3\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:56.530Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwux8y-6oldy3-b0d15627-50b4-4938-85d6-31163748f019\",\n    \"leaseRenewedAt\": 1792756377713,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758177713,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.result.json\",\n    \"agentName\": \"Engelbart\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Dispatch exactly once.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"2b53887956841990407be2ded738f7742cb6b11af7ea56c6123a5774904bfa68\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:55.993Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwux8y-6oldy3\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:57.890Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756376690,\n    \"ownerDetachedAt\": 1792756377890,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 82443,\n    \"ownerWaitToken\": \"f9bb1030-92c7-4376-aee0-60ccd015766b\",\n    \"startedAt\": \"2026-10-23T11:52:56.724Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 187\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 290,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 318,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 328,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 732\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:52:57.773Z\",\n    \"activityCursors\": {\n      \"df11d6743b7ea38b71914c612563856abc15d2bed9c7855f3c15788e31099f45\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-KzZgSK/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl80nt7-p0audu\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:20.011Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80nt7-p0audu-eb279b6a-97a7-4184-9e85-8042ab4bf02c\",\n    \"leaseRenewedAt\": 1792775121195,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776921195,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.result.json\",\n    \"agentName\": \"Archimedes\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Dispatch exactly once.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"110da24c8452392d0c7b3d45151cea3172784b9c730c684e62e08a668c9294c4\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:19.500Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80nt7-p0audu\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:21.415Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775120174,\n    \"ownerDetachedAt\": 1792775121415,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 13401,\n    \"ownerWaitToken\": \"60d01a1f-da2a-4bff-a0fd-8b8c8cf2db20\",\n    \"startedAt\": \"2026-10-23T17:05:20.210Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 275,\n        \"durationMs\": 186\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 285,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 295,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 323,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 334,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 737\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:21.257Z\",\n    \"activityCursors\": {\n      \"369d0349c5dc5007fe590f03ed2bea8a648f6701c9dce0671fc7a726ed5864a7\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
           }
         ],
         "exit": {
@@ -2280,7 +2692,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwux8y-6oldy3",
+            "task-mvl80nt7-p0audu",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -2293,7 +2705,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwux8y-6oldy3\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:56.530Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwux8y-6oldy3-b0d15627-50b4-4938-85d6-31163748f019\",\n    \"leaseRenewedAt\": 1792756377713,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758177713,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.result.json\",\n    \"agentName\": \"Engelbart\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Dispatch exactly once.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"2b53887956841990407be2ded738f7742cb6b11af7ea56c6123a5774904bfa68\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:55.993Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwux8y-6oldy3\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:57.890Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756376690,\n    \"ownerDetachedAt\": 1792756377890,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 82443,\n    \"ownerWaitToken\": \"f9bb1030-92c7-4376-aee0-60ccd015766b\",\n    \"startedAt\": \"2026-10-23T11:52:56.724Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 187\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 290,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 318,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 328,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 732\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:52:57.773Z\",\n    \"activityCursors\": {\n      \"df11d6743b7ea38b71914c612563856abc15d2bed9c7855f3c15788e31099f45\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80nt7-p0audu\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:20.011Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80nt7-p0audu-eb279b6a-97a7-4184-9e85-8042ab4bf02c\",\n    \"leaseRenewedAt\": 1792775121195,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776921195,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.result.json\",\n    \"agentName\": \"Archimedes\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Dispatch exactly once.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"110da24c8452392d0c7b3d45151cea3172784b9c730c684e62e08a668c9294c4\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:19.500Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80nt7-p0audu\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:21.415Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775120174,\n    \"ownerDetachedAt\": 1792775121415,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 13401,\n    \"ownerWaitToken\": \"60d01a1f-da2a-4bff-a0fd-8b8c8cf2db20\",\n    \"startedAt\": \"2026-10-23T17:05:20.210Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 275,\n        \"durationMs\": 186\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 285,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 295,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 323,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 334,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 737\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:21.257Z\",\n    \"activityCursors\": {\n      \"369d0349c5dc5007fe590f03ed2bea8a648f6701c9dce0671fc7a726ed5864a7\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
           }
         ],
         "exit": {
@@ -2308,9 +2720,9 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "wait",
-            "task-mvkwux8y-6oldy3",
+            "task-mvl80nt7-p0audu",
             "--owner",
-            "task-mvkwux8y-6oldy3-b0d15627-50b4-4938-85d6-31163748f019",
+            "task-mvl80nt7-p0audu-eb279b6a-97a7-4184-9e85-8042ab4bf02c",
             "--timeout-sec",
             "3600",
             "--cwd",
@@ -2324,7 +2736,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\"status\":\"completed\",\"worker\":\"Engelbart\",\"jobId\":\"task-mvkwux8y-6oldy3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":null,\"details\":\"duet result Engelbart --details\"}\n"
+            "text": "{\"status\":\"completed\",\"worker\":\"Archimedes\",\"jobId\":\"task-mvl80nt7-p0audu\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":null,\"details\":\"duet result 'task-mvl80nt7-p0audu' --details\"}\n"
           }
         ],
         "exit": {
@@ -2339,7 +2751,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwux8y-6oldy3",
+            "task-mvl80nt7-p0audu",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/repo",
@@ -2352,7 +2764,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvkwux8y-6oldy3\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T11:52:56.530Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwux8y-6oldy3-b0d15627-50b4-4938-85d6-31163748f019\",\n    \"leaseRenewedAt\": 1792756377713,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758177713,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.result.json\",\n    \"agentName\": \"Engelbart\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-9381fcb5934d62aa/jobs/task-mvkwux8y-6oldy3.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Dispatch exactly once.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"2b53887956841990407be2ded738f7742cb6b11af7ea56c6123a5774904bfa68\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T11:52:55.993Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvkwux8y-6oldy3\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T11:52:58.768Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756376690,\n    \"ownerDetachedAt\": 1792756377890,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 82443,\n    \"ownerWaitToken\": \"f9bb1030-92c7-4376-aee0-60ccd015766b\",\n    \"startedAt\": \"2026-10-23T11:52:56.724Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 271,\n        \"durationMs\": 187\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 281,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 290,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 318,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 328,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 732\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:52:57.773Z\",\n    \"activityCursors\": {\n      \"df11d6743b7ea38b71914c612563856abc15d2bed9c7855f3c15788e31099f45\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80nt7-p0audu\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:20.011Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80nt7-p0audu-eb279b6a-97a7-4184-9e85-8042ab4bf02c\",\n    \"leaseRenewedAt\": 1792775121195,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776921195,\n    \"sandbox\": \"danger-full-access\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.result.json\",\n    \"agentName\": \"Archimedes\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-d41e8b9ac0cec774/jobs/task-mvl80nt7-p0audu.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"xhigh\",\n      \"serviceTier\": null,\n      \"prompt\": \"Dispatch exactly once.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"110da24c8452392d0c7b3d45151cea3172784b9c730c684e62e08a668c9294c4\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:19.500Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"danger-full-access\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80nt7-p0audu\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:22.463Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775120174,\n    \"ownerDetachedAt\": 1792775121415,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 13401,\n    \"ownerWaitToken\": \"60d01a1f-da2a-4bff-a0fd-8b8c8cf2db20\",\n    \"startedAt\": \"2026-10-23T17:05:20.210Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 275,\n        \"durationMs\": 186\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 285,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 295,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 323,\n        \"durationMs\": 19\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 334,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 737\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:21.257Z\",\n    \"activityCursors\": {\n      \"369d0349c5dc5007fe590f03ed2bea8a648f6701c9dce0671fc7a726ed5864a7\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
           }
         ],
         "exit": {
@@ -2369,7 +2781,7 @@ export const captures = [
           "content": [
             {
               "type": "text",
-              "text": "Codex worker Engelbart started · job task-mvkwux8y-6oldy3 · gpt-6-astra / xhigh / danger-full-access"
+              "text": "Codex worker Archimedes started · job task-mvl80nt7-p0audu · gpt-6-astra / xhigh / danger-full-access"
             }
           ]
         }
@@ -2385,21 +2797,35 @@ export const captures = [
             }
           ]
         }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex usage · 150 input (40 cached) · 30 output tokens"
+            }
+          ]
+        }
       }
     ],
     "store": {
       "native:v2:native-session:native-agent": {
-        "v": 2,
         "type": "codex:codex-native",
         "session": "native-session",
         "agentId": "native-agent",
         "name": "native-worker",
+        "permissionMode": "default",
+        "v": 2,
         "cwd": "/private/tmp/duet14-g-fixture/repo",
         "notices": {
           "turnId": "turn-1",
-          "count": 2,
-          "last": "Codex: [completed] Handled the requested task. Task prompt accepted.",
-          "started": true
+          "count": 3,
+          "last": "Codex usage · 150 input (40 cached) · 30 output tokens",
+          "started": true,
+          "usage": true
         },
         "intent": {
           "session": "native-session",
@@ -2408,16 +2834,15 @@ export const captures = [
           "kind": "task",
           "nonce": "native-session:native-agent:turn-1"
         },
-        "jobId": "task-mvkwux8y-6oldy3",
-        "ownerId": "task-mvkwux8y-6oldy3-b0d15627-50b4-4938-85d6-31163748f019",
+        "jobId": "task-mvl80nt7-p0audu",
+        "ownerId": "task-mvl80nt7-p0audu-eb279b6a-97a7-4184-9e85-8042ab4bf02c",
         "threadId": "thr_1",
-        "worker": "Engelbart",
+        "worker": "Archimedes",
         "status": "completed",
-        "questionId": null,
         "answer": {
           "status": "completed",
-          "worker": "Engelbart",
-          "jobId": "task-mvkwux8y-6oldy3",
+          "worker": "Archimedes",
+          "jobId": "task-mvl80nt7-p0audu",
           "summary": "Handled the requested task.\nTask prompt accepted.",
           "checks": {
             "ran": [],
@@ -2433,8 +2858,15 @@ export const captures = [
             "Fixture finding one",
             "Fixture finding two"
           ],
+          "usage": {
+            "inputTokens": 150,
+            "cachedInputTokens": 40,
+            "outputTokens": 30,
+            "reasoningOutputTokens": 10,
+            "totalTokens": 180
+          },
           "next": "SendMessage to native-worker to continue",
-          "details": "duet result Engelbart --details"
+          "details": "duet result 'task-mvl80nt7-p0audu' --details"
         },
         "answeredTurn": "turn-1",
         "finishedAt": 1800000000000
@@ -2457,6 +2889,7 @@ export const captures = [
           },
           "parentModel": "haiku",
           "background": true,
+          "permissionMode": "default",
           "fork": false,
           "name": "native-worker",
           "cwd": "/private/tmp/duet14-g-fixture/repo"
@@ -2484,6 +2917,7 @@ export const captures = [
           "turnId": "turn-1",
           "index": 0,
           "model": "haiku",
+          "effort": "low",
           "messageCount": 1
         },
         "chunks": [
@@ -2495,7 +2929,7 @@ export const captures = [
           {
             "kind": "text",
             "index": 1,
-            "text": "{\"status\":\"completed\",\"worker\":\"Gauss\",\"jobId\":\"task-mvkwv06r-sv32p3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Gauss --details\"}"
+            "text": "{\"status\":\"completed\",\"worker\":\"Pascal\",\"jobId\":\"task-mvl80qy3-uxqp8c\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80qy3-uxqp8c' --details\"}"
           },
           {
             "kind": "stop",
@@ -2506,7 +2940,7 @@ export const captures = [
         "result": {
           "turnId": "turn-1",
           "index": 0,
-          "answer": "{\"status\":\"completed\",\"worker\":\"Gauss\",\"jobId\":\"task-mvkwv06r-sv32p3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Gauss --details\"}",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Pascal\",\"jobId\":\"task-mvl80qy3-uxqp8c\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80qy3-uxqp8c' --details\"}",
           "toolUses": [],
           "stopReason": "end_turn",
           "usage": null
@@ -2518,13 +2952,13 @@ export const captures = [
         "input": {
           "agentId": "native-agent",
           "turnId": "turn-1",
-          "answer": "{\"status\":\"completed\",\"worker\":\"Gauss\",\"jobId\":\"task-mvkwv06r-sv32p3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Gauss --details\"}",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Pascal\",\"jobId\":\"task-mvl80qy3-uxqp8c\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80qy3-uxqp8c' --details\"}",
           "durationMs": 1,
           "isAborted": false,
           "reason": "answer"
         },
         "result": {
-          "text": "{\"status\":\"completed\",\"worker\":\"Gauss\",\"jobId\":\"task-mvkwv06r-sv32p3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Gauss --details\"}"
+          "text": "{\"status\":\"completed\",\"worker\":\"Pascal\",\"jobId\":\"task-mvl80qy3-uxqp8c\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80qy3-uxqp8c' --details\"}"
         }
       }
     ],
@@ -2586,7 +3020,7 @@ export const captures = [
           },
           {
             "stream": "stdout",
-            "text": "{\"status\":\"completed\",\"worker\":\"Gauss\",\"jobId\":\"task-mvkwv06r-sv32p3\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"next\":null,\"details\":\"duet result Gauss --details\"}\n"
+            "text": "{\"status\":\"completed\",\"worker\":\"Pascal\",\"jobId\":\"task-mvl80qy3-uxqp8c\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":null,\"details\":\"duet result 'task-mvl80qy3-uxqp8c' --details\"}\n"
           }
         ],
         "exit": {
@@ -2603,6 +3037,8 @@ export const captures = [
             "status",
             "--all",
             "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-1",
             "--cwd",
             "/private/tmp/duet14-g-fixture/work tree",
             "--session",
@@ -2614,7 +3050,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-iVuybR/cxc-zNDwZx/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvkwv06r-sv32p3\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T11:53:00.339Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwv06r-sv32p3-40f6cb7e-0708-4f08-a927-5e556aee53a4\",\n    \"leaseRenewedAt\": 1792756381523,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758181523,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-91fd5d2dec5cc5d6/jobs/task-mvkwv06r-sv32p3.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-91fd5d2dec5cc5d6/jobs/task-mvkwv06r-sv32p3.result.json\",\n    \"agentName\": \"Gauss\",\n    \"threadId\": \"thr_1\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-91fd5d2dec5cc5d6/jobs/task-mvkwv06r-sv32p3.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/work tree\",\n      \"model\": \"gpt-6-sol\",\n      \"effort\": \"high\",\n      \"serviceTier\": \"priority\",\n      \"prompt\": \"  Preserve leading space.\\nDUET: this second line is brief text.\\n\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\\n\\n### /captured/CLAUDE.md\\nFORK_RULE_SENTINEL\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"capture\",\n        \"approximate\": false,\n        \"complete\": true,\n        \"snapshotHash\": \"8b8ed3d86f4b6897a70b5695862cde4b3c3fd40202df47ea38f30fbbf2e48bdf\",\n        \"renderedHash\": \"b9c96840e6b43527748177f5e209a417bd3e30f407e1c9d590d50c0f3ce7b201\",\n        \"capturedAt\": \"2026-10-23T11:52:59.363Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"capture\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvkwv06r-sv32p3\",\n      \"report\": true,\n      \"detached\": true,\n      \"forked\": true,\n      \"forkSourceSha256\": \"a94d6048fb163b50f12f7185127322b469521afe96690a5b0a4d3f565323d190\",\n      \"forkImportId\": \"import_1\",\n      \"forkLabel\": \"imported Claude conversation (fidelity not verified)\"\n    },\n    \"updatedAt\": \"2026-10-23T11:53:01.625Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792756380502,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 83637,\n    \"ownerWaitToken\": \"30736758-2459-4656-82c9-05580725edab\",\n    \"startedAt\": \"2026-10-23T11:53:00.536Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 268,\n        \"durationMs\": 181\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 278,\n        \"durationMs\": 48\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 288,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 308,\n        \"durationMs\": 11\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 328,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 732\n      }\n    },\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:53:01.607Z\",\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-A8DXtx/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl80qy3-uxqp8c\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:24.075Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80qy3-uxqp8c-ec5ec768-16e9-489f-a48e-3d662f27a322\",\n    \"leaseRenewedAt\": 1792775125262,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776925262,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-aaab152c15fdd058/jobs/task-mvl80qy3-uxqp8c.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-aaab152c15fdd058/jobs/task-mvl80qy3-uxqp8c.result.json\",\n    \"agentName\": \"Pascal\",\n    \"threadId\": \"thr_1\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-aaab152c15fdd058/jobs/task-mvl80qy3-uxqp8c.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/work tree\",\n      \"model\": \"gpt-6-sol\",\n      \"effort\": \"high\",\n      \"serviceTier\": \"priority\",\n      \"prompt\": \"  Preserve leading space.\\nDUET: this second line is brief text.\\n\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\\n\\n### /captured/CLAUDE.md\\nFORK_RULE_SENTINEL\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"capture\",\n        \"approximate\": false,\n        \"complete\": true,\n        \"snapshotHash\": \"7d67e03b5f3933e5edc366df8f31a76b2ad2c8bbdffa08c28d9624625ff5c4a1\",\n        \"renderedHash\": \"b9c96840e6b43527748177f5e209a417bd3e30f407e1c9d590d50c0f3ce7b201\",\n        \"capturedAt\": \"2026-10-23T17:05:23.122Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"capture\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80qy3-uxqp8c\",\n      \"report\": true,\n      \"detached\": true,\n      \"forked\": true,\n      \"forkSourceSha256\": \"a94d6048fb163b50f12f7185127322b469521afe96690a5b0a4d3f565323d190\",\n      \"forkImportId\": \"import_1\",\n      \"forkLabel\": \"imported Claude conversation (fidelity not verified)\"\n    },\n    \"updatedAt\": \"2026-10-23T17:05:25.361Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792775124239,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 15817,\n    \"ownerWaitToken\": \"6b397272-15a0-49bb-bfc6-e48195db309c\",\n    \"startedAt\": \"2026-10-23T17:05:24.276Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 270,\n        \"durationMs\": 182\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 283,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 292,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 312,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 331,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 735\n      }\n    },\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:25.340Z\",\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
           }
         ],
         "exit": {
@@ -2629,7 +3065,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwv06r-sv32p3",
+            "task-mvl80qy3-uxqp8c",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/work tree",
@@ -2642,7 +3078,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n  \"job\": {\n    \"id\": \"task-mvkwv06r-sv32p3\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T11:53:00.339Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwv06r-sv32p3-40f6cb7e-0708-4f08-a927-5e556aee53a4\",\n    \"leaseRenewedAt\": 1792756381523,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758181523,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-91fd5d2dec5cc5d6/jobs/task-mvkwv06r-sv32p3.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-91fd5d2dec5cc5d6/jobs/task-mvkwv06r-sv32p3.result.json\",\n    \"agentName\": \"Gauss\",\n    \"threadId\": \"thr_1\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-91fd5d2dec5cc5d6/jobs/task-mvkwv06r-sv32p3.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/work tree\",\n      \"model\": \"gpt-6-sol\",\n      \"effort\": \"high\",\n      \"serviceTier\": \"priority\",\n      \"prompt\": \"  Preserve leading space.\\nDUET: this second line is brief text.\\n\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\\n\\n### /captured/CLAUDE.md\\nFORK_RULE_SENTINEL\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"capture\",\n        \"approximate\": false,\n        \"complete\": true,\n        \"snapshotHash\": \"8b8ed3d86f4b6897a70b5695862cde4b3c3fd40202df47ea38f30fbbf2e48bdf\",\n        \"renderedHash\": \"b9c96840e6b43527748177f5e209a417bd3e30f407e1c9d590d50c0f3ce7b201\",\n        \"capturedAt\": \"2026-10-23T11:52:59.363Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"capture\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvkwv06r-sv32p3\",\n      \"report\": true,\n      \"detached\": true,\n      \"forked\": true,\n      \"forkSourceSha256\": \"a94d6048fb163b50f12f7185127322b469521afe96690a5b0a4d3f565323d190\",\n      \"forkImportId\": \"import_1\",\n      \"forkLabel\": \"imported Claude conversation (fidelity not verified)\"\n    },\n    \"updatedAt\": \"2026-10-23T11:53:01.701Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756380502,\n    \"ownerDetachedAt\": 1792756381701,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 83637,\n    \"ownerWaitToken\": \"30736758-2459-4656-82c9-05580725edab\",\n    \"startedAt\": \"2026-10-23T11:53:00.536Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 268,\n        \"durationMs\": 181\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 278,\n        \"durationMs\": 48\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 288,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 308,\n        \"durationMs\": 11\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 328,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 732\n      }\n    },\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:53:01.607Z\",\n    \"activityCursors\": {\n      \"69ba43c167d0bd0cb5025c0886130390281a220dd9df0a5c2a63de70582c36eb\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n  \"job\": {\n    \"id\": \"task-mvl80qy3-uxqp8c\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:24.075Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80qy3-uxqp8c-ec5ec768-16e9-489f-a48e-3d662f27a322\",\n    \"leaseRenewedAt\": 1792775125262,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776925262,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-aaab152c15fdd058/jobs/task-mvl80qy3-uxqp8c.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-aaab152c15fdd058/jobs/task-mvl80qy3-uxqp8c.result.json\",\n    \"agentName\": \"Pascal\",\n    \"threadId\": \"thr_1\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-aaab152c15fdd058/jobs/task-mvl80qy3-uxqp8c.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/work tree\",\n      \"model\": \"gpt-6-sol\",\n      \"effort\": \"high\",\n      \"serviceTier\": \"priority\",\n      \"prompt\": \"  Preserve leading space.\\nDUET: this second line is brief text.\\n\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\\n\\n### /captured/CLAUDE.md\\nFORK_RULE_SENTINEL\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"capture\",\n        \"approximate\": false,\n        \"complete\": true,\n        \"snapshotHash\": \"7d67e03b5f3933e5edc366df8f31a76b2ad2c8bbdffa08c28d9624625ff5c4a1\",\n        \"renderedHash\": \"b9c96840e6b43527748177f5e209a417bd3e30f407e1c9d590d50c0f3ce7b201\",\n        \"capturedAt\": \"2026-10-23T17:05:23.122Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"capture\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80qy3-uxqp8c\",\n      \"report\": true,\n      \"detached\": true,\n      \"forked\": true,\n      \"forkSourceSha256\": \"a94d6048fb163b50f12f7185127322b469521afe96690a5b0a4d3f565323d190\",\n      \"forkImportId\": \"import_1\",\n      \"forkLabel\": \"imported Claude conversation (fidelity not verified)\"\n    },\n    \"updatedAt\": \"2026-10-23T17:05:25.463Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775124239,\n    \"ownerDetachedAt\": 1792775125463,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 15817,\n    \"ownerWaitToken\": \"6b397272-15a0-49bb-bfc6-e48195db309c\",\n    \"startedAt\": \"2026-10-23T17:05:24.276Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 270,\n        \"durationMs\": 182\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 283,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 292,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 312,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 331,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 735\n      }\n    },\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:25.340Z\",\n    \"activityCursors\": {\n      \"2be7fd05f65691577000a921b6761edb9393ff8c7a8015b1a50ce98c6c7db89b\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
           }
         ],
         "exit": {
@@ -2659,6 +3095,8 @@ export const captures = [
             "status",
             "--all",
             "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-1",
             "--cwd",
             "/private/tmp/duet14-g-fixture/work tree",
             "--session",
@@ -2670,7 +3108,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-iVuybR/cxc-zNDwZx/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvkwv06r-sv32p3\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T11:53:00.339Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwv06r-sv32p3-40f6cb7e-0708-4f08-a927-5e556aee53a4\",\n    \"leaseRenewedAt\": 1792756381523,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758181523,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-91fd5d2dec5cc5d6/jobs/task-mvkwv06r-sv32p3.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-91fd5d2dec5cc5d6/jobs/task-mvkwv06r-sv32p3.result.json\",\n    \"agentName\": \"Gauss\",\n    \"threadId\": \"thr_1\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-91fd5d2dec5cc5d6/jobs/task-mvkwv06r-sv32p3.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/work tree\",\n      \"model\": \"gpt-6-sol\",\n      \"effort\": \"high\",\n      \"serviceTier\": \"priority\",\n      \"prompt\": \"  Preserve leading space.\\nDUET: this second line is brief text.\\n\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\\n\\n### /captured/CLAUDE.md\\nFORK_RULE_SENTINEL\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"capture\",\n        \"approximate\": false,\n        \"complete\": true,\n        \"snapshotHash\": \"8b8ed3d86f4b6897a70b5695862cde4b3c3fd40202df47ea38f30fbbf2e48bdf\",\n        \"renderedHash\": \"b9c96840e6b43527748177f5e209a417bd3e30f407e1c9d590d50c0f3ce7b201\",\n        \"capturedAt\": \"2026-10-23T11:52:59.363Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"capture\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvkwv06r-sv32p3\",\n      \"report\": true,\n      \"detached\": true,\n      \"forked\": true,\n      \"forkSourceSha256\": \"a94d6048fb163b50f12f7185127322b469521afe96690a5b0a4d3f565323d190\",\n      \"forkImportId\": \"import_1\",\n      \"forkLabel\": \"imported Claude conversation (fidelity not verified)\"\n    },\n    \"updatedAt\": \"2026-10-23T11:53:01.701Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756380502,\n    \"ownerDetachedAt\": 1792756381701,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 83637,\n    \"ownerWaitToken\": \"30736758-2459-4656-82c9-05580725edab\",\n    \"startedAt\": \"2026-10-23T11:53:00.536Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 268,\n        \"durationMs\": 181\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 278,\n        \"durationMs\": 48\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 288,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 308,\n        \"durationMs\": 11\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 328,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 732\n      }\n    },\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:53:01.607Z\",\n    \"activityCursors\": {\n      \"69ba43c167d0bd0cb5025c0886130390281a220dd9df0a5c2a63de70582c36eb\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-A8DXtx/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl80qy3-uxqp8c\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:24.075Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80qy3-uxqp8c-ec5ec768-16e9-489f-a48e-3d662f27a322\",\n    \"leaseRenewedAt\": 1792775125262,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776925262,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-aaab152c15fdd058/jobs/task-mvl80qy3-uxqp8c.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-aaab152c15fdd058/jobs/task-mvl80qy3-uxqp8c.result.json\",\n    \"agentName\": \"Pascal\",\n    \"threadId\": \"thr_1\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-aaab152c15fdd058/jobs/task-mvl80qy3-uxqp8c.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/work tree\",\n      \"model\": \"gpt-6-sol\",\n      \"effort\": \"high\",\n      \"serviceTier\": \"priority\",\n      \"prompt\": \"  Preserve leading space.\\nDUET: this second line is brief text.\\n\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\\n\\n### /captured/CLAUDE.md\\nFORK_RULE_SENTINEL\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"capture\",\n        \"approximate\": false,\n        \"complete\": true,\n        \"snapshotHash\": \"7d67e03b5f3933e5edc366df8f31a76b2ad2c8bbdffa08c28d9624625ff5c4a1\",\n        \"renderedHash\": \"b9c96840e6b43527748177f5e209a417bd3e30f407e1c9d590d50c0f3ce7b201\",\n        \"capturedAt\": \"2026-10-23T17:05:23.122Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"capture\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80qy3-uxqp8c\",\n      \"report\": true,\n      \"detached\": true,\n      \"forked\": true,\n      \"forkSourceSha256\": \"a94d6048fb163b50f12f7185127322b469521afe96690a5b0a4d3f565323d190\",\n      \"forkImportId\": \"import_1\",\n      \"forkLabel\": \"imported Claude conversation (fidelity not verified)\"\n    },\n    \"updatedAt\": \"2026-10-23T17:05:25.463Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775124239,\n    \"ownerDetachedAt\": 1792775125463,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 15817,\n    \"ownerWaitToken\": \"6b397272-15a0-49bb-bfc6-e48195db309c\",\n    \"startedAt\": \"2026-10-23T17:05:24.276Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 270,\n        \"durationMs\": 182\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 283,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 292,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 312,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 331,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 735\n      }\n    },\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:25.340Z\",\n    \"activityCursors\": {\n      \"2be7fd05f65691577000a921b6761edb9393ff8c7a8015b1a50ce98c6c7db89b\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
           }
         ],
         "exit": {
@@ -2685,7 +3123,7 @@ export const captures = [
             "/host/node",
             "/plugin/bin/duet",
             "status",
-            "task-mvkwv06r-sv32p3",
+            "task-mvl80qy3-uxqp8c",
             "--json",
             "--cwd",
             "/private/tmp/duet14-g-fixture/work tree",
@@ -2698,7 +3136,7 @@ export const captures = [
         "chunks": [
           {
             "stream": "stdout",
-            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n  \"job\": {\n    \"id\": \"task-mvkwv06r-sv32p3\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T11:53:00.339Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvkwv06r-sv32p3-40f6cb7e-0708-4f08-a927-5e556aee53a4\",\n    \"leaseRenewedAt\": 1792756381523,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792758181523,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-91fd5d2dec5cc5d6/jobs/task-mvkwv06r-sv32p3.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-91fd5d2dec5cc5d6/jobs/task-mvkwv06r-sv32p3.result.json\",\n    \"agentName\": \"Gauss\",\n    \"threadId\": \"thr_1\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-91fd5d2dec5cc5d6/jobs/task-mvkwv06r-sv32p3.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/work tree\",\n      \"model\": \"gpt-6-sol\",\n      \"effort\": \"high\",\n      \"serviceTier\": \"priority\",\n      \"prompt\": \"  Preserve leading space.\\nDUET: this second line is brief text.\\n\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\\n\\n### /captured/CLAUDE.md\\nFORK_RULE_SENTINEL\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"capture\",\n        \"approximate\": false,\n        \"complete\": true,\n        \"snapshotHash\": \"8b8ed3d86f4b6897a70b5695862cde4b3c3fd40202df47ea38f30fbbf2e48bdf\",\n        \"renderedHash\": \"b9c96840e6b43527748177f5e209a417bd3e30f407e1c9d590d50c0f3ce7b201\",\n        \"capturedAt\": \"2026-10-23T11:52:59.363Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"capture\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvkwv06r-sv32p3\",\n      \"report\": true,\n      \"detached\": true,\n      \"forked\": true,\n      \"forkSourceSha256\": \"a94d6048fb163b50f12f7185127322b469521afe96690a5b0a4d3f565323d190\",\n      \"forkImportId\": \"import_1\",\n      \"forkLabel\": \"imported Claude conversation (fidelity not verified)\"\n    },\n    \"updatedAt\": \"2026-10-23T11:53:01.701Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792756380502,\n    \"ownerDetachedAt\": 1792756381701,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 83637,\n    \"ownerWaitToken\": \"30736758-2459-4656-82c9-05580725edab\",\n    \"startedAt\": \"2026-10-23T11:53:00.536Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 268,\n        \"durationMs\": 181\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 278,\n        \"durationMs\": 48\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 288,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 308,\n        \"durationMs\": 11\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 328,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 732\n      }\n    },\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T11:53:01.607Z\",\n    \"activityCursors\": {\n      \"69ba43c167d0bd0cb5025c0886130390281a220dd9df0a5c2a63de70582c36eb\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n  \"job\": {\n    \"id\": \"task-mvl80qy3-uxqp8c\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/work tree\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:24.075Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80qy3-uxqp8c-ec5ec768-16e9-489f-a48e-3d662f27a322\",\n    \"leaseRenewedAt\": 1792775125262,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-1\",\n    \"leaseExpiresAt\": 1792776925262,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-aaab152c15fdd058/jobs/task-mvl80qy3-uxqp8c.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-aaab152c15fdd058/jobs/task-mvl80qy3-uxqp8c.result.json\",\n    \"agentName\": \"Pascal\",\n    \"threadId\": \"thr_1\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/work-tree-aaab152c15fdd058/jobs/task-mvl80qy3-uxqp8c.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/work tree\",\n      \"model\": \"gpt-6-sol\",\n      \"effort\": \"high\",\n      \"serviceTier\": \"priority\",\n      \"prompt\": \"  Preserve leading space.\\nDUET: this second line is brief text.\\n\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\\n\\n### /captured/CLAUDE.md\\nFORK_RULE_SENTINEL\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"capture\",\n        \"approximate\": false,\n        \"complete\": true,\n        \"snapshotHash\": \"7d67e03b5f3933e5edc366df8f31a76b2ad2c8bbdffa08c28d9624625ff5c4a1\",\n        \"renderedHash\": \"b9c96840e6b43527748177f5e209a417bd3e30f407e1c9d590d50c0f3ce7b201\",\n        \"capturedAt\": \"2026-10-23T17:05:23.122Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"capture\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80qy3-uxqp8c\",\n      \"report\": true,\n      \"detached\": true,\n      \"forked\": true,\n      \"forkSourceSha256\": \"a94d6048fb163b50f12f7185127322b469521afe96690a5b0a4d3f565323d190\",\n      \"forkImportId\": \"import_1\",\n      \"forkLabel\": \"imported Claude conversation (fidelity not verified)\"\n    },\n    \"updatedAt\": \"2026-10-23T17:05:25.463Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775124239,\n    \"ownerDetachedAt\": 1792775125463,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 15817,\n    \"ownerWaitToken\": \"6b397272-15a0-49bb-bfc6-e48195db309c\",\n    \"startedAt\": \"2026-10-23T17:05:24.276Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 270,\n        \"durationMs\": 182\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 283,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 292,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 312,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 331,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 735\n      }\n    },\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:25.340Z\",\n    \"activityCursors\": {\n      \"2be7fd05f65691577000a921b6761edb9393ff8c7a8015b1a50ce98c6c7db89b\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
           }
         ],
         "exit": {
@@ -2715,7 +3153,7 @@ export const captures = [
           "content": [
             {
               "type": "text",
-              "text": "Codex worker Gauss started · job task-mvkwv06r-sv32p3 · gpt-6-sol / high / read-only"
+              "text": "Codex worker Pascal started · job task-mvl80qy3-uxqp8c · gpt-6-sol / high / read-only"
             }
           ]
         }
@@ -2731,21 +3169,35 @@ export const captures = [
             }
           ]
         }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex usage · 150 input (40 cached) · 30 output tokens"
+            }
+          ]
+        }
       }
     ],
     "store": {
       "native:v2:native-session:native-agent": {
-        "v": 2,
         "type": "codex:codex-native",
         "session": "native-session",
         "agentId": "native-agent",
         "name": "native-worker",
+        "permissionMode": "default",
+        "v": 2,
         "cwd": "/private/tmp/duet14-g-fixture/work tree",
         "notices": {
           "turnId": "turn-1",
-          "count": 2,
-          "last": "Codex: [completed] Handled the requested task. Task prompt accepted.",
-          "started": true
+          "count": 3,
+          "last": "Codex usage · 150 input (40 cached) · 30 output tokens",
+          "started": true,
+          "usage": true
         },
         "intent": {
           "session": "native-session",
@@ -2754,16 +3206,15 @@ export const captures = [
           "kind": "task",
           "nonce": "native-session:native-agent:turn-1"
         },
-        "jobId": "task-mvkwv06r-sv32p3",
-        "ownerId": "task-mvkwv06r-sv32p3-40f6cb7e-0708-4f08-a927-5e556aee53a4",
+        "jobId": "task-mvl80qy3-uxqp8c",
+        "ownerId": "task-mvl80qy3-uxqp8c-ec5ec768-16e9-489f-a48e-3d662f27a322",
         "threadId": "thr_1",
-        "worker": "Gauss",
+        "worker": "Pascal",
         "status": "completed",
-        "questionId": null,
         "answer": {
           "status": "completed",
-          "worker": "Gauss",
-          "jobId": "task-mvkwv06r-sv32p3",
+          "worker": "Pascal",
+          "jobId": "task-mvl80qy3-uxqp8c",
           "summary": "Handled the requested task.\nTask prompt accepted.",
           "checks": {
             "ran": [],
@@ -2779,8 +3230,15 @@ export const captures = [
             "Fixture finding one",
             "Fixture finding two"
           ],
+          "usage": {
+            "inputTokens": 150,
+            "cachedInputTokens": 40,
+            "outputTokens": 30,
+            "reasoningOutputTokens": 10,
+            "totalTokens": 180
+          },
           "next": "SendMessage to native-worker to continue",
-          "details": "duet result Gauss --details"
+          "details": "duet result 'task-mvl80qy3-uxqp8c' --details"
         },
         "answeredTurn": "turn-1",
         "finishedAt": 1800000000000
@@ -2790,6 +3248,20 @@ export const captures = [
   {
     "behavior": "slow-task",
     "events": [
+      {
+        "event": "tool.call",
+        "input": {
+          "tool": "Agent",
+          "tool_use_id": "spawn-1",
+          "subagent_type": "codex:codex-native",
+          "description": "Native fake task",
+          "prompt": "DUET: --approve-browser-origin https://example.test\nNever dispatch.",
+          "effort": "high"
+        },
+        "result": {
+          "result": {}
+        }
+      },
       {
         "event": "agent.spawn",
         "input": {
@@ -2803,6 +3275,7 @@ export const captures = [
           },
           "parentModel": "haiku",
           "background": true,
+          "permissionMode": "default",
           "fork": false,
           "name": "native-worker",
           "cwd": "/private/tmp/duet14-g-fixture/repo"
@@ -2830,6 +3303,7 @@ export const captures = [
           "turnId": "turn-1",
           "index": 0,
           "model": "haiku",
+          "effort": "low",
           "messageCount": 1
         },
         "chunks": [
@@ -2867,38 +3341,2043 @@ export const captures = [
         "result": {
           "text": "{\"status\":\"blocked\",\"worker\":null,\"jobId\":null,\"summary\":\"Invalid DUET header. Allowed flags: --model, --effort, --sandbox, --fast/--normal, --cwd, --fork.\",\"blockers\":[{\"code\":\"native_adapter_error\",\"message\":\"Invalid DUET header. Allowed flags: --model, --effort, --sandbox, --fast/--normal, --cwd, --fork.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":null}"
         }
+      },
+      {
+        "event": "agent.spawn",
+        "input": {
+          "tool_use_id": "spawn-2",
+          "prompt": "DUET: --sandbox invalid\nReject before reserving a job.",
+          "description": "Native fake task",
+          "subagentType": "codex:codex-native",
+          "provider": {
+            "plugin": "codex",
+            "tier": "user"
+          },
+          "parentModel": "haiku",
+          "background": true,
+          "permissionMode": "default",
+          "fork": false,
+          "name": "native-worker",
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "resume": {
+            "agentId": "native-agent"
+          }
+        },
+        "result": {
+          "model": "haiku",
+          "agentId": "native-agent"
+        }
+      },
+      {
+        "event": "turn.start",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-2",
+          "text": "DUET: --sandbox invalid\nReject before reserving a job."
+        },
+        "result": {
+          "turnId": "turn-2"
+        }
+      },
+      {
+        "event": "turn.step",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-2",
+          "index": 0,
+          "model": "haiku",
+          "effort": "low",
+          "messageCount": 1
+        },
+        "chunks": [
+          {
+            "kind": "text",
+            "index": 1,
+            "text": "{\"status\":\"blocked\",\"worker\":null,\"jobId\":null,\"summary\":\"--sandbox must be read-only, workspace-write, or danger-full-access.\",\"blockers\":[{\"code\":\"native_adapter_error\",\"message\":\"--sandbox must be read-only, workspace-write, or danger-full-access.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":null}"
+          },
+          {
+            "kind": "stop",
+            "stopReason": "end_turn",
+            "usage": null
+          }
+        ],
+        "result": {
+          "turnId": "turn-2",
+          "index": 0,
+          "answer": "{\"status\":\"blocked\",\"worker\":null,\"jobId\":null,\"summary\":\"--sandbox must be read-only, workspace-write, or danger-full-access.\",\"blockers\":[{\"code\":\"native_adapter_error\",\"message\":\"--sandbox must be read-only, workspace-write, or danger-full-access.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":null}",
+          "toolUses": [],
+          "stopReason": "end_turn",
+          "usage": null
+        },
+        "processCount": 3
+      },
+      {
+        "event": "turn.complete",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-2",
+          "answer": "{\"status\":\"blocked\",\"worker\":null,\"jobId\":null,\"summary\":\"--sandbox must be read-only, workspace-write, or danger-full-access.\",\"blockers\":[{\"code\":\"native_adapter_error\",\"message\":\"--sandbox must be read-only, workspace-write, or danger-full-access.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":null}",
+          "durationMs": 1,
+          "isAborted": false,
+          "reason": "answer"
+        },
+        "result": {
+          "text": "{\"status\":\"blocked\",\"worker\":null,\"jobId\":null,\"summary\":\"--sandbox must be read-only, workspace-write, or danger-full-access.\",\"blockers\":[{\"code\":\"native_adapter_error\",\"message\":\"--sandbox must be read-only, workspace-write, or danger-full-access.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":null}"
+        }
+      },
+      {
+        "event": "reload",
+        "store": {
+          "native:v2:native-session:native-agent": {
+            "type": "codex:codex-native",
+            "session": "native-session",
+            "agentId": "native-agent",
+            "name": "native-worker",
+            "permissionMode": "default",
+            "effort": "high",
+            "v": 2,
+            "cwd": "/private/tmp/duet14-g-fixture/repo",
+            "notices": {
+              "turnId": "turn-2",
+              "count": 0
+            },
+            "answeredTurn": "turn-2",
+            "intent": {
+              "session": "native-session",
+              "agentId": "native-agent",
+              "turnId": "turn-2",
+              "kind": "task",
+              "nonce": "native-session:native-agent:turn-2"
+            },
+            "answer": {
+              "status": "blocked",
+              "worker": null,
+              "jobId": null,
+              "summary": "--sandbox must be read-only, workspace-write, or danger-full-access.",
+              "blockers": [
+                {
+                  "code": "native_adapter_error",
+                  "message": "--sandbox must be read-only, workspace-write, or danger-full-access."
+                }
+              ],
+              "next": "SendMessage to native-worker to continue",
+              "details": null
+            },
+            "finishedAt": 1800000000000
+          },
+          "native:closed:v1:native-session:native-agent": {
+            "turnId": "turn-2",
+            "at": 1800000000000
+          }
+        }
+      },
+      {
+        "event": "agent.spawn",
+        "input": {
+          "tool_use_id": "spawn-3",
+          "prompt": "Corrected foreground plan.",
+          "description": "Native fake task",
+          "subagentType": "codex:codex-native",
+          "provider": {
+            "plugin": "codex",
+            "tier": "user"
+          },
+          "parentModel": "haiku",
+          "background": false,
+          "permissionMode": "plan",
+          "fork": false,
+          "name": "native-worker",
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "resume": {
+            "agentId": "native-agent"
+          }
+        },
+        "result": {
+          "model": "haiku",
+          "agentId": "native-agent"
+        }
+      },
+      {
+        "event": "turn.start",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-3",
+          "text": "Corrected foreground plan."
+        },
+        "result": {
+          "turnId": "turn-3"
+        }
+      },
+      {
+        "event": "turn.step",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-3",
+          "index": 0,
+          "model": "haiku",
+          "effort": "low",
+          "messageCount": 1
+        },
+        "chunks": [
+          {
+            "kind": "thinking",
+            "index": 0,
+            "text": "Codex: [completed] Handled the requested task. Task prompt accepted."
+          },
+          {
+            "kind": "text",
+            "index": 1,
+            "text": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80t6r-7wm5gf\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80t6r-7wm5gf' --details\"}"
+          },
+          {
+            "kind": "stop",
+            "stopReason": "end_turn",
+            "usage": null
+          }
+        ],
+        "result": {
+          "turnId": "turn-3",
+          "index": 0,
+          "answer": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80t6r-7wm5gf\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80t6r-7wm5gf' --details\"}",
+          "toolUses": [],
+          "stopReason": "end_turn",
+          "usage": null
+        },
+        "processCount": 9
+      },
+      {
+        "event": "turn.complete",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-3",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80t6r-7wm5gf\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80t6r-7wm5gf' --details\"}",
+          "durationMs": 1,
+          "isAborted": false,
+          "reason": "answer"
+        },
+        "result": {
+          "text": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80t6r-7wm5gf\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80t6r-7wm5gf' --details\"}"
+        }
+      },
+      {
+        "event": "agent.spawn",
+        "input": {
+          "tool_use_id": "spawn-4",
+          "prompt": "DUET: --fork\nReject a fork continuation.",
+          "description": "Native fake task",
+          "subagentType": "codex:codex-native",
+          "provider": {
+            "plugin": "codex",
+            "tier": "user"
+          },
+          "parentModel": "haiku",
+          "background": true,
+          "permissionMode": "default",
+          "fork": false,
+          "name": "native-worker",
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "resume": {
+            "agentId": "native-agent"
+          }
+        },
+        "result": {
+          "model": "haiku",
+          "agentId": "native-agent"
+        }
+      },
+      {
+        "event": "turn.start",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-4",
+          "text": "DUET: --fork\nReject a fork continuation."
+        },
+        "result": {
+          "turnId": "turn-4"
+        }
+      },
+      {
+        "event": "turn.step",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-4",
+          "index": 0,
+          "model": "haiku",
+          "effort": "low",
+          "messageCount": 1
+        },
+        "chunks": [
+          {
+            "kind": "text",
+            "index": 1,
+            "text": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":null,\"summary\":\"--fork cannot be combined with --thread. Use --to for a follow-up after the fork completes.\",\"blockers\":[{\"code\":\"native_adapter_error\",\"message\":\"--fork cannot be combined with --thread. Use --to for a follow-up after the fork completes.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Euler --details\"}"
+          },
+          {
+            "kind": "stop",
+            "stopReason": "end_turn",
+            "usage": null
+          }
+        ],
+        "result": {
+          "turnId": "turn-4",
+          "index": 0,
+          "answer": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":null,\"summary\":\"--fork cannot be combined with --thread. Use --to for a follow-up after the fork completes.\",\"blockers\":[{\"code\":\"native_adapter_error\",\"message\":\"--fork cannot be combined with --thread. Use --to for a follow-up after the fork completes.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Euler --details\"}",
+          "toolUses": [],
+          "stopReason": "end_turn",
+          "usage": null
+        },
+        "processCount": 11
+      },
+      {
+        "event": "turn.complete",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-4",
+          "answer": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":null,\"summary\":\"--fork cannot be combined with --thread. Use --to for a follow-up after the fork completes.\",\"blockers\":[{\"code\":\"native_adapter_error\",\"message\":\"--fork cannot be combined with --thread. Use --to for a follow-up after the fork completes.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Euler --details\"}",
+          "durationMs": 1,
+          "isAborted": false,
+          "reason": "answer"
+        },
+        "result": {
+          "text": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":null,\"summary\":\"--fork cannot be combined with --thread. Use --to for a follow-up after the fork completes.\",\"blockers\":[{\"code\":\"native_adapter_error\",\"message\":\"--fork cannot be combined with --thread. Use --to for a follow-up after the fork completes.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Euler --details\"}"
+        }
+      },
+      {
+        "event": "reload",
+        "store": {
+          "native:v2:native-session:native-agent": {
+            "type": "codex:codex-native",
+            "session": "native-session",
+            "agentId": "native-agent",
+            "name": "native-worker",
+            "permissionMode": "default",
+            "effort": "high",
+            "v": 2,
+            "cwd": "/private/tmp/duet14-g-fixture/repo",
+            "notices": {
+              "turnId": "turn-4",
+              "count": 0
+            },
+            "answeredTurn": "turn-4",
+            "intent": {
+              "session": "native-session",
+              "agentId": "native-agent",
+              "turnId": "turn-4",
+              "kind": "task",
+              "nonce": "native-session:native-agent:turn-4"
+            },
+            "threadId": "thr_1",
+            "worker": "Euler",
+            "answer": {
+              "status": "blocked",
+              "worker": "Euler",
+              "jobId": null,
+              "summary": "--fork cannot be combined with --thread. Use --to for a follow-up after the fork completes.",
+              "blockers": [
+                {
+                  "code": "native_adapter_error",
+                  "message": "--fork cannot be combined with --thread. Use --to for a follow-up after the fork completes."
+                }
+              ],
+              "next": "SendMessage to native-worker to continue",
+              "details": "duet result Euler --details"
+            },
+            "finishedAt": 1800000000000
+          },
+          "native:closed:v1:native-session:native-agent": {
+            "turnId": "turn-4",
+            "at": 1800000000000
+          }
+        }
+      },
+      {
+        "event": "agent.spawn",
+        "input": {
+          "tool_use_id": "spawn-5",
+          "prompt": "DUET: --sandbox workspace-write\nContinue outside plan mode.",
+          "description": "Native fake task",
+          "subagentType": "codex:codex-native",
+          "provider": {
+            "plugin": "codex",
+            "tier": "user"
+          },
+          "parentModel": "haiku",
+          "background": true,
+          "permissionMode": "default",
+          "fork": false,
+          "name": "native-worker",
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "resume": {
+            "agentId": "native-agent"
+          }
+        },
+        "result": {
+          "model": "haiku",
+          "agentId": "native-agent"
+        }
+      },
+      {
+        "event": "turn.start",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-5",
+          "text": "DUET: --sandbox workspace-write\nContinue outside plan mode."
+        },
+        "result": {
+          "turnId": "turn-5"
+        }
+      },
+      {
+        "event": "turn.step",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-5",
+          "index": 0,
+          "model": "haiku",
+          "effort": "low",
+          "messageCount": 1
+        },
+        "chunks": [
+          {
+            "kind": "thinking",
+            "index": 0,
+            "text": "Codex: [completed] Handled the requested task. Task prompt accepted."
+          },
+          {
+            "kind": "text",
+            "index": 1,
+            "text": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80uyg-b987r4\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80uyg-b987r4' --details\"}"
+          },
+          {
+            "kind": "stop",
+            "stopReason": "end_turn",
+            "usage": null
+          }
+        ],
+        "result": {
+          "turnId": "turn-5",
+          "index": 0,
+          "answer": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80uyg-b987r4\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80uyg-b987r4' --details\"}",
+          "toolUses": [],
+          "stopReason": "end_turn",
+          "usage": null
+        },
+        "processCount": 17
+      },
+      {
+        "event": "turn.complete",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-5",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80uyg-b987r4\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80uyg-b987r4' --details\"}",
+          "durationMs": 1,
+          "isAborted": false,
+          "reason": "answer"
+        },
+        "result": {
+          "text": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80uyg-b987r4\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80uyg-b987r4' --details\"}"
+        }
+      },
+      {
+        "event": "agent.spawn",
+        "input": {
+          "tool_use_id": "spawn-6",
+          "prompt": "DUET: --sandbox danger-full-access\nPlan cannot write.",
+          "description": "Native fake task",
+          "subagentType": "codex:codex-native",
+          "provider": {
+            "plugin": "codex",
+            "tier": "user"
+          },
+          "parentModel": "haiku",
+          "background": true,
+          "permissionMode": "plan",
+          "fork": false,
+          "name": "native-worker",
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "resume": {
+            "agentId": "native-agent"
+          }
+        },
+        "result": {
+          "model": "haiku",
+          "agentId": "native-agent"
+        }
+      },
+      {
+        "event": "turn.start",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-6",
+          "text": "DUET: --sandbox danger-full-access\nPlan cannot write."
+        },
+        "result": {
+          "turnId": "turn-6"
+        }
+      },
+      {
+        "event": "turn.step",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-6",
+          "index": 0,
+          "model": "haiku",
+          "effort": "low",
+          "messageCount": 1
+        },
+        "chunks": [
+          {
+            "kind": "text",
+            "index": 1,
+            "text": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80uyg-b987r4\",\"summary\":\"Plan mode permits only the read-only Codex sandbox.\",\"blockers\":[{\"code\":\"native_plan_mode_read_only\",\"message\":\"Plan mode permits only the read-only Codex sandbox.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80uyg-b987r4' --details\"}"
+          },
+          {
+            "kind": "stop",
+            "stopReason": "end_turn",
+            "usage": null
+          }
+        ],
+        "result": {
+          "turnId": "turn-6",
+          "index": 0,
+          "answer": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80uyg-b987r4\",\"summary\":\"Plan mode permits only the read-only Codex sandbox.\",\"blockers\":[{\"code\":\"native_plan_mode_read_only\",\"message\":\"Plan mode permits only the read-only Codex sandbox.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80uyg-b987r4' --details\"}",
+          "toolUses": [],
+          "stopReason": "end_turn",
+          "usage": null
+        },
+        "processCount": 17
+      },
+      {
+        "event": "turn.complete",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-6",
+          "answer": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80uyg-b987r4\",\"summary\":\"Plan mode permits only the read-only Codex sandbox.\",\"blockers\":[{\"code\":\"native_plan_mode_read_only\",\"message\":\"Plan mode permits only the read-only Codex sandbox.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80uyg-b987r4' --details\"}",
+          "durationMs": 1,
+          "isAborted": false,
+          "reason": "answer"
+        },
+        "result": {
+          "text": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80uyg-b987r4\",\"summary\":\"Plan mode permits only the read-only Codex sandbox.\",\"blockers\":[{\"code\":\"native_plan_mode_read_only\",\"message\":\"Plan mode permits only the read-only Codex sandbox.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80uyg-b987r4' --details\"}"
+        }
+      },
+      {
+        "event": "agent.spawn",
+        "input": {
+          "tool_use_id": "spawn-7",
+          "prompt": "DUET: --sandbox workspace-write\nPlan cannot write.",
+          "description": "Native fake task",
+          "subagentType": "codex:codex-native",
+          "provider": {
+            "plugin": "codex",
+            "tier": "user"
+          },
+          "parentModel": "haiku",
+          "background": true,
+          "permissionMode": "plan",
+          "fork": false,
+          "name": "native-worker",
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "resume": {
+            "agentId": "native-agent"
+          }
+        },
+        "result": {
+          "model": "haiku",
+          "agentId": "native-agent"
+        }
+      },
+      {
+        "event": "turn.start",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-7",
+          "text": "DUET: --sandbox workspace-write\nPlan cannot write."
+        },
+        "result": {
+          "turnId": "turn-7"
+        }
+      },
+      {
+        "event": "turn.step",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-7",
+          "index": 0,
+          "model": "haiku",
+          "effort": "low",
+          "messageCount": 1
+        },
+        "chunks": [
+          {
+            "kind": "text",
+            "index": 1,
+            "text": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80uyg-b987r4\",\"summary\":\"Plan mode permits only the read-only Codex sandbox.\",\"blockers\":[{\"code\":\"native_plan_mode_read_only\",\"message\":\"Plan mode permits only the read-only Codex sandbox.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80uyg-b987r4' --details\"}"
+          },
+          {
+            "kind": "stop",
+            "stopReason": "end_turn",
+            "usage": null
+          }
+        ],
+        "result": {
+          "turnId": "turn-7",
+          "index": 0,
+          "answer": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80uyg-b987r4\",\"summary\":\"Plan mode permits only the read-only Codex sandbox.\",\"blockers\":[{\"code\":\"native_plan_mode_read_only\",\"message\":\"Plan mode permits only the read-only Codex sandbox.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80uyg-b987r4' --details\"}",
+          "toolUses": [],
+          "stopReason": "end_turn",
+          "usage": null
+        },
+        "processCount": 17
+      },
+      {
+        "event": "turn.complete",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-7",
+          "answer": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80uyg-b987r4\",\"summary\":\"Plan mode permits only the read-only Codex sandbox.\",\"blockers\":[{\"code\":\"native_plan_mode_read_only\",\"message\":\"Plan mode permits only the read-only Codex sandbox.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80uyg-b987r4' --details\"}",
+          "durationMs": 1,
+          "isAborted": false,
+          "reason": "answer"
+        },
+        "result": {
+          "text": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80uyg-b987r4\",\"summary\":\"Plan mode permits only the read-only Codex sandbox.\",\"blockers\":[{\"code\":\"native_plan_mode_read_only\",\"message\":\"Plan mode permits only the read-only Codex sandbox.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80uyg-b987r4' --details\"}"
+        }
+      },
+      {
+        "event": "agent.spawn",
+        "input": {
+          "tool_use_id": "spawn-8",
+          "prompt": "DUET: --effort low\nContinue planning.",
+          "description": "Native fake task",
+          "subagentType": "codex:codex-native",
+          "provider": {
+            "plugin": "codex",
+            "tier": "user"
+          },
+          "parentModel": "haiku",
+          "background": true,
+          "permissionMode": "plan",
+          "fork": false,
+          "name": "native-worker",
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "resume": {
+            "agentId": "native-agent"
+          }
+        },
+        "result": {
+          "model": "haiku",
+          "agentId": "native-agent"
+        }
+      },
+      {
+        "event": "turn.start",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-8",
+          "text": "DUET: --effort low\nContinue planning."
+        },
+        "result": {
+          "turnId": "turn-8"
+        }
+      },
+      {
+        "event": "turn.step",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-8",
+          "index": 0,
+          "model": "haiku",
+          "effort": "low",
+          "messageCount": 1
+        },
+        "chunks": [
+          {
+            "kind": "thinking",
+            "index": 0,
+            "text": "Codex: [completed] Handled the requested task. Task prompt accepted."
+          },
+          {
+            "kind": "text",
+            "index": 1,
+            "text": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80wi0-0q0zv4\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":12345,\"cachedInputTokens\":8000,\"outputTokens\":678,\"reasoningOutputTokens\":12,\"totalTokens\":13023},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80wi0-0q0zv4' --details\"}"
+          },
+          {
+            "kind": "stop",
+            "stopReason": "end_turn",
+            "usage": null
+          }
+        ],
+        "result": {
+          "turnId": "turn-8",
+          "index": 0,
+          "answer": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80wi0-0q0zv4\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":12345,\"cachedInputTokens\":8000,\"outputTokens\":678,\"reasoningOutputTokens\":12,\"totalTokens\":13023},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80wi0-0q0zv4' --details\"}",
+          "toolUses": [],
+          "stopReason": "end_turn",
+          "usage": null
+        },
+        "processCount": 22
+      },
+      {
+        "event": "turn.complete",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-8",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80wi0-0q0zv4\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":12345,\"cachedInputTokens\":8000,\"outputTokens\":678,\"reasoningOutputTokens\":12,\"totalTokens\":13023},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80wi0-0q0zv4' --details\"}",
+          "durationMs": 1,
+          "isAborted": false,
+          "reason": "answer"
+        },
+        "result": {
+          "text": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80wi0-0q0zv4\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":12345,\"cachedInputTokens\":8000,\"outputTokens\":678,\"reasoningOutputTokens\":12,\"totalTokens\":13023},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80wi0-0q0zv4' --details\"}"
+        }
+      },
+      {
+        "event": "agent.spawn",
+        "input": {
+          "tool_use_id": "spawn-9",
+          "prompt": "Dispatch with the fixture binary unavailable.",
+          "description": "Native fake task",
+          "subagentType": "codex:codex-native",
+          "provider": {
+            "plugin": "codex",
+            "tier": "user"
+          },
+          "parentModel": "haiku",
+          "background": true,
+          "permissionMode": "default",
+          "fork": false,
+          "name": "native-worker",
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "resume": {
+            "agentId": "native-agent"
+          }
+        },
+        "result": {
+          "model": "haiku",
+          "agentId": "native-agent"
+        }
+      },
+      {
+        "event": "turn.start",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-9",
+          "text": "Dispatch with the fixture binary unavailable."
+        },
+        "result": {
+          "turnId": "turn-9"
+        }
+      },
+      {
+        "event": "turn.step",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-9",
+          "index": 0,
+          "model": "haiku",
+          "effort": "low",
+          "messageCount": 1
+        },
+        "chunks": [
+          {
+            "kind": "text",
+            "index": 1,
+            "text": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":null,\"summary\":\"Selected executable /private/tmp/duet14-g-fixture/bin/unavailable-codex (source: CODEX_COMPANION_BIN) is missing. Fix or remove CODEX_COMPANION_BIN; a global install cannot override this pin.\",\"blockers\":[{\"code\":\"native_adapter_error\",\"message\":\"Selected executable /private/tmp/duet14-g-fixture/bin/unavailable-codex (source: CODEX_COMPANION_BIN) is missing. Fix or remove CODEX_COMPANION_BIN; a global install cannot override this pin.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Euler --details\"}"
+          },
+          {
+            "kind": "stop",
+            "stopReason": "end_turn",
+            "usage": null
+          }
+        ],
+        "result": {
+          "turnId": "turn-9",
+          "index": 0,
+          "answer": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":null,\"summary\":\"Selected executable /private/tmp/duet14-g-fixture/bin/unavailable-codex (source: CODEX_COMPANION_BIN) is missing. Fix or remove CODEX_COMPANION_BIN; a global install cannot override this pin.\",\"blockers\":[{\"code\":\"native_adapter_error\",\"message\":\"Selected executable /private/tmp/duet14-g-fixture/bin/unavailable-codex (source: CODEX_COMPANION_BIN) is missing. Fix or remove CODEX_COMPANION_BIN; a global install cannot override this pin.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Euler --details\"}",
+          "toolUses": [],
+          "stopReason": "end_turn",
+          "usage": null
+        },
+        "processCount": 24
+      },
+      {
+        "event": "turn.complete",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-9",
+          "answer": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":null,\"summary\":\"Selected executable /private/tmp/duet14-g-fixture/bin/unavailable-codex (source: CODEX_COMPANION_BIN) is missing. Fix or remove CODEX_COMPANION_BIN; a global install cannot override this pin.\",\"blockers\":[{\"code\":\"native_adapter_error\",\"message\":\"Selected executable /private/tmp/duet14-g-fixture/bin/unavailable-codex (source: CODEX_COMPANION_BIN) is missing. Fix or remove CODEX_COMPANION_BIN; a global install cannot override this pin.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Euler --details\"}",
+          "durationMs": 1,
+          "isAborted": false,
+          "reason": "answer"
+        },
+        "result": {
+          "text": "{\"status\":\"blocked\",\"worker\":\"Euler\",\"jobId\":null,\"summary\":\"Selected executable /private/tmp/duet14-g-fixture/bin/unavailable-codex (source: CODEX_COMPANION_BIN) is missing. Fix or remove CODEX_COMPANION_BIN; a global install cannot override this pin.\",\"blockers\":[{\"code\":\"native_adapter_error\",\"message\":\"Selected executable /private/tmp/duet14-g-fixture/bin/unavailable-codex (source: CODEX_COMPANION_BIN) is missing. Fix or remove CODEX_COMPANION_BIN; a global install cannot override this pin.\"}],\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result Euler --details\"}"
+        }
+      },
+      {
+        "event": "reload",
+        "store": {
+          "native:v2:native-session:native-agent": {
+            "type": "codex:codex-native",
+            "session": "native-session",
+            "agentId": "native-agent",
+            "name": "native-worker",
+            "permissionMode": "default",
+            "effort": "high",
+            "v": 2,
+            "cwd": "/private/tmp/duet14-g-fixture/repo",
+            "notices": {
+              "turnId": "turn-9",
+              "count": 0
+            },
+            "answeredTurn": "turn-9",
+            "intent": {
+              "session": "native-session",
+              "agentId": "native-agent",
+              "turnId": "turn-9",
+              "kind": "task",
+              "nonce": "native-session:native-agent:turn-9"
+            },
+            "threadId": "thr_1",
+            "worker": "Euler",
+            "answer": {
+              "status": "blocked",
+              "worker": "Euler",
+              "jobId": null,
+              "summary": "Selected executable /private/tmp/duet14-g-fixture/bin/unavailable-codex (source: CODEX_COMPANION_BIN) is missing. Fix or remove CODEX_COMPANION_BIN; a global install cannot override this pin.",
+              "blockers": [
+                {
+                  "code": "native_adapter_error",
+                  "message": "Selected executable /private/tmp/duet14-g-fixture/bin/unavailable-codex (source: CODEX_COMPANION_BIN) is missing. Fix or remove CODEX_COMPANION_BIN; a global install cannot override this pin."
+                }
+              ],
+              "next": "SendMessage to native-worker to continue",
+              "details": "duet result Euler --details"
+            },
+            "finishedAt": 1800000000000
+          },
+          "native:closed:v1:native-session:native-agent": {
+            "turnId": "turn-9",
+            "at": 1800000000000
+          }
+        }
+      },
+      {
+        "event": "agent.spawn",
+        "input": {
+          "tool_use_id": "spawn-10",
+          "prompt": "Retry after restoring the fixture binary.",
+          "description": "Native fake task",
+          "subagentType": "codex:codex-native",
+          "provider": {
+            "plugin": "codex",
+            "tier": "user"
+          },
+          "parentModel": "haiku",
+          "background": true,
+          "permissionMode": "default",
+          "fork": false,
+          "name": "native-worker",
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "resume": {
+            "agentId": "native-agent"
+          }
+        },
+        "result": {
+          "model": "haiku",
+          "agentId": "native-agent"
+        }
+      },
+      {
+        "event": "turn.start",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-10",
+          "text": "Retry after restoring the fixture binary."
+        },
+        "result": {
+          "turnId": "turn-10"
+        }
+      },
+      {
+        "event": "turn.step",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-10",
+          "index": 0,
+          "model": "haiku",
+          "effort": "low",
+          "messageCount": 1
+        },
+        "chunks": [
+          {
+            "kind": "thinking",
+            "index": 0,
+            "text": "Codex: [completed] Handled the requested task. Task prompt accepted."
+          },
+          {
+            "kind": "text",
+            "index": 1,
+            "text": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80ydg-zjwzty\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80ydg-zjwzty' --details\"}"
+          },
+          {
+            "kind": "stop",
+            "stopReason": "end_turn",
+            "usage": null
+          }
+        ],
+        "result": {
+          "turnId": "turn-10",
+          "index": 0,
+          "answer": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80ydg-zjwzty\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80ydg-zjwzty' --details\"}",
+          "toolUses": [],
+          "stopReason": "end_turn",
+          "usage": null
+        },
+        "processCount": 30
+      },
+      {
+        "event": "turn.complete",
+        "input": {
+          "agentId": "native-agent",
+          "turnId": "turn-10",
+          "answer": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80ydg-zjwzty\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80ydg-zjwzty' --details\"}",
+          "durationMs": 1,
+          "isAborted": false,
+          "reason": "answer"
+        },
+        "result": {
+          "text": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80ydg-zjwzty\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":\"SendMessage to native-worker to continue\",\"details\":\"duet result 'task-mvl80ydg-zjwzty' --details\"}"
+        }
       }
     ],
-    "processes": [],
-    "notices": [],
+    "processes": [
+      {
+        "kind": "run",
+        "request": {
+          "argv": [
+            "node",
+            "-p",
+            "process.execPath"
+          ],
+          "init": {
+            "timeoutMs": 10000
+          }
+        },
+        "value": {
+          "exitCode": 0,
+          "stdout": "/host/node\n",
+          "stderr": "",
+          "isStdoutTruncated": false,
+          "isStderrTruncated": false
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "task",
+            "--fresh",
+            "--sandbox",
+            "invalid",
+            "--effort",
+            "high",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-2",
+            "--timeout-sec",
+            "3600",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session",
+            "--session-cwd",
+            "/private/tmp/duet14-g-fixture/repo"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": "Reject before reserving a job."
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\"status\":\"error\",\"worker\":null,\"jobId\":null,\"summary\":\"--sandbox must be read-only, workspace-write, or danger-full-access.\",\"next\":null,\"details\":null}\n"
+          },
+          {
+            "stream": "stderr",
+            "text": "--sandbox must be read-only, workspace-write, or danger-full-access.\n"
+          }
+        ],
+        "exit": {
+          "code": 1,
+          "signal": null
+        }
+      },
+      {
+        "kind": "run",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "--all",
+            "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-2",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "init": {
+            "cwd": "/private/tmp/duet14-g-fixture/repo",
+            "timeoutMs": 15000
+          }
+        },
+        "value": {
+          "exitCode": 0,
+          "stdout": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"direct\",\n    \"label\": \"direct startup\",\n    \"detail\": \"No shared Codex runtime is active yet. The first review or task command will start one on demand.\",\n    \"endpoint\": null\n  },\n  \"running\": [],\n  \"latestFinished\": null,\n  \"recent\": [],\n  \"needsReview\": false\n}\n",
+          "stderr": "",
+          "isStdoutTruncated": false,
+          "isStderrTruncated": false
+        }
+      },
+      {
+        "kind": "run",
+        "request": {
+          "argv": [
+            "node",
+            "-p",
+            "process.execPath"
+          ],
+          "init": {
+            "timeoutMs": 10000
+          }
+        },
+        "value": {
+          "exitCode": 0,
+          "stdout": "/host/node\n",
+          "stderr": "",
+          "isStdoutTruncated": false,
+          "isStderrTruncated": false
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "task",
+            "--fresh",
+            "--sandbox",
+            "read-only",
+            "--effort",
+            "high",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-3",
+            "--timeout-sec",
+            "3600",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session",
+            "--session-cwd",
+            "/private/tmp/duet14-g-fixture/repo"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": "Corrected foreground plan."
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "[1] Codex: [completed] Handled the requested task. Task prompt accepted.\n"
+          },
+          {
+            "stream": "stdout",
+            "text": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80t6r-7wm5gf\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":null,\"details\":\"duet result 'task-mvl80t6r-7wm5gf' --details\"}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "--all",
+            "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-3",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-EsS1zb/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl80t6r-7wm5gf\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:26.979Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80t6r-7wm5gf-70c79f7a-e951-4c28-b7ca-229cc0391d2e\",\n    \"leaseRenewedAt\": 1792775128170,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-3\",\n    \"leaseExpiresAt\": 1792776928170,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80t6r-7wm5gf.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80t6r-7wm5gf.result.json\",\n    \"agentName\": \"Euler\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80t6r-7wm5gf.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"high\",\n      \"serviceTier\": null,\n      \"prompt\": \"Corrected foreground plan.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80t6r-7wm5gf\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:28.267Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792775127145,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 17648,\n    \"ownerWaitToken\": \"0f4ab116-c8b6-4efe-9b8e-797bd5b27169\",\n    \"startedAt\": \"2026-10-23T17:05:27.181Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 273,\n        \"durationMs\": 183\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 286,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 296,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 330,\n        \"durationMs\": 23\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 343,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 757\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:28.244Z\",\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "task-mvl80t6r-7wm5gf",
+            "--json",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80t6r-7wm5gf\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:26.979Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80t6r-7wm5gf-70c79f7a-e951-4c28-b7ca-229cc0391d2e\",\n    \"leaseRenewedAt\": 1792775128170,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-3\",\n    \"leaseExpiresAt\": 1792776928170,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80t6r-7wm5gf.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80t6r-7wm5gf.result.json\",\n    \"agentName\": \"Euler\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80t6r-7wm5gf.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"high\",\n      \"serviceTier\": null,\n      \"prompt\": \"Corrected foreground plan.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80t6r-7wm5gf\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:28.375Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775127145,\n    \"ownerDetachedAt\": 1792775128375,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 17648,\n    \"ownerWaitToken\": \"0f4ab116-c8b6-4efe-9b8e-797bd5b27169\",\n    \"startedAt\": \"2026-10-23T17:05:27.181Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 273,\n        \"durationMs\": 183\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 286,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 296,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 330,\n        \"durationMs\": 23\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 343,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 757\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:28.244Z\",\n    \"activityCursors\": {\n      \"f8002b4e8118eceb6bba64da42d58f8e6a7aa336271a2b67d65cf4213babfa66\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "--all",
+            "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-3",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-EsS1zb/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl80t6r-7wm5gf\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:26.979Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80t6r-7wm5gf-70c79f7a-e951-4c28-b7ca-229cc0391d2e\",\n    \"leaseRenewedAt\": 1792775128170,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-3\",\n    \"leaseExpiresAt\": 1792776928170,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80t6r-7wm5gf.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80t6r-7wm5gf.result.json\",\n    \"agentName\": \"Euler\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80t6r-7wm5gf.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"high\",\n      \"serviceTier\": null,\n      \"prompt\": \"Corrected foreground plan.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80t6r-7wm5gf\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:28.375Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775127145,\n    \"ownerDetachedAt\": 1792775128375,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 17648,\n    \"ownerWaitToken\": \"0f4ab116-c8b6-4efe-9b8e-797bd5b27169\",\n    \"startedAt\": \"2026-10-23T17:05:27.181Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 273,\n        \"durationMs\": 183\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 286,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 296,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 330,\n        \"durationMs\": 23\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 343,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 757\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:28.244Z\",\n    \"activityCursors\": {\n      \"f8002b4e8118eceb6bba64da42d58f8e6a7aa336271a2b67d65cf4213babfa66\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "task-mvl80t6r-7wm5gf",
+            "--json",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80t6r-7wm5gf\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Task\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:26.979Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80t6r-7wm5gf-70c79f7a-e951-4c28-b7ca-229cc0391d2e\",\n    \"leaseRenewedAt\": 1792775128170,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-3\",\n    \"leaseExpiresAt\": 1792776928170,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80t6r-7wm5gf.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80t6r-7wm5gf.result.json\",\n    \"agentName\": \"Euler\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80t6r-7wm5gf.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"high\",\n      \"serviceTier\": null,\n      \"prompt\": \"Corrected foreground plan.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": null,\n      \"jobId\": \"task-mvl80t6r-7wm5gf\",\n      \"report\": true,\n      \"detached\": true\n    },\n    \"updatedAt\": \"2026-10-23T17:05:28.375Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775127145,\n    \"ownerDetachedAt\": 1792775128375,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 17648,\n    \"ownerWaitToken\": \"0f4ab116-c8b6-4efe-9b8e-797bd5b27169\",\n    \"startedAt\": \"2026-10-23T17:05:27.181Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 273,\n        \"durationMs\": 183\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 286,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 296,\n        \"durationMs\": 11\n      },\n      \"threadStart\": {\n        \"phase\": \"threadStart\",\n        \"elapsedMs\": 330,\n        \"durationMs\": 23\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 343,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 757\n      }\n    },\n    \"threadId\": \"thr_1\",\n    \"turnId\": \"turn_1\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:28.244Z\",\n    \"activityCursors\": {\n      \"f8002b4e8118eceb6bba64da42d58f8e6a7aa336271a2b67d65cf4213babfa66\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "task",
+            "--thread",
+            "thr_1",
+            "--fork",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-4",
+            "--timeout-sec",
+            "3600",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session",
+            "--session-cwd",
+            "/private/tmp/duet14-g-fixture/repo"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": "Reject a fork continuation."
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\"status\":\"error\",\"worker\":null,\"jobId\":null,\"summary\":\"--fork cannot be combined with --thread. Use --to for a follow-up after the fork completes.\",\"next\":null,\"details\":null}\n"
+          },
+          {
+            "stream": "stderr",
+            "text": "--fork cannot be combined with --thread. Use --to for a follow-up after the fork completes.\n"
+          }
+        ],
+        "exit": {
+          "code": 1,
+          "signal": null
+        }
+      },
+      {
+        "kind": "run",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "--all",
+            "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-4",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "init": {
+            "cwd": "/private/tmp/duet14-g-fixture/repo",
+            "timeoutMs": 15000
+          }
+        },
+        "value": {
+          "exitCode": 0,
+          "stdout": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-EsS1zb/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": null,\n  \"recent\": [],\n  \"needsReview\": false\n}\n",
+          "stderr": "",
+          "isStdoutTruncated": false,
+          "isStderrTruncated": false
+        }
+      },
+      {
+        "kind": "run",
+        "request": {
+          "argv": [
+            "node",
+            "-p",
+            "process.execPath"
+          ],
+          "init": {
+            "timeoutMs": 10000
+          }
+        },
+        "value": {
+          "exitCode": 0,
+          "stdout": "/host/node\n",
+          "stderr": "",
+          "isStdoutTruncated": false,
+          "isStderrTruncated": false
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "task",
+            "--thread",
+            "thr_1",
+            "--sandbox",
+            "workspace-write",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-5",
+            "--timeout-sec",
+            "3600",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session",
+            "--session-cwd",
+            "/private/tmp/duet14-g-fixture/repo"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": "Continue outside plan mode."
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "[1] Codex: [completed] Handled the requested task. Task prompt accepted.\n"
+          },
+          {
+            "stream": "stdout",
+            "text": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80uyg-b987r4\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":null,\"details\":\"duet result 'task-mvl80uyg-b987r4' --details\"}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "--all",
+            "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-5",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-EsS1zb/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl80uyg-b987r4\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:29.272Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80uyg-b987r4-d763c901-de40-47be-ad86-d8d42791a34b\",\n    \"leaseRenewedAt\": 1792775129438,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-5\",\n    \"leaseExpiresAt\": 1792776929438,\n    \"sandbox\": \"workspace-write\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80uyg-b987r4.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80uyg-b987r4.result.json\",\n    \"agentName\": \"Euler\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl80t6r-7wm5gf\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80uyg-b987r4.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"high\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue outside plan mode.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"workspace-write\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80uyg-b987r4\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl80t6r-7wm5gf\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:30.391Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792775129427,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 19249,\n    \"ownerWaitToken\": \"95dcf9ce-89a5-4c2a-b6bb-ec73965292d5\",\n    \"startedAt\": \"2026-10-23T17:05:29.462Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 101,\n        \"durationMs\": 12\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 112,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 122,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 141,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 166,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 569\n      }\n    },\n    \"turnId\": \"turn_2\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:30.372Z\",\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "task-mvl80uyg-b987r4",
+            "--json",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80uyg-b987r4\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:29.272Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80uyg-b987r4-d763c901-de40-47be-ad86-d8d42791a34b\",\n    \"leaseRenewedAt\": 1792775129438,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-5\",\n    \"leaseExpiresAt\": 1792776929438,\n    \"sandbox\": \"workspace-write\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80uyg-b987r4.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80uyg-b987r4.result.json\",\n    \"agentName\": \"Euler\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl80t6r-7wm5gf\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80uyg-b987r4.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"high\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue outside plan mode.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"workspace-write\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80uyg-b987r4\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl80t6r-7wm5gf\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:30.548Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775129427,\n    \"ownerDetachedAt\": 1792775130548,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 19249,\n    \"ownerWaitToken\": \"95dcf9ce-89a5-4c2a-b6bb-ec73965292d5\",\n    \"startedAt\": \"2026-10-23T17:05:29.462Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 101,\n        \"durationMs\": 12\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 112,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 122,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 141,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 166,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 569\n      }\n    },\n    \"turnId\": \"turn_2\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:30.372Z\",\n    \"activityCursors\": {\n      \"68bb3326948711eaaab1e4b820685b401df0fbb1b2f5bc978ffbc9991114a88d\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "--all",
+            "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-5",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-EsS1zb/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl80uyg-b987r4\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:29.272Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80uyg-b987r4-d763c901-de40-47be-ad86-d8d42791a34b\",\n    \"leaseRenewedAt\": 1792775129438,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-5\",\n    \"leaseExpiresAt\": 1792776929438,\n    \"sandbox\": \"workspace-write\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80uyg-b987r4.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80uyg-b987r4.result.json\",\n    \"agentName\": \"Euler\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl80t6r-7wm5gf\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80uyg-b987r4.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"high\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue outside plan mode.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"workspace-write\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80uyg-b987r4\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl80t6r-7wm5gf\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:30.548Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775129427,\n    \"ownerDetachedAt\": 1792775130548,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 19249,\n    \"ownerWaitToken\": \"95dcf9ce-89a5-4c2a-b6bb-ec73965292d5\",\n    \"startedAt\": \"2026-10-23T17:05:29.462Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 101,\n        \"durationMs\": 12\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 112,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 122,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 141,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 166,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 569\n      }\n    },\n    \"turnId\": \"turn_2\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:30.372Z\",\n    \"activityCursors\": {\n      \"68bb3326948711eaaab1e4b820685b401df0fbb1b2f5bc978ffbc9991114a88d\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "task-mvl80uyg-b987r4",
+            "--json",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80uyg-b987r4\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": true,\n    \"createdAt\": \"2026-10-23T17:05:29.272Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80uyg-b987r4-d763c901-de40-47be-ad86-d8d42791a34b\",\n    \"leaseRenewedAt\": 1792775129438,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-5\",\n    \"leaseExpiresAt\": 1792776929438,\n    \"sandbox\": \"workspace-write\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80uyg-b987r4.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80uyg-b987r4.result.json\",\n    \"agentName\": \"Euler\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl80t6r-7wm5gf\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80uyg-b987r4.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"high\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue outside plan mode.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": true,\n      \"sandbox\": \"workspace-write\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80uyg-b987r4\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl80t6r-7wm5gf\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:30.548Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775129427,\n    \"ownerDetachedAt\": 1792775130548,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 19249,\n    \"ownerWaitToken\": \"95dcf9ce-89a5-4c2a-b6bb-ec73965292d5\",\n    \"startedAt\": \"2026-10-23T17:05:29.462Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 101,\n        \"durationMs\": 12\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 112,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 122,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 141,\n        \"durationMs\": 10\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 166,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 569\n      }\n    },\n    \"turnId\": \"turn_2\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:30.372Z\",\n    \"activityCursors\": {\n      \"68bb3326948711eaaab1e4b820685b401df0fbb1b2f5bc978ffbc9991114a88d\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "task",
+            "--thread",
+            "thr_1",
+            "--effort",
+            "low",
+            "--sandbox",
+            "read-only",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-8",
+            "--timeout-sec",
+            "3600",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session",
+            "--session-cwd",
+            "/private/tmp/duet14-g-fixture/repo"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": "Continue planning."
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "[1] Codex: [completed] Handled the requested task. Task prompt accepted.\n"
+          },
+          {
+            "stream": "stdout",
+            "text": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80wi0-0q0zv4\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":null,\"details\":\"duet result 'task-mvl80wi0-0q0zv4' --details\"}\n"
+          },
+          {
+            "stream": "stdout",
+            "text": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80wi0-0q0zv4\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":12345,\"cachedInputTokens\":8000,\"outputTokens\":678,\"reasoningOutputTokens\":12,\"totalTokens\":13023},\"next\":null,\"details\":\"duet result 'task-mvl80wi0-0q0zv4' --details\"}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "--all",
+            "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-8",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-EsS1zb/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl80wi0-0q0zv4\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:31.272Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80wi0-0q0zv4-9478f6b1-b108-4012-895a-61c9e34cad32\",\n    \"leaseRenewedAt\": 1792775131438,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-8\",\n    \"leaseExpiresAt\": 1792776931438,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80wi0-0q0zv4.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80wi0-0q0zv4.result.json\",\n    \"agentName\": \"Euler\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl80uyg-b987r4\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80wi0-0q0zv4.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"low\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue planning.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80wi0-0q0zv4\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl80uyg-b987r4\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:32.407Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792775131428,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 20689,\n    \"ownerWaitToken\": \"97580017-5717-448f-a17f-c3b372de90a8\",\n    \"startedAt\": \"2026-10-23T17:05:31.463Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 99,\n        \"durationMs\": 10\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 110,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 119,\n        \"durationMs\": 10\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 140,\n        \"durationMs\": 11\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 163,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 566\n      }\n    },\n    \"turnId\": \"turn_3\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:32.388Z\",\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "task-mvl80wi0-0q0zv4",
+            "--json",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80wi0-0q0zv4\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:31.272Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80wi0-0q0zv4-9478f6b1-b108-4012-895a-61c9e34cad32\",\n    \"leaseRenewedAt\": 1792775131438,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-8\",\n    \"leaseExpiresAt\": 1792776931438,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80wi0-0q0zv4.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80wi0-0q0zv4.result.json\",\n    \"agentName\": \"Euler\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl80uyg-b987r4\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80wi0-0q0zv4.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"low\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue planning.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80wi0-0q0zv4\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl80uyg-b987r4\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:32.557Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775131428,\n    \"ownerDetachedAt\": 1792775132557,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 20689,\n    \"ownerWaitToken\": \"97580017-5717-448f-a17f-c3b372de90a8\",\n    \"startedAt\": \"2026-10-23T17:05:31.463Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 99,\n        \"durationMs\": 10\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 110,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 119,\n        \"durationMs\": 10\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 140,\n        \"durationMs\": 11\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 163,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 566\n      }\n    },\n    \"turnId\": \"turn_3\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:32.388Z\",\n    \"activityCursors\": {\n      \"ffe08a8cf0293523a937bfe007f25333861e4a4528b79834456b75ae4517be27\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "--all",
+            "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-8",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-EsS1zb/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl80wi0-0q0zv4\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:31.272Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80wi0-0q0zv4-9478f6b1-b108-4012-895a-61c9e34cad32\",\n    \"leaseRenewedAt\": 1792775131438,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-8\",\n    \"leaseExpiresAt\": 1792776931438,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80wi0-0q0zv4.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80wi0-0q0zv4.result.json\",\n    \"agentName\": \"Euler\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl80uyg-b987r4\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80wi0-0q0zv4.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"low\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue planning.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80wi0-0q0zv4\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl80uyg-b987r4\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:32.557Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775131428,\n    \"ownerDetachedAt\": 1792775132557,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 20689,\n    \"ownerWaitToken\": \"97580017-5717-448f-a17f-c3b372de90a8\",\n    \"startedAt\": \"2026-10-23T17:05:31.463Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 99,\n        \"durationMs\": 10\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 110,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 119,\n        \"durationMs\": 10\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 140,\n        \"durationMs\": 11\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 163,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 566\n      }\n    },\n    \"turnId\": \"turn_3\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:32.388Z\",\n    \"activityCursors\": {\n      \"ffe08a8cf0293523a937bfe007f25333861e4a4528b79834456b75ae4517be27\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "task-mvl80wi0-0q0zv4",
+            "--json",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80wi0-0q0zv4\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:31.272Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80wi0-0q0zv4-9478f6b1-b108-4012-895a-61c9e34cad32\",\n    \"leaseRenewedAt\": 1792775131438,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-8\",\n    \"leaseExpiresAt\": 1792776931438,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80wi0-0q0zv4.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80wi0-0q0zv4.result.json\",\n    \"agentName\": \"Euler\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl80uyg-b987r4\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80wi0-0q0zv4.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"low\",\n      \"serviceTier\": null,\n      \"prompt\": \"Continue planning.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80wi0-0q0zv4\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl80uyg-b987r4\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:32.557Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775131428,\n    \"ownerDetachedAt\": 1792775132557,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 20689,\n    \"ownerWaitToken\": \"97580017-5717-448f-a17f-c3b372de90a8\",\n    \"startedAt\": \"2026-10-23T17:05:31.463Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 99,\n        \"durationMs\": 10\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 110,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 119,\n        \"durationMs\": 10\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 140,\n        \"durationMs\": 11\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 163,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 566\n      }\n    },\n    \"turnId\": \"turn_3\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:32.388Z\",\n    \"activityCursors\": {\n      \"ffe08a8cf0293523a937bfe007f25333861e4a4528b79834456b75ae4517be27\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "task",
+            "--thread",
+            "thr_1",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-9",
+            "--timeout-sec",
+            "3600",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session",
+            "--session-cwd",
+            "/private/tmp/duet14-g-fixture/repo"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": "Dispatch with the fixture binary unavailable."
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\"status\":\"error\",\"worker\":null,\"jobId\":null,\"summary\":\"Selected executable /private/tmp/duet14-g-fixture/bin/unavailable-codex (source: CODEX_COMPANION_BIN) is missing. Fix or remove CODEX_COMPANION_BIN; a global install cannot override this pin.\",\"next\":null,\"details\":null}\n"
+          },
+          {
+            "stream": "stderr",
+            "text": "Selected executable /private/tmp/duet14-g-fixture/bin/unavailable-codex (source: CODEX_COMPANION_BIN) is missing. Fix or remove CODEX_COMPANION_BIN; a global install cannot override this pin.\n"
+          }
+        ],
+        "exit": {
+          "code": 1,
+          "signal": null
+        }
+      },
+      {
+        "kind": "run",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "--all",
+            "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-9",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "init": {
+            "cwd": "/private/tmp/duet14-g-fixture/repo",
+            "timeoutMs": 15000
+          }
+        },
+        "value": {
+          "exitCode": 0,
+          "stdout": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-EsS1zb/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": null,\n  \"recent\": [],\n  \"needsReview\": false\n}\n",
+          "stderr": "",
+          "isStdoutTruncated": false,
+          "isStderrTruncated": false
+        }
+      },
+      {
+        "kind": "run",
+        "request": {
+          "argv": [
+            "node",
+            "-p",
+            "process.execPath"
+          ],
+          "init": {
+            "timeoutMs": 10000
+          }
+        },
+        "value": {
+          "exitCode": 0,
+          "stdout": "/host/node\n",
+          "stderr": "",
+          "isStdoutTruncated": false,
+          "isStderrTruncated": false
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "task",
+            "--thread",
+            "thr_1",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-10",
+            "--timeout-sec",
+            "3600",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session",
+            "--session-cwd",
+            "/private/tmp/duet14-g-fixture/repo"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": "Retry after restoring the fixture binary."
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "[1] Codex: [completed] Handled the requested task. Task prompt accepted.\n"
+          },
+          {
+            "stream": "stdout",
+            "text": "{\"status\":\"completed\",\"worker\":\"Euler\",\"jobId\":\"task-mvl80ydg-zjwzty\",\"summary\":\"Handled the requested task.\\nTask prompt accepted.\",\"checks\":{\"ran\":[],\"claimed\":[\"fixture check: passed\"],\"omitted\":0},\"assumptions\":[\"Fixture assumption\"],\"keyFindings\":[\"Fixture finding one\",\"Fixture finding two\"],\"usage\":{\"inputTokens\":150,\"cachedInputTokens\":40,\"outputTokens\":30,\"reasoningOutputTokens\":10,\"totalTokens\":180},\"next\":null,\"details\":\"duet result 'task-mvl80ydg-zjwzty' --details\"}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "--all",
+            "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-10",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-EsS1zb/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl80ydg-zjwzty\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:33.700Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80ydg-zjwzty-1866a20e-dada-4d70-9181-078aefa1db6d\",\n    \"leaseRenewedAt\": 1792775133864,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-10\",\n    \"leaseExpiresAt\": 1792776933864,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80ydg-zjwzty.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80ydg-zjwzty.result.json\",\n    \"agentName\": \"Euler\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl80wi0-0q0zv4\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80ydg-zjwzty.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"low\",\n      \"serviceTier\": null,\n      \"prompt\": \"Retry after restoring the fixture binary.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80ydg-zjwzty\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl80wi0-0q0zv4\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:34.871Z\",\n    \"ownerAttached\": true,\n    \"ownerAttachedAt\": 1792775133854,\n    \"ownerDetachedAt\": null,\n    \"ownerDetachReason\": null,\n    \"ownerWaitPid\": 22446,\n    \"ownerWaitToken\": \"fb715602-a521-4d26-86a4-98149ee24994\",\n    \"startedAt\": \"2026-10-23T17:05:33.894Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 100,\n        \"durationMs\": 11\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 111,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 121,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 141,\n        \"durationMs\": 11\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 163,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 569\n      }\n    },\n    \"turnId\": \"turn_4\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:34.851Z\",\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "task-mvl80ydg-zjwzty",
+            "--json",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80ydg-zjwzty\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:33.700Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80ydg-zjwzty-1866a20e-dada-4d70-9181-078aefa1db6d\",\n    \"leaseRenewedAt\": 1792775133864,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-10\",\n    \"leaseExpiresAt\": 1792776933864,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80ydg-zjwzty.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80ydg-zjwzty.result.json\",\n    \"agentName\": \"Euler\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl80wi0-0q0zv4\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80ydg-zjwzty.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"low\",\n      \"serviceTier\": null,\n      \"prompt\": \"Retry after restoring the fixture binary.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80ydg-zjwzty\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl80wi0-0q0zv4\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:35.004Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775133854,\n    \"ownerDetachedAt\": 1792775135004,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 22446,\n    \"ownerWaitToken\": \"fb715602-a521-4d26-86a4-98149ee24994\",\n    \"startedAt\": \"2026-10-23T17:05:33.894Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 100,\n        \"durationMs\": 11\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 111,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 121,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 141,\n        \"durationMs\": 11\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 163,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 569\n      }\n    },\n    \"turnId\": \"turn_4\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:34.851Z\",\n    \"activityCursors\": {\n      \"1456f6fca2768db0e562f3f063c44a34a75e1b2d114fd9d8c27399524541c897\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "--all",
+            "--json",
+            "--dispatch-nonce",
+            "native-session:native-agent:turn-10",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"config\": {\n    \"stopReviewGate\": false\n  },\n  \"sessionRuntime\": {\n    \"mode\": \"shared\",\n    \"label\": \"shared session\",\n    \"detail\": \"This Claude session is configured to reuse one shared Codex runtime.\",\n    \"endpoint\": \"unix:/private/tmp/dt-vccaRd/cxc-EsS1zb/broker.sock\"\n  },\n  \"running\": [],\n  \"latestFinished\": {\n    \"id\": \"task-mvl80ydg-zjwzty\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:33.700Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80ydg-zjwzty-1866a20e-dada-4d70-9181-078aefa1db6d\",\n    \"leaseRenewedAt\": 1792775133864,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-10\",\n    \"leaseExpiresAt\": 1792776933864,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80ydg-zjwzty.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80ydg-zjwzty.result.json\",\n    \"agentName\": \"Euler\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl80wi0-0q0zv4\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80ydg-zjwzty.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"low\",\n      \"serviceTier\": null,\n      \"prompt\": \"Retry after restoring the fixture binary.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80ydg-zjwzty\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl80wi0-0q0zv4\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:35.004Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775133854,\n    \"ownerDetachedAt\": 1792775135004,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 22446,\n    \"ownerWaitToken\": \"fb715602-a521-4d26-86a4-98149ee24994\",\n    \"startedAt\": \"2026-10-23T17:05:33.894Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 100,\n        \"durationMs\": 11\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 111,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 121,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 141,\n        \"durationMs\": 11\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 163,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 569\n      }\n    },\n    \"turnId\": \"turn_4\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:34.851Z\",\n    \"activityCursors\": {\n      \"1456f6fca2768db0e562f3f063c44a34a75e1b2d114fd9d8c27399524541c897\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\",\n    \"sessionLabel\": \"native-s…sion\"\n  },\n  \"recent\": [],\n  \"needsReview\": false\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      },
+      {
+        "kind": "spawn",
+        "request": {
+          "argv": [
+            "/host/node",
+            "/plugin/bin/duet",
+            "status",
+            "task-mvl80ydg-zjwzty",
+            "--json",
+            "--cwd",
+            "/private/tmp/duet14-g-fixture/repo",
+            "--session",
+            "native-session"
+          ],
+          "cwd": "/private/tmp/duet14-g-fixture/repo",
+          "input": ""
+        },
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "{\n  \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n  \"job\": {\n    \"id\": \"task-mvl80ydg-zjwzty\",\n    \"kind\": \"task\",\n    \"kindLabel\": \"rescue\",\n    \"title\": \"Codex Resume\",\n    \"workspaceRoot\": \"/private/tmp/duet14-g-fixture/repo\",\n    \"jobClass\": \"task\",\n    \"summary\": \"Handled the requested task.\",\n    \"write\": false,\n    \"createdAt\": \"2026-10-23T17:05:33.700Z\",\n    \"sessionId\": \"native-session\",\n    \"dispatchSessionId\": \"native-session\",\n    \"ownerId\": \"task-mvl80ydg-zjwzty-1866a20e-dada-4d70-9181-078aefa1db6d\",\n    \"leaseRenewedAt\": 1792775133864,\n    \"leaseSec\": 1800,\n    \"questionTimeoutSec\": 900,\n    \"dispatchNonce\": \"native-session:native-agent:turn-10\",\n    \"leaseExpiresAt\": 1792776933864,\n    \"sandbox\": \"read-only\",\n    \"approvalPolicy\": \"never+elicitations\",\n    \"approvedBrowserOrigins\": [],\n    \"approvedComputerApps\": [],\n    \"rawOutputFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80ydg-zjwzty.output.txt\",\n    \"resultFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80ydg-zjwzty.result.json\",\n    \"agentName\": \"Euler\",\n    \"threadId\": \"thr_1\",\n    \"followUpOf\": \"task-mvl80wi0-0q0zv4\",\n    \"status\": \"completed\",\n    \"direct\": true,\n    \"phase\": \"done\",\n    \"pid\": null,\n    \"logFile\": \"/private/tmp/duet14-g-fixture/isolated/duet/state/repo-cc0d5c594e9f9deb/jobs/task-mvl80ydg-zjwzty.log\",\n    \"request\": {\n      \"cwd\": \"/private/tmp/duet14-g-fixture/repo\",\n      \"model\": \"gpt-6-astra\",\n      \"effort\": \"low\",\n      \"serviceTier\": null,\n      \"prompt\": \"Retry after restoring the fixture binary.\",\n      \"developerInstructions\": \"The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.\",\n      \"claudeMd\": {\n        \"version\": 1,\n        \"source\": \"scan\",\n        \"approximate\": true,\n        \"complete\": false,\n        \"snapshotHash\": \"c7ef79dc8219a55384c7b3e66aec749ae5b397f11de38eb747211fa7e4c6acd1\",\n        \"renderedHash\": \"82eb7bbf531190e5012ca6ba615e4c730fd6c57b6fa6b7bf0ea493cd1d53c5c7\",\n        \"capturedAt\": \"2026-10-23T17:05:26.432Z\",\n        \"sessionCwd\": \"/private/tmp/duet14-g-fixture/repo\",\n        \"sessionCwdSource\": \"flag\",\n        \"bounded\": false,\n        \"omittedPaths\": [],\n        \"omittedCount\": 0,\n        \"note\": \"Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.\"\n      },\n      \"write\": false,\n      \"sandbox\": \"read-only\",\n      \"approvedBrowserOrigins\": [],\n      \"approvedComputerApps\": [],\n      \"resumeLast\": false,\n      \"threadId\": \"thr_1\",\n      \"jobId\": \"task-mvl80ydg-zjwzty\",\n      \"report\": true,\n      \"detached\": true,\n      \"settingsInheritance\": {\n        \"jobId\": \"task-mvl80wi0-0q0zv4\",\n        \"scope\": \"session\",\n        \"settingsInherited\": true,\n        \"requestGrantsInherited\": true,\n        \"note\": \"Inherited settings and recorded request grants from this session's job; runtime-only grants were excluded.\"\n      }\n    },\n    \"updatedAt\": \"2026-10-23T17:05:35.004Z\",\n    \"ownerAttached\": false,\n    \"ownerAttachedAt\": 1792775133854,\n    \"ownerDetachedAt\": 1792775135004,\n    \"ownerDetachReason\": \"returned\",\n    \"ownerWaitPid\": 22446,\n    \"ownerWaitToken\": \"fb715602-a521-4d26-86a4-98149ee24994\",\n    \"startedAt\": \"2026-10-23T17:05:33.894Z\",\n    \"preExistingChanges\": [],\n    \"startupTimings\": {\n      \"brokerConnectSpawn\": {\n        \"phase\": \"brokerConnectSpawn\",\n        \"elapsedMs\": 100,\n        \"durationMs\": 11\n      },\n      \"appServerInitialize\": {\n        \"phase\": \"appServerInitialize\",\n        \"elapsedMs\": 111,\n        \"durationMs\": 45\n      },\n      \"brokerHandshake\": {\n        \"phase\": \"brokerHandshake\",\n        \"elapsedMs\": 121,\n        \"durationMs\": 11\n      },\n      \"threadResume\": {\n        \"phase\": \"threadResume\",\n        \"elapsedMs\": 141,\n        \"durationMs\": 11\n      },\n      \"turnStart\": {\n        \"phase\": \"turnStart\",\n        \"elapsedMs\": 163,\n        \"durationMs\": 1\n      },\n      \"firstModelEvent\": {\n        \"phase\": \"firstModelEvent\",\n        \"elapsedMs\": 569\n      }\n    },\n    \"turnId\": \"turn_4\",\n    \"activitySeq\": 1,\n    \"completedAt\": \"2026-10-23T17:05:34.851Z\",\n    \"activityCursors\": {\n      \"1456f6fca2768db0e562f3f063c44a34a75e1b2d114fd9d8c27399524541c897\": 1\n    },\n    \"progressPreview\": [],\n    \"elapsed\": \"1s\",\n    \"duration\": \"1s\"\n  }\n}\n"
+          }
+        ],
+        "exit": {
+          "code": 0,
+          "signal": null
+        }
+      }
+    ],
+    "notices": [
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex worker Euler started · job task-mvl80t6r-7wm5gf · gpt-6-astra / high / read-only"
+            }
+          ]
+        }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex: [completed] Handled the requested task. Task prompt accepted."
+            }
+          ]
+        }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex usage · 150 input (40 cached) · 30 output tokens"
+            }
+          ]
+        }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex worker Euler started · job task-mvl80uyg-b987r4 · gpt-6-astra / high / workspace-write"
+            }
+          ]
+        }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex: [completed] Handled the requested task. Task prompt accepted."
+            }
+          ]
+        }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex usage · 150 input (40 cached) · 30 output tokens"
+            }
+          ]
+        }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex worker Euler started · job task-mvl80wi0-0q0zv4 · gpt-6-astra / low / read-only"
+            }
+          ]
+        }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex: [completed] Handled the requested task. Task prompt accepted."
+            }
+          ]
+        }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex usage · 12,345 input (8,000 cached) · 678 output tokens"
+            }
+          ]
+        }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex worker Euler started · job task-mvl80ydg-zjwzty · gpt-6-astra / low / read-only"
+            }
+          ]
+        }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex: [completed] Handled the requested task. Task prompt accepted."
+            }
+          ]
+        }
+      },
+      {
+        "agentId": "native-agent",
+        "message": {
+          "type": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "Codex usage · 150 input (40 cached) · 30 output tokens"
+            }
+          ]
+        }
+      }
+    ],
     "store": {
       "native:v2:native-session:native-agent": {
-        "v": 2,
         "type": "codex:codex-native",
         "session": "native-session",
         "agentId": "native-agent",
         "name": "native-worker",
+        "permissionMode": "default",
+        "effort": "high",
+        "v": 2,
         "cwd": "/private/tmp/duet14-g-fixture/repo",
         "notices": {
-          "turnId": "turn-1",
-          "count": 0
+          "turnId": "turn-10",
+          "count": 3,
+          "last": "Codex usage · 150 input (40 cached) · 30 output tokens",
+          "started": true,
+          "usage": true
         },
+        "answeredTurn": "turn-10",
+        "intent": {
+          "session": "native-session",
+          "agentId": "native-agent",
+          "turnId": "turn-10",
+          "kind": "task",
+          "nonce": "native-session:native-agent:turn-10"
+        },
+        "threadId": "thr_1",
+        "worker": "Euler",
+        "jobId": "task-mvl80ydg-zjwzty",
+        "ownerId": "task-mvl80ydg-zjwzty-1866a20e-dada-4d70-9181-078aefa1db6d",
+        "status": "completed",
         "answer": {
-          "status": "blocked",
-          "worker": null,
-          "jobId": null,
-          "summary": "Invalid DUET header. Allowed flags: --model, --effort, --sandbox, --fast/--normal, --cwd, --fork.",
-          "blockers": [
-            {
-              "code": "native_adapter_error",
-              "message": "Invalid DUET header. Allowed flags: --model, --effort, --sandbox, --fast/--normal, --cwd, --fork."
-            }
+          "status": "completed",
+          "worker": "Euler",
+          "jobId": "task-mvl80ydg-zjwzty",
+          "summary": "Handled the requested task.\nTask prompt accepted.",
+          "checks": {
+            "ran": [],
+            "claimed": [
+              "fixture check: passed"
+            ],
+            "omitted": 0
+          },
+          "assumptions": [
+            "Fixture assumption"
           ],
+          "keyFindings": [
+            "Fixture finding one",
+            "Fixture finding two"
+          ],
+          "usage": {
+            "inputTokens": 150,
+            "cachedInputTokens": 40,
+            "outputTokens": 30,
+            "reasoningOutputTokens": 10,
+            "totalTokens": 180
+          },
           "next": "SendMessage to native-worker to continue",
-          "details": null
+          "details": "duet result 'task-mvl80ydg-zjwzty' --details"
         },
-        "answeredTurn": "turn-1",
         "finishedAt": 1800000000000
+      },
+      "native:closed:v1:native-session:native-agent": {
+        "turnId": "turn-9",
+        "at": 1800000000000
       }
     }
   },
@@ -2937,6 +5416,7 @@ export const captures = [
           },
           "parentModel": "haiku",
           "background": true,
+          "permissionMode": "default",
           "fork": false,
           "name": "native-worker",
           "cwd": "/private/tmp/duet14-g-fixture/repo"
@@ -2964,6 +5444,7 @@ export const captures = [
           "turnId": "turn-1",
           "index": 0,
           "model": "haiku",
+          "effort": "low",
           "messageCount": 1
         },
         "chunks": [
@@ -3660,6 +6141,7 @@ export const captures = [
           },
           "parentModel": "haiku",
           "background": true,
+          "permissionMode": "default",
           "fork": false,
           "name": "native-worker",
           "cwd": "/private/tmp/duet14-g-fixture/repo",
@@ -3690,6 +6172,7 @@ export const captures = [
           "turnId": "turn-2",
           "index": 0,
           "model": "haiku",
+          "effort": "low",
           "messageCount": 1
         },
         "chunks": [

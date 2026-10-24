@@ -45,9 +45,12 @@ Act on `status`:
   findings, assumptions, blockers and artifact paths. Read `rawOutputFile` only
   if a report field is insufficient.
 - `running`: background `duet wait <worker>` and wait for its notification.
-- `needs_answer`: background ONE `duet answer <worker>` (`timeout: 600000`) with
-  stdin via a single-quoted `DUET_ANSWER` heredoc. It resolves the owner and
-  question, submits once and keeps waiting on the same turn. `question` gives
+- `needs_answer`: use the report's `next` command verbatim, or background ONE
+  `duet answer <worker> --question '<questionId>'` with the displayed question ID
+  (`timeout: 600000`) and stdin via a single-quoted `DUET_ANSWER` heredoc. It
+  refuses a stale ID, submits once and keeps waiting on the same turn. A bare
+  `duet answer <worker>` answers whatever question is pending now, possibly a
+  newer one. Native SendMessage already pins the displayed question. `question` gives
   id, kind, text, options and `expiresInSec`; use `--details` if text/options
   were shortened. A Computer Use approval has four fixed options; forward with
   `AskUserQuestion` unless the user pre-authorised the app.
@@ -165,8 +168,10 @@ answers to 8000 characters. Neither is copied into progress logs. The worker's
 contract forbids secrets/page content in questions. The default timeout is 900
 seconds (`task --question-timeout-sec`), after which the same response channel
 instructs conservative assumptions and final needs_input for essential missing
-input. Interrupt resolves the question with stop guidance. Late/duplicate answers
-fail rather than continuing a different question.
+input. Interrupt resolves the question with stop guidance. An answer pinned with
+`--question '<id>'` (as every report's `next` is) fails once that question is no
+longer pending, rather than continuing a different question. A bare
+`duet answer <worker>` answers whichever question is pending now.
 
 thread/resume has no dynamicTools field, so resumed threads (`duet task --to`, `--thread`,
 `--continue`) get `ask_parent` from a per-thread MCP server override instead:
@@ -236,11 +241,17 @@ For an interrupted or failed job, `duet result <worker> --details` exposes the
 compatibility `continuationCommand`. Use `duet task --continue <jobId> --cwd
 '<cwd>'` for one new turn with that job's recorded settings, only with consent.
 Native-agent stop and continuation behavior is described in [direct mode](direct-mode.md#if-a-worker-is-stopped).
-`--continue` refuses active jobs and any flag it inherits (`--thread`, `--fresh`,
-`--resume*`, `--write`, `--sandbox`, `--model`, `--effort`, `--fast`, `--normal`,
-`--approve-browser-origin`); it reuses the job's threadId, sandbox/write, model,
-effort, speed and approved origins, records `request.continuedFrom`, and appends
-any prompt text to the default continue prompt. With the user's consent, run it
+`--continue` refuses active jobs and conflicting flags (`--thread`, `--fresh`,
+`--resume*`, `--write`, `--model`, `--effort`, `--fast`, `--normal`,
+`--approve-browser-origin`, `--approve-computer-app`). It reuses the job's
+threadId, sandbox/write, model, effort and speed; only original request grants
+from the same Claude session are eligible, excluding runtime-only approvals
+and foreign dispatches after adoption. A recorded sandbox cannot be overridden.
+If settings are missing, `thread_settings_unknown` requires an explicit sandbox:
+`duet task --continue <jobId> --sandbox read-only --cwd '<cwd>'` is allowed in
+that case. Refused or never-started attempts do not become settings anchors;
+Duet consults a started predecessor. It records `request.continuedFrom` and
+appends any prompt text to the default continue prompt. With the user's consent, run it
 in background Bash, or through a new fallback worker; never automatically.
 
 For a job that is still running, with the user's explicit consent, the parent
@@ -280,16 +291,47 @@ the owned client/server; startup interruption also has a bounded client cleanup.
 Confirmed cancellation requires terminal turn evidence, not the interrupt RPC ack.
 Cancel returns unconfirmed (exit 2) if evidence is unavailable, including legacy
 records without a control-aware worker. It does not kill a historical PID.
+A dead worker with no thread handle is resolved as failed on refresh. If a
+thread exists but the turn handle is missing, read-only `thread/read` can recover
+a turn only when exactly one candidate started at or after the job's start, no
+other recorded job owns it (whether that job's wrapper is alive or dead), and no
+other handle-less job on the thread could have started it in the same window.
+Missing timestamps, multiple candidates, unreadable or inconsistent ownership
+records (a malformed index, or job files without an index) leave the outcome
+unresolved. Only a readable history with no matching candidate establishes that
+the turn never started. A missing-handle cancel interrupts only such a uniquely
+attributed live turn; otherwise it reports `interrupt_unconfirmed` (exit 2).
+
+Before starting a follow-up, Duet also checks the server for in-progress turns,
+including external turns and jobs in other workspaces. Any such turn yields
+`thread_busy` without a new turn. A per-thread admission reservation under the
+isolated home (`duet/thread-admission/`) is held from that check until the new
+turn's handle is saved, so a concurrent follow-up from another connection,
+broker or workspace is refused with `thread_busy` rather than racing the check.
+Another live job on the thread, including a fresh thread whose first turn is not
+yet accepted, also counts as busy. A reservation whose holder died is reclaimed
+after a 30-second settle window (`THREAD_ADMISSION_SETTLE_MS`), so a start
+request the holder already sent can be accepted and seen by the next check; a
+wrapper that crashed within that window before recording a turn also keeps the
+thread busy. Known limit: if a worker is killed while its start request is still
+pending in a broker and Codex accepts that request more than 30 seconds later, a
+concurrent follow-up from another workspace can run alongside the late turn. The
+broker shuts down about 4 seconds after accepting a turn whose client is gone,
+which ends that orphaned turn. Recovery/cancel commands are supplied only
+when a tracked job owns the turn; an external turn must be resolved by its owner.
+Refused or blocked attempts never become thread blockers.
 
 Codex's turn/interrupt leaves the commands a turn started running (unified-exec
 sessions under `codex app-server`). After every Duet-initiated interrupt, on the
 worker's own connection or, for `duet cancel` of a lost turn, on the broker that
 owns the thread, Duet sends the experimental `thread/backgroundTerminals/clean`
-with the threadId (capped at 3 s). This ends every background terminal of that
+with the threadId (capped at 3 s), including confirmed cancellation before a
+new turn started. This ends every background terminal of that
 thread, including servers it started in earlier turns. The outcome is recorded
 as `backgroundTerminals: {cleaned, detail}` on the job (`duet result --details`)
 and in `duet cancel --json`. It never changes the cancellation's confirmation or
-exit code. A natural turn end sends no cleanup.
+exit code. A natural turn end sends no terminal cleanup. Task-scoped Computer Use grants
+left behind by a dead worker are released at the next start or recovery.
 
 SessionEnd writes cancellation controls for this Claude session and waits up to
 four seconds inside the hook's five-second budget, across worktrees sharing the
@@ -314,7 +356,8 @@ unchanged by the move; `adopt` and `task --continue` on a migrated job behave as
 on a native one. A job or thread reference unknown to the new directory falls
 back to the legacy directories and imports the match, covering records an older
 session writes after the merge. SessionEnd runs the same check for its own
-workspace with a bounded lock wait before cancelling.
+workspace with a bounded lock wait before cancelling. Upgrade or downgrade
+with no Duet jobs running; legacy migration does not make mixed-version writes safe.
 It never shuts down a shared broker used by another session. The broker interrupts
 turns when their owner socket disconnects and closes its server group after a
 bounded failure deadline. With no clients or active turns it exits after 60 seconds
@@ -442,7 +485,7 @@ node plugins/codex/scripts/codex-companion.mjs status '<jobId>' --json
 ```
 
 Observer calls must leave leaseExpiresAt/leaseRenewedAt unchanged. Result on an
-active job reports still running (nonzero exit). The owner wait must advance both
+active job reports `running` (exit 0). The owner wait must advance both
 timestamps. Launch a second fresh smoke job in the same Claude session: ownerIds
 must differ; passing the first owner to the second job's status must not renew it.
 Cancel only that extra smoke job after recording the evidence.

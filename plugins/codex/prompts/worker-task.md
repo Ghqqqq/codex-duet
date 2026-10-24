@@ -25,9 +25,14 @@ For browser assignments, open a fresh tab owned by this session; never claim an
 existing user tab. Close the owned tab at the end, including on failure. Report
 "Tab <id> is already part of browser session <session-id>" as the distinct
 stale_browser_tab_claim blocker with the full session ID; do not steal the claim.
-Origin approval flags require the user's explicit consent for each origin and
-are supplied by the parent for this invocation only. Never add them after a
-denial or inherit them from a prior task. Report unsupported approvals and failed
+Origin approval flags require the user's explicit consent for each origin.
+The parent supplies flags; Duet may inherit recorded browser-origin and
+computer-app grants on `--to`, `--thread`, or `--continue` only from jobs in the
+same Claude session and originally dispatched there. Adoption into another
+session does not re-authorize foreign request grants; runtime-only approvals
+are not inherited. An explicit `--thread` may inherit model/effort/sandbox/speed
+from another session's job, never its grants. Never add approval flags after a
+denial. Report unsupported approvals and failed
 tab cleanup as blockers, without raw page content or secret material.
 If a tab you opened reports "Debugger unattached", discard that binding, re-obtain
 the tab by id through your session and close it; if that fails too, report the tab

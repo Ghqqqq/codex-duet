@@ -97,11 +97,13 @@ export function saveBrokerSession(cwd, session) {
   fs.writeFileSync(resolveBrokerStateFile(cwd), `${JSON.stringify(session, null, 2)}\n`, "utf8");
 }
 
+function unlinkIfPresent(file) {
+  try { fs.unlinkSync(file); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+}
+
 export function clearBrokerSession(cwd) {
-  const stateFile = resolveBrokerStateFile(cwd);
-  if (fs.existsSync(stateFile)) {
-    fs.unlinkSync(stateFile);
-  }
+  unlinkIfPresent(resolveBrokerStateFile(cwd));
 }
 
 async function isBrokerEndpointReady(endpoint) {
@@ -187,13 +189,9 @@ export function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessi
     }
   }
 
-  if (pidFile && fs.existsSync(pidFile)) {
-    fs.unlinkSync(pidFile);
-  }
+  if (pidFile) unlinkIfPresent(pidFile);
 
-  if (logFile && fs.existsSync(logFile)) {
-    fs.unlinkSync(logFile);
-  }
+  if (logFile) unlinkIfPresent(logFile);
 
   if (endpoint) {
     try {

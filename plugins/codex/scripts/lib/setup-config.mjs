@@ -5,6 +5,7 @@ import os from "node:os";
 import { keyPath, statements, valueOf } from "./tool-config.mjs";
 import { normalizeBrowserOrigin, normalizeBrowserOrigins, normalizeBundleId, normalizeBundleIds } from "./server-requests.mjs";
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
+import { tryAcquirePidLock } from "./state.mjs";
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function scan(text) {
@@ -67,7 +68,9 @@ function apply(home, edits, dryRun, { backup = true } = {}) {
     safeFile(home, edit.file);
     fs.mkdirSync(path.dirname(edit.file), { recursive: true, mode: 0o700 });
     const lock = `${edit.file}.duet-lock`, temp = `${edit.file}.${randomUUID()}.tmp`;
-    const fd = fs.openSync(lock, "wx", 0o600);
+    safeFile(home, lock);
+    const release = tryAcquirePidLock(lock);
+    if (!release) throw new Error("Configuration is being edited by another process; retry setup.");
     try {
       if (read(home, edit.file) !== edit.before) throw new Error("Configuration changed concurrently; retry setup.");
       if (backup && fs.existsSync(edit.file)) {
@@ -77,7 +80,7 @@ function apply(home, edits, dryRun, { backup = true } = {}) {
       fs.writeFileSync(temp, edit.after, { flag: "wx", mode: 0o600 });
       if (read(home, edit.file) !== edit.before) throw new Error("Configuration changed concurrently; retry setup.");
       fs.renameSync(temp, edit.file);
-    } finally { fs.closeSync(fd); fs.rmSync(temp, { force: true }); fs.unlinkSync(lock); }
+    } finally { try { fs.rmSync(temp, { force: true }); } finally { release(); } }
   }
   return { changedFiles: changed.map(e => e.file), backups, dryRun };
 }

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
-import { resolveStateDir, resolveStateRoot, withJournalLock } from "./state.mjs";
+import { resolveStateDir, resolveStateDirForRoot, resolveStateRoot, withJournalLock } from "./state.mjs";
 
 const SEGMENT = /^[A-Za-z0-9_.:-]{1,128}$/;
 const safeId = value => typeof value === "string" && SEGMENT.test(value) && value !== "." && value !== "..";
@@ -254,7 +254,7 @@ function viewAt(stateDir, runId, rows, env) {
   for (const job of jobs.values()) {
     if (finished.has(job.jobId)) continue;
     try {
-      const jobStateDir = job.workspaceRoot ? resolveStateDir(job.workspaceRoot, env) : stateDir;
+      const jobStateDir = job.workspaceRoot ? resolveStateDirForRoot(job.workspaceRoot, env) : stateDir;
       directory(path.join(jobStateDir, "jobs"), env);
       const live = JSON.parse(read(path.join(jobStateDir, "jobs", `${id(job.jobId, "jobId")}.json`)));
       if (live.runId === runId && (live.runStateDir ?? jobStateDir) === stateDir) {
@@ -378,7 +378,7 @@ export function linkJournalJob(job, brief, env = process.env) {
 export function finishJournalJob(job, report, env = process.env) {
   if (!job.runId || job.jobClass !== "task" || ["queued", "running"].includes(job.status)) return false;
   try {
-    const stateDir = runStateDirectory(job.runStateDir ?? resolveStateDir(job.workspaceRoot, env), env);
+    const stateDir = runStateDirectory(job.runStateDir ?? resolveStateDirForRoot(job.workspaceRoot, env), env);
     return locked(stateDir, env, () => {
       const rows = entries(stateDir, job.runId, env), jobId = id(job.id, "jobId");
       // Check AND append under the existing interprocess state lock. Every
@@ -411,7 +411,7 @@ function hasActiveLinkedJob(rows, env) {
   }
   for (const row of unfinished.values()) {
     try {
-      const stateDir = resolveStateDir(row.workspaceRoot ?? rows[0].cwd, env);
+      const stateDir = row.workspaceRoot ? resolveStateDirForRoot(row.workspaceRoot, env) : resolveStateDir(rows[0].cwd, env);
       const dir = directory(path.join(stateDir, "jobs"), env);
       const job = JSON.parse(read(path.join(dir, `${id(row.jobId, "jobId")}.json`)));
       if (["queued", "running"].includes(job.status)) return true;

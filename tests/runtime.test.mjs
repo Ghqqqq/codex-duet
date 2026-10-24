@@ -1483,7 +1483,7 @@ test("result returns the stored output for the latest finished job by default", 
   const report = JSON.parse(result.stdout);
   assert.equal(report.status, "completed"); assert.equal(report.jobId, "review-finished");
   assert.equal(report.summary, "Reviewed uncommitted changes.\nNo material issues found.");
-  assert.equal(report.next, null); assert.equal(report.details, "duet result review-finished --details");
+  assert.equal(report.next, null); assert.equal(report.details, "duet result 'review-finished' --details");
   const details = JSON.parse(run("node", [SCRIPT, "result", "--details"], { cwd: workspace }).stdout);
   assert.equal(details.threadId, "thr_review_finished");
 });

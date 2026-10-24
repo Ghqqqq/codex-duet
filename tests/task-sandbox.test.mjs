@@ -104,11 +104,11 @@ test("sandbox defaults apply to fresh tasks; named and thread follow-ups inherit
   assert.equal(f.state().nextTurnId, before, "failed resolution never starts a turn");
   const duplicate = direct(invoke(["task", ...session], other));
   patch(duplicate.jobId, { agentName: narrow.worker }, other);
-  const ambiguous = invoke(["task", ...session, "--to", narrow.worker]);
-  assert.equal(ambiguous.status, 1);
-  assert.ok(ambiguous.stderr.includes(duplicate.jobId));
-  assert.ok(ambiguous.stderr.includes(legacy.jobId));
-  assert.equal(f.state().nextTurnId, before + 1, "an ambiguous name never starts a turn");
+  const foreignBefore = JSON.parse(run(process.execPath, [f.script, "result", duplicate.jobId, "--json"], { cwd: other, env: f.env }).stdout).storedJob;
+  const local = direct(invoke(["task", ...session, "--to", narrow.worker]));
+  assert.equal(stored(local.jobId).threadId, narrowJob.threadId, "legacy duplicate names prefer the caller's workspace");
+  assert.deepEqual(JSON.parse(run(process.execPath, [f.script, "result", duplicate.jobId, "--json"], { cwd: other, env: f.env }).stdout).storedJob, foreignBefore);
+  assert.equal(f.state().nextTurnId, before + 2, "the local follow-up starts exactly one additional turn");
 });
 
 test("task rejects unknown, missing and conflicting sandbox flags before starting a turn", () => {
@@ -167,12 +167,12 @@ test("named follow-ups stay session-scoped while explicit continuations inherit 
   assert.equal(restartedJob.threadId, thread);
   assert.equal(restartedJob.sessionId, "session-c");
   for (const key of ["sandbox", "write", "model", "effort", "serviceTier", "approvedBrowserOrigins", "approvedComputerApps"]) {
-    assert.deepEqual(restartedJob.request[key], stored(foreign.jobId).request[key], key);
+    assert.deepEqual(restartedJob.request[key], key.startsWith("approved") ? [] : stored(foreign.jobId).request[key], key);
   }
   assert.equal(f.state().lastTurnStart.sandboxPolicy.type, "dangerFullAccess");
   assert.equal(f.state().lastTurnStart.model, "session-b-model");
-  assert.match(f.state().lastTurnStart.computerUse.session, /com\.example\.Foreign/);
-  assert.doesNotMatch(f.state().lastTurnStart.computerUse.session, /com\.example\.OneCall/);
+  assert.equal(f.state().lastTurnStart.computerUse.session, null);
+  assert.doesNotMatch(f.state().lastTurnStart.computerUse.session ?? "", /com\.example\.OneCall/);
   addRuntimeGrants(restarted.jobId);
   f.env.CODEX_COMPANION_SESSION_ID = "session-d";
   const threaded = json(f.call("task", "--direct", "--thread", thread, "fixture"));
@@ -183,16 +183,16 @@ test("named follow-ups stay session-scoped while explicit continuations inherit 
     assert.deepEqual(threadedJob.request[key], restartedJob.request[key], key);
   }
   assert.equal(f.state().lastTurnStart.model, "session-b-model");
-  assert.match(f.state().lastTurnStart.computerUse.session, /com\.example\.Foreign/);
-  assert.doesNotMatch(f.state().lastTurnStart.computerUse.session, /com\.example\.OneCall/);
+  assert.equal(f.state().lastTurnStart.computerUse.session, null);
+  assert.doesNotMatch(f.state().lastTurnStart.computerUse.session ?? "", /com\.example\.OneCall/);
   const threadedDetails = json(f.call("result", threaded.jobId, "--details"));
   assert.equal(threadedDetails.settingsInheritance.jobId, restarted.jobId);
   assert.equal(threadedDetails.settingsInheritance.scope, "workspace");
   assert.equal(Object.hasOwn(threaded, "settingsInheritance"), false);
   f.env.CODEX_COMPANION_SESSION_ID = "";
   const unscoped = json(f.call("task", "--direct", "--thread", thread, "fixture"));
-  assert.deepEqual(stored(unscoped.jobId).request.approvedComputerApps, ["com.example.Foreign"]);
-  assert.deepEqual(stored(unscoped.jobId).request.approvedBrowserOrigins, ["https://foreign.example"]);
+  assert.deepEqual(stored(unscoped.jobId).request.approvedComputerApps, []);
+  assert.deepEqual(stored(unscoped.jobId).request.approvedBrowserOrigins, []);
 });
 
 test("background task persists and reports the deliberately requested sandbox", async () => {

@@ -11,8 +11,10 @@ Use this skill only inside the `codex:codex-rescue` subagent. Its restrictions a
 The parent prefers `Agent(subagent_type: "codex:codex-native")` when available,
 otherwise `duet task` in background Bash. Its report arrives with the completion
 notification; only if missing, use `duet result <worker>`. Follow-ups use
-`duet task --to <worker>`; pending questions use `duet answer <worker>`. Native
-agents instead receive both through SendMessage. Do not parse output files.
+`duet task --to <worker>`; pending questions use the report's `next` command verbatim, or
+`duet answer <worker> --question '<questionId>'` with the displayed ID. A bare
+`duet answer <worker>` can answer a newer pending question. Native
+agents instead receive both through SendMessage, which already pins the displayed question. Do not parse output files.
 
 Primary helper: `duet task --quiet` with the brief only on stdin via a
 single-quoted `DUET_TASK` heredoc. `duet task --help` lists flags without starting
@@ -31,7 +33,7 @@ Execution rules:
 - Default to `--effort xhigh`; respect explicit user effort, and allow `max` for difficult work when supported.
 - Default to `--model gpt-6-astra`; respect explicit user model choices and map `spark` to `gpt-5.3-codex-spark`.
 - Map `spark` to `--model gpt-5.3-codex-spark`.
-- Default to a write-capable Codex run by adding `--write` unless the user explicitly asks for read-only behavior or only wants review, diagnosis, or research without edits.
+- For implementation and fix requests, add `--write`. For read-only requests or review, diagnosis, planning, or research without edits, pass `--sandbox read-only` explicitly instead.
 
 Command selection:
 - Use exactly one `task` invocation per rescue handoff.
@@ -44,10 +46,10 @@ Command selection:
 - `--resume`: always use `task --resume-last`, even if the request text is ambiguous.
 - `--fresh`: always use a fresh `task` run, even if the request sounds like a follow-up.
 - `--effort`: accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
-- `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run.
+- `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run. It inherits the selected thread's recorded model, effort, sandbox and speed unless explicitly overridden; missing sandbox settings require explicit `--sandbox`. Request grants require original dispatch in the same Claude session. Never use latest-thread selection for parallel workers.
 
 Safety rules:
-- Default to write-capable Codex work in `codex:codex-rescue` for implementation and fix requests. Keep diagnosis, planning, research, and review without requested edits read-only.
+- Default to write-capable Codex work in `codex:codex-rescue` for implementation and fix requests. Pass `--sandbox read-only` explicitly for diagnosis, planning, research, and review without requested edits.
 - Pass task text through a single-quoted `DUET_TASK` heredoc with its delimiter absent as a complete line from the prompt. Keep runtime flags separate and shell-quote their values. Do not interpolate prompt text into shell command syntax.
 - Preserve the user's task text as-is apart from stripping routing flags.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
@@ -55,6 +57,6 @@ Safety rules:
 - If the Bash call fails or Codex cannot be invoked, return the failure and captured stderr to the outer Claude agent. Do not hide authentication, isolation, unsupported model/effort/tier, or runtime errors; do not claim successful execution.
 
 Isolated runtime and collaboration:
-- Pass `--fast` when the caller explicitly selects fast mode, including a parent Claude selection for latency-sensitive work; otherwise use normal mode (omit `--fast` or pass `--normal`). On explicit-thread follow-ups, pass `--normal` when resetting inherited fast mode. These flags are runtime controls, not prompt text. Reasoning effort and speed mode are independent.
+- Pass `--fast` when the caller explicitly selects fast mode, including a parent Claude selection for latency-sensitive work; otherwise fresh tasks use normal mode. Follow-ups inherit recorded speed; pass `--normal` to reset it. These flags are runtime controls, not prompt text. Reasoning effort and speed mode are independent.
 - Use only this plugin runtime and its printed `codex-isolated.mjs` login/resume commands. Never fall back to the ordinary Codex home.
 - During `codex-claude collaboration`, the outer Claude agent owns planning, parallel worker assignments, integration and acceptance. The thin forwarding rules apply only to this rescue subagent; the outer agent must inspect changes and verification evidence.

@@ -396,7 +396,7 @@ test("cleanup plans and removes expired open/closed runs and pointers, retaining
   assert.equal(applied.runsDeleted, 2); assert.equal(fs.existsSync(f.pointer), false); assert.equal(fs.existsSync(f.file(closed)), false);
   const recent = f.start("Recent"), job = linked(f, recent);
   finishJournalJob(job, { status: "completed" }, f.env);
-  const old = new Date(Date.now() - 45 * 86400000).toISOString(), record = { ...job, createdAt: old, updatedAt: old, completedAt: old, pid: null };
+  const old = new Date(Date.now() - 45 * 86400000).toISOString(), record = { ...job, createdAt: old, updatedAt: old, completedAt: old, pid: null, result: { turnEnded: true } };
   fs.mkdirSync(path.join(f.state, "jobs"), { recursive: true });
   fs.writeFileSync(path.join(f.state, "jobs", `${job.id}.json`), JSON.stringify(record));
   fs.writeFileSync(path.join(f.state, "state.json"), JSON.stringify({ version: 1, config: {}, jobs: [record] }));

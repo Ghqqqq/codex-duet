@@ -83,8 +83,10 @@ function threadSandbox(mode) {
   return { type: "readOnly", networkAccess: false };
 }
 
+const turnStartedAt = new Map();
 function buildTurn(id, status = "inProgress", error = null) {
-  return { id, status, items: [], error };
+  if (!turnStartedAt.has(id)) turnStartedAt.set(id, now());
+  return { id, status, items: [], error, startedAt: turnStartedAt.get(id), completedAt: status === "inProgress" ? null : now() };
 }
 
 function buildAccountReadResult() {
@@ -604,7 +606,23 @@ async function handleLine(line) {
           computerUse: readComputerUse(process.env.CODEX_HOME, thread.id)
 	        };
 	        saveState(state);
+
+        // Model requests within one turn report separate last breakdowns.
+        // Keep cumulative thread history and exercise updates on both sides
+        // of the turn/start response (the first update must be buffered).
+        thread.tokenUsage ??= { inputTokens: 1000, cachedInputTokens: 300, cacheWriteInputTokens: 0,
+          outputTokens: 200, reasoningOutputTokens: 60, totalTokens: 1200 };
+        const emitUsage = last => {
+          thread.tokenUsage = Object.fromEntries(Object.entries(last).map(([key, value]) => [key, thread.tokenUsage[key] + value]));
+          saveState(state);
+          send({ method: "thread/tokenUsage/updated", params: { threadId: thread.id, turnId,
+            tokenUsage: { last, total: thread.tokenUsage, modelContextWindow: 128000 } } });
+        };
+        emitUsage({ inputTokens: 100, cachedInputTokens: 30, cacheWriteInputTokens: 0,
+          outputTokens: 20, reasoningOutputTokens: 6, totalTokens: 120 });
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
+        emitUsage({ inputTokens: 50, cachedInputTokens: 10, cacheWriteInputTokens: 0,
+          outputTokens: 10, reasoningOutputTokens: 4, totalTokens: 60 });
 
         if (BEHAVIOR === "large-jsonl") {
           emitTurnCompleted(thread.id, turnId, { completed: { type: "agentMessage", id: "large-message", text: prompt, phase: "final_answer" } });

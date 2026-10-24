@@ -2,7 +2,7 @@ import { leaseSnapshot, leaseExpiryReport } from "./job-runtime.mjs";
 import fs from "node:fs";
 
 import { getSessionRuntimeStatus } from "./codex.mjs";
-import { getConfig, importLegacyJob, listJobs, readJobFile, resolveJobFile } from "./state.mjs";
+import { getConfig, importLegacyJob, listJobs, readJobFile, resolveJobFile, unresolvedTask, visibleJobs } from "./state.mjs";
 import { SESSION_ID_ENV } from "./tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
@@ -232,7 +232,11 @@ function matchJobReference(jobs, reference, predicate = () => true) {
 export function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
-  const workspaceJobs = listJobs(workspaceRoot);
+  const recordForJob = job => job.jobClass === "task" ? readStoredJob(workspaceRoot, job.id) ?? job : job;
+  // Tasks need their private record to be observable. Keep legacy index-only
+  // review listings; retention removes dangling entries under the state lock.
+  const workspaceJobs = visibleJobs(listJobs(workspaceRoot).filter(job =>
+    job.jobClass !== "task" || !["queued", "running"].includes(job.status) || fs.existsSync(resolveJobFile(workspaceRoot, job.id))), recordForJob);
   const jobs = sortJobsNewestFirst(options.all ? workspaceJobs : filterJobsForCurrentSession(workspaceJobs, options));
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
@@ -252,7 +256,7 @@ export function buildStatusSnapshot(cwd, options = {}) {
   const latestFinishedRaw = jobs.find((job) => job.status !== "queued" && job.status !== "running") ?? null;
   const latestFinished = latestFinishedRaw ? statusJob(latestFinishedRaw) : null;
 
-  const recent = (options.all ? jobs : jobs.slice(0, maxJobs))
+  const recent = jobs.filter((job, index) => options.all || index < maxJobs || unresolvedTask(recordForJob(job)))
     .filter((job) => job.status !== "queued" && job.status !== "running" && job.id !== latestFinished?.id)
     .map(statusJob);
 

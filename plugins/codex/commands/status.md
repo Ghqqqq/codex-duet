@@ -26,8 +26,10 @@ provides handles and compatibility recovery commands when needed.
 
 Reports arrive with completion notifications; only if missing, run
 `duet result <worker>`. Handle `running` with one background `duet wait <worker>`;
-handle `needs_answer` with one background `duet answer <worker>` and a
-single-quoted `DUET_ANSWER` heredoc. Native agents receive answers through
+handle `needs_answer` with the report's `next` command verbatim, or one background
+`duet answer <worker> --question '<questionId>'` using the displayed ID and a
+single-quoted `DUET_ANSWER` heredoc. A bare `duet answer <worker>` can answer a
+newer pending question. Native agents already pin the displayed question through
 SendMessage and handle waits themselves. Never parse output files or run two
 waits. See the [dispatch protocol](../prompts/ultra-codex-protocol.md#dispatch).
 
