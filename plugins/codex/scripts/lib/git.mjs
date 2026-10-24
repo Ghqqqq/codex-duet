@@ -120,9 +120,9 @@ export function getCurrentBranch(cwd) {
 }
 
 export function getWorkingTreeState(cwd) {
-  const staged = gitChecked(cwd, ["diff", "--cached", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
-  const unstaged = gitChecked(cwd, ["diff", "--name-only"]).stdout.trim().split("\n").filter(Boolean);
-  const untracked = gitChecked(cwd, ["ls-files", "--others", "--exclude-standard"]).stdout.trim().split("\n").filter(Boolean);
+  const staged = gitChecked(cwd, ["diff", "--cached", "--name-only", "-z"]).stdout.split("\0").filter(Boolean);
+  const unstaged = gitChecked(cwd, ["diff", "--name-only", "-z"]).stdout.split("\0").filter(Boolean);
+  const untracked = gitChecked(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]).stdout.split("\0").filter(Boolean);
 
   return {
     staged,
@@ -198,12 +198,18 @@ function formatUntrackedFile(cwd, relativePath) {
   const absolutePath = path.join(cwd, relativePath);
   let stat;
   try {
-    stat = fs.statSync(absolutePath);
+    stat = fs.lstatSync(absolutePath);
   } catch {
     return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
   }
+  if (stat.isSymbolicLink()) {
+    return `### ${relativePath}\n(symlink, not inlined)`;
+  }
   if (stat.isDirectory()) {
     return `### ${relativePath}\n(skipped: directory)`;
+  }
+  if (!stat.isFile()) {
+    return `### ${relativePath}\n(skipped: not a regular file)`;
   }
   if (stat.size > MAX_UNTRACKED_BYTES) {
     return `### ${relativePath}\n(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
@@ -211,7 +217,12 @@ function formatUntrackedFile(cwd, relativePath) {
 
   let buffer;
   try {
-    buffer = fs.readFileSync(absolutePath);
+    const file = fs.realpathSync(absolutePath);
+    const relative = path.relative(fs.realpathSync(cwd), file);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      return `### ${relativePath}\n(skipped: outside repository)`;
+    }
+    buffer = fs.readFileSync(file);
   } catch {
     return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
   }
@@ -224,7 +235,14 @@ function formatUntrackedFile(cwd, relativePath) {
 
 function collectWorkingTreeContext(cwd, state, options = {}) {
   const includeDiff = options.includeDiff !== false;
-  const status = gitChecked(cwd, ["status", "--short", "--untracked-files=all"]).stdout.trim();
+  const entries = gitChecked(cwd, ["status", "--short", "--untracked-files=all", "-z"]).stdout.split("\0").filter(Boolean);
+  const statusLines = [];
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index], code = entry.slice(0, 2), file = JSON.stringify(entry.slice(3));
+    // In -z status, a rename/copy lists its destination before its source.
+    statusLines.push(`${code} ${/[RC]/.test(code) ? `${JSON.stringify(entries[++index])} -> ` : ""}${file}`);
+  }
+  const status = statusLines.join("\n");
   const changedFiles = listUniqueFiles(state.staged, state.unstaged, state.untracked);
 
   let parts;
@@ -263,7 +281,7 @@ function collectBranchContext(cwd, baseRef, options = {}) {
   const includeDiff = options.includeDiff !== false;
   const comparison = options.comparison ?? buildBranchComparison(cwd, baseRef);
   const currentBranch = getCurrentBranch(cwd);
-  const changedFiles = gitChecked(cwd, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean);
+  const changedFiles = gitChecked(cwd, ["diff", "--name-only", "-z", comparison.commitRange]).stdout.split("\0").filter(Boolean);
   const logOutput = gitChecked(cwd, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
   const diffStat = gitChecked(cwd, ["diff", "--stat", comparison.commitRange]).stdout.trim();
 
@@ -323,7 +341,7 @@ export function collectReviewContext(cwd, target, options = {}) {
     details = collectWorkingTreeContext(repoRoot, state, { includeDiff });
   } else {
     const comparison = buildBranchComparison(repoRoot, target.baseRef);
-    const fileCount = gitChecked(repoRoot, ["diff", "--name-only", comparison.commitRange]).stdout.trim().split("\n").filter(Boolean).length;
+    const fileCount = gitChecked(repoRoot, ["diff", "--name-only", "-z", comparison.commitRange]).stdout.split("\0").filter(Boolean).length;
     diffBytes = measureGitOutputBytes(
       repoRoot,
       ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange],

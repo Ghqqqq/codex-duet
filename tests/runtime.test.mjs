@@ -209,7 +209,7 @@ test("setup reports not ready when app-server config read fails", () => {
 
 });
 
-test("native review returns a finished turn and structured result", () => {
+test("review commands preserve stdin arguments and native terminal results", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir);
@@ -220,9 +220,11 @@ test("native review returns a finished turn and structured result", () => {
   run("git", ["commit", "-m", "init"], { cwd: repo });
   fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = 2;\n");
 
-  const result = run("node", [SCRIPT, "review", "--json"], {
+  const env = { ...buildEnv(binDir), CODEX_COMPANION_APP_SERVER_ENDPOINT: `unix:${path.join(binDir, "missing.sock")}` };
+  const result = run("node", [SCRIPT, "review", "--args-stdin"], {
     cwd: repo,
-    env: buildEnv(binDir)
+    env,
+    input: "--json --scope working-tree"
   });
 
   assert.equal(result.status, 0);
@@ -230,6 +232,46 @@ test("native review returns a finished turn and structured result", () => {
   assert.equal(payload.codex.status, 0);
   assert.equal(payload.turnEnded, true);
   assert.ok(payload.threadId);
+
+  const marker = path.join(binDir, "focus-executed");
+  const literal = `$(touch ${marker}) \`touch ${marker}\` $HOME`;
+  for (const command of ["review", "adversarial-review"]) {
+    const templates = fs.readFileSync(path.join(PLUGIN_ROOT, "commands", `${command}.md`), "utf8");
+    for (const [, template] of templates.matchAll(/```bash\n([\s\S]*?)\n```/g)) {
+      const args = `--wait --scope working-tree --json ${literal}`;
+      const shell = template.replaceAll("${CLAUDE_PLUGIN_ROOT}", PLUGIN_ROOT).replaceAll("$ARGUMENTS", args);
+      const reviewed = run("bash", ["-c", shell], { cwd: repo, env });
+      // Native review rejects focus; adversarial review sends it as data.
+      assert.equal(reviewed.status, command === "review" ? 1 : 0, reviewed.stderr);
+      assert.equal(fs.existsSync(marker), false);
+      if (command === "adversarial-review") {
+        const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+        assert.ok(state.lastTurnStart.prompt.includes(literal));
+      }
+    }
+  }
+
+  const fake = path.join(binDir, "codex"), source = fs.readFileSync(fake, "utf8");
+  const reply = 'send({ id: message.id, result: { turn: buildTurn(turnId), reviewThreadId: reviewThread.id } });';
+  assert.ok(source.includes(reply));
+  fs.writeFileSync(fake, source.replace(reply, `${reply}
+        send({ method: "turn/completed", params: { threadId: reviewThread.id, turn: buildTurn(turnId, "failed", { message: "SYNTHETIC_REVIEW_FAILURE", codexErrorInfo: "internalServerError", additionalDetails: null }) } });
+        break;`));
+  const failed = run("node", [SCRIPT, "review", "--json"], { cwd: repo, env });
+  assert.equal(failed.status, 1, failed.stderr);
+  const failure = JSON.parse(failed.stdout);
+  assert.equal(failure.codex.status, 1);
+  assert.equal(failure.turnEnded, true);
+  assert.equal(failure.error, "SYNTHETIC_REVIEW_FAILURE");
+  const jobId = /Job handle: ([^;]+);/.exec(failed.stderr)[1];
+  const stored = JSON.parse(run("node", [SCRIPT, "status", jobId, "--json"], { cwd: repo, env }).stdout).job;
+  assert.equal(stored.status, "failed");
+  assert.ok(stored.summary.includes(failure.error));
+  const reported = run("node", [SCRIPT, "result", jobId], { cwd: repo, env });
+  assert.equal(reported.status, 1);
+  const report = JSON.parse(reported.stdout);
+  assert.equal(report.status, "failed");
+  assert.ok(report.summary.includes(failure.error));
 });
 
 test("task runs when the active provider does not require OpenAI login", () => {

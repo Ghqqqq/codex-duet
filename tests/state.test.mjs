@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { initGitRepo, makeTempDir } from "./helpers.mjs";
-import { ensureStateDir, listSessionJobs, resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateDirForRoot, resolveStateFile, resolveStateRoot, saveState } from "../plugins/codex/scripts/lib/state.mjs";
+import { ensureStateDir, listSessionJobs, resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateDirForRoot, resolveStateFile, resolveStateRoot, saveState, updateJob, updateState } from "../plugins/codex/scripts/lib/state.mjs";
 
 test("resolveStateDir is a per-workspace directory under the isolated home, independent of CLAUDE_PLUGIN_DATA and the temp dir", () => {
   const workspace = makeTempDir();
@@ -102,4 +102,42 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
       .flatMap((jobId) => [`${jobId}.json`, `${jobId}.log`])
       .sort()
   );
+
+  const anchored = makeTempDir(), privateFiles = new Map();
+  const anchors = Array.from({ length: 60 }, (_, i) => {
+    const job = { id: `anchor-${i}`, threadId: `thread-${i}`, jobClass: "task", status: "completed",
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(), updatedAt: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString() };
+    const file = resolveJobFile(anchored, job.id);
+    privateFiles.set(job.id, file);
+    fs.writeFileSync(file, JSON.stringify({ ...job, turnId: `turn-${i}`, result: { structured: { status: "completed" } } }));
+    return job;
+  });
+  saveState(anchored, { jobs: anchors });
+  const read = fs.readFileSync, reads = [];
+  fs.readFileSync = function(file, ...args) {
+    if ([...privateFiles.values()].includes(file)) reads.push(file);
+    return read.call(this, file, ...args);
+  };
+  try {
+    updateJob(anchored, "anchor-59", () => ({ cursor: 1 }));
+    updateState(anchored, state => { state.config.stopReviewGate = true; });
+    assert.deepEqual(reads, [privateFiles.get("anchor-59")], "stable anchors never require unrelated private reads");
+    // The newer refused attempt must not displace the private started anchor.
+    const refused = { ...anchors[0], id: "refused", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z", result: { structured: { status: "blocked" } } };
+    fs.writeFileSync(resolveJobFile(anchored, refused.id), JSON.stringify(refused));
+    const saved = saveState(anchored, { jobs: [...anchors, refused] });
+    assert.ok(saved.jobs.some(job => job.id === "anchor-0"));
+    reads.length = 0;
+    updateState(anchored, state => { state.config.stopReviewGate = false; });
+    assert.deepEqual(reads, [], "necessary pruning reuses unchanged private records");
+    // A changed record must invalidate the cache and participate in pruning.
+    const changed = { ...anchors[0], recovery: { turnStatus: "notStarted" }, result: { structured: { status: "blocked" } } };
+    fs.writeFileSync(privateFiles.get("anchor-0"), JSON.stringify(changed));
+    const rechecked = updateState(anchored, () => {});
+    assert.deepEqual(reads, [privateFiles.get("anchor-0")]);
+    assert.equal(rechecked.jobs.some(job => job.id === "anchor-0"), false);
+    assert.ok(rechecked.jobs.some(job => job.id === "refused"));
+  } finally {
+    fs.readFileSync = read;
+  }
 });

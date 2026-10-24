@@ -46,7 +46,7 @@ values and unknown entry types fail before journal writes.
 | --- | --- |
 | `start` | Non-empty `goal` string, `criteria` array of non-empty strings |
 | `add criteria` | `criteria` array of non-empty strings, appended to existing criteria |
-| `add verdict` | `jobId`, `verdict` (`ACCEPT`, `ACCEPT_WITH_GLUE`, `REWORK`, `REASSIGN`), `criteria` array of `{criterion, evidence, result}`, non-empty `reason` |
+| `add verdict` | `jobId`, `verdict` (`ACCEPT`, `ACCEPT_WITH_GLUE`, `REWORK`, `REASSIGN`), `criteria` array of `{criterion, evidence, result}`, non-empty `reason`; optional `resolves` array of job IDs linked to this run |
 | Criterion result | `met`, `not_met` or `cannot_verify`; criterion and evidence are non-empty strings |
 | `add decision` | Non-empty `summary` and `basis`; optional non-empty `risk` string |
 | `close` | `judgment` (`passed`, `blocked`, `abandoned`), non-empty `summary`; optional `openRisks` array of strings |
@@ -55,10 +55,23 @@ Empty criteria arrays are allowed when no criterion applies. Verdicts can name
 jobs whose ordinary records have expired. The latest verdict supersedes earlier
 verdicts in the recovery view; all entries remain in the journal. Jobs without a
 verdict and jobs whose latest verdict is unresolved `REWORK` or `REASSIGN` are
-open items. A later `ACCEPT` or `ACCEPT_WITH_GLUE` on an explicitly linked
-follow-up/continuation (including a descendant) resolves earlier rework. Sharing
-a thread alone does not resolve it. The accepting job's latest verdict must still
-be acceptance, and must follow the ancestor's latest rejection in journal order.
+open items. A later `ACCEPT` or `ACCEPT_WITH_GLUE` resolves earlier rework or
+reassignment when it lists the rejected job in `resolves`, or is a descendant
+through explicit `followUpOf`/`continuationOf` links. Sharing a thread alone does
+not resolve it. The accepting job's latest verdict must still be acceptance and
+must follow the rejected job's latest verdict in journal order; a later rejection
+reopens it. Unknown job IDs in `resolves` are rejected before writing.
+
+When a fresh worker fixes REWORK or replaces a REASSIGN job, preserve the original
+rejection and add `"resolves":["<rejectedJobId>"]` to the replacement's verified
+acceptance verdict. For example, with both jobs already linked to the run:
+
+```sh
+duet journal add verdict <<'JSON'
+{"jobId":"task-replacement","verdict":"ACCEPT","criteria":[{"criterion":"Keep all journal files in the isolated home","evidence":"Checked the replacement's artifact paths","result":"met"}],"reason":"Verified the replacement fixes the rejected work","resolves":["task-rejected"]}
+JSON
+```
+
 Close records the judgment and clears pointers to that run; closing twice or
 adding manual entries after close is an error. It does not cancel workers. A
 worker already linked to a run may still record its terminal report after close.
@@ -80,7 +93,7 @@ or unreadable journal. Text lists every issue and its next safe action. JSON is:
 | --- | --- | --- |
 | `unfinished_job` | Linked job has no `job_finished` and its readable record is queued/running | Check status and the existing owner wait; wait for completion |
 | `no_verdict` | Finished job has no verdict | Inspect its report, verify criteria and record a verdict |
-| `open_rework` | Latest rejection has no later acceptance on that job or linked follow-up | Verify a correction before accepting; continuing a stopped job requires consent |
+| `open_rework` | Latest rejection has no later acceptance on that job, linked descendant or job naming it in `resolves` | Verify a correction before accepting; record `resolves` for a fresh replacement; continuing a stopped job requires consent |
 | `unmet_criterion` | Latest result for exact criterion text is `not_met` or `cannot_verify` | Resolve and recheck it, then record observed evidence with `met` |
 | `unchecked_criterion` | Task-level criterion appears in no verdict | Check and record that exact criterion text |
 | `missing_artifact` | Latest finish's report path or file is missing/empty, unreadable or unsafe | Recover available report evidence, or explain its absence in a blocked/abandoned close |
@@ -137,6 +150,9 @@ effort, sandbox, available `followUpOf` and `continuationOf` identifiers, and a
 relative `brief` path. Job-finish records
 contain `jobId`, `status`, final `threadId` and a relative `report` path. Follow-up
 identifiers depend on the previous job still being discoverable at launch.
+`task --thread <id> --cwd <other-worktree>` records `followUpOf` from the
+cross-workspace predecessor found through thread inheritance when no local
+predecessor is available.
 
 Directories are private (0700), files are 0600, and journal paths reject
 symlinked directories and files. Pointer and artifact publication use atomic

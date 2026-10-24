@@ -128,6 +128,8 @@ Durable run criteria, verdicts and decisions in the isolated home.
     criteria: {"criteria":["..."]}
     verdict: {"jobId":"...","verdict":"ACCEPT|ACCEPT_WITH_GLUE|REWORK|REASSIGN",
               "criteria":[{"criterion":"...","evidence":"...","result":"met|not_met|cannot_verify"}],"reason":"..."}
+      Optional resolves: ["<jobId>", ...] names linked jobs in this run whose REWORK/REASSIGN
+      a later ACCEPT/ACCEPT_WITH_GLUE resolves. Unknown job IDs are rejected.
     decision: {"summary":"...","basis":"...","risk":"optional"}
   close [--run <id>]  Stdin: {"judgment":"passed|blocked|abandoned","summary":"...","openRisks":[]}.
     passed refuses open issues (exit 2); blocked/abandoned record them as openIssues.
@@ -205,11 +207,12 @@ Check isolated runtime readiness or change setup; --help, -h exits without chang
   --allow-browser-origin <origin>, --revoke-browser-origin <origin>  Change saved origins (repeatable).
   --computer-use-approval <mirror|ask>  App policy; --list-computer-apps  List apps.
   --allow-computer-app <bundle-id>, --revoke-computer-app <bundle-id>  Change saved apps (repeatable).
-  --enable-review-gate, --disable-review-gate  Toggle stop-time review gate.`,
+  --enable-review-gate, --disable-review-gate  Toggle stop-time review gate (always read-only, also in plan mode).`,
   review: `Usage: duet review [options]
 Read-only native review; no focus text. --help, -h exits without starting a review.
   --base <ref>  Base revision; --scope <auto|working-tree|branch>  Review target.
   --model, -m <model>  Model; --cwd, -C <dir>  Workspace; --json  JSON output.
+  --args-stdin  Read raw review arguments via a single-quoted heredoc (e.g. DUET_ARGS), without shell expansion.
   --wait, --background  Accepted routing hints; this helper stays in the foreground.`,
   "adversarial-review": `Usage: duet adversarial-review [options] [focus text]
 Read-only adversarial review. --help, -h shows help.
@@ -217,6 +220,7 @@ Unknown flags within 2 edits of a known option are rejected as likely typos;
 other unknown flags remain focus text. Use -- for literal typo-like focus text.
   --base <ref>  Base revision; --scope <auto|working-tree|branch>  Review target.
   --model, -m <model>  Model; --cwd, -C <dir>  Workspace; --json  JSON output.
+  --args-stdin  Read raw review arguments via a single-quoted heredoc (e.g. DUET_ARGS), without shell expansion.
   --wait, --background  Accepted routing hints; this helper stays in the foreground.
   --  Treat remaining tokens, including help flags, as literal focus text.`,
   transfer: `Usage: duet transfer [--source <claude-jsonl>] [--cwd <dir>] [--json]
@@ -260,6 +264,10 @@ Never pass answer text on the command line or start a second wait.
 Replace <questionId> with the ID you saw. --question rejects a stale/answered ID.
 A bare duet answer <worker> answers whatever question is pending now, which may be newer
 than the one you saw. Native SendMessage already pins the displayed question and is unaffected.
+Computer Use approvals accept only an exact displayed option label, its number 1-4,
+or call/once/task/always/deny/no. Answers are trimmed and case-insensitive; exact labels
+allow a trailing period. Anything else denies, including yes, negations or qualified text.
+Send only the choice, without explanation; native SendMessage uses the same rules.
 A different owner or attached wait is refused without submitting.
   --owner <id>  Explicit owner; otherwise resolved.
   --question <id>  Pin the displayed question; omission selects the currently pending question.
@@ -341,13 +349,15 @@ function normalizeReasoningEffort(effort) {
   return normalized;
 }
 
-function normalizeArgv(argv) {
+function normalizeArgv(argv, argsStdin = false) {
   if (argv.length === 1) {
     const [raw] = argv;
-    if (!raw || !raw.trim()) {
-      return [];
-    }
-    return splitRawArgumentString(raw);
+    argv = raw?.trim() ? splitRawArgumentString(raw) : [];
+  }
+  const index = argsStdin ? argv.indexOf("--args-stdin") : -1;
+  const separator = argv.indexOf("--");
+  if (index >= 0 && (separator < 0 || index < separator)) {
+    return [...argv.slice(0, index), ...splitRawArgumentString(readStdinIfPiped()), ...argv.slice(index + 1)];
   }
   return argv;
 }
@@ -681,15 +691,23 @@ async function executeReviewRun(request) {
       onProgress: request.onProgress,
       signal: request.signal
     });
+    const failureMessage = result.status !== 0
+      ? result.error?.message || result.turn?.error?.message || result.stderr?.trim() || "No failure details were returned."
+      : null;
+    const summary = failureMessage
+      ? `${reviewName} failed: ${firstMeaningfulLine(failureMessage)}`
+      : firstMeaningfulLine(result.reviewText, `${reviewName} completed.`);
+    const stderr = [result.stderr, failureMessage].filter(Boolean).filter((value, index, values) => values.indexOf(value) === index).join("\n");
     const payload = {
       review: reviewName,
       target,
       threadId: result.threadId,
       sourceThreadId: result.sourceThreadId,
       turnEnded: Boolean(result.turnEnded),
+      ...(failureMessage ? { error: failureMessage, rawOutput: [`${reviewName} failed: ${failureMessage}`, result.reviewText].filter(Boolean).join("\n\n") } : {}),
       codex: {
         status: result.status,
-        stderr: result.stderr,
+        stderr,
         stdout: result.reviewText,
         reasoning: result.reasoningSummary
       }
@@ -698,7 +716,7 @@ async function executeReviewRun(request) {
       {
         status: result.status,
         stdout: result.reviewText,
-        stderr: result.stderr
+        stderr
       },
       { reviewLabel: reviewName, targetLabel: target.label, reasoningSummary: result.reasoningSummary }
     );
@@ -709,7 +727,7 @@ async function executeReviewRun(request) {
       turnId: result.turnId,
       payload,
       rendered,
-      summary: firstMeaningfulLine(result.reviewText, `${reviewName} completed.`),
+      summary,
       jobTitle: `Codex ${reviewName}`,
       jobClass: "review",
       targetLabel: target.label
@@ -1071,6 +1089,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
   // Reserve the name under the same workspace lock that publishes job state.
   // Concurrent dispatches see this queued reservation before either launches.
   const stored = listJobs(workspaceRoot);
+  const inheritedPrevious = !identity.continued && identity.threadId ? resolveThreadInheritance(workspaceRoot, identity.threadId).job : null;
   let duplicateDispatch;
   updateState(workspaceRoot, state => {
     const currentIds = new Set(state.jobs.map(candidate => candidate.id));
@@ -1079,8 +1098,8 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
       duplicateDispatch = candidates.find(candidate => candidate.dispatchNonce === identity.dispatchNonce && candidate.sessionId === record.sessionId);
       if (duplicateDispatch) return;
     }
-    const previous = identity.continued ?? (identity.threadId ? candidates
-      .filter(candidate => candidate.threadId === identity.threadId)
+    const previous = identity.continued ?? (identity.threadId ? [...candidates, inheritedPrevious]
+      .filter(candidate => candidate?.threadId === identity.threadId)
       .sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")) || b.id.localeCompare(a.id))[0] : null);
     const recent = Date.now() - 24 * 60 * 60 * 1000;
     const previousSession = (previous?.sessionId === undefined ? previous?.ownerId : previous.sessionId) || null;
@@ -1245,12 +1264,19 @@ function enqueueBackgroundTask(cwd, job, request) {
 }
 
 async function handleReviewCommand(argv, config) {
-  const { options, positionals } = parseCommandInput(argv, {
+  const tokens = normalizeArgv(argv, true);
+  const separator = tokens.indexOf("--");
+  if ((separator < 0 ? tokens : tokens.slice(0, separator)).some(token => token === "--help" || token === "-h")) {
+    printUsage(config.reviewName === "Adversarial Review" ? "adversarial-review" : "review");
+    return;
+  }
+  const { options, positionals } = parseSessionArgs(tokens, {
     rejectUnknown: config.reviewName !== "Adversarial Review",
     rejectOptionTypos: config.reviewName === "Adversarial Review",
     valueOptions: ["base", "scope", "model", "cwd"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
+      ...COMMAND_ALIASES,
       m: "model"
     }
   });

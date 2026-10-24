@@ -148,7 +148,8 @@ Turing, …) reused by `--to` follow-ups. → [Direct mode and worker lifecycle]
 
 Claude's loaded CLAUDE.md/rules are forwarded automatically; opt out on a fresh
 task with `--no-claude-md` or `CODEX_COMPANION_CLAUDE_MD=0`. Without the loaded
-inventory, forwarding uses an approximate scan. `duet task --fork` explicitly
+inventory, forwarding uses an approximate scan that excludes auto-memory by
+real path, including indirect symlink aliases. `duet task --fork` explicitly
 imports the current conversation into a new thread before running the brief,
 labelled “imported Claude conversation (fidelity not verified)”. → [Context configuration](docs/configuration.md#claude-instructions-and-conversation-imports)
 
@@ -156,12 +157,15 @@ labelled “imported Claude conversation (fidelity not verified)”. → [Contex
 
 `codex-live` is a read-only pane that draws every worker the way Claude Code
 draws its own transcript: prompts, `⏺` rows, tool headers, file changes, plans and
-pending questions. Resolved `ask_parent` calls show matched answers. On resumed
-threads, Codex 0.146.0 supplies no call ID to custom MCP servers, so answers are
-not shown. New jobs ask Claude Code to open the pane; Claude Code decides
+pending questions. Resolved `ask_parent` calls show matched answers on fresh and
+resumed threads when Codex supplies a tool call ID; answers without one are not
+shown. New jobs ask Claude Code to open the pane; Claude Code decides
 whether it is shown at the current width. `/codex-live` opens and focuses it at any width.
-Follow-ups on the same Codex thread stay in one row, with every turn in one
+Follow-ups on the same Codex thread stay in one row, with retained turns in one
 continuous transcript; new jobs preserve your selection and scroll position.
+Refused follow-ups stay in history without hiding the live owner's status or
+question. Unresolved turns show attention, and **Clear finished** keeps any
+conversation with an active or unresolved turn.
 `/tasks` shows compact progress with outcomes first. Neither costs Claude tokens.
 
 <p align="center">
@@ -189,8 +193,12 @@ decisions, and the final judgment. After compaction or on resume, Claude runs
 
 Optional Chrome and Computer Use tooling, mirrored from your own Codex app.
 Each assignment opens a fresh, session-owned tab. App approvals you already
-granted carry over, and anything new is asked of Claude (allow once / this task /
-always / deny). → [docs/configuration.md](docs/configuration.md)
+granted carry over, and anything new is asked of Claude. Answer with an exact
+displayed option (`Allow this call`, `Allow for this task`, `Allow always
+(isolated Codex home)`, `Deny`), its number `1`–`4`, or a single keyword
+`call`/`once`/`task`/`always`/`deny`/`no`. Answers are trimmed and case-insensitive;
+exact labels allow a trailing period. Anything else, including `yes` or a
+qualified reply, denies the request. → [Computer Use approvals](docs/computer-use-approvals.md#forwarded-approvals-owned-jobs)
 
 ## Defaults
 
@@ -222,9 +230,11 @@ Full table and the security implications of each setting:
 
 ## Known limitations
 
-- `ask_parent` relies on the Codex app-server's experimental dynamic-tool API
-  (and a per-thread MCP bridge on resumed threads). Runtimes that reject it fall
-  back to a final `needs_input` report.
+- `ask_parent` uses a per-thread MCP bridge on fresh and resumed threads. Fresh
+  threads fall back to the experimental dynamic-tool API if the runtime reports
+  unsupported bridge registration; that fallback can incur code-mode polling
+  while waiting.
+  If registration is unavailable, workers retain the final `needs_input` fallback.
 - Codex edits bypass Claude Code's permission prompts and rewind. The report's
   touched-file snapshot, the Codex sandbox and `git diff` are the controls.
 - File attribution is unreliable when several writers share one checkout. Give

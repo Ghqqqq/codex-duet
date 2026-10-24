@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing';
 import type { On } from 'claude-code';
 import type { CodexLiveMarker, CodexLiveState } from '../types';
-import { boundState, clearFinished, groupedSessions, isHiddenJob, normalizeSessions, visibleJobs, visibleSessions,
+import { attention, boundState, clearFinished, groupedSessions, isHiddenJob, normalizeSessions, visibleJobs, visibleSessions,
   collapseActivity, jobView, markerView, statusLine } from '../hooks/model';
 import { activityItems, eventItem, feedItems, feedLines, feedWindow, headerLayout, jobRow, recentEndedJobIds,
   normalizeFeed, paneLayout, reconcileFeed, scrollFeed, selectedJob, width } from '../hooks/layout';
@@ -210,7 +210,7 @@ test('clearing against newer state preserves jobs that ended after the click tim
   expect(cleared.selectedId).toBe('new');
 });
 
-test('latest turn controls lifecycle, pending questions, status counts and clearing', () => {
+test('live and unresolved members control lifecycle, pending questions, status counts and clearing', () => {
   const old = { ...conversationTurn('old', 0), question: { text: 'Obsolete question', options: [] } };
   const latest = jobView({ id: 'latest', threadId: 'shared', status: 'waiting',
     pendingQuestion: { text: 'Continue?', options: ['Yes', { label: 'No' }] } }, marker('latest'));
@@ -227,17 +227,59 @@ test('latest turn controls lifecycle, pending questions, status counts and clear
   expect(counts.match(/(\d+) waiting/)?.[1]).toBe('1');
   expect(visibleSessions(clearFinished(state, state.nowMs)).length).toBe(1);
   const done = { ...state, jobs: [old, { ...latest, status: 'needs_input', completedAt: createdAt }] };
-  expect(selectedJob(done)).toMatchObject({ active: false, finished: true });
+  expect(selectedJob(done)).toMatchObject({ active: true, finished: false, lifecycleJobId: old.id });
   expect(jobView({ id: 'terminal', status: 'needs_input', pendingQuestion: { text: 'Old' } }, marker('terminal')).question).toBe(null);
-  expect(feedItems(selectedJob(done)!, epoch).some(item => item.key === 'pending-question')).toBe(false);
-  expect(statusLine(done.jobs)?.match(/(\d+) waiting/)?.[1]).toBe('1');
+  expect(feedItems(selectedJob(done)!, epoch).some(item => item.key.endsWith(':pending-question'))).toBe(true);
+  expect(statusLine(done.jobs)).toBe(statusLine([old]));
   const cleared = clearFinished(done, state.nowMs);
-  expect(visibleJobs(cleared)).toEqual([]);
-  expect(statusLine(visibleJobs(cleared))).toBe(undefined);
-  expect(cleared.selectedId).toBe(null);
+  expect(visibleJobs(cleared).map(job => job.id)).toEqual(['old', 'latest']);
+  expect(statusLine(visibleJobs(cleared))).toBe(statusLine(done.jobs));
+  expect(cleared.selectedId).toBe('thread:shared');
   const resumed = { ...cleared, jobs: [...cleared.jobs, conversationTurn('follow-up', 3)] };
   expect(selectedJob(resumed)?.turns.map(job => job.id)).toEqual(['old', 'latest', 'follow-up']);
   expect(jobView({ id: 'answered', status: 'waiting', pendingQuestion: { text: 'Answered', answer: '' } }, marker('answered')).question).toBe(null);
+
+  const refusals = Array.from({ length: 7 }, (_, n) => jobView({ id: `refusal-${n}`, threadId: 'shared', status: 'blocked',
+    completedAt: new Date(epoch + 3000 + n).toISOString(), result: { blockers: [{ code: 'thread_busy' }] } },
+  { ...marker(`refusal-${n}`), createdAt: new Date(epoch + 3000 + n).toISOString() }));
+  const refused = boundState({ ...state, jobs: [...state.jobs, ...refusals] });
+  const owner = selectedJob(refused)!;
+  expect(owner).toMatchObject({ active: true, finished: false, lifecycleJobId: latest.id, question: latest.question });
+  expect(refused.jobs.find(job => job.id === latest.id)?.detailsLoaded).toBe(true);
+  expect(refused.jobs.filter(job => job.detailsLoaded).length).toBe(5);
+  expect(feedItems(owner, epoch).some(item => item.key.endsWith(':pending-question'))).toBe(true);
+  expect(visibleJobs(clearFinished(refused, epoch + 10000)).length).toBe(refused.jobs.length);
+  const ended = { ...state, jobs: [conversationTurn('old', 0, 'completed'), ...refusals] };
+  expect(selectedJob(ended)).toMatchObject({ status: 'completed', lifecycleJobId: 'old' });
+  expect(visibleJobs(clearFinished(ended, epoch + 10000))).toEqual([]);
+
+  const results = [
+    { status: 'failed', result: { failureSource: 'transport', turnEnded: false } },
+    { status: 'failed', result: { errorCode: 'BROKER_CONNECTION_CLOSED' } },
+    { status: 'failed', result: { error: 'Connection to Codex closed while the turn was running.' } },
+    { status: 'failed' },
+    { status: 'interrupted', result: { turnEnded: false, interruptionConfirmed: false } },
+    { status: 'cancelled', result: { turnEnded: false, interruptionConfirmed: false } },
+  ];
+  for (const fields of results) {
+    const raw = { id: 'lost', jobClass: 'task', threadId: 'shared', turnId: 'turn', pid: 123, completedAt: createdAt, ...fields };
+    const lost = jobView(raw, marker('lost'));
+    expect(lost).toMatchObject({ unresolved: true, finished: false, active: false });
+    expect(attention(lost)).toBeDefined();
+    expect(statusLine([lost])).toBeDefined();
+    const unresolved = boundState({ jobs: [lost, ...refusals], selectedId: 'thread:shared', nowMs: epoch });
+    expect(selectedJob(unresolved)?.lifecycleJobId).toBe('lost');
+    expect(visibleJobs(clearFinished(unresolved, epoch + 10000)).length).toBe(unresolved.jobs.length);
+    expect(jobView({ ...raw, recovered: true }, marker('lost')).finished).toBe(true);
+    expect(jobView({ ...raw, result: { ...fields.result, turnEnded: true } }, marker('lost')).finished).toBe(true);
+    expect(jobView({ ...raw, status: 'running', completedAt: undefined }, marker('lost')).active).toBe(true);
+  }
+  for (const fields of [
+    { status: 'failed', result: { failureSource: 'transport', structured: { status: 'blocked' } } },
+    { status: 'failed', result: { workerStatus: 'failed', errorCode: 'BROKER_CONNECTION_CLOSED' } },
+    { status: 'interrupted', result: { turnEnded: false, interruptionConfirmed: true } },
+    { status: 'cancelled', result: { turnEnded: false, interruptionConfirmed: false }, turnId: undefined },
+  ]) expect(jobView({ id: 'resolved', jobClass: 'task', turnId: 'turn', ...fields }, marker('resolved')).finished).toBe(true);
 });
 
 test('attention keeps an old waiting worker visible with its question and orders unanswered questions by age', () => {

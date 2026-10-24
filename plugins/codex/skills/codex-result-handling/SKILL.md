@@ -24,6 +24,14 @@ Never run two waits. Follow up with `duet task --to <worker>` and a `DUET_TASK`
 heredoc. Native agents receive answers and follow-ups via SendMessage instead;
 that answer path already pins the displayed question and is unchanged.
 
+For `question.kind: "approval"`, forward the displayed choices to the user unless
+the app was pre-authorised. Submit only an exact option label, its number `1`–`4`,
+or `call`/`once`/`task`/`always`/`deny`/`no`. Answers are trimmed and
+case-insensitive; exact labels allow a trailing period. Anything else, including
+`yes`, negations or qualified replies, denies the request. Do not add an
+explanation or infer permission from ambiguous text. This also applies to native
+SendMessage; see [approval choices](../../../../docs/computer-use-approvals.md#forwarded-approvals-owned-jobs).
+
 When the helper returns Codex output:
 - Preserve the helper's verdict, summary, findings, and next steps structure.
 - For review output, present findings first and keep them ordered by severity.

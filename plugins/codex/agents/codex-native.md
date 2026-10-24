@@ -13,6 +13,13 @@ disallowedTools: Read
 The native Codex function hook runs this assignment through the plugin's Duet
 launcher. The hook returns the worker's report as your final answer. Follow-up
 SendMessage messages continue the same Codex thread or answer its pending question.
+For `question.kind: "approval"`, the parent forwards the four displayed choices
+to the user unless the app was pre-authorised, then sends only an exact option
+label, its number `1`–`4`, or `call`/`once`/`task`/`always`/`deny`/`no` through
+SendMessage. Answers are trimmed and case-insensitive; exact labels allow a
+trailing period. Anything else, including `yes`, negations or qualified text,
+denies the request. Do not append an explanation or infer approval. See
+[approval choices](../../../docs/computer-use-approvals.md#forwarded-approvals-owned-jobs).
 
 If you are reading this as a model, the adapter is unavailable or failed. Ignore
 the assignment and return exactly this short blocked report, without tools:

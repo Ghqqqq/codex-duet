@@ -221,11 +221,14 @@ test("first prompt.context wins, preserves loaded instructions, and leaves incom
       fs.mkdirSync(storage); fs.writeFileSync(path.join(storage, "MEMORY.md"), "EXCLUDED_AUTO_MEMORY");
       fs.mkdirSync(path.dirname(path.join(config, name)), { recursive: true });
       fs.symlinkSync(storage, path.join(config, name));
+      const alias = name.replaceAll("/", "-") + "-alias.md";
+      fs.symlinkSync(path.join(config, name, "MEMORY.md"), path.join(config, alias));
     }
     const realMemory = path.join(config, "projects/real/memory"); fs.mkdirSync(realMemory, { recursive: true });
     fs.writeFileSync(path.join(realMemory, "MEMORY.md"), "EXCLUDED_AUTO_MEMORY");
     fs.symlinkSync(realMemory, path.join(config, "alias"));
     fs.writeFileSync(path.join(config, "CLAUDE.md"), "USER_SCAN_RULE\n@inside.md\n@projects/p/memory/MEMORY.md\n@agent-memory/reviewer/MEMORY.md\n@agent-memory-local/reviewer/MEMORY.md\n@alias/MEMORY.md");
+    fs.appendFileSync(path.join(config, "CLAUDE.md"), "\n@projects-p-memory-alias.md\n@agent-memory-reviewer-alias.md\n@agent-memory-local-reviewer-alias.md");
     fs.writeFileSync(path.join(config, "inside.md"), "SAFE_IMPORT");
     const prepared = prepareClaudeInstructions({ sessionId: `scan-links-${linkedConfig}`, cwd: f.repo }, { ...f.env, HOME: home });
     assert.equal(prepared.claudeMd.source, "scan");

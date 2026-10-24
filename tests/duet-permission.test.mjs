@@ -99,12 +99,32 @@ test("PreToolUse permits only the single-command duet grammar with trusted sessi
     const head = command.split("\n")[0];
     const insertion = head.includes(" <<'") ? head.indexOf(" <<'") : head.length;
     const executable = command.startsWith("duet ") ? "duet" : command.startsWith(quotedLauncher) ? quotedLauncher : launcher;
-    const binding = `${command.includes("--session session-a") ? "" : " --session session-a"}${/^ (task|answer|wait)\b/.test(command.slice(executable.length)) && !command.includes("--tool-use-id") ? " --tool-use-id tool-a" : ""}`;
-    const expected = `${quotedLauncher}${command.slice(executable.length, insertion)}${binding}${command.slice(insertion)}`;
+    const words = command.slice(executable.length, insertion).match(/'[^']*'|[^ \t]+/g).map(word => word.startsWith("'") ? word.slice(1, -1) : word);
+    const binding = [...(command.includes("--session session-a") ? [] : ["--session", "session-a"]),
+      ...(["task", "answer", "wait"].includes(words[0]) ? ["--tool-use-id", "tool-a"] : [])];
+    const expected = `${quotedLauncher} ${[...words, ...binding].map(word => `'${word}'`).join(" ")}${command.slice(insertion)}`;
     assert.equal(updated.updatedInput.command, expected);
     const repeated = invoke({ ...payload, tool_input: updated.updatedInput });
     if (expected.includes("--tool-use-id")) assert.deepEqual(repeated, {}, "an internal binding supplied in a command is never auto-approved");
     else assert.equal(repeated.hookSpecificOutput.updatedInput.command, expected);
+  }
+  const probe = path.join(config, "probe"), log = path.join(config, "calls.jsonl"), shellFile = path.join(config, "command.sh");
+  fs.writeFileSync(probe, `#!${process.execPath}\nconst fs = require('node:fs'); fs.appendFileSync(process.env.PROBE_LOG, JSON.stringify({ argv: process.argv.slice(2), stdin: fs.readFileSync(0, 'utf8') }) + '\\n');\n`, { mode: 0o755 });
+  for (const value of ["G", "L", "=duet", "=nonexistent_duet"]) {
+    const original = heredoc(`duet task --cwd ${value}`);
+    const rewritten = invoke(input(original)).hookSpecificOutput.updatedInput.command;
+    fs.writeFileSync(shellFile, `'${probe}'${rewritten.slice(quotedLauncher.length)}`);
+    for (const shell of ["/bin/bash", "/bin/zsh"].filter(fs.existsSync)) {
+      fs.writeFileSync(log, "");
+      const aliases = shell.endsWith("zsh") ? "alias -g G='x; extra_probe' L='| extra_probe' session-a=foreign tool-a=other-tool task=other-task --session=--foreign-session\n" : "";
+      const executed = run(shell, [...(shell.endsWith("zsh") ? ["-f"] : ["--noprofile", "--norc"]), "-c",
+        `extra_probe() { printf '%s\\n' extra >> '${log}'; }\n${aliases}source '${shellFile}'`], { env: { ...env, PROBE_LOG: log } });
+      assert.equal(executed.status, 0, executed.stderr);
+      assert.deepEqual(fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse), [{
+        argv: ["task", "--cwd", value, "--session", "session-a", "--tool-use-id", "tool-a"],
+        stdin: original.slice(original.indexOf("\n") + 1, original.lastIndexOf("DUET_TASK"))
+      }]);
+    }
   }
   const collision = makeTempDir("duet14-c-path-");
   fs.writeFileSync(path.join(collision, "duet"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -114,7 +134,7 @@ test("PreToolUse permits only the single-command duet grammar with trusted sessi
     const result = invoke({ ...input("duet task", { dangerouslyDisableSandbox: true }), permission_mode }).hookSpecificOutput;
     assert.equal(result.permissionDecision, "allow");
     assert.equal(result.updatedInput.dangerouslyDisableSandbox, true);
-    assert.equal(result.updatedInput.command, `${quotedLauncher} task --session session-a --tool-use-id tool-a`);
+    assert.equal(result.updatedInput.command, `${quotedLauncher} 'task' '--session' 'session-a' '--tool-use-id' 'tool-a'`);
   }
   for (const permission_mode of [undefined, "plan"]) assert.deepEqual(invoke({ ...input("duet task"), permission_mode }), {});
   for (const verb of ["task", "answer Ada", "wait Ada"]) {
@@ -133,7 +153,7 @@ test("harmless aliases and helper text never suppress the absolute launcher or d
     return JSON.parse(result.stdout);
   };
   const expected = { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow",
-    updatedInput: { command: `${quotedLauncher} wait Ada --session session-a --tool-use-id tool-a` } } };
+    updatedInput: { command: `${quotedLauncher} 'wait' 'Ada' '--session' 'session-a' '--tool-use-id' 'tool-a'` } } };
   const check = () => {
     for (const mode of ["default", "bypassPermissions"]) assert.deepEqual(invoke(mode), expected);
     assert.deepEqual(invoke("plan"), {});

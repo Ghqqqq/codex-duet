@@ -32,6 +32,32 @@ text, and everything after `--` is always literal focus text.
 /codex:adversarial-review --background look for race conditions and question the chosen approach
 ```
 
+Both review slash commands pass their raw arguments through `--args-stdin` and
+a single-quoted heredoc in foreground and background mode. Use the same pattern
+when invoking the companion directly; `$()`, backticks and dollar signs in
+focus text then reach the argument parser without shell expansion:
+
+```bash
+duet review --args-stdin <<'DUET_ARGS'
+--base main
+DUET_ARGS
+
+duet adversarial-review --args-stdin <<'DUET_ARGS'
+--base main check whether $(refresh) and `retry` are treated as literal input
+DUET_ARGS
+```
+
+Choose a different delimiter if any argument line is exactly `DUET_ARGS`, changing
+both delimiters together. For background execution, run the same command with
+Claude's `Bash(..., run_in_background: true)`; `--background` is only a routing hint
+to the slash command. Do not embed focus text in shell-expanded strings.
+
+Adversarial review lists untracked symlinks as `(symlink, not inlined)` without
+reading their targets. Only regular files whose real paths remain inside the
+repository are eligible for inlining; files outside the repository are never
+read by this collector. Path collection preserves non-ASCII and quoted names.
+A failed native review keeps its failure reason in the report and summary.
+
 ### `/codex:rescue`
 
 Hands a one-off task to Codex through the `codex:codex-rescue` subagent: investigate
@@ -121,7 +147,8 @@ and npm is available, it can offer to install Codex for you. It also runs the
 configuration actions described under [Configuration](configuration.md).
 
 The optional review gate runs a targeted Codex review of Claude's last turn from a
-`Stop` hook and blocks the stop if it finds issues:
+`Stop` hook and blocks the stop if it finds issues. It always passes `--sandbox
+read-only`, including in plan mode, regardless of the configured default:
 
 ```bash
 /codex:setup --enable-review-gate
@@ -169,6 +196,11 @@ it verbatim or retain the displayed ID explicitly. A bare `duet answer <worker>`
 answers whatever question is pending now, which may be newer than the one you
 saw. Native `codex:codex-native` agents receive follow-ups and answers via
 SendMessage; that path already pins the displayed question and is unchanged.
+For a Computer Use approval, send only an exact displayed option label, its
+number `1`–`4`, or `call`/`once`/`task`/`always`/`deny`/`no`. Answers are trimmed
+and case-insensitive; exact labels allow a trailing period. Anything else,
+including `yes` or qualified replies, denies the request. See
+[approval choices](computer-use-approvals.md#forwarded-approvals-owned-jobs).
 Run task/wait/answer in background Bash; reports arrive with completion
 notifications. Use single-quoted arguments and `DUET_TASK`/`DUET_ANSWER` heredocs.
 Double quotes, pipes, compound commands and flags outside the permission hook's

@@ -63,11 +63,11 @@ export const APPROVAL_CHOICES = ["call", "task", "always", "deny"];
 export const APPROVAL_OPTIONS = ["Allow this call", "Allow for this task", "Allow always (isolated Codex home)", "Deny"];
 export function parseApprovalAnswer(answer) {
   const text = String(answer ?? "").trim().toLowerCase();
-  if (!text) return "deny";
-  if (/^(?:4|deny|no|reject|decline|refuse)\b/.test(text) || /\b(?:deny|denied|reject|decline)\b/.test(text)) return "deny";
-  if (/^3\b|\balways\b/.test(text)) return "always";
-  if (/^2\b|\b(?:task|session|thread)\b/.test(text)) return "task";
-  if (/^1\b|\b(?:call|once|yes|allow|approve|accept|ok|okay)\b/.test(text)) return "call";
+  const option = APPROVAL_OPTIONS.findIndex(label => label.toLowerCase() === text.replace(/\.$/, ""));
+  if (option !== -1) return APPROVAL_CHOICES[option];
+  if (/^[1-4]$/.test(text)) return APPROVAL_CHOICES[Number(text) - 1];
+  if (APPROVAL_CHOICES.includes(text)) return text;
+  if (text === "once") return "call";
   return "deny";
 }
 

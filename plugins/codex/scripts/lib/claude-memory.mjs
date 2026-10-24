@@ -133,13 +133,38 @@ const autoMemory = file => /[\\/]\.claude[\\/](?:projects[\\/].*[\\/]memory|agen
 // Do not follow symlinks/imports out of the containing tree or read auto memory.
 export function scanClaudeInstructions(cwd, env = process.env) {
   const files = [], seen = new Set();
+  const managed = process.platform === "darwin" ? "/Library/Application Support/ClaudeCode" : process.platform === "win32" ? path.join(env.ProgramFiles || "C:\\Program Files", "ClaudeCode") : "/etc/claude-code";
+  const user = path.join(env.HOME || env.USERPROFILE || os.homedir(), ".claude");
+  const ancestors = [];
+  for (let dir = path.resolve(cwd); path.dirname(dir) !== dir; dir = path.dirname(dir)) ancestors.unshift(dir);
+  const memoryRoots = new Set();
+  const excludeDirectory = directory => {
+    try {
+      const real = fs.realpathSync(directory);
+      if (fs.statSync(real).isDirectory()) memoryRoots.add(real);
+    } catch { /* Missing or unreadable memory directories cannot be resolved. */ }
+  };
+  // Discover physical memory roots before loading any imports: aliases may
+  // erase both the .claude spelling and the official memory directory name.
+  for (const config of new Set([user, path.join(managed, ".claude"), ...ancestors.map(dir => path.join(dir, ".claude"))])) {
+    for (const name of ["projects", "agent-memory", "agent-memory-local"]) {
+      const directory = path.join(config, name);
+      if (name !== "projects") excludeDirectory(directory);
+      try {
+        for (const child of fs.readdirSync(directory)) {
+          excludeDirectory(name === "projects" ? path.join(directory, child, "memory") : path.join(directory, child));
+        }
+      } catch { /* No readable memory inventory at this location. */ }
+    }
+  }
   let bytes = 0, bounded = false, visited = 0;
   function add(candidate, kind, root = path.dirname(candidate), parent, depth = 0, rule = false, logical = candidate) {
     if (files.length >= 256 || bytes >= 1000000) { bounded = true; return; }
     try {
       const file = fs.realpathSync(candidate), tree = fs.realpathSync(root);
       if (!inside(tree, file) || seen.has(file) || autoMemory(logical) || autoMemory(file)
-          || autoMemory(path.resolve(root, path.relative(tree, file)))) return;
+          || autoMemory(path.resolve(root, path.relative(tree, file)))
+          || [...memoryRoots].some(memory => inside(memory, file))) return;
       const stat = fs.statSync(file);
       if (!stat.isFile() || stat.size > 4 * 1024 * 1024) return;
       const raw = fs.readFileSync(file, "utf8"), frontmatter = /^(?:\uFEFF)?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(raw);
@@ -170,12 +195,8 @@ export function scanClaudeInstructions(cwd, env = process.env) {
       else if (entry.name.endsWith(".md")) add(file, kind, root, undefined, 0, true);
     }
   }
-  const managed = process.platform === "darwin" ? "/Library/Application Support/ClaudeCode" : process.platform === "win32" ? path.join(env.ProgramFiles || "C:\\Program Files", "ClaudeCode") : "/etc/claude-code";
   add(path.join(managed, "CLAUDE.md"), "managed"); rules(path.join(managed, ".claude", "rules"), "managed");
-  const user = path.join(env.HOME || env.USERPROFILE || os.homedir(), ".claude");
   add(path.join(user, "CLAUDE.md"), "user"); rules(path.join(user, "rules"), "user");
-  const ancestors = [];
-  for (let dir = path.resolve(cwd); path.dirname(dir) !== dir; dir = path.dirname(dir)) ancestors.unshift(dir);
   for (const dir of ancestors) {
     add(path.join(dir, "CLAUDE.md"), "project");
     add(path.join(dir, ".claude", "CLAUDE.md"), "project");

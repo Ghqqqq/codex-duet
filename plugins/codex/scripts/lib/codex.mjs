@@ -165,15 +165,15 @@ function buildThreadParams(cwd, options = {}) {
     sandbox: options.sandbox ?? "read-only",
     serviceName: SERVICE_NAME,
     ...(options.developerInstructions != null ? { developerInstructions: options.developerInstructions } : {}),
-    ...(options.parentQuestions ? { dynamicTools: [ASK_PARENT] } : {}),
+    ...(options.parentQuestions ? options.parentBridge ? { config: parentBridgeConfig(options.parentBridge) } : { dynamicTools: [ASK_PARENT] } : {}),
     ephemeral: options.ephemeral ?? true
   };
 }
 
-// thread/resume accepts no dynamicTools, so a resumed thread gets ask_parent from
-// a per-thread MCP server override instead: Codex spawns this plugin's stdio bridge,
-// which blocks on the same job-file question flow the in-process tool uses. Only
-// the thread handle and state-location variables are passed; nothing else leaks.
+// Fresh and resumed threads get ask_parent from a per-thread MCP server override.
+// Fresh threads bind through the starting job until its thread handle is recorded;
+// resumes bind directly to the thread. Only one handle and the state-location
+// variables are passed. The bridge uses the in-process tool's job-file flow.
 // `omit_tools_from` keeps the tool out of Codex's deferred/code-mode tool sets:
 // verified live that without it the server starts and `mcpServerStatus/list`
 // shows the tool, yet the model never sees `mcp__duet_parent.ask_parent`.
@@ -181,7 +181,9 @@ export function parentBridgeConfig(bridge) {
   // The bridge finds job state through the isolated home, like every other
   // helper process; pass it explicitly because Codex starts MCP servers with a
   // reduced environment.
-  const env = { [PARENT_BRIDGE_ENV.cwd]: bridge.cwd, [PARENT_BRIDGE_ENV.threadId]: bridge.threadId, CODEX_COMPANION_HOME: resolveIsolatedCodexHome() };
+  const env = { [PARENT_BRIDGE_ENV.cwd]: bridge.cwd,
+    ...(bridge.threadId ? { [PARENT_BRIDGE_ENV.threadId]: bridge.threadId } : { [PARENT_BRIDGE_ENV.jobId]: bridge.jobId }),
+    CODEX_COMPANION_HOME: resolveIsolatedCodexHome() };
   for (const key of ["TMPDIR"]) if (process.env[key]) env[key] = process.env[key];
   return { mcp_servers: { [PARENT_BRIDGE_SERVER]: {
     command: process.execPath, args: [fileURLToPath(new URL("../parent-bridge-mcp.mjs", import.meta.url))], env,
@@ -992,13 +994,32 @@ async function requestExternalAgentSessionImport(client, params) {
   }
 }
 
+// The unsupported signal must name the registration field itself: an unrelated
+// error ("model config: unsupported model") or serde's list of *accepted* fields
+// ("unknown field `x`, expected one of `config`, ...") is not a registration rejection.
+const REGISTRATION_FIELDS = { bridge: "config|mcp_servers", dynamic: "dynamicTools|dynamic_tools" };
+function parentRegistrationUnsupported(error, registration) {
+  const field = `[\`'"]?(?:[\\w./]*[./])?(?:${REGISTRATION_FIELDS[registration]})[\`'"]?(?![\\w])`;
+  const rejected = new RegExp(`(?:unknown|unrecognized|unexpected|unsupported) (?:field|parameter|param|key)s?:? ${field}|(?:^|[\\s(])${field} (?:is |are )?(?:not supported|unsupported|requires (?:the )?experimental)`, "i");
+  return [-32600, -32601, -32602].includes(error.rpcCode) && rejected.test(String(error.message ?? ""));
+}
+
 async function startThread(client, cwd, options = {}) {
   let response;
-  try { response = await client.request("thread/start", buildThreadParams(cwd, options)); }
-  catch (error) {
-    if (!options.parentQuestions || !/dynamicTools|dynamic.tools|experimental/i.test(error.message) || ![-32600, -32601, -32602].includes(error.rpcCode)) throw error;
-    emitProgress(options.onProgress, "Parent questions unavailable in this runtime; final needs_input fallback remains enabled.", "starting");
-    response = await client.request("thread/start", buildThreadParams(cwd, { ...options, parentQuestions: false }));
+  if (options.parentQuestions && options.parentBridge) {
+    try { response = await client.request("thread/start", buildThreadParams(cwd, options)); }
+    catch (error) {
+      if (!parentRegistrationUnsupported(error, "bridge")) throw error;
+      emitProgress(options.onProgress, "Parent question bridge unavailable in this runtime; retrying with the dynamic tool.", "starting");
+    }
+  }
+  if (!response) {
+    try { response = await client.request("thread/start", buildThreadParams(cwd, { ...options, parentBridge: null })); }
+    catch (error) {
+      if (!options.parentQuestions || !parentRegistrationUnsupported(error, "dynamic")) throw error;
+      emitProgress(options.onProgress, "Parent questions unavailable in this runtime; final needs_input fallback remains enabled.", "starting");
+      response = await client.request("thread/start", buildThreadParams(cwd, { ...options, parentQuestions: false }));
+    }
   }
   const threadId = response.thread.id;
   emitProgress(options.onProgress, `Thread handle: ${threadId}.`, "starting", { threadId });
@@ -1020,7 +1041,7 @@ async function startThread(client, cwd, options = {}) {
 async function resumeThread(client, threadId, cwd, options = {}) {
   try { return await client.request("thread/resume", buildResumeParams(threadId, cwd, options)); }
   catch (error) {
-    if (!options.parentBridge || !/config|mcp_servers|unknown field|experimental/i.test(error.message) || ![-32600, -32601, -32602].includes(error.rpcCode)) throw error;
+    if (!options.parentBridge || !parentRegistrationUnsupported(error, "bridge")) throw error;
     emitProgress(options.onProgress, "Parent questions unavailable on this resumed thread; final needs_input fallback remains enabled.", "starting");
     return client.request("thread/resume", buildResumeParams(threadId, cwd, { ...options, parentBridge: null }));
   }
@@ -1537,7 +1558,9 @@ export async function runAppServerTurn(cwd, options = {}) {
         ephemeral: options.persistThread ? false : true,
         threadName: options.persistThread ? options.threadName : options.threadName ?? null,
         onProgress: options.onProgress,
-        parentQuestions: Boolean(options.onParentQuestion)
+        parentQuestions: Boolean(options.onParentQuestion),
+        parentBridge: options.onParentQuestion && options.parentBridge && options.jobId
+          ? { ...options.parentBridge, threadId: null, jobId: options.jobId } : null
       });
       threadId = response.thread.id;
       threadPolicy = response.sandbox;

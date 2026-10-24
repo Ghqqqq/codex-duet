@@ -64,12 +64,16 @@ function regularStat(file) {
     return stat;
   } catch (error) { if (error.code === "ENOENT") return null; throw error; }
 }
-function readJson(file) {
+function readJson(file, cache = null) {
   const before = regularStat(file);
-  if (!before) return null;
+  if (!before) { cache?.delete(file); return null; }
+  const cached = cache?.get(file);
+  if (cached && cached.stat.ino === before.ino && cached.stat.mtimeMs === before.mtimeMs && cached.stat.size === before.size && cached.stat.ctimeMs === before.ctimeMs) return cached.value;
+  cache?.delete(file);
   const value = JSON.parse(fs.readFileSync(file, "utf8"));
   const after = regularStat(file);
   if (!after || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs || before.size !== after.size) throw new Error(`Record changed while reading: ${file}`);
+  cache?.set(file, { stat: after, value });
   return value;
 }
 function validateJob(job) {
@@ -118,7 +122,7 @@ function artifactFiles(workspace, job) {
     return { path: file, bytes: stat?.size ?? 0 };
   });
 }
-function workspaceRecords(workspace, { state = null, locked = false } = {}) {
+function workspaceRecords(workspace, { state = null, locked = false, cache = null } = {}) {
   realDirectory(workspace);
   const lock = path.join(workspace, ".state-lock");
   if (!locked && fs.existsSync(lock)) throw new Error("Workspace state is locked; skipping.");
@@ -139,7 +143,7 @@ function workspaceRecords(workspace, { state = null, locked = false } = {}) {
     realDirectory(jobsDir);
     for (const entry of fs.readdirSync(jobsDir, { withFileTypes: true })) {
       if (!entry.name.endsWith(".json") || entry.name.endsWith(".result.json")) continue;
-      const record = readJson(path.join(jobsDir, entry.name));
+      const record = readJson(path.join(jobsDir, entry.name), cache);
       validateJob(record);
       if (entry.name !== `${record.id}.json`) throw new Error("Job file id does not match its name.");
       records.set(record.id, { index: records.get(record.id)?.index ?? null, record });
@@ -150,7 +154,7 @@ function workspaceRecords(workspace, { state = null, locked = false } = {}) {
   if (before?.ino !== after?.ino || before?.mtimeMs !== after?.mtimeMs || before?.size !== after?.size || (!locked && fs.existsSync(lock))) throw new Error("Workspace changed while reading; skipping.");
   return records;
 }
-function inspectWorkspaces(env, cutoff, { retainAll = false } = {}) {
+function inspectWorkspaces(env, cutoff, { retainAll = false, cache = null } = {}) {
   const jobs = [], referenced = new Set(), errors = [], retained = [];
   try {
     const root = resolveStateRoot(env);
@@ -163,7 +167,7 @@ function inspectWorkspaces(env, cutoff, { retainAll = false } = {}) {
         continue;
       }
       try {
-        const records = workspaceRecords(workspace);
+        const records = workspaceRecords(workspace, { cache });
         const candidates = [], protectedRecords = [];
         for (const { index, record } of records.values()) {
           const job = record ?? index;
@@ -229,19 +233,23 @@ export function planRetention({ now = Date.now(), days, env = process.env } = {}
   const policy = retentionPolicy(env, days), cutoffMs = Number(new Date(now)) - policy.days * DAY;
   if (!Number.isFinite(cutoffMs) || !Number.isFinite(new Date(cutoffMs).getTime())) throw new Error("Invalid retention date or period.");
   resolveIsolatedCodexHome(env); // Enforce the test-home and normal-home guards before scanning.
-  const state = inspectWorkspaces(env, cutoffMs);
+  // Keep parsed private records only for this plan/apply cycle. Every reuse
+  // still checks the file identity, timestamps and size, including under lock.
+  const cache = new Map();
+  const state = inspectWorkspaces(env, cutoffMs, { cache });
   const markers = planSessionMarkers(cutoffMs, { env });
   const runs = planRuns(cutoffMs, { env });
   const snapshots = planClaudeSnapshots(cutoffMs, { env });
   const imports = planClaudeImports({ now, env });
   const threads = state.errors.length ? { threads: [], errors: [] } : inspectThreads(env, cutoffMs, state.referenced);
   const plan = { cutoff: new Date(cutoffMs).toISOString(), ...policy, jobs: state.jobs, runs: runs.runs, runSessions: runs.runSessions, markers: markers.markers, snapshots: snapshots.snapshots, imports: imports.imports, threads: threads.threads, retained: state.retained, errors: [...state.errors, ...markers.errors, ...runs.errors, ...snapshots.errors, ...imports.errors, ...threads.errors] };
-  Object.defineProperty(plan, CONTEXT, { value: { env: { ...env }, now: Number(new Date(now)) } });
+  Object.defineProperty(plan, CONTEXT, { value: { env: { ...env }, now: Number(new Date(now)), cache } });
   return plan;
 }
 
 export async function applyRetention(plan, { deleteThread } = {}) {
   const report = { jobsDeleted: 0, runsDeleted: 0, runSessionsDeleted: 0, markersDeleted: 0, snapshotsDeleted: 0, importsDeleted: 0, threadsDeleted: 0, threadsSkipped: 0, bytesFreed: 0, retained: (plan?.retained ?? []).map(item => ({ ...item })), errors: [...(plan?.errors ?? [])], days: plan?.days, warnings: [...(plan?.warnings ?? [])] };
+  const cache = plan?.[CONTEXT]?.cache ?? new Map();
   try {
     const env = plan[CONTEXT]?.env ?? process.env, cutoff = Date.parse(plan.cutoff);
     if (!Number.isFinite(cutoff)) throw new Error("Invalid retention cutoff.");
@@ -258,7 +266,7 @@ export async function applyRetention(plan, { deleteThread } = {}) {
         if (path.dirname(workspace) !== root) throw new Error("Workspace is outside the state root.");
         realDirectory(workspace);
         const removed = removeJobsFromState(workspace, state => {
-          const records = workspaceRecords(workspace, { state, locked: true }), selected = [];
+          const records = workspaceRecords(workspace, { state, locked: true, cache }), selected = [];
           for (const id of ids) {
             const item = records.get(id);
             if (!item) continue;
@@ -322,7 +330,7 @@ export async function applyRetention(plan, { deleteThread } = {}) {
       try {
         // Even expired jobs that failed to be removed now protect their threads.
         // Recheck references and rollout mtimes immediately before each RPC.
-        const state = inspectWorkspaces(env, cutoff, { retainAll: true });
+        const state = inspectWorkspaces(env, cutoff, { retainAll: true, cache });
         if (state.errors.length) throw new Error("Cannot safely recheck all workspace references.");
         const current = inspectThreads(env, cutoff, state.referenced);
         if (current.errors.length) throw new Error("Cannot safely recheck rollout activity.");
@@ -338,6 +346,8 @@ export async function applyRetention(plan, { deleteThread } = {}) {
   } catch (error) {
     report.errors.push(errorEntry({ scope: "retention" }, error));
     report.threadsSkipped = (plan?.threads?.length ?? 0) - report.threadsDeleted;
+  } finally {
+    cache.clear();
   }
   return report;
 }

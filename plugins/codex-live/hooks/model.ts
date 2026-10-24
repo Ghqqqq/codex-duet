@@ -93,13 +93,32 @@ function count(value: unknown): number | undefined {
 }
 
 // Derive lifecycle from authoritative fields, including persisted older views.
-export function jobLifecycle(job: { status: string; completedAt: string; finalStatus?: string }) {
+export function jobLifecycle(job: { status: string; completedAt: string; finalStatus?: string; unresolved?: boolean }) {
+  if (job.unresolved) return { status: 'unresolved', finished: false, active: false };
   const terminal = ['completed', 'failed', 'cancelled', 'interrupted', 'stopped', 'blocked', 'needs_input'];
   const ended = Number.isFinite(Date.parse(job.completedAt));
   const status = ended && !terminal.includes(job.status)
     ? terminal.includes(job.finalStatus ?? '') ? job.finalStatus! : 'completed' : job.status;
   const finished = terminal.includes(status);
   return { status, finished, active: !finished && ['running', 'queued', 'waiting'].includes(status) };
+}
+
+// Mirror plugins/codex/scripts/lib/state.mjs:308-322 (unresolvedTask).
+// The hook sandbox has no PID-liveness API and must not spawn processes.
+// Keep queued/running records active; conservatively apply the result checks
+// to terminal task records even when a recorded PID may still be alive.
+function unresolvedTask(job: Record<string, unknown>): boolean {
+  if (job.jobClass !== 'task' || job.recovered || ['queued', 'running', 'waiting'].includes(string(job.status))) return false;
+  if (!job.result) return job.status !== 'cancelled';
+  const result = object(job.result);
+  if (['interrupted', 'cancelled'].includes(string(job.status))) {
+    return Boolean(job.turnId) && result.turnEnded === false && result.interruptionConfirmed !== true;
+  }
+  if (job.status !== 'failed' || result.turnEnded || result.structured) return false;
+  if (result.failureSource === 'transport') return true;
+  if (result.workerStatus) return false;
+  return result.errorCode === 'BROKER_CONNECTION_CLOSED' ||
+    /^(Codex broker connection closed during startup\.|Connection to Codex closed while the turn was running\.|Codex connection closed before turn completion; recover the recorded job\.)$/i.test(string(result.error ?? job.errorMessage));
 }
 
 export function unwrapCommand(command: string): string {
@@ -130,9 +149,13 @@ export function jobView(value: unknown, marker: CodexLiveMarker, details = true)
   if (job.id !== marker.jobId || !string(job.status)) throw new Error('Invalid job');
   const request = object(job.request);
   const report = object(job.report);
+  const result = object(job.result);
+  const unresolved = unresolvedTask(job);
+  const notStarted = [object(job.recovery).turnStatus, result.turnStatus].includes('notStarted') ||
+    (job.status === 'blocked' || report.status === 'blocked') && ![job.turnId, result.turnId, report.turnId].some(Boolean);
   const pending = object(job.pendingQuestion);
   const { status, finished, active } = jobLifecycle({ status: clean(job.status),
-    completedAt: string(job.completedAt), finalStatus: clean(report.status) });
+    completedAt: string(job.completedAt), finalStatus: clean(report.status), unresolved });
   // Companion questions carry expiry + timeout rather than a creation timestamp.
   const questionTime = isoTime(pending.createdAt) ?? (number(pending.expiresAt) === undefined ? undefined
     : isoTime(number(pending.expiresAt)! - (number(job.questionTimeoutSec) ?? 900) * 1000));
@@ -173,7 +196,7 @@ export function jobView(value: unknown, marker: CodexLiveMarker, details = true)
     id: marker.jobId, label: taskText(marker.summary || job.summary || marker.title) || 'Codex Task', status,
     threadId: string(job.threadId).trim() || undefined,
     agentName: limitChars(clean(job.agentName), 100) || marker.name,
-    active, finished,
+    active, finished, unresolved, notStarted,
     createdAt: marker.createdAt || string(job.createdAt),
     startedAt: string(job.startedAt) || marker.createdAt || string(job.createdAt),
     completedAt: string(job.completedAt), model: limitChars(clean(request.model), 100),
@@ -206,23 +229,25 @@ export function elapsed(job: CodexLiveJob, now: number): string {
 
 export function glyph(job: CodexLiveJob): string {
   const { status, active } = jobLifecycle(job);
-  if (attention(job) === 'blocked') return '!';
+  if (attention(job) === 'blocked' || job.unresolved) return '!';
   if (active && (job.question || status === 'waiting')) return '?';
   return ({ running: '●', queued: '…', completed: '✓', failed: '✗', blocked: '!',
     cancelled: '■', interrupted: '■', stopped: '■' } as Record<string, string>)[status] ?? '·';
 }
 
-// Attention is independent of recency, and always belongs to the latest turn.
-export function attention(job: CodexLiveJob): 'question' | 'blocked' | undefined {
+// Attention follows the live or unresolved owner, independently of recency.
+export function attention(job: CodexLiveJob): 'question' | 'blocked' | 'unresolved' | undefined {
   const { status, active } = jobLifecycle(job);
   if (active && job.question) return 'question';
+  if (job.unresolved) return 'unresolved';
   if (status === 'blocked' || status === 'needs_input') return 'blocked';
   return undefined;
 }
 
 export function attentionOrder(a: CodexLiveJob, b: CodexLiveJob): number {
   const kindA = attention(a), kindB = attention(b);
-  if (kindA !== kindB) return kindA === 'question' ? -1 : 1;
+  const rank = (kind: ReturnType<typeof attention>) => kind === 'question' ? 0 : kind === 'unresolved' ? 1 : kind === 'blocked' ? 2 : 3;
+  if (kindA !== kindB) return rank(kindA) - rank(kindB);
   const time = (job: CodexLiveJob) => [job.question?.createdAt, job.completedAt, job.createdAt]
     .map(value => Date.parse(value ?? '')).find(Number.isFinite) ?? 0;
   return time(a) - time(b) || a.id.localeCompare(b.id);
@@ -268,7 +293,11 @@ export function groupedSessions(jobs: readonly CodexLiveJob[], turnCounts: Reado
     const turns = group.sort(oldestJob);
     const latest = turns[turns.length - 1]!;
     const id = sessionId(latest);
-    return { ...latest, ...jobLifecycle(latest), id, turns, turnCount: Math.max(turns.length, turnCounts[id] ?? 0) };
+    const active = turns.filter(job => jobLifecycle(job).active);
+    const owner = active.filter(job => job.question).at(-1) ?? active.at(-1) ??
+      turns.filter(job => job.unresolved).at(-1) ?? turns.filter(job => !job.notStarted).at(-1) ?? latest;
+    return { ...owner, ...jobLifecycle(owner), id, lifecycleJobId: owner.id, turns,
+      turnCount: Math.max(turns.length, turnCounts[id] ?? 0) };
   });
 }
 
@@ -277,11 +306,20 @@ export const DETAIL_TURN_LIMIT = 5;
 
 export function retainedTurns(session: CodexLiveSession): CodexLiveJob[] {
   const latest = session.turns.at(-1)!;
-  const protectedIds = new Set(session.turns.filter(job => job.id === latest.id || jobLifecycle(job).active).map(job => job.id));
+  const protectedIds = new Set(session.turns.filter(job => job.id === latest.id || job.id === session.lifecycleJobId ||
+    jobLifecycle(job).active || job.unresolved).map(job => job.id));
   // Protecting active turns and the latest turn takes precedence over the cap.
   const slots = TURN_LIMIT - protectedIds.size;
   if (slots > 0) for (const job of session.turns.filter(job => !protectedIds.has(job.id)).slice(-slots)) protectedIds.add(job.id);
   return session.turns.filter(job => protectedIds.has(job.id));
+}
+
+export function detailedTurns(session: CodexLiveSession): CodexLiveJob[] {
+  const turns = retainedTurns(session);
+  const owner = turns.find(job => job.id === session.lifecycleJobId && jobLifecycle(job).active);
+  const ids = new Set(owner ? [owner.id] : []);
+  for (const job of [...turns].reverse()) if (ids.size < DETAIL_TURN_LIMIT) ids.add(job.id);
+  return turns.filter(job => ids.has(job.id));
 }
 
 export function sessionForId(sessions: readonly CodexLiveSession[], id: string | null): CodexLiveSession | undefined {
@@ -325,6 +363,7 @@ export function normalizeSessions(state: CodexLiveState): CodexLiveState {
 }
 
 export function isHiddenJob(state: CodexLiveState, job: CodexLiveJob): boolean {
+  if (jobLifecycle(job).active || job.unresolved) return false;
   if (state.hiddenJobIds?.includes(job.id)) return true;
   if (state.hiddenFinishedBefore === undefined || !jobLifecycle(job).finished) return false;
   const completedAt = Date.parse(job.completedAt);
@@ -339,16 +378,17 @@ export function visibleJobs(state: CodexLiveState): CodexLiveJob[] {
 }
 
 export function visibleSessions(state: CodexLiveState): CodexLiveSession[] {
-  // Only the latest turn's tombstone/end time hides a conversation. A new turn
-  // reopens it, including all of its previously cleared transcript.
-  return groupedSessions(state.jobs, state.turnCounts).filter(session => !isHiddenJob(state, session.turns.at(-1)!));
+  // A refusal cannot hide its owner. A new started turn reopens the history.
+  return groupedSessions(state.jobs, state.turnCounts).filter(session =>
+    session.active || session.unresolved || !isHiddenJob(state, session.turns.find(job => job.id === session.lifecycleJobId)!));
 }
 
 export function clearFinished(state: CodexLiveState, nowMs: number): CodexLiveState {
   const clearing = { ...state, hiddenFinishedBefore: Math.max(state.hiddenFinishedBefore ?? nowMs, nowMs) };
   // A concurrent poll may have added completions after the captured clear time.
   const hiddenJobIds = [...new Set([...(state.hiddenJobIds ?? []),
-    ...visibleSessions(state).map(session => session.turns.at(-1)!)
+    ...visibleSessions(state).filter(session => !session.active && !session.unresolved)
+      .map(session => session.turns.find(job => job.id === session.lifecycleJobId)!)
       .filter(job => isHiddenJob(clearing, job)).map(job => job.id)])];
   const cleared = { ...clearing, hiddenJobIds };
   const jobs = visibleSessions(cleared).sort((a, b) =>
@@ -373,7 +413,7 @@ export function boundState(state: CodexLiveState): CodexLiveState {
   const sessions = groupedSessions(state.jobs, state.turnCounts);
   const retained = new Set(sessions.flatMap(session => retainedTurns(session).map(job => job.id)));
   const selectedSession = sessionForId(sessions, state.selectedId);
-  const detailed = new Set(selectedSession ? retainedTurns(selectedSession).slice(-DETAIL_TURN_LIMIT).map(job => job.id) : []);
+  const detailed = new Set(selectedSession ? detailedTurns(selectedSession).map(job => job.id) : []);
   const turnCounts = { ...state.turnCounts, ...Object.fromEntries(sessions.map(session => [session.id, session.turnCount])) };
   const jobs = state.jobs.filter(job => retained.has(job.id)).map(previous => {
     const lifecycle = jobLifecycle(previous);
@@ -413,13 +453,29 @@ export function boundState(state: CodexLiveState): CodexLiveState {
 // Measure once and subtract removed jobs; do not reserialize the entire state
 // for every eviction. Active turns and the selected conversation are protected.
 export function fitState(state: CodexLiveState): CodexLiveState {
-  // Bound read acknowledgements before measuring and again after budget eviction.
-  const retainedSessionIds = new Set(state.jobs.map(sessionId));
-  state = { ...state, viewedSessionIds: state.viewedSessionIds?.filter(id => retainedSessionIds.has(id)) };
+  // Lifetime metadata must shrink with history, including old oversized views.
+  // Run before measurement and after eviction so a failed publish can recover.
+  const trim = (value: CodexLiveState): CodexLiveState => {
+    const jobIds = new Set(value.jobs.map(job => job.id));
+    const ids = new Set(value.jobs.map(sessionId));
+    return { ...value,
+      seenJobIds: value.seenJobIds?.filter(id => jobIds.has(id)),
+      autoOpenedJobIds: value.autoOpenedJobIds?.filter(id => jobIds.has(id)),
+      // Tombstones also cover cleared jobs no longer in the visible cache.
+      hiddenJobIds: value.hiddenJobIds?.slice(-2000),
+      firstEndedAtMs: value.firstEndedAtMs && Object.fromEntries(Object.entries(value.firstEndedAtMs).filter(([id]) => jobIds.has(id))),
+      turnCounts: value.turnCounts && Object.fromEntries(Object.entries(value.turnCounts).filter(([id]) => ids.has(id))),
+      viewedSessionIds: value.viewedSessionIds?.filter(id => ids.has(id)),
+      newSessionIds: value.newSessionIds?.filter(id => ids.has(id)),
+      recentEndedIds: value.recentEndedIds?.filter(id => ids.has(id)),
+      feeds: value.feeds && Object.fromEntries(Object.entries(value.feeds).filter(([id]) => ids.has(id))),
+    };
+  };
+  state = trim(state);
   let size = JSON.stringify(state).length;
   if (size < 900_000) return state;
   const sessions = groupedSessions(state.jobs, state.turnCounts);
-  const latestIds = new Set(sessions.map(session => session.turns.at(-1)!.id));
+  const latestIds = new Set(sessions.flatMap(session => [session.turns.at(-1)!.id, session.lifecycleJobId]));
   const removed = new Set<string>();
   const remove = (job: CodexLiveJob) => {
     if (removed.has(job.id)) return;
@@ -436,16 +492,11 @@ export function fitState(state: CodexLiveState): CodexLiveState {
   // Then discard whole finished, unselected sessions, oldest first.
   for (const session of sessions.sort(oldestJob)) {
     if (size < 899_000) break;
-    if (session.id === state.selectedId || !session.finished || session.turns.some(job => jobLifecycle(job).active)) continue;
+    if (session.id === state.selectedId || !session.finished || session.turns.some(job => jobLifecycle(job).active || job.unresolved)) continue;
     for (const job of session.turns) remove(job);
   }
   const jobs = state.jobs.filter(job => !removed.has(job.id));
-  const ids = new Set(jobs.map(sessionId));
-  const result = { ...state, jobs,
-    viewedSessionIds: state.viewedSessionIds?.filter(id => ids.has(id)),
-    feeds: state.feeds && Object.fromEntries(Object.entries(state.feeds).filter(([id]) => ids.has(id))),
-    recentEndedIds: state.recentEndedIds?.filter(id => ids.has(id)),
-  };
+  const result = trim({ ...state, jobs });
   if (JSON.stringify(result).length >= 900_000) throw new Error('View exceeds the 900,000 character budget');
   return result;
 }

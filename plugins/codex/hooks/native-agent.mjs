@@ -136,12 +136,12 @@ async function prune($) {
 // Module-local promises serialize overlapping steps; persisted intents cover
 // reloads. The companion's locked nonce reservation also covers other copies.
 const flights = new Map(), nodes = new Map(), dispatching = new Map();
-async function node($) {
+async function node($, timeoutMs = 10000) {
   const session = await $.session.id();
   if (!nodes.has(session)) nodes.set(session, (async () => {
     // This API does not expose Claude's execPath (Claude may be bundled Bun).
     // Pin the same host PATH Node that the classic hooks and Bash path use.
-    const result = await $.process.run(['node', '-p', 'process.execPath'], { timeoutMs: 10000 });
+    const result = await $.process.run(['node', '-p', 'process.execPath'], { timeoutMs });
     const executable = result.stdout.trim();
     if (result.exitCode !== 0 || !/^(\/|[A-Za-z]:[\\/])/.test(executable) || /[\r\n]/.test(executable)) throw new Error('Node.js is required for native Codex workers; no host Node executable was found.');
     return executable;
@@ -149,10 +149,15 @@ async function node($) {
   try { return await nodes.get(session); }
   catch { nodes.delete(session); throw new Error('Node.js is required for native Codex workers; no host Node executable was found.'); }
 }
-async function command($, state, args, input = '') {
+async function processBudget($, { deadline, timeoutMs = 15000, reserveMs = 0 } = {}) {
+  const remaining = deadline === undefined ? timeoutMs : Math.min(timeoutMs, deadline - await $.clock.now() - reserveMs);
+  if (remaining < 1) throw new Error('Native stop confirmation deadline expired; inspect duet status.');
+  return Math.floor(remaining);
+}
+async function command($, state, args, input = '', timing = {}) {
   // ProcessSpawnRequest.input writes the whole string and closes stdin (also
   // for an empty string). Do not use process.run's differently named stdin.
-  return { argv: [await node($), `${$.plugin.root}/bin/duet`, ...args, '--cwd', state.cwd, '--session', state.session,
+  return { argv: [await node($, timing.deadline === undefined ? 10000 : await processBudget($, { ...timing, timeoutMs: 500 })), `${$.plugin.root}/bin/duet`, ...args, '--cwd', state.cwd, '--session', state.session,
     ...(args[0] === 'task' ? ['--session-cwd', await $.session.root()] : [])], cwd: state.cwd, input };
 }
 async function companion($, state, args, input = '', progress) {
@@ -216,9 +221,9 @@ function parseReport(stdout, code, stderr = '') {
   return report;
 }
 // Recovery must not open another stream tied to the aborted turn's signal.
-async function snapshot($, state, args, { requireSuccess = false } = {}) {
-  const request = await command($, state, args);
-  const result = await $.process.run(request.argv, { cwd: request.cwd, timeoutMs: 15000 });
+async function snapshot($, state, args, { requireSuccess = false, ...timing } = {}) {
+  const request = await command($, state, args, '', timing);
+  const result = await $.process.run(request.argv, { cwd: request.cwd, timeoutMs: await processBudget($, timing) });
   if (result.isStdoutTruncated) throw new Error('Duet recovery response was truncated; inspect duet status.');
   const report = parseReport(result.stdout, result.exitCode, result.stderr);
   // Only an absence claim needs a successful lookup; terminal reports such as
@@ -227,9 +232,9 @@ async function snapshot($, state, args, { requireSuccess = false } = {}) {
   return report;
 }
 const save = ($, state) => $.store.set(keyFor(state.session, state.agentId), state);
-async function handles($, state, jobId, recovery = false, persist = true) {
-  const args = ['status', jobId, '--json'];
-  const { job } = recovery ? await snapshot($, state, args) : await companion($, state, args);
+async function handles($, state, jobId, recovery = false, persist = true, { waitMs = 0, ...timing } = {}) {
+  const args = ['status', jobId, '--json', ...(waitMs ? ['--wait', '--timeout-ms', String(waitMs), '--poll-interval-ms', '250'] : [])];
+  const { job } = recovery ? await snapshot($, state, args, timing) : await companion($, state, args);
   if (!job || job.sessionId !== state.session) throw new Error('Duet job is missing or belongs to another session.');
   if (state.intent?.kind === 'task' && job.dispatchNonce !== state.intent.nonce) throw new Error('Duet dispatch nonce does not match the native launch intent.');
   if (state.jobId === job.id && state.ownerId && state.ownerId !== job.ownerId) throw new Error('Duet job ownership changed; refusing to adopt another owner implicitly.');
@@ -238,9 +243,9 @@ async function handles($, state, jobId, recovery = false, persist = true) {
   if (persist) await save($, state);
   return job;
 }
-async function reconcile($, state, recovery = false, allowAbsent = false) {
+async function reconcile($, state, recovery = false, allowAbsent = false, timing = {}) {
   const args = ['status', '--all', '--json'];
-  const lookup = flags => recovery ? snapshot($, state, flags, { requireSuccess: allowAbsent }) : companion($, state, flags);
+  const lookup = flags => recovery ? snapshot($, state, flags, { ...timing, requireSuccess: allowAbsent }) : companion($, state, flags);
   let status;
   try { status = await lookup([...args, '--dispatch-nonce', state.intent.nonce]); }
   catch (error) {
@@ -252,7 +257,7 @@ async function reconcile($, state, recovery = false, allowAbsent = false) {
   const matches = jobs.filter(job => job.sessionId === state.session && job.dispatchNonce === state.intent.nonce);
   if (allowAbsent && matches.length === 0) return null;
   if (matches.length !== 1) throw new Error('Native launch intent has no unique recorded job. Refusing to redispatch; inspect duet status before retrying.');
-  return handles($, state, matches[0].id, recovery);
+  return handles($, state, matches[0].id, recovery, true, timing);
 }
 async function drive($, e, state, progress) {
   // Block only a binding known to have failed: permissionMode is optional in
@@ -361,22 +366,42 @@ async function drive($, e, state, progress) {
   if (report.status === 'needs_answer') await progress.line(`? Waiting for Claude: ${report.question?.text || report.summary}`);
   return { ...report, next: nativeNext(state, report.status) };
 }
-async function cancel($, state) {
+async function cancel($, state, deadline) {
   let job;
   delete state.cancellation;
+  const lookup = { deadline, timeoutMs: 500, reserveMs: 2000 };
   try {
-    if (state.intent?.kind === 'task' && !state.jobId) await reconcile($, state, true);
+    if (state.intent?.kind === 'task' && !state.jobId) await reconcile($, state, true, false, lookup);
     if (!state.jobId) return;
-    const request = await command($, state, ['cancel', state.jobId, '--json']);
-    const result = await $.process.run(request.argv, { cwd: request.cwd, timeoutMs: 15000 });
-    // Aborting the sole task stream can finish the worker before turn.complete
-    // reaches cancel, which only selects active jobs. Confirm that race from
-    // the recorded interruption, never from a missing/nonzero CLI response.
-    job = await handles($, state, state.jobId, true);
-    state.cancellation = result.exitCode !== 0 && ['interrupted', 'cancelled'].includes(job.status) && job.interruptionConfirmed === true
-      ? { jobId: job.id, status: 'cancelled', confirmation: 'confirmed', turnInterrupted: true, reason: job.interruptionReason }
-      : JSON.parse(result.stdout);
-    state.status = state.cancellation.status || 'blocked';
+    // Both callers are stopping a native owner. Give its worker one bounded,
+    // read-only chance to confirm owner_stopped before the cancel safety net.
+    // Terminal records return immediately; an unavailable lookup still falls
+    // through to cancel using the already-recorded job handle.
+    const timing = { deadline, timeoutMs: 2000, reserveMs: 2000 };
+    try {
+      const waitMs = Math.max(1, await processBudget($, timing) - 150);
+      job = await handles($, state, state.jobId, true, false, { ...timing, waitMs });
+    } catch { /* A failed/timed-out observation must not suppress cancellation. */ }
+    if (job?.interruptionConfirmed !== true) {
+      const timing = { deadline, timeoutMs: 1500, reserveMs: 500 };
+      const request = await command($, state, ['cancel', state.jobId, '--json'], '', timing);
+      let result, failure;
+      try {
+        result = await $.process.run(request.argv, { cwd: request.cwd, timeoutMs: await processBudget($, timing) });
+      } catch (error) { failure = error; }
+      // The CLI may have sent its interrupt before timing out. Always use the
+      // reserved final read to look for durable confirmation, even on rejection.
+      try { job = await handles($, state, state.jobId, true, false, { deadline, timeoutMs: 500 }); }
+      catch (error) { failure ||= error; }
+      if (job?.interruptionConfirmed !== true) {
+        if (!result) throw failure;
+        state.cancellation = JSON.parse(result.stdout);
+      }
+    }
+    if (['interrupted', 'cancelled'].includes(job?.status) && job.interruptionConfirmed === true) {
+      state.cancellation = { jobId: job.id, status: job.status, confirmation: 'confirmed', turnInterrupted: true, reason: job.interruptionReason };
+    }
+    state.status = state.cancellation?.status || 'blocked';
     state.finishedAt = await $.clock.now();
   } catch (error) {
     state.cancellation = { status: 'unconfirmed', message: 'Cancellation unconfirmed; inspect duet status. Owner-loss and question timeout remain the fallback.',
@@ -390,15 +415,11 @@ async function cancel($, state) {
 const closeTurn = async ($, state) => $.store.set(closedKey(state.session, state.agentId), { turnId: state.intent.turnId, at: await $.clock.now() });
 const isClosed = async ($, state) => !!state.intent && (await $.store.get(closedKey(state.session, state.agentId)))?.turnId === state.intent.turnId;
 // Cancel the recorded job; close its turn only with evidence that it ended.
-async function stopJob($, state) {
-  let job = await cancel($, state);
+async function stopJob($, state, deadline) {
+  // Leave 500 ms of the host's 5 s abort linger for store/dispatch overhead.
+  deadline ??= await $.clock.now() + 4500;
+  const job = await cancel($, state, deadline);
   if (!job) return null;
-  // A stopped owner's worker records its confirmed interruption a moment
-  // later; re-read briefly (2 s, inside the host's 5 s abort linger).
-  for (let tries = 0; tries < 8 && !ended(job, state); tries++) {
-    await $.clock.sleep(250);
-    job = await handles($, state, job.id, true);
-  }
   const confirmed = state.cancellation?.confirmation === 'confirmed' && state.cancellation.jobId === job.id;
   // Just after a confirmed cancel the job record can still read running.
   state.status = confirmed && ACTIVE.includes(job.status) ? state.cancellation.status : job.status;
@@ -433,10 +454,11 @@ const stoppingReport = state => ({ status: 'interrupted', worker: state.worker |
   summary: `Stopped from /tasks. The owner wait was stopped, so the worker interrupts the Codex turn and ends the commands it started; duet status ${state.worker || state.jobId} shows the recorded confirmation.`,
   next: nativeNext(state, 'interrupted'), details: nativeDetails(state) });
 async function stoppedReport($, state) {
-  const job = await stopJob($, state);
+  const deadline = await $.clock.now() + 4500;
+  const job = await stopJob($, state, deadline);
   if (!job) return null;
   if (ACTIVE.includes(job.status)) return cancelledReport(state, state.status);
-  const report = await snapshot($, state, ['result', job.id, '--report']);
+  const report = await snapshot($, state, ['result', job.id, '--report'], { deadline, timeoutMs: 500 });
   if (report.jobId !== job.id) throw new Error('Duet report does not match the recorded job handle.');
   return { ...report, status: job.status, worker: job.agentName || null, jobId: job.id, next: nativeNext(state, job.status) };
 }

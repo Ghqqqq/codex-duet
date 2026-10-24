@@ -71,13 +71,15 @@ export function approveDuet(input, env = process.env) {
     fs.accessSync(resolved, fs.constants.X_OK);
     if (!fs.statSync(resolved).isFile()) return {};
   } catch { return {}; }
-  // Only these exact launcher spellings are allowed; the argument grammar is
-  // unchanged. The quoted form also works when the plugin path has shell syntax.
+  // Only these exact launcher spellings are allowed. The quoted form also
+  // works when the plugin path has shell syntax.
   const executable = ["duet", quote(resolved), ...(/^[A-Za-z0-9_./:=,@%+-]+$/.test(resolved) ? [resolved] : [])]
     .find(value => header.startsWith(value) && /^[ \t]$/.test(header[value.length] ?? ""));
   if (!executable) return {};
   const argumentsHeader = header.slice(executable.length).replace(/^[ \t]+/, "");
-  if (!/^(?:task|answer|wait|result|status|cancel)(?=[ \t]|$)/.test(argumentsHeader)) return {};
+  // Recognize our own fully quoted absolute rewrite on a repeated hook call.
+  if (!/^(?:task|answer|wait|result|status|cancel)(?=[ \t]|$)/.test(argumentsHeader)
+      && !(executable !== "duet" && /^'(?:task|answer|wait|result|status|cancel)'(?=[ \t]|$)/.test(argumentsHeader))) return {};
   if (heredoc) {
     if (newline < 0) return {};
     const lines = command.slice(newline + 1).split("\n");
@@ -139,8 +141,10 @@ export function approveDuet(input, env = process.env) {
   if (flags.has("continue") && ["to", "thread", "fresh", "resume", "resume-last", "sandbox", "model", "effort", "fast", "normal"].some(key => flags.has(key))) return {};
   if (flags.has("help") && (heredoc || [...flags.keys()].some(key => !["help", "session", "cwd"].includes(key)))) return {};
   if (executable === "duet" && !trustedLauncher(env, input.cwd)) return {};
-  const binding = `${flags.has("session") ? "" : ` --session ${input.session_id}`}${delivers ? ` --tool-use-id ${input.tool_use_id}` : ""}`;
-  const rewritten = `${quote(resolved)}${header.slice(executable.length)}${binding}${command.slice(header.length)}`;
+  // Re-emit validated words literally: unquoted arguments (including our own
+  // bindings) can still expand through zsh global aliases or =command lookup.
+  const binding = [...(flags.has("session") ? [] : ["--session", input.session_id]), ...(delivers ? ["--tool-use-id", input.tool_use_id] : [])];
+  const rewritten = `${[resolved, ...tokens, ...binding].map(quote).join(" ")}${command.slice(header.length)}`;
   return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: { ...input.tool_input, command: rewritten } } };
 }
 

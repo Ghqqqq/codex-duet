@@ -10,17 +10,21 @@ Status colours follow your theme. Select a session row to view its conversation.
 Each detailed turn shows its assignment prompt (up to 20,000 characters),
 collapsed to three rows with click-to-expand/collapse.
 Resolved `ask_parent` calls show the parent's answer (up to 2,000 characters),
-matched only by call ID, never by order. On resumed threads, Codex 0.146.0 does
-not forward a call ID to custom MCP servers, so those answers are not shown.
+matched only by call ID, never by order. On fresh and resumed threads, the parent
+bridge preserves Codex's `_meta.callId` for matching. Answers without a valid
+call ID, including older stored answers, are not shown.
 
 Jobs in this Claude session that share a Codex `threadId` appear as one session,
 including `duet task --to`, `--thread` and `--continue` follow-ups. Its row shows the
-latest turn's summary, status and elapsed time, plus a turn count when it fits.
-Selecting it shows each turn's header and activity in creation order; follow-ups
-preserve selection and following. The latest turn controls the footer, questions
-and lifecycle. Clear finished hides whole finished sessions, and a new follow-up
-reveals their history again. Jobs without a thread ID stay separate until one is
-known; saved job selections and scroll positions migrate to their session.
+lifecycle owner's summary, status and elapsed time, plus a turn count when it fits.
+Any active turn keeps the session active; an active turn with a pending question
+takes priority. Otherwise an unresolved turn takes priority over ended turns.
+Refused follow-ups that never started stay in history without replacing the
+owner's status, footer or question. Selecting the session shows retained turns
+in creation order; follow-ups preserve selection and following. Clear finished
+never hides a session with an active or unresolved turn. A new started follow-up
+reveals a cleared session's history again. Jobs without a thread ID stay separate
+until one is known; saved job selections and scroll positions migrate to their session.
 
 Install from the Duet marketplace with `/plugin install codex-live@duet`, then
 use `/codex-live` to open and focus the pane at any terminal width. New active
@@ -36,7 +40,7 @@ invalid, the poller caches the time it first observed the job ended. That fallba
 time is cached and persisted with session identity so reloads preserve the grace period. Eligibility updates on poll ticks, including when
 no jobs are active. At two minutes an unselected ended job moves into history;
 selection, its transcript and the retained jobs are unchanged.
-Unanswered questions/approvals and uncleared blocked/needs-input results override this recency order with `?`/`!` markers and status-line attention while preserving selection; active rows show the pending question or current operation and quiet time after one minute.
+Unanswered questions/approvals, unresolved turns and uncleared blocked/needs-input results override this recency order with `?`/`!` markers and status-line attention while preserving selection; active rows show the pending question or current operation and quiet time after one minute.
 New workers preserve the selected conversation and its scroll position, showing `• new` until selected; returning to a viewed conversation restores its saved scroll position.
 
 `+N more` counts omitted sessions. Its first press expands up to ten rows: active
@@ -48,8 +52,13 @@ separates the list from the feed; with one single-turn session its identity
 appears in the footer instead. The footer always shows the selected job's status,
 age and tool count (waiting jobs show who they await). Running jobs animate once
 per second while the pane is open. Queued jobs say `Queued` with a stationary
-ellipsis and have their own status-line count. A terminal status or completion
-time wins over an unanswered question; needs-input jobs show `Needs input`.
+ellipsis and have their own status-line count. Within a resolved turn, terminal
+status or completion time wins over a stale unanswered question; needs-input jobs
+show `Needs input`.
+An unresolved turn shows `Unresolved` with `!` attention instead of a finished
+failure or stop. It mirrors the companion's unresolved-turn checks for missing
+results, transport loss and an interrupt whose turn end is unconfirmed. Such a
+turn stays visible until its outcome is resolved; the pane does not resolve it.
 
 The plugin scrolls the feed itself. Wheel/arrows move by rows, page keys by the
 feed window's height, and Home/End go to its start/end. Wheels over the pinned
@@ -60,15 +69,21 @@ starts following. A plain hotkey button has the engine's `b: ` prefix;
 the layout reserves those cells. Narrow footers shorten status before shortening
 the button, down to `↓ Jump`.
 
-Retention keeps the newest 20 sessions plus any active or selected sessions outside
-that group. Each session retains up to 20 turns (active turns and the latest turn
-are always protected), with full activity limited to the latest 5 turns of the
-selected session. Rows still show the total turn count, and capped transcripts
+Retention keeps the newest 20 sessions plus any active, unresolved or selected
+sessions outside that group. Each session retains up to 20 turns; active and
+unresolved turns, the lifecycle owner and the latest turn are always protected,
+even when that exceeds the cap. Full activity is limited to 5 turns of the selected
+session, reserving a slot for its active owner and filling the rest with the
+newest turns. Rows still show the total turn count, and capped transcripts
 start with an earlier-turns notice; older retained turns show only their headers.
 Evicted markers can be rediscovered. Each detailed turn keeps up to 200 collapsed events and displays the
 last 80 items with only its latest todo plan. Serialized events across all selected
 turns share a 450,000-character budget, shortening
 oldest message bodies first; the whole state has a 900,000-character ceiling.
+Seen/auto-opened IDs, end-time observations and turn counts shrink with retained
+jobs and sessions; clear tombstones are capped at 2,000. Poll bookkeeping also
+drops entries for markers no longer present, so a failed publication can recover
+on the next poll instead of growing an unpublishable lifetime history.
 If needed, the pane drops the oldest finished, unselected turns, then finished
 unselected sessions, to fit that ceiling. Polling hydrates before composing a
 single candidate view and reuses it for state publication; a concurrent pane
@@ -139,5 +154,6 @@ or mtime. A failed read keeps the last good view and a pinned
 `⚠ stale · last update <age> ago` warning. Reload-time marker failures also keep
 the persisted view. Commands and tool calls pair overlapping starts/completions
 FIFO at the completion’s sequence position. Cancelled/declined calls say
-`Cancelled`; unmatched starts in ended jobs say `Interrupted` without an age. No logs/results/diffs are
+`Cancelled`; unmatched starts in ended jobs say `Interrupted` without an age,
+and starts in unresolved turns say `Unresolved`. No logs/results/diffs are
 loaded into the view. Requires Claude Code's 2.1.302 function-hooks pane API.

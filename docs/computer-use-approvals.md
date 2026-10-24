@@ -131,15 +131,22 @@ parent (or the user through it) answers with the report's `next` command verbati
 `duet answer '<jobId>' --question '<id>'` with the displayed ID and answer on
 stdin. A bare `duet answer <worker>` can answer a newer pending question; the
 native SendMessage path already pins the displayed question.
+Submit only an exact displayed option label, its number `1`–`4` in the order
+below, or a single keyword `call`, `once`, `task`, `always`, `deny` or `no`.
+Answers are trimmed and case-insensitive; exact labels may end with one period.
+Anything else denies the request, including `yes`, `Allow always`, negations,
+qualifications and mixed text. Forward the chosen answer without explanation;
+do not turn an ambiguous reply into an approval. This applies to both stdin and
+native SendMessage answers; ordinary `ask_parent` questions keep their own options.
 Task-scoped grants left by a dead worker are released at the next start or recovery.
 The effect of each choice:
 
 | answer | reply to Codex | persisted state |
 | --- | --- | --- |
-| Allow this call | `{ action: "accept" }` | none |
-| Allow for this task | accept | `sessions/<thread>.toml` for this thread, withdrawn when the turn ends |
-| Allow always | accept | `<isolated home>/computer-use/config.toml` `[apps] allowed` (an explicit entry, like `setup --allow-computer-app`) |
-| Deny, timeout, unrecognised answer, cancelled job | `{ action: "cancel" }` | none; the turn is reported `blocked` with `computer_use_app_not_approved` |
+| `Allow this call`, `1`, `call`, `once` | `{ action: "accept" }` | none |
+| `Allow for this task`, `2`, `task` | accept | `sessions/<thread>.toml` for this thread, withdrawn when the turn ends |
+| `Allow always (isolated Codex home)`, `3`, `always` | accept | `<isolated home>/computer-use/config.toml` `[apps] allowed` (an explicit entry, like `setup --allow-computer-app`) |
+| `Deny`, `4`, `deny`, `no`, timeout, unrecognised answer, cancelled job | `{ action: "cancel" }` | none; the turn is reported `blocked` with `computer_use_app_not_approved` |
 
 The reply never carries `_meta.persist`, so Codex's own runtime records nothing;
 the user's `~/.codex` is never written. The question uses the job's question

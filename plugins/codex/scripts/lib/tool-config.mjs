@@ -4,6 +4,21 @@ import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
 import { buildCuaConfig, buildCodexAppCuaConfig, CUA_SETTING_KEYS } from "./cua-config.mjs";
+import { tryAcquirePidLock } from "./state.mjs";
+
+// Every config writer uses this PID-aware lock, including setup's session files.
+// A short wait handles overlapping writes without leaving dead owners stranded.
+const CONFIG_LOCK_WAIT = new Int32Array(new SharedArrayBuffer(4));
+export function acquireConfigLock(file) {
+  const deadline = Date.now() + 1000;
+  for (;;) {
+    const release = tryAcquirePidLock(`${file}.duet-lock`);
+    if (release) return release;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("Configuration is being edited by another process; retry setup.");
+    Atomics.wait(CONFIG_LOCK_WAIT, 0, 0, Math.min(25, remaining));
+  }
+}
 
 export const TOOL_PLUGINS = ["browser", "chrome", "computer-use", "unified-computer-use"];
 export const NODE_REPL_ENV_KEYS = [
@@ -89,6 +104,32 @@ export function valueOf(text) {
   return result;
 }
 
+// Mask comments for parsing while retaining their original offsets and bytes.
+export function maskTomlComments(text) {
+  const comments = [];
+  let quote = null, triple = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === "\\" && quote === '"') { i++; continue; }
+      if (c === quote && (!triple || text.slice(i, i + 3) === quote.repeat(3))) {
+        if (triple) i += 2;
+        quote = null;
+      }
+    } else if (c === '"' || c === "'") {
+      quote = c; triple = text.slice(i, i + 3) === c.repeat(3);
+      if (triple) i += 2;
+    } else if (c === "#") {
+      let start = i;
+      while (start > 0 && /[ \t]/.test(text[start - 1])) start--;
+      while (i < text.length && text[i] !== "\n") i++;
+      comments.push({ start, end: i });
+    }
+  }
+  let code = text;
+  for (const { start, end } of comments) code = code.slice(0, start) + " ".repeat(end - start) + code.slice(end);
+  return { code, comments };
+}
 // Split only at top-level newlines (including unrelated multiline strings).
 export function statements(text) {
   const result = [];
@@ -133,10 +174,10 @@ export function readToolConfig(text, { inlineTables = [] } = {}) {
   const result = Object.create(null);
   let section = [];
   for (const statement of statements(text)) {
-    const line = statement.trim();
-    if (!line || line.startsWith("#")) continue;
+    const line = maskTomlComments(statement).code.trim();
+    if (!line) continue;
     if (line.startsWith("[")) {
-      const header = /^\[([^\n]+)\]\s*(?:#.*)?$/.exec(line);
+      const header = /^\[([^\n]+)\]\s*$/.exec(line);
       if (!header || line.startsWith("[[")) {
         if (/marketplaces|plugins|node_repl|cua_repl/.test(line)) throw new Error("Unsupported tool table header.");
         section = ["ignored-array-table"];
@@ -184,13 +225,19 @@ const canonical = value => JSON.stringify(value, (_, v) => v && typeof v === "ob
 const isCua = keys => keys[0] === "mcp_servers" && keys[1] === "cua_repl";
 function removeCua(text) {
   let section = [];
-  return statements(text).filter(raw => {
-    const line = raw.trim(), header = /^\[([^\n]+)\]\s*(?:#.*)?$/.exec(line);
-    if (header && !line.startsWith("[[")) { section = keyPath(header[1]); return !isCua(section); }
+  return statements(text).flatMap(raw => {
+    const { code, comments } = maskTomlComments(raw);
+    const line = code.trim(), header = /^\[([^\n]+)\]\s*$/.exec(line);
+    if (!line) return [raw];
+    const retainedComments = () => comments.map(c => raw.slice(c.start, c.end));
+    if (header && !line.startsWith("[[")) {
+      section = keyPath(header[1]);
+      return isCua(section) ? retainedComments() : [raw];
+    }
     if (line.startsWith("[")) section = ["ignored-array-table"];
-    if (isCua(section)) return false;
+    if (isCua(section)) return retainedComments();
     const match = /^((?:"(?:\\.|[^"\\])*"|'[^']*'|[^=])+)=([\s\S]*)$/.exec(line);
-    return !match || !isCua([...section, ...keyPath(match[1].trim())]);
+    return match && isCua([...section, ...keyPath(match[1].trim())]) ? retainedComments() : [raw];
   }).join("\n");
 }
 function cuaDiff(before, after) {
@@ -320,8 +367,7 @@ export function syncToolConfig({ env = process.env, dryRun = false, cuaTemplate,
   if (dryRun || !report.changed) return report;
   fs.mkdirSync(paths.isolated, { recursive: true, mode: 0o700 });
   // Serialize writers and refuse a config modified since the read.
-  const lock = `${paths.destination}.sync-lock`;
-  const fd = fs.openSync(lock, "wx", 0o600);
+  const release = acquireConfigLock(paths.destination);
   const temporary = `${paths.destination}.${randomUUID()}.tmp`;
   try {
     if (readOptional(paths.destination) !== before) throw new Error("Config changed during tool sync; retry.");
@@ -333,9 +379,7 @@ export function syncToolConfig({ env = process.env, dryRun = false, cuaTemplate,
     if (readOptional(paths.destination) !== before) throw new Error("Config changed during tool sync; retry.");
     fs.renameSync(temporary, paths.destination);
   } finally {
-    fs.closeSync(fd);
-    fs.rmSync(temporary, { force: true });
-    fs.unlinkSync(lock);
+    try { fs.rmSync(temporary, { force: true }); } finally { release(); }
   }
   return report;
 }

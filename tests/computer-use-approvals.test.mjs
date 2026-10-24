@@ -212,7 +212,7 @@ test("an owned job forwards an unapproved Computer Use request to the parent; th
   assert.equal(fs.existsSync(sessionFile(task.threadId)), false);
   assert.match(task.log, /"decision":"approved","reason":"parent-task"/);
   // Always: the isolated home's own allow list; the user's ~/.codex is untouched.
-  const always = await ask("allow always");
+  const always = await ask("always");
   assert.equal(always.done.status, "completed");
   assert.match(always.reply.computerUse.global, /com\.google\.Chrome/);
   assert.deepEqual(allowedIn(f.isolatedFile), ["com.google.Chrome"]);

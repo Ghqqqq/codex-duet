@@ -75,8 +75,10 @@ per-invocation task flag below.
 
 All selected TOML is validated before mutation. Other settings/comments are
 preserved; unchanged files are byte-exact no-ops. Each changed existing file gets
-a timestamped 0600 backup before its atomic replacement, with a lock and concurrent
-content check. Changed filenames/backups are reported, including repaired thread
+a timestamped 0600 backup before its atomic replacement, with the same PID-aware
+`.duet-lock` used by tool sync and a concurrent content check. Existing dotted
+keys are extended in their section without reopening their parent as a table.
+Changed filenames/backups are reported, including repaired thread
 files. Symlinks, hard links and unsupported inline/selected TOML fail clearly.
 Multi-file repair is not a cross-file transaction; if an external writer races,
 inspect the reported/error context and retry. Setup does not open a browser,

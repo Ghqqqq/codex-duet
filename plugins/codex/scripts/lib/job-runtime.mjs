@@ -437,10 +437,10 @@ export const ASK_PARENT = {
 };
 const textReply = text => ({ success: true, contentItems: [{ type: "inputText", text }] });
 export const PARENT_BRIDGE_SERVER = "duet_parent";
-// The bridge is bound to a *thread*, not a job: the shared broker keeps a resumed
-// thread (and its MCP servers) loaded across runs, so the same bridge process can
-// serve several consecutive jobs. Each call resolves the job active on the thread.
-export const PARENT_BRIDGE_ENV = { cwd: "CODEX_COMPANION_BRIDGE_CWD", threadId: "CODEX_COMPANION_BRIDGE_THREAD" };
+// The bridge retains its thread from either a thread handle or the starting job.
+// The shared broker keeps threads and MCP servers loaded across runs; calls find
+// the recorded turn owner across workspaces, never a newer queued reservation.
+export const PARENT_BRIDGE_ENV = { cwd: "CODEX_COMPANION_BRIDGE_CWD", threadId: "CODEX_COMPANION_BRIDGE_THREAD", jobId: "CODEX_COMPANION_BRIDGE_JOB" };
 export function activeJobForThread(cwd, threadId) {
   if (!threadId) return null;
   const candidates = listJobs(cwd).filter(job => job.threadId === threadId && ACTIVE.has(job.status));
@@ -450,7 +450,7 @@ export function activeJobForThread(cwd, threadId) {
 /**
  * Block one Codex question on the job file until the owner answers, the
  * question times out, or the job is stopped. Shared by the in-process dynamic
- * tool (new threads) and the stdio MCP bridge process (resumed threads), so the
+ * tool (compatibility fallback) and the stdio MCP bridge process, so the
  * owner-facing wait/answer flow is identical for both.
  */
 // kind "question" is Codex's own ask_parent call; kind "approval" is a Computer
@@ -458,8 +458,9 @@ export function activeJobForThread(cwd, threadId) {
 export async function askParentQuestion(cwd, id, { question, options = [], kind = "question", callId = null }, { signal = null, onProgress = null, stopped = () => false } = {}) {
   const questionId = `${kind}-${randomUUID()}`;
   const askedAt = new Date(Date.now()).toISOString();
-  // Approval requests have no ask_parent tool item. Never guess a missing ID
-  // from question order, text, or the MCP transport's independent request ID.
+  // Tool call IDs come from the dynamic request or MCP _meta.callId. Approval
+  // requests have no ask_parent item. Never guess a missing ID from question
+  // order, text, or the MCP transport's independent request ID.
   callId = kind === "approval" ? null : callId;
   const historyPatch = (current, resolution, answer = undefined) => ({ questionHistory: [...(current.questionHistory ?? []).slice(-19), {
     id: questionId, callId, kind, text: question, options, askedAt,

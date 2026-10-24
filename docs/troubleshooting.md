@@ -58,6 +58,11 @@ allowed in the user's Codex app (or added with `setup --allow-computer-app`); in
 `ask` mode mirrored grants are dropped but explicit ones remain. Approve with
 `task --approve-computer-app <bundle id>` for one call, an explicit isolated grant
 (`setup --allow-computer-app`), or the forwarded approval question on an owned job.
+For that question, submit only an exact displayed option label, its number
+`1`–`4`, or `call`/`once`/`task`/`always`/`deny`/`no`. Answers are trimmed and
+case-insensitive; exact labels allow a trailing period. Anything else, including
+`yes` or a choice followed by an explanation, denies the request; see
+[approval choices](computer-use-approvals.md#forwarded-approvals-owned-jobs).
 `computer_use_app_blocked_by_policy`/`computer_use_app_forbidden` come from
 Codex's own policy and cannot be overridden here. `browser_tab_debugger_unattached`
 names a tab (`tabId`, `sessionId`, `closed` in `--details`) the worker could not inspect or
@@ -85,7 +90,10 @@ More: [worker operations](worker-operations.md) and
 ## Known limitations
 
 - Stopping an active native agent from `/tasks` interrupts its turn and ends
-  the commands its thread started. Claude Code refuses process calls in the
+  the commands its thread started. The adapter gives the owner stop a bounded
+  chance to record `interrupted` / `owner_stopped`, with a cancel fallback when
+  confirmation is missing. Explicit `duet cancel` retains its cancellation
+  semantics. Claude Code refuses process calls in the
   stopped dispatch, so the agent's result reports `interrupted` from the
   recorded handles, and the confirmation is recorded on the job afterwards
   (`duet status <worker>`); SendMessage can then continue the agent. If no job
@@ -99,9 +107,10 @@ More: [worker operations](worker-operations.md) and
   false` and leaves them running.
 - `--fork` imports are labelled “imported Claude conversation (fidelity not
   verified)”; use an explicit brief for facts and acceptance criteria.
-- `codex-live` shows prompts and matched `ask_parent` answers. On resumed threads,
-  Codex 0.146.0 does not forward a call ID to custom MCP servers, so answers
-  cannot be matched and are not shown.
+- `codex-live` shows prompts and matched `ask_parent` answers on fresh and resumed
+  threads. The bridge preserves Codex's `_meta.callId`; if the runtime omits it
+  or a stored answer has no valid call ID, that answer cannot be matched and is
+  not shown.
 
 - `ask_parent`, `--follow`, owner loss, `--continue`, lease expiry and
   cancellation are covered by fixture tests against a fake app-server. The
@@ -111,9 +120,11 @@ More: [worker operations](worker-operations.md) and
   trips on one resumed thread; that real app-server smoke remains manual.
   `npm run verify` checks versions, builds, and runs runtime and live-pane fixture
   tests; CI runs those checks on pull requests and pushes to main.
-- `ask_parent` uses the app-server's experimental dynamic-tool API on new threads
-  and a per-thread MCP server override on resumed threads. Runtimes that reject
-  either registration fall back to a final `needs_input` report.
+- `ask_parent` uses a per-thread MCP server override on fresh and resumed threads,
+  keeping parent questions outside code mode. If a runtime reports unsupported
+  bridge registration, fresh threads retry with the experimental dynamic-tool API, which can incur
+  repeated `exec`/`wait` sampling while awaiting an answer. If registration is
+  unavailable, workers retain the final `needs_input` fallback.
 - Codex edits bypass Claude Code's own permission prompts and edit tracking; the
   report's `changedFiles` (`touchedFiles`/`preExistingChanges` in `--details`), the Codex sandbox and your git
   history are the controls. `git diff`/`git status` show current uncommitted changes;

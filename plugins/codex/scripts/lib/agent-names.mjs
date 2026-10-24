@@ -3,7 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { listSessionJobs, resolveStateRoot } from "./state.mjs";
 
-// Historical scientists and computing pioneers; ASCII names keep pane labels compact.
+// Historical (deceased) scientists, mathematicians and computing pioneers.
+// ASCII names of at most 11 letters keep pane labels compact. Suffixes such as
+// "-2" appear only after a session has used every name.
 export const AGENT_NAMES = Object.freeze([
   "Ada", "Turing", "Hopper", "Curie", "Noether", "Euler", "Gauss", "Kepler",
   "Faraday", "Shannon", "Dijkstra", "Hamming", "Ramanujan", "Hypatia", "Fibonacci",
@@ -12,7 +14,33 @@ export const AGENT_NAMES = Object.freeze([
   "Heisenberg", "Schrodinger", "Boltzmann", "Tesla", "Volta", "Ampere", "Ohm",
   "Joule", "Watt", "Kelvin", "Fourier", "Laplace", "Lagrange", "Cauchy", "Riemann",
   "Hilbert", "Cantor", "Poincare", "Galois", "Church", "Neumann", "Zuse",
-  "Atanasoff", "Aiken", "Wilkes", "Backus", "McCarthy", "Minsky", "Engelbart", "Jacobi"
+  "Atanasoff", "Aiken", "Wilkes", "Backus", "McCarthy", "Minsky", "Engelbart",
+  "Jacobi", "Pythagoras", "Thales", "Ptolemy", "Hipparchus", "Diophantus",
+  "Aristarchus", "Democritus", "Aryabhata", "Brahmagupta", "Bhaskara", "Madhava",
+  "Khwarizmi", "Alhazen", "Biruni", "Khayyam", "Seki", "Napier", "Descartes",
+  "Fermat", "Bernoulli", "Agnesi", "Germain", "Legendre", "Abel", "Bolyai",
+  "Lobachevsky", "Hamilton", "Sylvester", "Cayley", "Dedekind", "Kummer",
+  "Weierstrass", "Liouville", "Mobius", "Grassmann", "Klein", "Peano", "Frege",
+  "Zermelo", "Lebesgue", "Markov", "Lyapunov", "Kolmogorov", "Banach", "Ulam",
+  "Erdos", "Godel", "Hardy", "Kleene", "Tutte", "Conway", "Nash", "Somerville",
+  "Huygens", "Hooke", "Halley", "Herschel", "Brahe", "Coulomb", "Oersted",
+  "Kirchhoff", "Helmholtz", "Hertz", "Doppler", "Heaviside", "Gibbs", "Rayleigh",
+  "Lorentz", "Zeeman", "Roentgen", "Becquerel", "Rutherford", "Moseley", "Bragg",
+  "Millikan", "Michelson", "Minkowski", "Sommerfeld", "Debye", "Pauli", "Meitner",
+  "Chadwick", "Compton", "Bose", "Saha", "Raman", "Yukawa", "Majorana", "Landau",
+  "Kapitsa", "Cherenkov", "Feynman", "Bethe", "Schwinger", "Lemaitre", "Hubble",
+  "Leavitt", "Hawking", "Sagan", "Tsiolkovsky", "Korolev", "Lomonosov", "Boyle",
+  "Cavendish", "Priestley", "Scheele", "Lavoisier", "Dalton", "Avogadro", "Davy",
+  "Berzelius", "Wohler", "Liebig", "Bunsen", "Kekule", "Mendeleev", "Arrhenius",
+  "Ostwald", "Nernst", "Hahn", "Pauling", "Hodgkin", "Franklin", "Hippocrates",
+  "Galen", "Vesalius", "Harvey", "Linnaeus", "Jenner", "Lamarck", "Cuvier",
+  "Humboldt", "Darwin", "Wallace", "Mendel", "Pasteur", "Lister", "Golgi", "Cajal",
+  "Pavlov", "Fleming", "McClintock", "Crick", "Hutton", "Lyell", "Wegener", "Mohs",
+  "Richter", "Schickard", "Jacquard", "Hollerith", "Nyquist", "Hartley", "Wiener",
+  "Huffman", "Eckert", "Mauchly", "Bartik", "Holberton", "Sammet", "Hartree",
+  "Welchman", "Rejewski", "Licklider", "Newell", "Rosenblatt", "McCulloch", "Pitts",
+  "Perlis", "Iverson", "Kemeny", "Floyd", "Cocke", "Naur", "Wirth", "Ritchie",
+  "Postel", "Baran", "Kilby", "Noyce"
 ]);
 
 export function pickAgentName(usedNames, random = Math.random) {

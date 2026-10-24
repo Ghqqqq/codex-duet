@@ -16,6 +16,14 @@ notification; only if missing, use `duet result <worker>`. Follow-ups use
 `duet answer <worker>` can answer a newer pending question. Native
 agents instead receive both through SendMessage, which already pins the displayed question. Do not parse output files.
 
+For a Computer Use approval, the parent submits only an exact displayed option
+label, its number `1`–`4`, or `call`/`once`/`task`/`always`/`deny`/`no`. Answers
+are trimmed and case-insensitive; exact labels allow a trailing period. Anything
+else, including `yes` or qualified text, denies the request. Send no explanation
+with the choice, whether using stdin or native SendMessage. The rescue wrapper
+returns the question unchanged for the parent; it never chooses approval.
+See [approval choices](../../../../docs/computer-use-approvals.md#forwarded-approvals-owned-jobs).
+
 Primary helper: `duet task --quiet` with the brief only on stdin via a
 single-quoted `DUET_TASK` heredoc. `duet task --help` lists flags without starting
 a job. Single-quote runtime arguments; double quotes, pipes and commands outside

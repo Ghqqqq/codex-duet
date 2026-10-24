@@ -73,6 +73,37 @@ test("journal validation is read-only and passed close preserves state until ver
   assert.deepEqual(snapshot(f.stateRoot), before, "validation and refused close preserve the journal and active pointer");
   json(f.journal(["add", "verdict"], verdict(job.id)));
   assert.deepEqual(json(f.journal(["validate"])), { runId, ok: true, issues: [] });
+  const rework = linked(f, runId, "job-rework"), replacement = linked(f, runId, "job-replacement");
+  for (const next of [rework, replacement]) assert.equal(finishJournalJob(next, { status: "completed" }, f.env), true);
+  json(f.journal(["add", "verdict"], verdict(job.id, "REASSIGN")));
+  json(f.journal(["add", "verdict"], verdict(rework.id, "REWORK")));
+  json(f.journal(["add", "verdict"], verdict(replacement.id)));
+  const openRework = () => {
+    const result = f.journal(["validate"]);
+    assert.equal(result.status, 2, result.stderr);
+    const issues = JSON.parse(result.stdout).issues;
+    assert.ok(issues.every(issue => issue.kind === "open_rework"));
+    return issues.map(issue => issue.jobId);
+  };
+  assert.deepEqual(openRework(), [job.id, rework.id], "acceptance without lineage or resolves cannot clear unrelated rework");
+  const unchanged = snapshot(f.stateRoot);
+  for (const resolves of [null, job.id, [3], [""], ["../escape"], [job.id, "unknown-job"]]) {
+    assert.equal(f.journal(["add", "verdict"], { ...verdict(replacement.id), resolves }).status, 1);
+    assert.deepEqual(snapshot(f.stateRoot), unchanged, "invalid resolution references must not append a verdict");
+  }
+  const resolves = [job.id, rework.id];
+  json(f.journal(["add", "verdict"], { ...verdict(replacement.id, "REWORK"), resolves }));
+  assert.deepEqual(openRework(), [...resolves, replacement.id], "only acceptance resolves rejections");
+  json(f.journal(["add", "verdict"], { ...verdict(replacement.id), resolves }));
+  assert.equal(json(f.journal(["validate"])).ok, true);
+  json(f.journal(["add", "verdict"], verdict(job.id, "REASSIGN")));
+  assert.deepEqual(openRework(), [job.id], "a later rejection reopens an explicitly resolved job");
+  json(f.journal(["add", "verdict"], { ...verdict(replacement.id, "ACCEPT_WITH_GLUE"), resolves }));
+  const view = json(f.journal(["show"]));
+  assert.deepEqual(view.jobs.map(job => job.latestVerdict.verdict), ["REASSIGN", "REWORK", "ACCEPT_WITH_GLUE"]);
+  assert.deepEqual(view.jobs.at(-1).latestVerdict.resolves, resolves);
+  assert.deepEqual(view.openItems, []);
+  assert.deepEqual(json(f.journal(["validate"])), { runId, ok: true, issues: [] });
   assert.deepEqual(json(f.journal(["close"], { judgment: "passed", summary: "Now checked" })).openIssues, []);
   assert.equal(fs.existsSync(f.pointer), false);
 });
@@ -218,7 +249,9 @@ test("one session links jobs and recovers its run across workspaces; other sessi
 
 test("direct tasks link exact worker brief and one terminal compact report; unlinked tasks do not journal", async t => {
   if (!await requireLocalSockets(t)) return;
-  const f = fixture(), runId = f.start();
+  const f = fixture(); initGitRepo(f.cwd);
+  assert.equal(run("git", ["commit", "--allow-empty", "-m", "fixture"], { cwd: f.cwd, env: f.env }).status, 0);
+  const runId = f.start();
   const report = json(f.call(["task", "--fresh", "--direct", "--sandbox", "read-only"], "  Check journal linking.\n"));
   assert.equal(report.status, "completed");
   const events = f.rows(runId), started = events.filter(row => row.type === "job_started"), finished = events.filter(row => row.type === "job_finished");
@@ -240,11 +273,31 @@ test("direct tasks link exact worker brief and one terminal compact report; unli
   assert.equal(fs.readFileSync(path.join(f.runs, runId, followStart.brief), "utf8"), "Plain foreground follow up.");
   const continuation = json(f.call(["task", "--continue", report.jobId, "--direct"], "Continue the recorded task."));
   assert.equal(f.rows(runId).find(row => row.type === "job_started" && row.jobId === continuation.jobId).continuationOf, report.jobId);
+  assert.equal(f.rows(runId).find(row => row.type === "job_started" && row.jobId === continuation.jobId).followUpOf, report.jobId, "explicit continuation keeps its selected predecessor");
   assert.equal(f.rows(runId).filter(row => row.type === "job_finished").length, 3);
   const resumed = json(f.call(["task", "--resume-last", "--json", "--sandbox", "read-only"]));
   const resumeStart = f.rows(runId).find(row => row.type === "job_started" && row.jobId === resumed.jobId);
   assert.equal(fs.readFileSync(path.join(f.runs, runId, resumeStart.brief), "utf8"), JSON.parse(fs.readFileSync(path.join(f.root, "fake-codex-state.json"))).lastTurnStart.prompt);
   for (const jobId of [report.jobId, followUp.jobId, continuation.jobId, resumed.jobId]) json(f.journal(["add", "verdict"], verdict(jobId)));
+  for (const jobId of [report.jobId, continuation.jobId, resumed.jobId]) json(f.journal(["add", "verdict"], verdict(jobId, "REWORK")));
+  const other = path.join(f.root, "correction-worktree");
+  assert.equal(run("git", ["worktree", "add", "-b", "correction", other], { cwd: f.cwd, env: f.env }).status, 0);
+  const correction = json(run(process.execPath, [cli, "task", "--thread", stored.threadId, "--cwd", other, "--direct"], { cwd: f.cwd, env: f.env, input: "Verify the correction in another worktree." }));
+  const correctionStart = f.rows(runId).find(row => row.type === "job_started" && row.jobId === correction.jobId);
+  assert.equal(correctionStart.workspaceRoot, other); assert.equal(correctionStart.followUpOf, resumed.jobId); assert.equal(correctionStart.threadId, stored.threadId);
+  const correctionJob = JSON.parse(fs.readFileSync(path.join(resolveStateDir(other, f.env), "jobs", `${correction.jobId}.json`)));
+  assert.equal(correctionJob.followUpOf, resumed.jobId);
+  json(f.journal(["add", "verdict"], verdict(correction.jobId)));
+  assert.deepEqual(json(f.journal(["validate"])), { runId, ok: true, issues: [] }, "accepted cross-worktree descendants resolve earlier rework");
+  json(f.journal(["add", "verdict"], verdict(correction.jobId, "REWORK")));
+  const returned = json(f.call(["task", "--thread", stored.threadId, "--direct"], "Finish the correction back in the original worktree."));
+  const returnedStart = f.rows(runId).find(row => row.type === "job_started" && row.jobId === returned.jobId);
+  assert.equal(returnedStart.workspaceRoot, f.cwd); assert.equal(returnedStart.threadId, stored.threadId);
+  assert.equal(returnedStart.followUpOf, correction.jobId, "returning to an earlier workspace retains the newest cross-worktree predecessor");
+  const returnedJob = JSON.parse(fs.readFileSync(path.join(f.state, "jobs", `${returned.jobId}.json`)));
+  assert.equal(returnedJob.followUpOf, correction.jobId);
+  json(f.journal(["add", "verdict"], verdict(returned.jobId)));
+  assert.deepEqual(json(f.journal(["validate"])), { runId, ok: true, issues: [] }, "A→B→A acceptance resolves rework in both worktrees");
   json(f.journal(["close"], { judgment: "passed", summary: "Done" }));
   const before = snapshot(f.runs);
   const unlinked = json(f.call(["task", "--fresh", "--direct", "--sandbox", "read-only"], "Check without a run."));

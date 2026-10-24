@@ -6,6 +6,7 @@ import { makeTempDir, run } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { installCuaFixture } from "./cua-config-fixture.mjs";
 import { getToolAvailability, readToolConfig, syncToolConfig, NODE_REPL_ENV_KEYS } from "../plugins/codex/scripts/lib/tool-config.mjs";
+import { projectDocsSetup, readTomlField } from "../plugins/codex/scripts/lib/setup-config.mjs";
 
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
 function fixture() {
@@ -86,6 +87,57 @@ test("tool sync uses exact env/plugin allowlists, preserves code sources and bac
   assert.equal(again.backup, null);
   assert.equal(fs.readFileSync(f.destination, "utf8"), after);
   assert.equal(getToolAvailability(f.env).browser, "available");
+
+  // Pause each real writer at its final content read. The other writer must
+  // fail without committing, then a retry must preserve both settings.
+  for (const first of ["setup", "sync"]) {
+    const race = fixture();
+    fs.mkdirSync(race.env.CODEX_COMPANION_HOME);
+    fs.writeFileSync(race.destination, 'model = "keep"\n[mcp_servers.cua_repl]\ncommand = "existing-cua"\n');
+    const setup = () => projectDocsSetup({ env: race.env, mode: "claude-md" });
+    const sync = () => syncToolConfig({ env: race.env });
+    const originalRead = fs.readFileSync;
+    let reads = 0, contended = false;
+    fs.readFileSync = function(file, ...args) {
+      const value = originalRead.call(this, file, ...args);
+      if (file === race.destination && ++reads === 3) {
+        assert.throws(first === "setup" ? sync : setup);
+        contended = true;
+      }
+      return value;
+    };
+    try { (first === "setup" ? setup : sync)(); }
+    finally { fs.readFileSync = originalRead; }
+    assert.equal(contended, true);
+    (first === "setup" ? sync : setup)();
+    const merged = fs.readFileSync(race.destination, "utf8");
+    assert.deepEqual(readTomlField(merged, ["project_doc_fallback_filenames"]), ["CLAUDE.md"]);
+    assert.equal(readToolConfig(merged).plugins["browser@openai-bundled"].enabled, true);
+  }
+
+  // Replacement ignores commented syntax and retains even comments attached
+  // to the CUA settings being removed, including their original CRLF bytes.
+  const replacement = fixture();
+  fs.mkdirSync(replacement.env.CODEX_COMPANION_HOME);
+  const comments = ['# model = "example"\r\n', ' # header ] = ignored\r\n', '\t# command = "example"\r\n',
+    '  # command ] = ignored\r\n', ' # array start\r\n', ' # array item\r\n', ' # array end\r\n', ' # env ] = ignored\r\n'];
+  const commented = comments[0] + 'model = "keep#model"\r\n[mcp_servers.cua_repl]' + comments[1] + comments[2] +
+    'command = "old#cua"' + comments[3] + 'args = [' + comments[4] + '"arg#value",' + comments[5] + ']' + comments[6] +
+    '[mcp_servers.cua_repl.env]' + comments[7] + 'OLD = "old#env"\r\n' +
+    '[projects."hash#repo"] # unrelated ] = ignored\r\ntrust_level = "trusted#value"\r\n[[notes]] # cua_repl\r\nvalue = "keep"\r\n';
+  fs.writeFileSync(replacement.destination, commented);
+  assert.equal(readToolConfig(commented).mcp_servers.cua_repl.command, "old#cua");
+  const options = { env: replacement.env, replaceCua: true };
+  assert.deepEqual(syncToolConfig({ ...options, dryRun: true }).replaced, ["mcp_servers.cua_repl"]);
+  assert.equal(fs.readFileSync(replacement.destination, "utf8"), commented);
+  const replaced = syncToolConfig(options);
+  assert.equal(fs.readFileSync(replaced.backup, "utf8"), commented);
+  const updated = fs.readFileSync(replacement.destination, "utf8");
+  for (const comment of comments) assert.ok(updated.includes(comment));
+  assert.equal(readTomlField(updated, ["model"]), "keep#model");
+  assert.equal(readTomlField(updated, ["projects", "hash#repo", "trust_level"]), "trusted#value");
+  assert.notEqual(readToolConfig(updated).mcp_servers.cua_repl.command, "old#cua");
+  assert.equal(syncToolConfig(options).changed, false);
 });
 
 test("reference-style preexisting tables including separate env table are a byte-exact no-op", () => {

@@ -53,7 +53,12 @@ Act on `status`:
   newer one. Native SendMessage already pins the displayed question. `question` gives
   id, kind, text, options and `expiresInSec`; use `--details` if text/options
   were shortened. A Computer Use approval has four fixed options; forward with
-  `AskUserQuestion` unless the user pre-authorised the app.
+  `AskUserQuestion` unless the user pre-authorised the app. Answer only with an
+  exact displayed option label, its number `1`–`4`, or a single keyword
+  `call`/`once`/`task`/`always`/`deny`/`no`. Answers are trimmed and case-insensitive;
+  exact labels allow a trailing period. Anything else, including `yes`, negations
+  or qualified text, denies the request. Native SendMessage uses the same rules;
+  see [approval choices](computer-use-approvals.md#forwarded-approvals-owned-jobs).
 - `ownership_moved`: report it and stop using that owner; never re-adopt.
 
 Never run two waits for one job. Exit codes are completed 0, blocked/needs_input
@@ -129,16 +134,18 @@ between tool calls.
 
 ## Parent questions
 
-The installed CLI's generated experimental schema exposes dynamic tool
-registration. Duet enables `initialize.capabilities.experimentalApi: true` and
-registers one `ask_parent` function on new threads. Owned jobs use
+Duet exposes `ask_parent` through a per-thread MCP bridge on fresh and resumed
+threads. Keeping it outside Codex's code-mode tool set lets the model call it
+directly, without repeated `exec`/`wait` sampling while the parent answers.
+The experimental dynamic-tool API remains a compatibility fallback for fresh
+threads. Duet enables `initialize.capabilities.experimentalApi: true`. Owned jobs use
 `never+elicitations`: command/sandbox/rule approvals are rejected, and Computer
 Use app elicitations go to the parent. There is no plan-mode switch.
-Request-user-input availability in ordinary mode was not assumed. A valid registered tool call keeps its RPC
-response pending while a private job record carries text/options/expiry. Answer
-stdin supplies one inputText content item and continues the **same turn**.
+Request-user-input availability in ordinary mode was not assumed. A valid tool
+call keeps its RPC response pending while a private job record carries
+text/options/expiry. Answer stdin resolves that call and continues the **same turn**.
 
-Schema evidence (scratch files excluded from promotion):
+Dynamic-tool fallback schema evidence (scratch files excluded from promotion):
 
 | File / JSON pointer | Evidence |
 | --- | --- |
@@ -149,7 +156,7 @@ Schema evidence (scratch files excluded from promotion):
 | `.test-tmp/w5-schema/DynamicToolCallResponse.json#/properties/contentItems` and `/success` | Reply requires success and contentItems; inputText variant carries text. |
 | `.test-tmp/w5-schema/ServerRequest.json#/definitions/ToolRequestUserInputParams` | Alternative input request is described as experimental; not used to assume default-mode availability. |
 
-Exact successful dynamic-tool result (original request ID retained):
+Exact successful dynamic-tool fallback result (original request ID retained):
 
 ```json
 {"id":7,"result":{"success":true,"contentItems":[{"type":"inputText","text":"The parent's answer."}]}}
@@ -173,19 +180,46 @@ input. Interrupt resolves the question with stop guidance. An answer pinned with
 longer pending, rather than continuing a different question. A bare
 `duet answer <worker>` answers whichever question is pending now.
 
-thread/resume has no dynamicTools field, so resumed threads (`duet task --to`, `--thread`,
-`--continue`) get `ask_parent` from a per-thread MCP server override instead:
-`thread/resume.config.mcp_servers.duet_parent` points Codex at
-`scripts/parent-bridge-mcp.mjs` (stdio MCP) with only the thread handle
-(`CODEX_COMPANION_BRIDGE_CWD`/`CODEX_COMPANION_BRIDGE_THREAD`) and the state-location
-variables in its environment. The bridge is bound to the thread, not to a job: the
-shared broker keeps a resumed thread and its MCP servers loaded for the idle window,
-so one bridge process serves consecutive jobs on that thread. Each `tools/call`
-resolves the newest active job for the thread (`activeJobForThread`) and blocks on
-the same job-file question flow (`askParentQuestion`) the in-process dynamic tool
-uses, so `wait`/`answer` behave identically; with no active job the tool returns an
-error text instead of hanging. The bridge's `tool_timeout_sec` is the question
-timeout plus 120 s.
+Both `thread/start.config.mcp_servers.duet_parent` and the corresponding
+`thread/resume` override point Codex at `scripts/parent-bridge-mcp.mjs` (stdio MCP).
+Its environment contains `CODEX_COMPANION_BRIDGE_CWD`, `CODEX_COMPANION_HOME`,
+optional `TMPDIR`, and exactly one handle: `CODEX_COMPANION_BRIDGE_JOB` for a fresh
+thread, or `CODEX_COMPANION_BRIDGE_THREAD` for a resumed thread (`duet task --to`,
+`--thread`, `--continue`). Fresh starts carry no `dynamicTools`. Codex can spawn
+the bridge before `thread/start` returns, so a job-bound bridge reads that job's
+recorded `threadId` as soon as the companion publishes it: on every incoming MCP
+message and on a `BINDING_CAPTURE_POLL_MS` (250 ms) poll for up to
+`BINDING_CAPTURE_MS` (5 min), not only at the first question. Once captured, the
+binding lasts for the process lifetime, so later jobs on the loaded thread keep
+asking even after the starting job is pruned. Missing or malformed environment
+handles fail startup.
+
+The shared broker keeps threads and MCP servers loaded across runs, so each
+`tools/call` looks up the bound thread across the isolated state store using
+`recordedThreadJobs`. Eligible jobs have an ACTIVE status, a valid workspace root,
+and a recorded turn ID; queued reservations without an admitted turn cannot
+receive questions. A valid `_meta["x-codex-turn-metadata"].turn_id` selects only
+its recorded owner. If that turn has not been published yet, lookup retries for
+up to `TURN_RECORD_WAIT_MS` (3 s) at 100 ms intervals. Without valid turn
+metadata (older runtimes), exactly one readable eligible job must exist; zero or
+several are refused. Selection uses the readable records even when another
+workspace directory is unreadable or lacks its index: turn IDs are unique and
+unadmitted reservations carry none, so an unrelated leftover directory cannot
+disable parent questions. Without turn metadata this is a "one readable eligible
+job" rule, not a guarantee against arbitrarily damaged state.
+
+An unknown bound thread or a differing string `_meta.threadId` returns the
+existing no-listener error; metadata never supplies the bound thread. Questions
+use the selected job's own workspace, including when a loaded bridge is reused
+through a shared broker endpoint from another workspace. Calls block on the
+same job-file flow (`askParentQuestion`) as the in-process dynamic fallback, so
+`wait`/`answer` behave identically. The bridge's `tool_timeout_sec` is the question
+timeout plus 120 s (capped at 86400 s).
+
+The bridge records a valid `_meta.callId` in `questionHistory[].callId`, allowing
+`codex-live` to match the answer to the MCP tool item on fresh and resumed threads.
+Missing or malformed call IDs stay null; the JSON-RPC request ID is never used
+for matching. Previously recorded answers without call IDs remain unmatched.
 
 Two details were only found against the real app-server
 (`codex-cli 0.162.0-alpha.17.2`) and are both required: the override sets
@@ -194,10 +228,21 @@ and `mcpServerStatus/list` shows the tool but the model's tool list never contai
 `mcp__duet_parent.ask_parent`; and the call must be approval-free under the
 worker's approval policy (`never`, or the granular `never+elicitations` of owned jobs, which rejects tool approvals the same way), which the tool's `readOnlyHint` annotation plus
 `tools.ask_parent.approval_mode = "approve"` guarantee (without them Codex fails
-the call with "requires approval"). A runtime rejecting the registration gets one
-registration-free thread/start or thread/resume fallback before any model turn;
-auth, model and transport errors are preserved. Unavailable mechanisms retain the
-existing final needs_input classification.
+the call with "requires approval"). If a runtime reports unsupported fresh-thread
+bridge registration, Duet retries once with `dynamicTools`; an unsupported
+dynamic registration retains the registration-free `thread/start` retry. The
+dynamic fallback can incur repeated code-mode sampling while waiting. `thread/resume`, which has no
+`dynamicTools` field, keeps its single registration-free retry. These fallbacks
+share one compatibility predicate (`parentRegistrationUnsupported`): RPC code
+`-32600`, `-32601`, or `-32602`, and an unsupported signal attached to the
+registration field itself (`config`/`mcp_servers` or `dynamicTools`/`dynamic_tools`,
+optionally dotted such as `thread/start.dynamicTools`): ``unknown field `config` ``,
+`unsupported parameter ...` (optionally with a colon), `... is not supported`, or `... requires
+experimentalApi`. Fields that only appear elsewhere, such as serde's list of
+accepted fields (``unknown field `serviceName`, expected one of `config`, ...``) or
+`Invalid model config: unsupported model selected`, propagate after one request
+with the original diagnostic. Unavailable mechanisms retain the existing final
+needs_input classification.
 
 ## Ownership and cleanup
 

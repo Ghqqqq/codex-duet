@@ -2,21 +2,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
-import { keyPath, statements, valueOf } from "./tool-config.mjs";
+import { acquireConfigLock, keyPath, maskTomlComments, statements, valueOf } from "./tool-config.mjs";
 import { normalizeBrowserOrigin, normalizeBrowserOrigins, normalizeBundleId, normalizeBundleIds } from "./server-requests.mjs";
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
-import { tryAcquirePidLock } from "./state.mjs";
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function scan(text) {
   let section = [], offset = 0;
   return statements(text).map(raw => {
     const start = offset; offset += raw.length + 1;
-    const line = raw.trim(), header = /^\[([^\n]+)\]\s*(?:#.*)?$/.exec(line);
+    const { code, comments } = maskTomlComments(raw);
+    const line = code.trim(), header = /^\[([^\n]+)\]\s*$/.exec(line);
     if (header && !line.startsWith("[[")) { section = keyPath(header[1]); return { start, end: Math.min(offset, text.length), section, header: true }; }
     if (line.startsWith("[")) section = ["unsupported-array-table"];
     const m = /^((?:"(?:\\.|[^"\\])*"|'[^']*'|[^=])+)=([\s\S]*)$/.exec(line);
-    return { start, end: Math.min(offset, text.length), section, keys: m ? [...section, ...keyPath(m[1].trim())] : null, value: m?.[2] };
+    return { start, end: Math.min(offset, text.length), section, keys: m ? [...section, ...keyPath(m[1].trim())] : null, value: m?.[2], comments: comments.map(c => raw.slice(c.start, c.end)) };
   });
 }
 export function readTomlField(text, keys) {
@@ -28,25 +28,24 @@ export function readTomlField(text, keys) {
 export function setTomlField(text, keys, value) {
   if (same(readTomlField(text, keys), value)) return text;
   const entries = scan(text), found = entries.find(e => same(e.keys, keys));
-  if (value === undefined) return found ? text.slice(0, found.start) + text.slice(found.end) : text;
+  const comment = found?.comments.length ? `${found.comments.join("\n")}\n` : "";
+  if (value === undefined) return found ? text.slice(0, found.start) + comment + text.slice(found.end) : text;
   if (found) {
-    // Preserve an inline comment without interpreting quoted '#' characters.
-    let quote = null, escaped = false, comment = "";
-    for (let i = 0; i < found.value.length; i++) {
-      const c = found.value[i];
-      if (escaped) { escaped = false; continue; }
-      if (quote === '"' && c === "\\") { escaped = true; continue; }
-      if (quote) { if (c === quote) quote = null; continue; }
-      if (c === '"' || c === "'") quote = c;
-      else if (c === "#") { comment = ` ${found.value.slice(i).split("\n")[0]}`; break; }
-    }
     const relative = keys.slice(found.section.length).map(k => JSON.stringify(k)).join(".");
-    return text.slice(0, found.start) + `${relative} = ${JSON.stringify(value)}${comment}\n` + text.slice(found.end);
+    return text.slice(0, found.start) + `${relative} = ${JSON.stringify(value)}${comment || "\n"}` + text.slice(found.end);
   }
   const section = keys.slice(0, -1), line = `${JSON.stringify(keys.at(-1))} = ${JSON.stringify(value)}\n`;
   if (!section.length) return line + text;
   const header = entries.find(e => e.header && same(e.section, section));
   if (header) return text.slice(0, header.end) + (header.end && text[header.end - 1] !== "\n" ? "\n" : "") + line + text.slice(header.end);
+  // Dotted keys define their parents in this section. Reopening those parents
+  // with a table header is invalid TOML; extend the same dotted path instead.
+  const dotted = entries.find(e => e.keys && e.keys.length > e.section.length + 1 && e.section.length < section.length &&
+    e.section.every((k, i) => keys[i] === k) && e.keys[e.section.length] === keys[e.section.length]);
+  if (dotted) {
+    const relative = keys.slice(dotted.section.length).map(k => JSON.stringify(k)).join(".");
+    return text.slice(0, dotted.end) + (dotted.end && text[dotted.end - 1] !== "\n" ? "\n" : "") + `${relative} = ${JSON.stringify(value)}\n` + text.slice(dotted.end);
+  }
   return `${text}${text.endsWith("\n") || !text ? "" : "\n"}\n[${section.map(k => JSON.stringify(k)).join(".")}]\n${line}`;
 }
 function safeFile(home, file) {
@@ -69,8 +68,7 @@ function apply(home, edits, dryRun, { backup = true } = {}) {
     fs.mkdirSync(path.dirname(edit.file), { recursive: true, mode: 0o700 });
     const lock = `${edit.file}.duet-lock`, temp = `${edit.file}.${randomUUID()}.tmp`;
     safeFile(home, lock);
-    const release = tryAcquirePidLock(lock);
-    if (!release) throw new Error("Configuration is being edited by another process; retry setup.");
+    const release = acquireConfigLock(edit.file);
     try {
       if (read(home, edit.file) !== edit.before) throw new Error("Configuration changed concurrently; retry setup.");
       if (backup && fs.existsSync(edit.file)) {

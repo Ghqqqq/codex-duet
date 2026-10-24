@@ -1225,75 +1225,183 @@ test("task --continue resumes the job's thread with its recorded authorization a
   assert.equal(bridge.tools.ask_parent.approval_mode, "approve", "approvalPolicy never would otherwise reject the call");
   assert.match(f.state().lastTurnStart.prompt, /continue with the next step/);
   assert.equal(job(f, second.jobId).request.continuedFrom, first.jobId);
-  assert.equal(f.state().lastThreadStart.config, undefined, "new threads keep the in-process dynamic tool");
+  const start = f.state().lastThreadStart;
+  assert.deepEqual(start.config.mcp_servers.duet_parent, { ...bridge, env: {
+    [PARENT_BRIDGE_ENV.cwd]: f.repo, [PARENT_BRIDGE_ENV.jobId]: first.jobId,
+    CODEX_COMPANION_HOME: bridge.env.CODEX_COMPANION_HOME,
+    ...(f.env.TMPDIR ? { TMPDIR: f.env.TMPDIR } : {})
+  } }, "new threads use the bridge with only the job handle and state-location variables");
+  assert.equal(Object.hasOwn(start, "dynamicTools"), false);
   const active = fixture();
   const running = json(active.call("task", "--detached", "--json", "third"));
   await waitUntil(() => job(active, running.jobId).turnId);
   assert.notEqual(active.call("task", "--continue", running.jobId, "--json").status, 0);
   json(active.call("cancel", running.jobId, "--json"));
+
+  // An older runtime rejects the bridge override, then the dynamic registration.
+  const fallback = fixture("slow-task"), binary = path.join(fallback.dir, "codex");
+  fs.writeFileSync(binary, fs.readFileSync(binary, "utf8").replace('case "thread/start": {', `case "thread/start": {
+    state.startRegistrations = [...(state.startRegistrations || []), [Boolean(message.params.config), Boolean(message.params.dynamicTools)]];
+    saveState(state);
+    if (message.params.config || message.params.dynamicTools) {
+      send({ id: message.id, error: { code: -32602, message: message.params.config ? "unknown field config" : "dynamicTools unsupported" } });
+      break;
+    }`));
+  const compatible = fallback.call("task", "--follow", "--report", "--json", "compatibility fallback");
+  assert.deepEqual({ exit: compatible.status, registrations: fallback.state().startRegistrations },
+  { exit: 0, registrations: [[true, false], [false, true], [false, false]] });
+
+  // Unrelated errors, including serde's list of accepted fields, are not registration rejections.
+  for (const originalError of ["Invalid model config: unsupported model selected",
+    "unknown field `serviceName`, expected one of `cwd`, `model`, `config`, `dynamicTools`"]) {
+    const unrelated = fixture("slow-task"), unrelatedBinary = path.join(unrelated.dir, "codex");
+    fs.writeFileSync(unrelatedBinary, fs.readFileSync(unrelatedBinary, "utf8").replace('case "thread/start": {', `case "thread/start": {
+    state.startAttempts = (state.startAttempts || 0) + 1; saveState(state);
+    if (state.startAttempts === 1) {
+      send({ id: message.id, error: { code: -32602, message: ${JSON.stringify(originalError)} } }); break;
+    }`));
+    const failed = json(unrelated.call("task", "--follow", "--report", "--json", "unrelated model error"), 1);
+    const failedJob = job(unrelated, failed.jobId);
+    assert.deepEqual({ attempts: unrelated.state().startAttempts, status: failedJob.status, error: failedJob.recovery?.originalError },
+      { attempts: 1, status: "failed", error: originalError });
+  }
 });
 
 test("the parent bridge answers ask_parent through the job file and reports cancellation", async t => {
-  const cwd = makeTempDir(), id = "bridge-job", threadId = "thread-bridge";
-  writeJobFile(cwd, id, { id, status: "running", jobClass: "task", workspaceRoot: cwd, ownerId: "owner", questionTimeoutSec: 5, threadId });
-  upsertJob(cwd, { id, status: "running", jobClass: "task", workspaceRoot: cwd, threadId, createdAt: "2026-01-01T00:00:00.000Z" });
-  const env = { ...process.env, [PARENT_BRIDGE_ENV.cwd]: cwd, [PARENT_BRIDGE_ENV.threadId]: threadId };
-  const bridge = spawnOwned(process.execPath, [bridgeScript], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
-  t.after(() => { if (alive(bridge.pid)) bridge.kill(); });
-  const replies = []; let buffer = "";
-  bridge.stdout.on("data", chunk => { buffer += chunk; let i; while ((i = buffer.indexOf("\n")) >= 0) { replies.push(JSON.parse(buffer.slice(0, i))); buffer = buffer.slice(i + 1); } });
-  const send = message => bridge.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
-  const reply = id => waitUntil(() => replies.find(r => r.id === id));
-  bridge.stdin.write('null\n[]\ntrue\n42\n"text"\n');
-  send({ id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" } } });
-  assert.equal((await reply(1)).result.serverInfo.name, "duet-parent-bridge");
-  send({ method: "notifications/initialized" });
-  send({ id: 2, method: "tools/list" });
-  assert.deepEqual((await reply(2)).result.tools.map(t => t.name), ["ask_parent"]);
-  send({ id: 3, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Which way?", options: ["A", "B"] } } });
-  const pending = await waitUntil(() => readJobFile(resolveJobFile(cwd, id)).pendingQuestion);
-  assert.equal(pending.text, "Which way?"); assert.deepEqual(pending.options, ["A", "B"]);
-  answerQuestion(cwd, id, pending.id, "Go with A", "owner");
-  const answered = await reply(3);
-  assert.equal(answered.result.isError, false); assert.equal(answered.result.content[0].text, "Go with A");
-  for (const [requestId, separator] of [[8, "\u2028"], [9, "\u2029"]]) {
-    const question = `Which${separator}way?`;
-    const wire = Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: requestId, method: "tools/call", params: { name: "ask_parent", arguments: { question } } })}\r\n`);
-    const cut = wire.indexOf(Buffer.from(separator)) + 1;
-    bridge.stdin.write(wire.subarray(0, cut));
-    bridge.stdin.write(wire.subarray(cut));
-    const unicodePending = await waitUntil(() => {
-      const current = readJobFile(resolveJobFile(cwd, id)).pendingQuestion;
-      return current?.text === question && current;
-    });
-    answerQuestion(cwd, id, unicodePending.id, "Go with B", "owner");
-    const unicodeReply = await reply(requestId);
-    assert.equal(unicodeReply.result.isError, false);
-    assert.equal(unicodeReply.result.content[0].text, "Go with B");
+  const { updateState } = await import("../plugins/codex/scripts/lib/state.mjs");
+  const previousHome = process.env.CODEX_COMPANION_HOME;
+  process.env.CODEX_COMPANION_HOME = path.join(makeTempDir(), "isolated");
+  t.after(() => { process.env.CODEX_COMPANION_HOME = previousHome; });
+  // An unrelated index-less leftover makes the inventory incomplete; exact turn
+  // ownership must still route questions instead of disabling the tool.
+  const leftover = path.join(process.env.CODEX_COMPANION_HOME, "duet", "state", "leftover", "jobs");
+  fs.mkdirSync(leftover, { recursive: true }); fs.writeFileSync(path.join(leftover, "stray.json"), "{}");
+  const openBridge = (cwd, env) => {
+    const bridge = spawnOwned(process.execPath, [bridgeScript], { cwd, env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
+    t.after(() => { if (alive(bridge.pid)) bridge.kill(); });
+    const replies = []; let buffer = "";
+    bridge.stdout.on("data", chunk => { buffer += chunk; let i; while ((i = buffer.indexOf("\n")) >= 0) { replies.push(JSON.parse(buffer.slice(0, i))); buffer = buffer.slice(i + 1); } });
+    return { bridge, send: message => bridge.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`), reply: id => waitUntil(() => replies.find(r => r.id === id)) };
+  };
+  for (const binding of ["threadId", "jobId"]) {
+    const cwd = makeTempDir(), id = "bridge-job", threadId = `thread-bridge-${binding}`, turnId = "turn-bridge";
+    writeJobFile(cwd, id, { id, status: "running", jobClass: "task", workspaceRoot: cwd, ownerId: "owner", questionTimeoutSec: 5,
+      threadId: binding === "threadId" ? threadId : null, turnId });
+    upsertJob(cwd, { id, status: "running", jobClass: "task", workspaceRoot: cwd,
+      threadId: binding === "threadId" ? threadId : null, turnId, createdAt: "2026-01-01T00:00:00.000Z" });
+    const otherCwd = makeTempDir(), queued = "bridge-queued";
+    const reservation = { id: queued, status: "queued", jobClass: "task", workspaceRoot: otherCwd,
+      threadId, sessionId: "other-session", createdAt: "2026-02-01T00:00:00.000Z" };
+    writeJobFile(otherCwd, queued, reservation); upsertJob(otherCwd, reservation);
+    const { bridge, send, reply } = openBridge(cwd, { [PARENT_BRIDGE_ENV.cwd]: cwd, [PARENT_BRIDGE_ENV[binding]]: binding === "threadId" ? threadId : id });
+    bridge.stdin.write('null\n[]\ntrue\n42\n"text"\n');
+    send({ id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" } } });
+    assert.equal((await reply(1)).result.serverInfo.name, "duet-parent-bridge");
+    send({ method: "notifications/initialized" });
+    send({ id: 2, method: "tools/list" });
+    assert.deepEqual((await reply(2)).result.tools.map(t => t.name), ["ask_parent"]);
+    if (binding === "jobId") {
+      send({ id: 10, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Thread recorded yet?" }, _meta: { threadId } } });
+      assert.equal((await reply(10)).result.isError, true, "metadata cannot supply a missing bound thread");
+      updateJob(cwd, id, () => ({ threadId }));
+    }
+    send({ id: 11, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Wrong thread?" }, _meta: { threadId: "other-thread" } } });
+    assert.equal((await reply(11)).result.isError, true);
+    send({ id: 3, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Which way?", options: ["A", "B"] },
+      _meta: { threadId, callId: "call_bridge_3", "x-codex-turn-metadata": { turn_id: turnId } } } });
+    const pending = await waitUntil(() => readJobFile(resolveJobFile(cwd, id)).pendingQuestion);
+    assert.equal(pending.text, "Which way?"); assert.deepEqual(pending.options, ["A", "B"]);
+    assert.equal(readJobFile(resolveJobFile(otherCwd, queued)).pendingQuestion, undefined, "an unadmitted reservation cannot receive another turn's question");
+    answerQuestion(cwd, id, pending.id, "Go with A", "owner");
+    const answered = await reply(3);
+    assert.equal(answered.result.isError, false); assert.equal(answered.result.content[0].text, "Go with A");
+    assert.equal(readJobFile(resolveJobFile(cwd, id)).questionHistory.at(-1).callId, "call_bridge_3");
+    for (const [requestId, separator] of [[8, "\u2028"], [9, "\u2029"]]) {
+      const question = `Which${separator}way?`;
+      const wire = Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: requestId, method: "tools/call", params: { name: "ask_parent", arguments: { question },
+        ...(requestId === 9 ? { _meta: { callId: "invalid/call" } } : {}) } })}\r\n`);
+      const cut = wire.indexOf(Buffer.from(separator)) + 1;
+      bridge.stdin.write(wire.subarray(0, cut));
+      bridge.stdin.write(wire.subarray(cut));
+      const unicodePending = await waitUntil(() => {
+        const current = readJobFile(resolveJobFile(cwd, id)).pendingQuestion;
+        return current?.text === question && current;
+      });
+      answerQuestion(cwd, id, unicodePending.id, "Go with B", "owner");
+      const unicodeReply = await reply(requestId);
+      assert.equal(unicodeReply.result.isError, false);
+      assert.equal(unicodeReply.result.content[0].text, "Go with B");
+      assert.equal(readJobFile(resolveJobFile(cwd, id)).questionHistory.at(-1).callId, null, "missing or invalid metadata never falls back to the RPC id");
+    }
+    send({ id: 4, method: "tools/call", params: { name: "ask_parent", arguments: { question: "x".repeat(1001) } } });
+    assert.equal((await reply(4)).result.isError, true);
+    updateJob(cwd, id, () => ({ cancelRequested: { reason: "cancelled_by_user", at: new Date().toISOString() } }));
+    send({ id: 5, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Still there?" } } });
+    assert.equal((await reply(5)).result.isError, false);
+    // The broker keeps a thread loaded across runs, so one bridge process outlives
+    // the job that spawned it: once that job is over, calls bind to the thread's
+    // turn owner, and with none active the tool reports it instead of hanging.
+    updateJob(cwd, id, () => ({ status: "completed", cancelRequested: null }));
+    upsertJob(cwd, { id, status: "completed" });
+    send({ id: 6, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Anyone?" } } });
+    const nobody = await reply(6);
+    assert.equal(nobody.result.isError, true);
+    const next = "bridge-job-2";
+    writeJobFile(cwd, next, { id: next, status: "running", jobClass: "task", workspaceRoot: cwd, ownerId: "owner-2", questionTimeoutSec: 5, threadId, turnId: "turn-next" });
+    upsertJob(cwd, { id: next, status: "running", jobClass: "task", workspaceRoot: cwd, threadId, turnId: "turn-next", createdAt: "2026-01-02T00:00:00.000Z" });
+    send({ id: 7, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Next job?" } } });
+    const nextPending = await waitUntil(() => readJobFile(resolveJobFile(cwd, next)).pendingQuestion);
+    assert.equal(nextPending.text, "Next job?"); assert.equal(readJobFile(resolveJobFile(cwd, id)).pendingQuestion, null, "the finished job is left alone");
+    answerQuestion(cwd, next, nextPending.id, "Yes", "owner-2");
+    assert.equal((await reply(7)).result.content[0].text, "Yes");
+
+    const originFile = resolveJobFile(cwd, id);
+    updateState(cwd, state => { state.jobs = state.jobs.filter(job => job.id !== id); });
+    assert.equal(fs.existsSync(originFile), false, "the starting record is deleted after the bridge has bound its thread");
+    const cross = "bridge-cross-workspace";
+    const crossJob = { id: cross, status: "running", jobClass: "task", workspaceRoot: otherCwd,
+      ownerId: "owner-cross", questionTimeoutSec: 5, threadId, turnId: null };
+    writeJobFile(otherCwd, cross, crossJob); upsertJob(otherCwd, crossJob);
+    send({ id: 12, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Other workspace?" },
+      _meta: { threadId, "x-codex-turn-metadata": { turn_id: "turn-cross" } } } });
+    // The first lookup has run before this ping; publish the accepted turn while
+    // its question waits, without asserting a timing threshold.
+    send({ id: 13, method: "ping" }); await reply(13);
+    updateJob(otherCwd, cross, () => ({ turnId: "turn-cross" }));
+    const crossPending = await waitUntil(() => readJobFile(resolveJobFile(otherCwd, cross)).pendingQuestion);
+    assert.equal(crossPending.text, "Other workspace?");
+    answerQuestion(otherCwd, cross, crossPending.id, "Cross-workspace answer", "owner-cross");
+    assert.equal((await reply(12)).result.content[0].text, "Cross-workspace answer");
+
+    for (const [requestId, meta] of [[14, undefined], [15, { "x-codex-turn-metadata": { turn_id: "invalid/turn" } }]]) {
+      send({ id: requestId, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Ambiguous owner?" }, _meta: meta } });
+      assert.equal((await reply(requestId)).result.isError, true, "missing or invalid turn metadata cannot choose between admitted owners");
+    }
+    bridge.stdin.end();
+    await waitUntil(() => !alive(bridge.pid));
   }
-  send({ id: 4, method: "tools/call", params: { name: "ask_parent", arguments: { question: "x".repeat(1001) } } });
-  assert.equal((await reply(4)).result.isError, true);
-  updateJob(cwd, id, () => ({ cancelRequested: { reason: "cancelled_by_user", at: new Date().toISOString() } }));
-  send({ id: 5, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Still there?" } } });
-  assert.equal((await reply(5)).result.isError, false);
-  // The broker keeps a thread loaded across runs, so one bridge process outlives
-  // the job that spawned it: once that job is over, calls bind to the thread's
-  // newest active job, and with none active the tool reports it instead of hanging.
-  updateJob(cwd, id, () => ({ status: "completed", cancelRequested: null }));
-  upsertJob(cwd, { id, status: "completed" });
-  send({ id: 6, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Anyone?" } } });
-  const nobody = await reply(6);
-  assert.equal(nobody.result.isError, true);
-  const next = "bridge-job-2";
-  writeJobFile(cwd, next, { id: next, status: "running", jobClass: "task", workspaceRoot: cwd, ownerId: "owner-2", questionTimeoutSec: 5, threadId });
-  upsertJob(cwd, { id: next, status: "running", jobClass: "task", workspaceRoot: cwd, threadId, createdAt: "2026-01-02T00:00:00.000Z" });
-  send({ id: 7, method: "tools/call", params: { name: "ask_parent", arguments: { question: "Next job?" } } });
-  const nextPending = await waitUntil(() => readJobFile(resolveJobFile(cwd, next)).pendingQuestion);
-  assert.equal(nextPending.text, "Next job?"); assert.equal(readJobFile(resolveJobFile(cwd, id)).pendingQuestion, null, "the finished job is left alone");
-  answerQuestion(cwd, next, nextPending.id, "Yes", "owner-2");
-  assert.equal((await reply(7)).result.content[0].text, "Yes");
-  bridge.stdin.end();
-  await waitUntil(() => !alive(bridge.pid));
+
+  // A loaded bridge keeps its thread even when no turn asked before the starting
+  // record was pruned: it captures the binding once the thread is recorded.
+  const coldCwd = makeTempDir(), origin = "cold-origin", coldThread = "thread-cold";
+  const originJob = { id: origin, status: "running", jobClass: "task", workspaceRoot: coldCwd, threadId: null, createdAt: "2026-03-01T00:00:00.000Z" };
+  writeJobFile(coldCwd, origin, originJob); upsertJob(coldCwd, originJob);
+  const cold = openBridge(coldCwd, { [PARENT_BRIDGE_ENV.cwd]: coldCwd, [PARENT_BRIDGE_ENV.jobId]: origin });
+  cold.send({ id: 1, method: "tools/list" }); await cold.reply(1);
+  updateJob(coldCwd, origin, () => ({ threadId: coldThread, status: "completed" }));
+  cold.send({ id: 2, method: "ping" }); await cold.reply(2);
+  updateState(coldCwd, state => { state.jobs = state.jobs.filter(job => job.id !== origin); });
+  assert.equal(fs.existsSync(resolveJobFile(coldCwd, origin)), false);
+  const current = { id: "cold-current", status: "running", jobClass: "task", workspaceRoot: coldCwd, ownerId: "owner-cold", questionTimeoutSec: 5,
+    threadId: coldThread, turnId: "turn-cold", createdAt: "2026-03-02T00:00:00.000Z" };
+  writeJobFile(coldCwd, current.id, current); upsertJob(coldCwd, current);
+  cold.send({ id: 3, method: "tools/call", params: { name: "ask_parent", arguments: { question: "First question?" },
+    _meta: { threadId: coldThread, "x-codex-turn-metadata": { turn_id: "turn-cold" } } } });
+  const coldPending = await waitUntil(() => readJobFile(resolveJobFile(coldCwd, current.id)).pendingQuestion);
+  answerQuestion(coldCwd, current.id, coldPending.id, "Still bound", "owner-cold");
+  assert.equal((await cold.reply(3)).result.content[0].text, "Still bound");
+  cold.bridge.stdin.end();
+  await waitUntil(() => !alive(cold.bridge.pid));
 });
 
 function startQuestionCommand(f, command, input = "") {

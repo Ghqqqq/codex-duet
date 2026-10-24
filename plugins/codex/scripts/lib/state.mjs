@@ -71,7 +71,7 @@ export function resolveStateDir(cwd, env = process.env) {
 export function resolveStateDirForRoot(root, env = process.env) {
   try {
     const real = fs.realpathSync.native(root), boundary = nearestGitBoundary(real);
-    if (real !== root || (boundary !== null && boundary !== root)) root = resolveWorkspaceRoot(root);
+    if (boundary !== null && boundary !== root) root = resolveWorkspaceRoot(root);
   } catch { /* Deleted workspaces retain their original path-based key. */ }
   return path.join(resolveStateRoot(env), workspaceKey(root));
 }
@@ -342,13 +342,52 @@ export function visibleJobs(jobs, recordForJob = job => job) {
     .filter(job => isActiveStatus(job.status) || unresolvedTask(recordForJob(job)) || historyCount++ < MAX_JOBS);
 }
 
+const PRUNE_RECORDS = new Map();
+const MAX_PRUNE_RECORDS = MAX_JOBS + MAX_THREAD_ANCHORS;
+const sameRecord = (left, right) => left.ino === right.ino && left.mtimeMs === right.mtimeMs && left.size === right.size && left.ctimeMs === right.ctimeMs;
+function readPruneRecord(file) {
+  try {
+    const before = fs.statSync(file), cached = PRUNE_RECORDS.get(file);
+    if (cached && sameRecord(cached.stat, before)) return cached.value;
+    PRUNE_RECORDS.delete(file);
+    const value = JSON.parse(fs.readFileSync(file, "utf8")), after = fs.statSync(file);
+    if (sameRecord(before, after)) {
+      if (PRUNE_RECORDS.size >= MAX_PRUNE_RECORDS) PRUNE_RECORDS.delete(PRUNE_RECORDS.keys().next().value);
+      PRUNE_RECORDS.set(file, { stat: after, value });
+    }
+    return value;
+  } catch {
+    PRUNE_RECORDS.delete(file);
+    return null;
+  }
+}
+
 function pruneJobs(jobs, stateDir, imports = new Map()) {
+  const ordered = [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+  const finished = ordered.filter(job => !isActiveStatus(job.status));
+  // These jobs fit the visible history even if none are unresolved. No private
+  // record can change membership, so cursor/lease writes need no payload scan.
+  if (finished.length <= MAX_JOBS) return ordered;
+  const threadOrder = [...finished].sort((left, right) =>
+    String(right.createdAt ?? right.startedAt ?? right.updatedAt ?? "").localeCompare(String(left.createdAt ?? left.startedAt ?? left.updatedAt ?? "")) || right.id.localeCompare(left.id));
+  const grouped = new Map();
+  for (const job of threadOrder) {
+    if (!job.threadId) continue;
+    if (!grouped.has(job.threadId) && grouped.size < MAX_THREAD_ANCHORS) grouped.set(job.threadId, []);
+    grouped.get(job.threadId)?.push(job);
+  }
+  const guaranteed = new Set(finished.slice(0, MAX_JOBS).map(job => job.id));
+  // A thread with one attempt has an unambiguous anchor. Multiple attempts
+  // still need the private started/unresolved predicates below, unchanged.
+  for (const attempts of grouped.values()) if (attempts.length === 1) guaranteed.add(attempts[0].id);
+  if (finished.every(job => guaranteed.has(job.id))) return ordered;
+
   // The index intentionally omits result. Consult private records for the
   // predicate without publishing their output in the index or status views.
   const records = new Map();
   const recordFor = job => {
     if (job.jobClass !== "task") return job;
-    if (!records.has(job.id)) records.set(job.id, { ...job, ...(imports.get(job.id)?.file ?? readJsonOrNull(path.join(stateDir, JOBS_DIR_NAME, `${job.id}.json`))) });
+    if (!records.has(job.id)) records.set(job.id, { ...job, ...(imports.get(job.id)?.file ?? readPruneRecord(path.join(stateDir, JOBS_DIR_NAME, `${job.id}.json`))) });
     return records.get(job.id);
   };
   const visible = new Set(visibleJobs(jobs, recordFor).map(job => job.id));
@@ -356,17 +395,15 @@ function pruneJobs(jobs, stateDir, imports = new Map()) {
   // Match inheritance's job order: an old job's cursor/lease update must not
   // displace the later turn that recorded the thread's current settings. A
   // newer refused or never-started attempt must not displace it either.
-  for (const job of [...jobs].sort((left, right) =>
-    String(right.createdAt ?? right.startedAt ?? right.updatedAt ?? "").localeCompare(String(left.createdAt ?? left.startedAt ?? left.updatedAt ?? "")) || right.id.localeCompare(left.id))) {
-    if (isActiveStatus(job.status) || !job.threadId) continue;
+  for (const job of threadOrder) {
+    if (!job.threadId) continue;
     const anchor = threads.get(job.threadId);
     if (!anchor) {
       if (threads.size < MAX_THREAD_ANCHORS) threads.set(job.threadId, { id: job.id, started: startedThreadSettings(recordFor(job)) });
     } else if (!anchor.started && startedThreadSettings(recordFor(job))) Object.assign(anchor, { id: job.id, started: true });
   }
   const anchors = new Set([...threads.values()].map(anchor => anchor.id));
-  return [...jobs]
-    .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
+  return ordered
     .filter(job => visible.has(job.id) || anchors.has(job.id));
 }
 

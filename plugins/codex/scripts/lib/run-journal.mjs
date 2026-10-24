@@ -38,7 +38,8 @@ function validate(type, value) {
       if (!Array.isArray(value.criteria)) throw new Error("criteria must be an array of criterion/evidence/result objects.");
       return { jobId: id(value.jobId, "jobId"), verdict: choice(value.verdict, ["ACCEPT", "ACCEPT_WITH_GLUE", "REWORK", "REASSIGN"], "verdict"),
         criteria: value.criteria.map(item => { object(item); return { criterion: string(item.criterion, "criterion"), evidence: string(item.evidence, "evidence"), result: choice(item.result, ["met", "not_met", "cannot_verify"], "result") }; }),
-        reason: string(value.reason, "reason") };
+        reason: string(value.reason, "reason"),
+        ...(value.resolves === undefined ? {} : { resolves: strings(value.resolves, "resolves").map(jobId => id(jobId, "resolves jobId")) }) };
     }
     case "decision": return { summary: string(value.summary, "summary"), basis: string(value.basis, "basis"), ...(value.risk === undefined ? {} : { risk: string(value.risk, "risk") }) };
     case "run_closed": return { judgment: choice(value.judgment, ["passed", "blocked", "abandoned"], "judgment"), summary: string(value.summary, "summary"), ...(value.openRisks === undefined ? {} : { openRisks: strings(value.openRisks, "openRisks") }) };
@@ -167,7 +168,14 @@ export function addEntry(cwd, sessionId, type, input, runId, env = process.env) 
   const selected = target(resolveStateDir(cwd, env), sessionId, runId, env), stateDir = selected.stateDir;
   runId = selected.runId;
   return locked(stateDir, env, () => {
-    requireOpen(entries(stateDir, runId, env), runId);
+    const rows = entries(stateDir, runId, env);
+    requireOpen(rows, runId);
+    if (type === "verdict" && "resolves" in data && data.resolves?.length) {
+      const known = new Set(rows.filter(row => row.type === "job_started").map(row => row.jobId));
+      for (const jobId of data.resolves) {
+        if (!known.has(jobId)) throw new Error(`Unknown resolves jobId in run ${runId}: ${jobId}.`);
+      }
+    }
     append(stateDir, runId, type, data);
     return { runId, type };
   });
@@ -264,11 +272,14 @@ function viewAt(stateDir, runId, rows, env) {
     } catch { /* pruned or unavailable */ }
   }
   const linked = [...jobs.values()];
-  // Only explicit lineage resolves rework, never a shared thread. A later
-  // rejection reopens it; a previously accepted descendant cannot erase that.
+  // Explicit resolution or lineage resolves rework, never a shared thread. A
+  // later rejection reopens it; a previous acceptance cannot erase that.
   const resolved = new Set();
   for (const job of linked) {
     if (!started.has(job.jobId) || !["ACCEPT", "ACCEPT_WITH_GLUE"].includes(job.latestVerdict?.verdict)) continue;
+    for (const jobId of job.latestVerdict.resolves ?? []) {
+      if (started.has(jobId) && verdictOrder.get(job.jobId) > verdictOrder.get(jobId)) resolved.add(jobId);
+    }
     const pending = [job.followUpOf, job.continuationOf], seen = new Set([job.jobId]);
     while (pending.length) {
       const parentId = pending.pop(), parent = jobs.get(parentId);

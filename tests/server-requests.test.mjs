@@ -255,10 +255,10 @@ test("shared broker delivers task server requests and origin approvals to the ac
 test("a parent's approval answer maps to one of four choices and denies by default", () => {
   assert.equal(parseApprovalAnswer("Allow this call"), "call");
   assert.equal(parseApprovalAnswer("1"), "call");
-  assert.equal(parseApprovalAnswer("yes"), "call");
+  assert.equal(parseApprovalAnswer("yes"), "deny");
   assert.equal(parseApprovalAnswer("Allow for this task"), "task");
   assert.equal(parseApprovalAnswer("2"), "task");
-  assert.equal(parseApprovalAnswer("allow for this session"), "task");
+  assert.equal(parseApprovalAnswer("allow for this session"), "deny");
   assert.equal(parseApprovalAnswer("Allow always (isolated Codex home)"), "always");
   assert.equal(parseApprovalAnswer("3"), "always");
   assert.equal(parseApprovalAnswer("Deny"), "deny");
@@ -268,4 +268,11 @@ test("a parent's approval answer maps to one of four choices and denies by defau
   assert.equal(parseApprovalAnswer(""), "deny");
   assert.equal(parseApprovalAnswer("maybe later"), "deny");
   assert.equal(parseApprovalAnswer(undefined), "deny");
+  for (const [answer, choice] of [["call", "call"], ["once", "call"], ["task", "task"], ["always", "always"], ["deny", "deny"], ["no", "deny"],
+    ["  ALLOW THIS CALL.  ", "call"], [" Allow for this task. ", "task"], ["ALLOW ALWAYS (ISOLATED CODEX HOME).", "always"], ["Deny.", "deny"]]) {
+    assert.equal(parseApprovalAnswer(answer), choice, answer);
+  }
+  for (const answer of ["Allow for this task, not always", "Do not allow this app", "Never allow this app", "allow always", "not always", "always except Chrome", "call or task", "2 but only once", "3 deny", "1.", "task.", "Allow this call..", "ok", "approve", "allow"]) {
+    assert.equal(parseApprovalAnswer(answer), "deny", answer);
+  }
 });

@@ -39,6 +39,8 @@ export type CodexLiveJob = {
   status: string;
   active: boolean;
   finished: boolean;
+  unresolved?: boolean;
+  notStarted?: boolean;
   createdAt: string;
   startedAt: string;
   completedAt: string;
@@ -65,8 +67,8 @@ export type CodexLiveJob = {
   lastUpdateMs?: number;
 };
 
-// Derived from flat persisted jobs; all display fields belong to the latest turn.
-export type CodexLiveSession = CodexLiveJob & { turns: CodexLiveJob[]; turnCount: number };
+// Derived from flat persisted jobs; live/unresolved owners outrank later refusals.
+export type CodexLiveSession = CodexLiveJob & { turns: CodexLiveJob[]; turnCount: number; lifecycleJobId: string };
 
 export type CodexLiveFeedView = {
   feedOffset: number;

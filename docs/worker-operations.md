@@ -50,7 +50,9 @@ to 1800 s. Direct mode conflicts with `--follow`, `--detached`, `--background`,
   wait. Answer from your context when the brief should have covered it; otherwise
   collect the user's decision. A Computer Use approval has four fixed options;
   forward with `AskUserQuestion` unless the app was pre-authorised. Use
-  `--details` if the compact question/options were shortened.
+  `--details` if the compact question/options were shortened. Submit only the
+  accepted label, number or keyword described under [app approvals](#computer-use-app-approvals);
+  a free-form reply such as `yes` denies the request.
 - `ownership_moved`: report it; do not reuse the retired owner or re-adopt.
 - `error`: check `duet status` before resubmitting; a runtime failure may occur
   after dispatch. `owner_stopped` means the wait was stopped and the turn interrupted.
@@ -81,7 +83,9 @@ It cannot combine with `--to`, `--thread`, `--continue` or resume flags.
 Native agents take an optional first line `DUET: <flags>` (`--model`, `--effort`,
 `--sandbox`, `--fast`/`--normal`, `--cwd`, `--fork`). Use SendMessage to their
 Claude agent name for follow-ups and answers; they handle waits themselves.
-Stop active native tasks from `/tasks`. A parked question may not cancel when
+Stop active native tasks from `/tasks`: the adapter waits briefly for
+`interrupted` / `owner_stopped` confirmation and falls back to cancel if needed.
+A parked question may not cancel when
 its already-ended agent row is stopped; use `duet cancel <worker>` or the default
 900 s question timeout applies. Missing hooks yield a blocked report; check
 `duet status` before retrying. See [direct mode](direct-mode.md).
@@ -116,7 +120,8 @@ assignment requires it. Never elevate after a denial.
 Claude's loaded CLAUDE.md/rules are forwarded automatically through
 `developerInstructions`, with an explicitly approximate startup scan when the
 loaded inventory is unavailable. Existing threads retain their original
-instructions. Opt out on a fresh task with `--no-claude-md` or
+instructions. The scan excludes auto-memory by real path, including indirect
+symlink aliases. Opt out on a fresh task with `--no-claude-md` or
 `CODEX_COMPANION_CLAUDE_MD=0`. This is separate from Codex discovering `AGENTS.md`
 and Duet's `project_doc_fallback_filenames = ["CLAUDE.md"]` default in the
 isolated config. `duet setup --project-docs agents-only` removes only that exact
@@ -205,9 +210,15 @@ options `Allow this call` / `Allow for this task` / `Allow always (isolated
 Codex home)` / `Deny`); in direct mode the main agent handles it via
 `duet answer <worker> --question '<questionId>'` with a `DUET_ANSWER` heredoc; native agents use
 SendMessage, and the fallback relays the question and submits the parent's choice.
-"This task" writes the thread's session file for the rest of the turn; "always"
-adds an explicit entry to the isolated home's allow list; everything else
-cancels the request. An unapproved app is reported as `status: blocked` with
+Submit only an exact displayed option label, its number `1`–`4`, or a single
+keyword `call`/`once`/`task`/`always`/`deny`/`no`. Answers are trimmed and
+case-insensitive; exact labels may end with a period. Anything else, including
+`yes`, negations, qualifications or mixed text, denies the request. Do not append
+an explanation or infer approval from ambiguous text. These rules also apply
+to native SendMessage. `Allow this call` grants only the request; `Allow for this
+task` writes the thread's session file for the rest of the turn; `Allow always
+(isolated Codex home)` adds an explicit entry to the isolated home's allow list.
+An unapproved app is reported as `status: blocked` with
 `computer_use_app_not_approved` and the app name,
 never as `completed`. Details: [Computer Use approvals](computer-use-approvals.md).
 

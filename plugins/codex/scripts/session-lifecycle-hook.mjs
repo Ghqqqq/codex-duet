@@ -17,13 +17,18 @@ const SESSION_START_CONTEXT = [
   "Dispatch Codex with duet task <<'DUET_TASK' (brief on following lines, then DUET_TASK alone); use Bash run_in_background: true.",
   "The background-task completion notification carries the complete Duet report.",
   "Follow up on the same worker with duet task --to <worker> and a brief on stdin.",
-  "Answer with duet answer <worker> <<'DUET_ANSWER' (answer on following lines, then DUET_ANSWER alone).",
+  "Answer with the report's next command verbatim, which pins --question '<questionId>', or duet answer <worker> --question '<questionId>' <<'DUET_ANSWER' (answer on following lines, then DUET_ANSWER alone).",
   "If a report is missing, run duet result <worker>.",
   "Run duet task --help for flags."
 ].join("\n");
 const shellEscape = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 function appendEnvVar(name, value) {
-  if (process.env.CLAUDE_ENV_FILE && value != null && value !== "") fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export ${name}=${shellEscape(value)}\n`);
+  if (!process.env.CLAUDE_ENV_FILE || value == null || value === "") return;
+  let previous = "";
+  try { previous = fs.readFileSync(process.env.CLAUDE_ENV_FILE, "utf8"); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  const separator = previous && !previous.endsWith("\n") ? "\n" : "";
+  fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `${separator}export ${name}=${shellEscape(value)}\n`);
 }
 async function main() {
   const event = process.argv[2];

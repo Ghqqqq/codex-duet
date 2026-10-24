@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.4.2
+
+### Parent questions
+
+- Fresh threads now use the per-thread MCP `ask_parent` bridge, keeping the question outside code mode so waiting for an answer does not trigger repeated `exec`/`wait` sampling. The bridge captures its starting job's thread as soon as it is recorded and keeps it for its lifetime once captured, so pruning the starting job cannot disable later questions on the loaded thread; resumed bridges keep their supplied thread handle.
+- Bridge questions follow the recorded turn owner across workspaces, excluding queued reservations without a turn. Missing turn metadata (older runtimes) requires exactly one readable eligible owner; an unrelated unreadable workspace directory does not disable questions. Mismatched thread metadata is refused, and valid Codex `_meta.callId` values let `codex-live` match answers on fresh and resumed threads; missing or invalid call IDs remain unmatched.
+- Registration fallbacks require a supported RPC error code and an unsupported signal attached to the registration field itself; a field named only in serde's list of accepted fields does not count. Fresh threads retry unsupported bridge registration with the dynamic tool, then without registration if necessary; unrelated model/config errors retain their original diagnostic without retrying.
+
+### Approvals and configuration
+
+- Computer Use approval answers must be an exact option label (case-insensitive, trimmed, with an optional trailing period), its number `1`–`4`, or one of `call`, `once`, `task`, `always`, `deny`, `no`. Anything else denies the request, including `yes`, negations and qualified or mixed replies.
+- Setup and tool sync use one PID-aware lock per config file and recheck for concurrent edits. TOML updates preserve comments and extend existing dotted keys without adding conflicting tables.
+
+### Reviews and instruction forwarding
+
+- The stop review gate always runs read-only, including in plan mode, regardless of the configured default sandbox.
+- Adversarial review lists untracked symlinks without inlining their targets and never reads files outside the repository when collecting untracked contents. Non-ASCII and quoted filenames are handled correctly.
+- Review commands accept `--args-stdin`; both foreground and background slash-command recipes use a single-quoted heredoc so focus text is never shell-expanded. Failed native reviews preserve their failure reason in the report and summary.
+- Instruction forwarding excludes auto-memory by real path, including indirect aliases through symlinked configuration or memory directories.
+
+### Live pane and hooks
+
+- `codex-live` keeps the live owner's status and pending question visible after a refused follow-up. Unresolved turns are flagged and cannot be cleared; lifetime bookkeeping shrinks with retained history so the pane can keep publishing updates.
+- The permission hook single-quotes every validated argument and injected binding while preserving heredoc bodies. SessionStart teaches question-pinned answers, and environment exports no longer join a previous hook's unterminated line.
+- Stopping an active native agent from `/tasks` lets the owner stop finish as `interrupted` / `owner_stopped`, with a bounded confirmation wait and a cancel fallback if needed. Explicit `duet cancel` keeps its existing behavior.
+
+### Journal and performance
+
+- Acceptance verdicts can name earlier jobs in `resolves` to close REWORK/REASSIGN handled by a fresh worker; unknown IDs are rejected. Same-thread follow-ups across worktrees record `followUpOf` when the predecessor is discoverable.
+- Routine state updates avoid rereading retained output when pruning cannot change membership. Necessary pruning reads reuse unchanged records, non-Git symlink roots need no Git lookup, and retention reuses parsed records across planning and locked revalidation.
+
+### Worker names
+
+- The worker name pool grows from 60 to 240 historical scientists, mathematicians and computing pioneers, so long sessions reach numbered names such as `Tesla-3` far later. Names stay unique within a Claude session and are never reused; the `-2`, `-3` suffix still appears only after every name has been used.
+
 ## 1.4.1
 
 Correctness fixes from the 1.4.0 review and release-candidate QA, plus native-agent plan mode, effort and usage support.

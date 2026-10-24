@@ -56,6 +56,11 @@ private backup, preserving unrelated configuration; an identical server is a
 no-op. Desktop permissions must already belong to Codex Computer Use.app. Setup
 does not grant OS permissions or run a live tool probe.
 
+Setup and tool sync share one PID-aware `.duet-lock` per config file, wait only
+for a bounded interval, and recheck content before replacement. TOML changes
+preserve comments, including commented-out assignments, and extend dotted keys
+without adding conflicting parent tables.
+
 `--default-sandbox read-only|workspace-write|danger-full-access` is an independent,
 offline setup operation with `--dry-run` and backups. It stores `default_sandbox`
 in `<isolated-home>/duet/config.toml`, shared by terminal and Claude sessions.
@@ -64,6 +69,9 @@ Codex app in full-access mode); this setting lowers it. Explicit per-call flags
 win: `task --sandbox <mode>` narrows or widens one call on its own, `--write`
 alone guarantees at least workspace-write, `--write=false` requests read-only.
 `setup --json` reports `defaultSandbox`. Workers never modify this setting.
+The optional stop review gate (`--enable-review-gate`/`--disable-review-gate`)
+always runs with `--sandbox read-only`, including in plan mode; it never uses
+the configured default sandbox.
 
 Browser access is unrestricted by default, like the user's own Codex app: before
 every task the plugin mirrors top-level `approval_mode = "never_ask"` into the
@@ -100,8 +108,13 @@ from other setup changes. For one call the parent may instead pass
 session" in the Codex app, mirror has nothing to copy; tell them to choose
 "Always" there or use `--allow-computer-app`. An app that no list covers is not
 refused outright on an owned worker job: the request reaches the parent as a
-pending question with four fixed options (allow this call, allow for this task,
-allow always in the isolated home, deny), so the user decides at run time.
+pending question with four fixed options (`Allow this call`, `Allow for this
+task`, `Allow always (isolated Codex home)`, `Deny`), so the user decides at run
+time. Answer only with an exact label, its number `1`–`4`, or a single keyword
+`call`/`once`/`task`/`always`/`deny`/`no`. Answers are trimmed and case-insensitive;
+exact labels allow a trailing period. Anything else, including `yes`, negations
+or qualified text, denies the request. Send only the choice through the report's
+question-pinned `next` command or native SendMessage, without explanation.
 
 Project instructions: Codex reads `AGENTS.md` itself; `--project-docs claude-md`
 (the default, saved as `project_docs` in `<isolated home>/duet/config.toml`)
@@ -114,6 +127,7 @@ and `--json` (`projectDocs`: `projectDocs`, `fallbackFilenames`, `custom`,
 `changedFiles`). This controls only Codex's project-file fallback. Task dispatch
 separately forwards Claude's loaded CLAUDE.md/rules, including user-level files,
 as developer instructions (approximate scan when the inventory is unavailable).
+That scan excludes auto-memory by real path, including indirect symlink aliases.
 Use `duet task --fresh --no-claude-md` or `CODEX_COMPANION_CLAUDE_MD=0` to opt out
 of forwarding; existing threads retain their original instructions.
 

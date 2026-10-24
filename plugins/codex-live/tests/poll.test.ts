@@ -88,6 +88,7 @@ function scrollFixture() {
   let now = epoch;
   let state: CodexLiveState = { jobs: [], selectedId: null, nowMs: 0 };
   let version = 0;
+  let rejectWrite = false;
   const engine = {
     ui: {
       panes: async () => open ? [{ id: 'codex-live', isFocused: false }] : [],
@@ -112,7 +113,10 @@ function scrollFixture() {
     },
     state: {
       get: async () => { observeStateGet?.(); return { value: state, version }; },
-      set: async (_ref: unknown, value: CodexLiveState) => { maxPublishedChars = Math.max(maxPublishedChars, JSON.stringify(value).length); state = value; return { isSet: true, version: ++version }; },
+      set: async (_ref: unknown, value: CodexLiveState) => {
+        if (rejectWrite) { rejectWrite = false; throw new Error('Simulated publication failure'); }
+        maxPublishedChars = Math.max(maxPublishedChars, JSON.stringify(value).length); state = value; return { isSet: true, version: ++version };
+      },
     },
   };
   // Fail closed on any new engine capability, including file mutation or companion/tool calls.
@@ -149,6 +153,13 @@ function scrollFixture() {
     }) });
   }
   return { forbidden, poll, add, files, scrolls, opens, reads, logs, statuses, unreadable,
+    rejectNextWrite: () => { rejectWrite = true; },
+    remove: (id: string) => {
+      const index = markers.indexOf(`${id}.json`);
+      if (index >= 0) markers.splice(index, 1);
+      files.delete(`/home/duet/sessions/session-a/${id}.json`);
+      files.delete(`/jobs/${id}.json`);
+    },
     onStateGet: (observer?: () => void) => { observeStateGet = observer; },
     reload: checkedPoller, latest: () => state,
     close: () => { open = false; },
@@ -736,17 +747,17 @@ test('retention counts twenty sessions, protects active and selected sessions an
   await f.poll(true);
   f.latest().selectedId = 'thread:selected';
   for (let n = 0; n < 21; n++) {
-    // An old turn still marked running must not protect a finished session.
+    // Every active member protects the session, even with a later completion.
     addTurn(`turn-${n}-0`, `session-${n}`, n * 2, n === 0 ? 'running' : 'completed');
     addTurn(`turn-${n}-1`, `session-${n}`, n * 2 + 1);
   }
-  // Model the deliberately stale running turn as already observed.
+  // Model the earlier running turn as already observed.
   f.latest().seenJobIds!.push('turn-0-0');
   await f.poll(true);
-  expect(visibleSessions(f.latest()).length).toBe(22);
-  expect(f.latest().jobs.length).toBe(43);
+  expect(visibleSessions(f.latest()).length).toBe(23);
+  expect(f.latest().jobs.length).toBe(45);
   expect(f.latest().selectedId).toBe('thread:selected');
-  expect(f.latest().jobs.some(job => job.threadId === 'session-0')).toBe(false);
+  expect(f.latest().jobs.some(job => job.threadId === 'session-0')).toBe(true);
   expect(f.latest().jobs.some(job => job.id === 'active-old')).toBe(true);
   expect(f.latest().jobs.filter(job => job.threadId === 'selected').every(job => job.detailsLoaded)).toBe(true);
   addTurn('follow-up', 'session-0', 50, 'running');
@@ -758,6 +769,39 @@ test('retention counts twenty sessions, protects active and selected sessions an
   expect(f.latest().selectedId).toBe('thread:session-0');
   expect(selectedJob(f.latest())?.turns.map(job => job.id)).toEqual(['turn-0-0', 'turn-0-1', 'follow-up']);
   expect(selectedJob(f.latest())?.turns.every(job => job.detailsLoaded && job.events.length === 1)).toBe(true);
+
+  // Remove an evicted batch while preserving the selected/live work. No
+  // identity bookkeeping from that batch may remain in the published atom.
+  for (let n = 21; n < 45; n++) addTurn(`batch-${n}`, `batch-${n}`, n + 100);
+  await f.poll(true);
+  const pruned = 'batch-21';
+  expect(f.latest().jobs.some(job => job.id === pruned)).toBe(false);
+  for (let n = 21; n < 45; n++) f.remove(`batch-${n}`);
+  f.latest().seenJobIds!.push(pruned);
+  f.latest().autoOpenedJobIds!.push(pruned);
+  f.latest().firstEndedAtMs![pruned] = epoch;
+  f.latest().turnCounts![`thread:${pruned}`] = 1;
+  addTurn('after-prune', 'after-prune', 200, 'running');
+  const previous = f.latest();
+  f.rejectNextWrite();
+  await f.poll(true);
+  expect(f.latest()).toBe(previous);
+  expect(f.logs.length).toBe(1);
+  await f.poll(true);
+  expect(f.latest().jobs.some(job => job.id === 'after-prune' && job.active)).toBe(true);
+  expect(f.opens.filter(open => open.id === 'codex-live').length).toBe(3);
+  const retainedIds = f.latest().jobs.map(job => job.id);
+  const retainedSessions = visibleSessions(f.latest()).map(session => session.id);
+  expect(f.latest().seenJobIds?.every(id => retainedIds.includes(id))).toBe(true);
+  expect(f.latest().autoOpenedJobIds?.every(id => retainedIds.includes(id))).toBe(true);
+  expect(Object.keys(f.latest().firstEndedAtMs ?? {}).every(id => retainedIds.includes(id))).toBe(true);
+  expect(Object.keys(f.latest().turnCounts ?? {}).every(id => retainedSessions.includes(id))).toBe(true);
+  expect(f.latest().seenJobIds).not.toContain(pruned);
+  expect(f.latest().firstEndedAtMs?.[pruned]).toBe(undefined);
+  expect(f.latest().turnCounts?.[`thread:${pruned}`]).toBe(undefined);
+  expect(visibleSessions(f.latest()).find(session => session.id === 'thread:session-0')?.turnCount).toBe(3);
+  await f.reload()(true);
+  expect(visibleSessions(f.latest()).find(session => session.id === 'thread:session-0')?.turnCount).toBe(3);
 });
 
 test('twenty long-summary conversations stay below budget and publish an active follow-up with its full turn count', async () => {

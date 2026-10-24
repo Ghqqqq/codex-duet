@@ -35,7 +35,9 @@ A header the companion rejects before starting a job (an invalid value, an
 unavailable Codex) returns a blocked report and the agent accepts a corrected
 message. Use SendMessage to the native agent's
 name to continue the same Codex thread or answer its pending question. The
-adapter handles waits; stop an active task from `/tasks`. A parked question may
+adapter handles waits; stop an active task from `/tasks`. It gives the owner stop
+a bounded chance to confirm `interrupted` / `owner_stopped`, then uses a cancel
+fallback if confirmation is missing. A parked question may
 outlive stopping an already-ended agent row: use `duet cancel <worker>` for an
 explicit cancellation, or the question expires after 900 seconds by default.
 
@@ -60,6 +62,9 @@ Use `duet task --help` for task flags; help starts no job. The installed plugin
 adds `bin/` to PATH, and SessionStart supplies the session ID and a short dispatch
 recipe. If `duet` is missing in an older session, reload/start a new session or
 use the absolute `plugins/codex/bin/duet` launcher path.
+The SessionStart answer recipe pins the displayed `--question` ID. Its exports
+append to `CLAUDE_ENV_FILE` with a newline separator when a previous hook left
+its last line unterminated.
 
 Claude makes one Bash call per job with `run_in_background: true` and
 `description: "Codex: <label>"`. When Claude's Bash sandbox is on, set
@@ -80,8 +85,10 @@ allowlist go through normal permissions. Read-only workers add `--sandbox
 read-only`; another checkout adds `--cwd '<dir>'`. Parallel writers need disjoint
 OWNED PATHS or separate worktrees.
 
-For accepted commands, the hook pins the quoted absolute launcher and inserts
-the Claude session/tool-use bindings in every non-plan permission mode, including
+For accepted commands, the hook pins the absolute launcher, single-quotes every
+validated argument and injected session/tool-use binding, and preserves heredoc
+bodies byte-for-byte. This prevents argument expansion through zsh aliases or
+`=command` lookup. It binds commands in every non-plan permission mode, including
 bypass mode; plan mode abstains. PATH collisions still use normal permissions.
 It does not scan shell snapshots: harmless aliases, helper text and stale or
 missing snapshots must not silently prevent report attachment. A shell function
@@ -128,7 +135,12 @@ Use it whenever compact evidence or question text was shortened.
   wait. `question` supplies `id`, `kind`, `text`, `options` and `expiresInSec`;
   `optionsOmitted` counts choices removed to fit the report budget. A Computer
   Use approval has four fixed options; forward it
-  with `AskUserQuestion` unless the user pre-authorised the app.
+  with `AskUserQuestion` unless the user pre-authorised the app. Submit only an
+  exact displayed option label, its number `1`–`4`, or one of
+  `call`/`once`/`task`/`always`/`deny`/`no`, without explanation. Answers are
+  trimmed and case-insensitive; exact labels allow a trailing period. Anything
+  else, including `yes` or qualified text, denies the request. The same rules
+  apply to native SendMessage; see [approval choices](computer-use-approvals.md#forwarded-approvals-owned-jobs).
 - `ownership_moved`: report it; do not reuse the retired owner or re-adopt.
 - `error`: check `duet status` before resubmitting; a runtime or wait failure
   may occur after launch. `owner_stopped` means the wait was stopped and the
@@ -165,6 +177,7 @@ Claude's loaded CLAUDE.md/rules from the session's first `prompt.context` are
 automatically forwarded as `developerInstructions`. Later contexts are ignored;
 edits apply from the next Claude session. An unavailable or invalid first
 inventory leaves no snapshot and Duet reports an approximate startup scan. A
+scan excludes auto-memory by real path, including indirect symlink aliases. A
 valid inventory that exceeds the capture budget stays authoritative, with
 omissions reported; it never falls back to scanning removed files back in.
 Threads retain their original instructions, so changed rules also need a fresh task. Opt out
@@ -191,17 +204,20 @@ file changes, tool calls, plan and pending question. Resolved `ask_parent` calls
 show their matched answer; on resumed threads Codex 0.146.0 does not pass a call ID
 to custom MCP servers, so answers cannot be matched and are not shown. Jobs on the same Codex
 thread (`--to`, `--thread` and `--continue` follow-ups) form one row whose transcript
-shows every turn in order. It is read-only: it never
+shows retained turns in order. The row follows its active owner and question,
+even after a newer refused follow-up; unresolved turns are flagged for attention.
+It is read-only: it never
 starts, answers or cancels a job, and costs no Claude tokens. The pane reads
 companion-written markers under
 `<isolated home>/duet/sessions/<claudeSessionId>/`.
 Active rows show a pending question or current operation when available, with
-quiet time after a minute; unanswered questions and blocked/needs-input results
+quiet time after a minute; unanswered questions, unresolved turns and blocked/needs-input results
 take priority. New workers preserve the selected conversation and its
 scroll position, showing `• new` until selected; returning to a viewed
 conversation restores its saved scroll position. **Clear finished** hides ended
-jobs for this session without deleting their records or changing the default
-30-day retention.
+conversations only when they have no active or unresolved turn, without deleting
+records or changing the default 30-day retention. Pane bookkeeping is bounded
+with retained history; see the [pane reference](../plugins/codex-live/README.md).
 
 ### Haiku fallback
 

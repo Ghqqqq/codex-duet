@@ -1,6 +1,6 @@
 import type { ThemeKey } from 'claude-code';
 import type { CodexLiveEvent, CodexLiveFeedView, CodexLiveJob, CodexLiveSession, CodexLiveState } from '../types';
-import { attention, attentionOrder, clean, cleanBody, DETAIL_TURN_LIMIT, elapsed, jobLifecycle, questionExcerpt, sessionForId, taskText, turnKey, unwrapCommand, visibleSessions } from './model';
+import { attention, attentionOrder, clean, cleanBody, detailedTurns, elapsed, jobLifecycle, questionExcerpt, sessionForId, taskText, turnKey, unwrapCommand, visibleSessions } from './model';
 
 import { cells, clusters, fit, width } from './text';
 export { fit, width } from './text';
@@ -33,6 +33,7 @@ export function jobState(job: CodexLiveJob): { word: string; color: ThemeKey } {
   const { status, active } = jobLifecycle(job);
   if (active && (job.question || status === 'waiting')) return { word: 'Waiting for Claude', color: 'warning' };
   switch (status) {
+    case 'unresolved': return { word: 'Unresolved', color: 'warning' };
     case 'queued': return { word: 'Queued', color: 'inactive' };
     case 'running': return { word: 'Running', color: 'claude' };
     case 'completed': return { word: 'Done', color: 'success' };
@@ -55,7 +56,7 @@ export function jobRow(job: CodexLiveJob | CodexLiveSession, selected: boolean, 
   const { word } = jobState(job);
   const { active } = jobLifecycle(job);
   const glyph = attention(job) === 'blocked' ? '!' : ({ Running: '⏺', Queued: '…', 'Needs input': '?', 'Waiting for Claude': '?', Done: '✓', Failed: '✗',
-    Blocked: '✗', Stopped: '■' } as Record<string, string>)[word] ?? '·';
+    Blocked: '✗', Stopped: '■', Unresolved: '!' } as Record<string, string>)[word] ?? '·';
   const bullet = fit(`${glyph} `, Math.max(0, columns - width(selector)));
   const available = Math.max(0, columns - width(selector + bullet));
   const marker = isNew && !selected && available >= 7 ? ' • new' : '';
@@ -104,6 +105,7 @@ function cancelled(event: CodexLiveEvent): boolean { return ['cancelled', 'decli
 
 export function toolResult(event: CodexLiveEvent, now: number, job?: CodexLiveJob): ResultLine {
   if (cancelled(event)) return { text: 'Cancelled', color: 'inactive' };
+  if (inProgress(event) && job?.unresolved) return { text: 'Unresolved', color: 'warning' };
   if (inProgress(event) && job && !jobLifecycle(job).active) return { text: 'Interrupted', color: 'inactive' };
   const duration = event.durationMs === undefined ? '' : ` (${(Math.max(0, event.durationMs) / 1000).toFixed(1)}s)`;
   if (failed(event)) return { text: `${event.type === 'commandExecution' && event.exitCode !== undefined && event.exitCode !== 0
@@ -201,15 +203,17 @@ export function activityItems(job: CodexLiveJob): CodexLiveEvent[] {
 
 export function feedItems(job: CodexLiveJob | CodexLiveSession, now: number): FeedItem[] {
   const turns = 'turns' in job ? job.turns : [job];
+  const detailedIds = new Set(('turns' in job ? detailedTurns(job) : turns).map(turn => turn.id));
+  const ownerId = 'turns' in job ? job.lifecycleJobId : job.id;
   const omitted = 'turns' in job ? Math.max(0, job.turnCount - turns.length) : 0;
   const notice: FeedItem[] = omitted ? [{ key: 'earlier-turns', notice: true,
     title: `${omitted} earlier ${omitted === 1 ? 'turn' : 'turns'} not shown`, color: 'subtle', results: [] }] : [];
-  return [...notice, ...turns.flatMap((turn, index) => {
-    const detailed = index >= turns.length - DETAIL_TURN_LIMIT && !turn.detailsOmitted;
+  return [...notice, ...turns.flatMap(turn => {
+    const detailed = detailedIds.has(turn.id) && !turn.detailsOmitted;
     const prompt: FeedItem[] = detailed && turn.prompt !== undefined ? [{ key: 'prompt', title: 'Prompt', bold: 'Prompt', maxRows: 1,
       color: 'suggestion', results: [], prompt: { turnId: turn.id, text: turn.prompt, report: turn.promptReport === true } }] : [];
     const items = [headerItem(turn, now), ...prompt, ...(detailed ? activityItems(turn).map(event => eventItem(event, turn, now)) : [])];
-    if (index === turns.length - 1 && jobLifecycle(turn).active && turn.question) items.push({ key: 'pending-question', title: 'Waiting for Claude', color: 'warning',
+    if (turn.id === ownerId && jobLifecycle(turn).active && turn.question) items.push({ key: 'pending-question', title: 'Waiting for Claude', color: 'warning',
       results: [{ text: turn.question.text, color: 'subtle' },
         ...turn.question.options.map((option, i): ResultLine => ({ text: `${i + 1}. ${option}`, color: 'subtle' }))] });
     if (detailed && turn.detailsLoaded === false && !turn.detailsUnavailable) items.push({ key: 'loading', title: 'Loading transcript…', color: 'subtle', results: [] });

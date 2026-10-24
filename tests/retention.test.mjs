@@ -312,6 +312,33 @@ test("apply rechecks owner attachment, private records, mtimes and new cross-wor
   assert.equal(result.jobsDeleted, 0); assert.equal(result.markersDeleted, 0); assert.equal(result.threadsSkipped, 3);
   assert.deepEqual(result.retained, [{ workspace: job.workspace, jobId: job.id, reason: "owner-attached" }]);
   for (const target of [...job.files, file, markerFile, freshenedRollout]) assert.ok(fs.existsSync(target));
+
+  // Reuse unchanged records from the preview, but never a replaced file or a
+  // symlink, even when the replacement's size and mtime match the preview.
+  const g = fixture(), unchanged = seedJob(g, "unchanged"), replaced = seedJob(g, "replaced");
+  const preview = plan(g), stat = fs.statSync(replaced.file);
+  const replacement = `${replaced.file}.tmp`;
+  fs.writeFileSync(replacement, fs.readFileSync(replaced.file, "utf8").replace('"ownerAttached":false', '"ownerAttached":true '));
+  fs.utimesSync(replacement, stat.atime, stat.mtime);
+  fs.renameSync(replacement, replaced.file);
+  assert.equal(fs.statSync(replaced.file).size, stat.size);
+  const read = fs.readFileSync, reads = [];
+  fs.readFileSync = function(file, ...args) {
+    if ([unchanged.file, replaced.file].includes(file)) reads.push(file);
+    return read.call(this, file, ...args);
+  };
+  try {
+    const applied = await applyRetention(preview);
+    assert.equal(applied.jobsDeleted, 1); assert.deepEqual(applied.errors, []);
+    assert.deepEqual(reads, [replaced.file]);
+    assert.ok(fs.existsSync(replaced.file)); assert.equal(fs.existsSync(unchanged.file), false);
+  } finally { fs.readFileSync = read; }
+  const h = fixture(), linked = seedJob(h, "linked"), linkPlan = plan(h);
+  const outside = path.join(h.root, "outside.json");
+  fs.renameSync(linked.file, outside); fs.symlinkSync(outside, linked.file);
+  const refused = await applyRetention(linkPlan);
+  assert.equal(refused.jobsDeleted, 0); assert.equal(refused.errors.length, 1);
+  assert.ok(fs.existsSync(outside)); assert.ok(fs.lstatSync(linked.file).isSymbolicLink());
 });
 
 test("unreadable state or a busy workspace lock skips the workspace and all thread deletion", async () => {

@@ -35,7 +35,8 @@ Execution mode rules:
   - `Run in background`
 
 Argument handling:
-- Preserve the user's arguments exactly.
+- Preserve the user's arguments exactly, passing them through the single-quoted heredoc below without shell expansion.
+- If an argument line is exactly `DUET_ARGS`, choose a delimiter absent from the arguments and change both heredoc delimiters together.
 - Do not strip `--wait` or `--background` yourself.
 - Do not weaken the adversarial framing or rewrite the user's focus text.
 - The companion script parses `--wait` and `--background`, but Claude Code's `Bash(..., run_in_background: true)` is what actually detaches the run.
@@ -49,20 +50,20 @@ Argument handling:
 Foreground flow:
 - Run:
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review "$ARGUMENTS"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review --args-stdin <<'DUET_ARGS'
+$ARGUMENTS
+DUET_ARGS
 ```
 - Return the command stdout verbatim, exactly as-is.
 - Do not paraphrase, summarize, or add commentary before or after it.
 - Do not fix any issues mentioned in the review output.
 
 Background flow:
-- Launch the review with `Bash` in the background:
-```typescript
-Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review "$ARGUMENTS"`,
-  description: "Codex adversarial review",
-  run_in_background: true
-})
+- Run this command with `Bash(..., run_in_background: true)`:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review --args-stdin <<'DUET_ARGS'
+$ARGUMENTS
+DUET_ARGS
 ```
 - Do not call `BashOutput` or wait for completion in this turn.
 - After launching the command, tell the user: "Codex adversarial review started in the background. Check `/codex:status` for progress."

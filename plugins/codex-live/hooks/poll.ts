@@ -1,7 +1,7 @@
 import { atom, read } from 'claude-code';
 import type { EngineInterface } from 'claude-code';
 import type { CodexLiveJob, CodexLiveMarker, CodexLiveState } from '../types';
-import { boundState, DETAIL_TURN_LIMIT, fitState, groupedSessions, jobSummary, jobView, markerView, normalizeSessions,
+import { boundState, detailedTurns, fitState, groupedSessions, jobSummary, jobView, markerView, normalizeSessions, oldestJob,
   retainedTurns, sessionForId, sessionId, statusLine, unavailableJob, visibleSessions } from './model';
 import { feedLines, paneLayout, normalizeFeed, recentEndedJobIds, selectedJob } from './layout';
 import { publishView, reportFailure, updateFailure, viewports } from './runtime';
@@ -29,11 +29,13 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
   let lastStatus: string | undefined;
   const cache = new Map<string, Cached>();
   // Evicted entries keep only a header summary and file identity, never raw/details.
-  const evicted = new Map<string, Pick<Cached, 'job' | 'processedMtime' | 'marker'>>();
+  const evicted = new Map<string, Pick<Cached, 'job' | 'processedMtime' | 'marker' | 'firstEnded'>>();
   const markerNames = new Set<string>();
   const retryMarker = new Map<string, number>();
   // Keep only identities after ownership moves, including across failed writes.
   const foreignJobs = new Set<string>();
+  // Successful observations outside the retained view live only while present.
+  const knownJobs = new Set<string>();
 
   return async (force = false) => {
     if (busy) return;
@@ -49,11 +51,13 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
       const sessionChanged = !!current.sessionId && current.sessionId !== currentSession;
       if (session !== currentSession) {
         session = currentSession;
-        cache.clear(); evicted.clear(); markerNames.clear(); retryMarker.clear(); foreignJobs.clear();
+        cache.clear(); evicted.clear(); markerNames.clear(); retryMarker.clear(); foreignJobs.clear(); knownJobs.clear();
       }
       if (sessionChanged) current = { jobs: [], selectedId: null, nowMs: 0 };
       const previouslySeen = new Set(current.seenJobIds ?? current.jobs.map(job => job.id));
-      const previouslyKnown = new Set([...previouslySeen, ...current.jobs.map(job => job.id)]);
+      const previouslyKnown = new Set([...previouslySeen, ...current.jobs.map(job => job.id),
+        ...knownJobs]);
+      const previousLatest = new Map(groupedSessions(current.jobs).map(group => [group.id, group.turns.at(-1)!]));
       const seen = new Set(previouslySeen);
       const joinedThreads = new Set<string>();
       const opened = new Set(current.autoOpenedJobIds ?? current.jobs.filter(job => job.active).map(job => job.id));
@@ -73,6 +77,16 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
       const presentMarkers = entries && new Set(entries.filter(entry => entry.kind === 'file' && entry.name.endsWith('.json'))
         .map(entry => entry.name));
       if (presentMarkers) for (const name of evicted.keys()) if (!presentMarkers.has(name)) evicted.delete(name);
+      if (presentMarkers) {
+        for (const name of retryMarker.keys()) if (!presentMarkers.has(name)) retryMarker.delete(name);
+        // A failed publication leaves candidates in cache; pruned finished
+        // candidates must not accumulate while the last good view is retained.
+        const retainedIds = new Set(current.jobs.map(job => job.id));
+        for (const [id, entry] of cache) if (!presentMarkers.has(entry.markerName) && !retainedIds.has(id) &&
+          entry.job.finished && !entry.job.unresolved) {
+          cache.delete(id); markerNames.delete(entry.markerName); foreignJobs.delete(id);
+        }
+      }
       for (const entry of entries ?? []) {
         if (entry.kind !== 'file' || !entry.name.endsWith('.json') || markerNames.has(entry.name) || now < (retryMarker.get(entry.name) ?? 0)) continue;
         try {
@@ -83,6 +97,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
           if (!cache.has(marker.jobId)) cache.set(marker.jobId, {
             marker, markerName: entry.name, job: memo?.job ?? (previous ? jobSummary(previous) : unavailableJob(marker)),
             processedMtime: memo?.processedMtime,
+            firstEnded: memo?.firstEnded,
             full: previous?.detailsLoaded !== false ? previous : undefined, nextCheck: 0,
           });
           evicted.delete(entry.name);
@@ -131,13 +146,19 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
         if (foreignJobs.has(entry.job.id)) continue;
         // Also retry bookkeeping after a rejected state write with unchanged mtime.
         if (entry.processedMtime !== undefined) {
-          if (!seen.has(entry.job.id) && entry.job.active && !opened.has(entry.job.id)) newlyActive.push(entry.job.id);
+          if (!previouslyKnown.has(entry.job.id) && entry.job.active && !opened.has(entry.job.id)) newlyActive.push(entry.job.id);
           seen.add(entry.job.id);
         }
         if (entry.job.finished) {
-          entry.firstEnded ??= firstEndedAtMs[entry.job.id] ?? now;
+          // A reloaded cleared history has no retained end observation. Keep
+          // its creation-time fallback instead of making it newly finished.
+          // Jobs still in the last good view (including active-at-clear jobs)
+          // continue to receive their actual first observed end time.
+          const clearedHistory = current.hiddenFinishedBefore !== undefined && !current.jobs.some(job => job.id === entry.job.id)
+            ? Date.parse(entry.job.createdAt) : NaN;
+          entry.firstEnded ??= firstEndedAtMs[entry.job.id] ?? (Number.isFinite(clearedHistory) ? clearedHistory : now);
           firstEndedAtMs[entry.job.id] = entry.firstEnded;
-        } else if (entry.job.active) { delete firstEndedAtMs[entry.job.id]; entry.firstEnded = undefined; }
+        } else if (entry.job.active || entry.job.unresolved) { delete firstEndedAtMs[entry.job.id]; entry.firstEnded = undefined; }
       }
       // A reload may coincide with an unreadable marker/directory. Keep the
       // persisted last good view until its marker can be rediscovered.
@@ -161,7 +182,12 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
         const turnCounts = { ...latest.turnCounts };
         for (const entry of newest) if ((!previouslyKnown.has(entry.job.id) && seen.has(entry.job.id)) || joinedThreads.has(entry.job.id)) {
           const id = sessionId(entry.job);
-          turnCounts[id] = (turnCounts[id] ?? 0) + 1;
+          // After reload, older omitted turns are rediscovered from markers.
+          // Their count is already included; only newer arrivals extend it.
+          const previous = previousLatest.get(id);
+          if (!previous || oldestJob(entry.job, previous) > 0 || joinedThreads.has(entry.job.id)) {
+            turnCounts[id] = (turnCounts[id] ?? 0) + 1;
+          }
         }
         // Include this tick's first end observations before deciding visibility.
         const removedSessions = new Set(latest.jobs.filter(job => foreignJobs.has(job.id)).map(sessionId));
@@ -177,11 +203,11 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
         // allows a newly activated conversation to take focus.
         const selectedId = selectedSession?.id ?? activated[0]?.id
           ?? visible.find(session => session.active)?.id ?? visible[0]?.id ?? null;
-        const retained = visible.filter((session, i) => i < 20 || session.active || session.id === selectedId);
+        const retained = visible.filter((session, i) => i < 20 || session.active || session.unresolved || session.id === selectedId);
         const retainedSessions = new Set(retained.map(session => session.id));
         const retainedIds = new Set(retained.flatMap(session => retainedTurns(session).map(job => job.id)));
         const selected = sessionForId(retained, selectedId);
-        const detailedIds = new Set(selected ? retainedTurns(selected).slice(-DETAIL_TURN_LIMIT).map(job => job.id) : []);
+        const detailedIds = new Set(selected ? detailedTurns(selected).map(job => job.id) : []);
         for (const session of visible) turnCounts[session.id] = session.turnCount;
         return { visibility, selectedId, retained, retainedSessions, retainedIds, detailedIds, turnCounts };
       };
@@ -203,7 +229,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
           entry.processedMtime = stat.mtimeMs;
           entry.nextCheck = entry.job.finished ? now + 10000 : 0;
           if (entry.job.finished) firstEndedAtMs[id] = entry.firstEnded ??= firstEndedAtMs[id] ?? now;
-          else if (entry.job.active) { delete firstEndedAtMs[id]; entry.firstEnded = undefined; }
+          else if (entry.job.active || entry.job.unresolved) { delete firstEndedAtMs[id]; entry.firstEnded = undefined; }
         } catch { entry.job = { ...entry.job, detailsUnavailable: true }; entry.nextCheck = now + 5000; }
       }
       if (hydrated) {
@@ -233,7 +259,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
           seenJobIds: [...seen], autoOpenedJobIds: [...opened], firstEndedAtMs,
           recentEndedIds: recentEndedJobIds(retained, now, job => {
             const end = Date.parse(job.completedAt);
-            const latestId = sessionForId(retained, job.id)!.turns.at(-1)!.id;
+            const latestId = sessionForId(retained, job.id)!.lifecycleJobId;
             return Number.isFinite(end) ? end : firstEndedAtMs[latestId] ?? NaN;
           }),
         });
@@ -256,6 +282,9 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
         candidate = published; // Status and eviction must use the view actually saved.
       }
       const retainedIds = new Set(candidate.jobs.map(job => job.id));
+      knownJobs.clear();
+      for (const entry of [...cache.values(), ...remembered]) if (entry.processedMtime !== undefined &&
+        (retainedIds.has(entry.job.id) || !presentMarkers || presentMarkers.has(entry.markerName))) knownJobs.add(entry.job.id);
       for (const entry of remembered) if (retainedIds.has(entry.job.id)) {
         cache.set(entry.job.id, entry);
         evicted.delete(entry.markerName);
@@ -264,7 +293,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
       }
       for (const [id, entry] of cache) if (!retainedIds.has(id)) {
         if (!foreignJobs.has(id) && (!presentMarkers || presentMarkers.has(entry.markerName))) evicted.set(entry.markerName, {
-          job: jobSummary(entry.job), processedMtime: entry.processedMtime, marker: entry.marker,
+          job: jobSummary(entry.job), processedMtime: entry.processedMtime, marker: entry.marker, firstEnded: entry.firstEnded,
         });
         cache.delete(id);
         markerNames.delete(entry.markerName);

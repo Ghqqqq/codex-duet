@@ -188,6 +188,11 @@ consequential decisions and accepted assumptions with `journal add decision`,
 then runs `journal validate` before `journal close` (`passed`, `blocked` or
 `abandoned`). A passed close refuses unresolved issues with exit 2 and leaves
 the journal and active pointer unchanged; blocked/abandoned closes record them.
+When a fresh worker resolves REWORK or REASSIGN, its verified `ACCEPT` or
+`ACCEPT_WITH_GLUE` verdict includes `resolves: ["<rejectedJobId>", ...]`.
+Unknown IDs are rejected. Accepted `followUpOf`/`continuationOf` descendants also
+resolve earlier rejections; same-thread follow-ups can discover that predecessor
+across worktrees. A later rejection reopens the work.
 
 After compaction or a resumed session, `journal show` recovers the goal,
 criteria, latest worker verdicts, decisions and open items. SessionStart adds a
@@ -249,16 +254,23 @@ Workers run with approval policy `never+elicitations`: command, sandbox, rule
 and permission prompts are rejected as before, and MCP elicitations are
 forwarded. A Computer Use app request that no `--approve-computer-app` flag
 covers reaches the parent as a pending question with four fixed options (`Allow
-this call`, `Allow for this task`, `Allow always (isolated Codex home)`, `Deny`);
-see `docs/computer-use-approvals.md`. The orchestrator forwards it to the user
-through `AskUserQuestion` unless the user pre-authorised the app.
+this call`, `Allow for this task`, `Allow always (isolated Codex home)`, `Deny`).
+The orchestrator forwards it to the user through `AskUserQuestion` unless the
+user pre-authorised the app. Submit only an
+exact displayed label, its number `1`–`4`, or one of
+`call`/`once`/`task`/`always`/`deny`/`no`. Answers are trimmed and case-insensitive;
+exact labels allow a trailing period. Anything else, including `yes`, negations
+and qualified replies, denies the request. Send the choice without explanation
+through the pinned answer command or native SendMessage. See
+[approval choices](computer-use-approvals.md#forwarded-approvals-owned-jobs).
 
 ## Project instructions
 
 Claude's loaded CLAUDE.md/rules are automatically forwarded as developer
 instructions, including user-level files. When the inventory is unavailable,
-Duet reports an approximate startup scan. Existing threads retain their original
-instructions. Disable forwarding for a fresh task with `--no-claude-md` or set
+Duet reports an approximate startup scan. It excludes auto-memory by real path,
+including indirect aliases through symlinked directories. Existing threads retain
+their original instructions. Disable forwarding for a fresh task with `--no-claude-md` or set
 `CODEX_COMPANION_CLAUDE_MD=0`.
 
 Codex also discovers `AGENTS.md` itself. Duet's separate default

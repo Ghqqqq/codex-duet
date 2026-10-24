@@ -214,6 +214,7 @@ function fixture(behavior) {
       modelCalls++; throw new Error('Claude model bottom was reached');
     });
     if (aborted) controller = new AbortController();
+    await options.beforeComplete?.();
     const completion = await invoke('turn.complete', { agentId: 'native-agent', turnId: `turn-${number}`,
       answer: aborted ? '' : result.answer, durationMs: 1, isAborted: aborted, reason: aborted ? 'aborted' : 'answer' }, async e => ({ text: e.answer }));
     if (!aborted) assert.equal(completion.text, result.answer);
@@ -246,7 +247,7 @@ function fixture(behavior) {
     setStore: data => fs.writeFileSync(storeFile, JSON.stringify(data)),
     codexState: () => JSON.parse(fs.readFileSync(`${root}/bin/fake-codex-state.json`, 'utf8')),
     // Stop as a person would: after the early handle lookup has run.
-    stopOnWait: () => { onWait = async () => { await advance(1500); controller.abort(); }; },
+    stopOnWait: (beforeStop = async () => {}) => { onWait = async () => { await advance(1500); await beforeStop(); controller.abort(); }; },
   };
 }
 
@@ -329,7 +330,7 @@ test('real companion: dispatch, completion and reload follow-up reuse the Codex 
   f.save();
 });
 
-test('real companion: question/answer stays on the job; abort interrupts fake Codex and persists cancellation', async () => {
+test('real companion: question/answer stays on the job; abort interrupts fake Codex and persists cancellation', async t => {
   const question = fixture('parent-question-sequence');
   const asked = await question.turn('Ask the fake parent a question.', 1);
   assert.equal(asked.status, 'needs_answer'); assert.ok(asked.question.id);
@@ -427,7 +428,8 @@ test('real companion: question/answer stays on the job; abort interrupts fake Co
   const stopped = await cancellation.turn('Run until stopped.', 1, true);
   const job = cancellation.jobs()[0];
   assert.ok(isC2Report(stopped));
-  assert.ok(['interrupted', 'cancelled'].includes(job.status));
+  assert.equal(job.status, 'interrupted');
+  assert.equal(job.result.interruptionReason, 'owner_stopped');
   // The stopped dispatch cannot run processes: it reports from recorded handles
   // and turn.complete records the confirmation.
   assert.equal(stopped.status, 'interrupted');
@@ -444,10 +446,64 @@ test('real companion: question/answer stays on the job; abort interrupts fake Co
   assert.equal(state.jobId, job.id);
   assert.equal(state.worker, job.agentName);
   assert.equal(state.cancellation.confirmation, 'confirmed');
+  assert.equal(state.cancellation.reason, 'owner_stopped');
   assert.equal(state.status, job.status);
   // The closure marker, not the overwritable state record, admits the next SendMessage.
   assert.ok(Object.entries(cancellation.readStore()).some(([key, value]) => key.startsWith('native:closed:v1:') && value.turnId === 'turn-1'));
   cancellation.save();
+
+  // Exercise completion after the worker has already recorded its interrupt,
+  // and a real duet cancel racing the native stop. User cancellation keeps its
+  // own status/reason; /tasks alone always records owner_stopped.
+  for (const userCancel of [false, true]) {
+    const other = fixture('interruptible-slow-task');
+    other.stopOnWait(async () => {
+      if (!userCancel) return;
+      const result = spawnSync(process.execPath, [plugin + '/bin/duet', 'cancel', other.jobs()[0].id, '--json',
+        '--cwd', `${other.root}/repo`, '--session', 'native-session'], { env: other.env, encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+      const report = JSON.parse(result.stdout);
+      assert.equal(report.status, 'cancelled');
+      assert.equal(report.reason, 'cancelled_by_user');
+      assert.equal(report.confirmation, 'confirmed');
+    });
+    await other.turn('Run until stopped.', 1, true, { beforeComplete: () => until(() =>
+      other.jobs().every(job => !['queued', 'running'].includes(job.status))) });
+    const job = other.jobs()[0], state = Object.values(other.readStore()).find(value => value.v === 2);
+    assert.equal(job.status, userCancel ? 'cancelled' : 'interrupted');
+    assert.equal(job.result.interruptionReason, userCancel ? 'cancelled_by_user' : 'owner_stopped');
+    assert.equal(state.status, job.status);
+    assert.equal(state.cancellation.reason, job.result.interruptionReason);
+    assert.equal(state.cancellation.confirmation, 'confirmed');
+  }
+
+  // A dead wrapper cannot observe its owner's stop. The adapter must retain
+  // duet cancel's app-server recovery path to interrupt the unresolved turn.
+  const dead = fixture('lost-turn:owner-stop');
+  dead.stopOnWait(() => process.kill(dead.jobs()[0].pid, 'SIGSTOP'));
+  await dead.turn('Run until stopped after the wrapper exits.', 1, true, { beforeComplete: async () => {
+    // Also lose the broker connection, keeping the fake server's persisted
+    // turn in progress. No surviving wrapper/broker can stop it for the adapter.
+    const records = fs.readdirSync(`${dead.root}/processes`).map(name => JSON.parse(fs.readFileSync(`${dead.root}/processes/${name}`, 'utf8')));
+    const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; } };
+    for (const record of records.filter(record => !record.exited && alive(record.pid))) process.kill(record.pid, 'SIGKILL');
+    await until(() => records.every(record => record.exited || !alive(record.pid)));
+  } });
+  const deadJob = dead.jobs()[0], deadState = Object.values(dead.readStore()).find(value => value.v === 2);
+  const fallback = dead.capture.processes.filter(call => call.kind === 'run' && call.request.argv[2] === 'cancel');
+  const waitIndex = dead.capture.processes.findIndex(call => call.kind === 'run' && call.request.argv.includes('--wait'));
+  const cancelIndex = dead.capture.processes.findIndex(call => call.kind === 'run' && call.request.argv[2] === 'cancel');
+  t.diagnostic(JSON.stringify({ scenario: 'native-stop-dead-wrapper', cancelCalls: fallback.length,
+    status: deadJob.status, interruptionConfirmed: deadJob.result?.interruptionConfirmed === true,
+    confirmation: deadState.cancellation?.confirmation, lastInterrupt: dead.codexState().lastInterrupt,
+    ownerDetachReason: deadJob.ownerDetachReason }));
+  assert.equal(fallback.length, 1, 'A stopped dead wrapper requires the duet cancel safety net');
+  assert.ok(waitIndex >= 0 && waitIndex < cancelIndex, 'Read-only owner-stop confirmation precedes the fallback cancel');
+  assert.ok(['interrupted', 'cancelled'].includes(deadJob.status));
+  assert.equal(deadJob.result.interruptionConfirmed, true);
+  assert.deepEqual(dead.codexState().lastInterrupt, { threadId: deadJob.threadId, turnId: deadJob.turnId });
+  assert.equal(deadState.cancellation.confirmation, 'confirmed');
+  assert.equal(deadState.status, deadJob.status);
 });
 
 // Job reads are independent test assertions, outside the captured hook boundary.

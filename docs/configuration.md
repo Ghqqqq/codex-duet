@@ -7,6 +7,11 @@ and write timestamped backups of existing destination files. Task startup may
 apply defaults automatically; new files and temporary per-task app grants have
 no backup.
 
+Setup and tool sync share one PID-aware `.duet-lock` per destination file,
+with a bounded wait and a content recheck before replacement. Comments,
+including commented-out assignments, are preserved. New keys extend existing
+dotted paths in their current section instead of adding conflicting tables.
+
 ## Match your Codex App
 
 Workers already default to full access and an unrestricted browser, like the
@@ -51,7 +56,9 @@ The sandbox default is stored in `<isolated-home>/duet/config.toml` and is
 for that call in either direction and needs no other flag; `--write` alone
 guarantees at least workspace-write and `--write=false` requests read-only.
 Lower the default with `setup --default-sandbox read-only` or `workspace-write`;
-use `task --sandbox read-only` for one call. Review commands remain read-only.
+use `task --sandbox read-only` for one call. Review commands and the optional
+stop review gate always run read-only, including in plan mode; the configured
+default does not apply to the gate.
 
 The browser is unrestricted by default. Before every task the plugin mirrors
 top-level `approval_mode = "never_ask"` into the isolated `browser/config.toml`
@@ -112,8 +119,12 @@ approvals and foreign dispatches after adoption are excluded. An explicit
 If the user has only ever chosen "This session" in the Codex app, mirror finds nothing to copy; choose "Always" there,
 use `--allow-computer-app`, or answer the forwarded question when a worker asks.
 "Allow for this task" grants the app to that worker's thread until the turn
-ends; "Allow always" adds an explicit entry to the isolated home's list, never to
-`~/.codex`. Details: [Computer Use approvals](computer-use-approvals.md).
+ends; "Allow always (isolated Codex home)" adds an explicit entry to the isolated
+home's list, never to `~/.codex`. Submit only an exact displayed option label,
+its number `1`–`4`, or `call`/`once`/`task`/`always`/`deny`/`no`. Answers are
+trimmed and case-insensitive; exact labels allow a trailing period. Anything
+else, including `yes` or an explanation appended to a choice, denies the request.
+Details: [Computer Use approvals](computer-use-approvals.md#forwarded-approvals-owned-jobs).
 
 ## Browser and computer-use tooling
 
@@ -195,8 +206,10 @@ session store.
 Task dispatch automatically forwards Claude's loaded CLAUDE.md/rules through
 Codex's `developerInstructions`. Only the first `prompt.context` in each Claude
 session can capture managed, user, project and local instruction files, including
-loaded imports; auto-memory entries are excluded, including through symlinked
-configuration or memory directories in the scan fallback. Later contexts are ignored
+loaded imports; auto-memory entries are excluded. The scan fallback resolves
+auto-memory directories and candidate files to real paths, excluding indirect
+aliases even when their names contain no memory-directory component. This also
+covers symlinked configuration and memory directories. Later contexts are ignored
 because this event has no agent attribution. CLAUDE.md edits apply from the next
 Claude session. The forwarded text is capped at 60,000 UTF-16 units,
 including executor framing and omission notes. `duet result <worker> --details`

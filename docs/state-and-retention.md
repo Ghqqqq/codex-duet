@@ -48,6 +48,14 @@ Record format, owner/lease semantics and command output fields are unchanged.
 Once no older release runs anymore, remove a legacy directory by hand only when
 the artifacts its migrated records reference are no longer needed.
 
+Routine lease, cursor and progress updates avoid rereading retained private
+output when the index proves pruning cannot change membership. When private
+records are needed for pruning, a bounded in-process cache reuses unchanged
+records after checking file identity, timestamps and size. The newest-started
+thread anchors and unresolved-turn protections below still apply. Mapping an
+already recorded non-Git workspace root to its state directory needs no Git
+process, including when the root is a symlink with no Git boundary at its real path.
+
 ## Retention
 
 At session start, Duet's detached prewarm child cleans ended job records, session
@@ -77,3 +85,8 @@ Preview with `duet cleanup --dry-run --json`; apply with
 overrides the period for that command. Nothing is removed immediately on job
 completion, so results, continuations and pane history remain available during
 the retention period (subject to the count cap).
+
+Retention reuses parsed private records for one plan/apply cycle, including
+locked revalidation and thread-reference checks. Each reuse checks file identity,
+timestamps and size; changed records are reread, and the cache is released after
+apply. Cleanup still rechecks eligibility under the state lock before deletion.
