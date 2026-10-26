@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { makeTempDir, run } from "./helpers.mjs";
 import { installCuaFixture } from "./cua-config-fixture.mjs";
-import { syncToolConfig, readToolConfig } from "../plugins/codex/scripts/lib/tool-config.mjs";
+import { syncToolConfig, readToolConfig, getToolAvailability } from "../plugins/codex/scripts/lib/tool-config.mjs";
 import { browserOriginSetup, defaultSandboxSetup, ensureBrowserApproval } from "../plugins/codex/scripts/lib/setup-config.mjs";
 
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
@@ -46,6 +46,24 @@ test("codex-app mirrors the template exactly except two home fields, without inv
   assert.equal(applied.backup, null);
   assert.equal(fs.readFileSync(f.destination, "utf8"), preview.append);
   assert.equal(syncToolConfig(f.options).changed, false);
+  assert.equal(getToolAvailability(f.env).cuaRepl, "available");
+  const before = fs.readFileSync(f.destination, "utf8");
+  fs.unlinkSync(f.config.command);
+  assert.equal(getToolAvailability(f.env).cuaRepl, "missing");
+  assert.ok(getToolAvailability(f.env).cuaReplReason);
+  assert.throws(() => syncToolConfig(f.options));
+  assert.equal(fs.readFileSync(f.destination, "utf8"), before);
+  assert.deepEqual(fs.readdirSync(f.env.CODEX_COMPANION_HOME), ["config.toml"]);
+  for (const fault of ["missing-node", "nonexecutable-node", "missing-launcher"]) {
+    const g = fixture();
+    if (fault === "missing-node") fs.unlinkSync(g.config.command);
+    if (fault === "nonexecutable-node") fs.chmodSync(g.config.command, 0o600);
+    if (fault === "missing-launcher") fs.unlinkSync(g.config.args[0]);
+    for (const dryRun of [true, false]) {
+      assert.throws(() => syncToolConfig({ ...g.options, dryRun }));
+      assert.equal(fs.existsSync(g.env.CODEX_COMPANION_HOME), false);
+    }
+  }
 });
 
 test("codex-app discovers the newest numeric cache version and honors an explicit template", () => {

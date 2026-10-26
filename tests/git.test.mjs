@@ -3,7 +3,7 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { collectReviewContext, resolveReviewTarget } from "../plugins/codex/scripts/lib/git.mjs";
+import { collectReviewContext, getWorkingTreeState, resolveReviewTarget } from "../plugins/codex/scripts/lib/git.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 
 test("resolveReviewTarget prefers working tree when repo is dirty", () => {
@@ -17,6 +17,39 @@ test("resolveReviewTarget prefers working tree when repo is dirty", () => {
   const target = resolveReviewTarget(cwd, {});
 
   assert.equal(target.mode, "working-tree");
+
+  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
+  const subdir = path.join(cwd, "src");
+  fs.mkdirSync(subdir);
+  for (let index = 0; index < 40; index += 1) {
+    fs.writeFileSync(path.join(cwd, `new-${index}.txt`), "x".repeat(24000));
+  }
+  assert.deepEqual(resolveReviewTarget(subdir), resolveReviewTarget(cwd));
+  assert.deepEqual(getWorkingTreeState(subdir), getWorkingTreeState(cwd));
+  assert.equal(resolveReviewTarget(subdir).mode, "working-tree");
+  const bounded = collectReviewContext(subdir, resolveReviewTarget(subdir));
+  assert.deepEqual(bounded, collectReviewContext(cwd, resolveReviewTarget(cwd)));
+  assert.ok(bounded.untrackedInlineBytes <= 256 * 1024);
+  assert.equal(bounded.untrackedInlineFiles + bounded.omittedUntracked.length, 40);
+  assert.ok(bounded.omittedUntracked.length > 0);
+  assert.ok(bounded.omittedUntracked.every(file => file.size === 24000));
+  for (let index = 0; index < 40; index += 1) {
+    fs.writeFileSync(path.join(cwd, `new-${index}.txt`), "small");
+  }
+  const countBounded = collectReviewContext(cwd, resolveReviewTarget(cwd));
+  assert.equal(countBounded.untrackedInlineFiles, 32);
+  assert.equal(countBounded.omittedUntracked.length, 8);
+  for (let index = 0; index < 40; index += 1) fs.unlinkSync(path.join(cwd, `new-${index}.txt`));
+
+  run("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd });
+  run("git", ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], { cwd });
+  assert.equal(resolveReviewTarget(subdir).baseRef, "main");
+  run("git", ["branch", "-m", "feature-only"], { cwd });
+  assert.equal(resolveReviewTarget(subdir).baseRef, "origin/main");
+  assert.equal(collectReviewContext(subdir, resolveReviewTarget(subdir)).fileCount, 0);
+  assert.throws(() => resolveReviewTarget(subdir, { base: "missing-base" }));
+  run("git", ["update-ref", "-d", "refs/remotes/origin/main"], { cwd });
+  assert.throws(() => resolveReviewTarget(subdir));
 });
 
 test("resolveReviewTarget falls back to branch diff when repo is clean", () => {

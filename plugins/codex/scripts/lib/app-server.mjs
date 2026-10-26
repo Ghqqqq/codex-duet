@@ -112,9 +112,10 @@ class AppServerClientBase {
    * @template {AppServerMethod} M
    * @param {M} method
    * @param {import("./app-server-protocol").AppServerRequestParams<M>} params
+   * @param {{ timeoutMs?: number }} [options]
    * @returns {Promise<import("./app-server-protocol").AppServerResponse<M>>}
    */
-  request(method, params) {
+  request(method, params, { timeoutMs } = {}) {
     if (this.closed || this.exitResolved) {
       throw this.exitError ?? new Error("codex app-server client is closed.");
     }
@@ -123,10 +124,16 @@ class AppServerClientBase {
     this.nextId += 1;
 
     return new Promise((resolve, reject) => {
+      const timer = timeoutMs === undefined ? null : setTimeout(() => {
+        this.pending.delete(id);
+        reject(Object.assign(new Error(`Codex ${method} probe timed out.`), { code: "ETIMEDOUT" }));
+      }, Math.max(1, timeoutMs));
+      const settle = callback => value => { clearTimeout(timer); callback(value); };
       const threadId = params && typeof params === "object" && "threadId" in params ? params.threadId : null;
       if (method === "turn/start") this.setServerRequestContext(threadId, null);
-      this.pending.set(id, { resolve, reject, method, threadId });
-      this.sendMessage({ id, method, params });
+      this.pending.set(id, { resolve: settle(resolve), reject: settle(reject), method, threadId });
+      try { this.sendMessage({ id, method, params }); }
+      catch (error) { this.pending.delete(id); settle(reject)(error); }
     });
   }
 
@@ -396,6 +403,9 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
 
 export class CodexAppServerClient {
   static async connect(cwd, options = {}) {
+    if (options.connectTimeoutMs !== undefined && options.connectDeadline === undefined) {
+      options = { ...options, connectDeadline: Date.now() + options.connectTimeoutMs };
+    }
     if (options.signal?.aborted) throw new Error("Task interrupted before runtime connection.");
     const began = Date.now();
     resolveIsolatedCodexHome(options.env ?? process.env);
@@ -417,7 +427,14 @@ export class CodexAppServerClient {
     options.onClient?.(client);
     options.onRuntimeEvent?.({ timing: { phase: "brokerConnectSpawn", durationMs: Date.now() - began } });
     const initializeAt = Date.now();
-    try { await client.initialize(); } catch (error) {
+    let connectTimer;
+    try {
+      const initialize = client.initialize();
+      if (options.connectTimeoutMs === undefined) await initialize;
+      else await Promise.race([initialize, new Promise((_, reject) => {
+        connectTimer = setTimeout(() => reject(Object.assign(new Error("Codex initialize probe timed out."), { code: "ETIMEDOUT" })), Math.max(1, options.connectDeadline - Date.now()));
+      })]);
+    } catch (error) {
       await client.close().catch(() => {});
       if (client.transport === "broker" && !options.signal?.aborted &&
           ["BROKER_CONNECTION_CLOSED", "ECONNRESET", "EPIPE", "ENOENT", "ECONNREFUSED"].includes(error.code)) {
@@ -427,7 +444,7 @@ export class CodexAppServerClient {
         return CodexAppServerClient.connect(cwd, { ...options, disableBroker: true });
       }
       throw error;
-    }
+    } finally { clearTimeout(connectTimer); }
     client.startupTimings = { appServerInitialize: Date.now() - initializeAt };
     options.onRuntimeEvent?.({ timing: { phase: client.transport === "broker" ? "brokerHandshake" : "appServerInitialize", durationMs: Date.now() - initializeAt } });
     return client;

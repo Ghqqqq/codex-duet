@@ -1,7 +1,7 @@
 import { redactActivity } from "./activity.mjs";
 import fs from "node:fs";
 import { resolveJobFile } from "./state.mjs";
-import { classifyBrowserBlocker, classifyKnownBlockers, dedupeBlockers } from "./blockers.mjs";
+import { classifyBrowserBlocker, classifyCodexError, classifyKnownBlockers, dedupeBlockers } from "./blockers.mjs";
 
 export { classifyBrowserBlocker };
 
@@ -98,10 +98,11 @@ export function buildWorkerReport(payload, meta = {}) {
   const text = `${payload.rawOutput ?? ""}\n${payload.error ?? ""}`;
   const browserBlocker = classifyBrowserBlocker(text);
   const structured = payload.structured && WORKER_REPORT_STATUSES.includes(payload.structured.status) ? payload.structured : null;
-  // Captured refusals (tool results, declined elicitations) come first; the
-  // final answer's own signatures follow. Either makes a zero-exit turn blocked.
-  const known = dedupeBlockers([...(payload.blockers ?? []), ...classifyKnownBlockers(text)]);
-  const status = payload.status !== 0 ? "failed" : known.length ? "blocked" : structured ? declaredStatus(structured) : classifyWorkerOutcome(payload.rawOutput, payload.status);
+  const runtimeBlocker = payload.status !== 0 ? classifyCodexError(payload.codexErrorInfo, payload.error) : null;
+  // Classified turn failures also block a non-zero turn. Other captured refusals
+  // and final-answer signatures retain their existing zero-exit precedence.
+  const known = dedupeBlockers([...(runtimeBlocker ? [runtimeBlocker] : []), ...(payload.blockers ?? []), ...classifyKnownBlockers(text)]);
+  const status = runtimeBlocker ? "blocked" : payload.status !== 0 ? "failed" : known.length ? "blocked" : structured ? declaredStatus(structured) : classifyWorkerOutcome(payload.rawOutput, payload.status);
   // Blockers Codex declared itself; a declared "blocked" without any entry still
   // names the summary so the parent sees why.
   const declared = structured ? (structured.blockers.length || status !== "blocked" ? structured.blockers : [{ code: "reported_blocked", message: structured.summary || "Codex reported blocked without details." }]) : [];
@@ -131,7 +132,8 @@ export function buildWorkerReport(payload, meta = {}) {
     jobId: meta.jobId ?? null,
     threadId: payload.threadId ?? null,
     turnId: payload.turnId ?? null,
-    exitCode: payload.status,
+    exitCode: runtimeBlocker ? 2 : payload.status,
+    ...(runtimeBlocker && payload.error ? { error: redactActivity(payload.error) } : {}),
     sandbox: payload.sandbox ?? "unknown",
     approvalPolicy: payload.approvalPolicy ?? "unknown",
     // Run settings, so the parent can confirm e.g. that --fast took effect.

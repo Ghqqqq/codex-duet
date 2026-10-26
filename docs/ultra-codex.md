@@ -15,16 +15,16 @@ missing, Claude runs `duet result <worker>`; full evidence and handles are in
 
 Ultracode is a session setting (`/effort ultracode`), and so is ultra-codex
 mode. `ultra-codex on [--quick|--thorough] [--max-workers <n>]` writes a small
-JSON record to `<isolated home>/duet/state/<workspace>/ultra-codex/<session
-id>.json`, keyed by the Claude session id that the SessionStart hook exports as
+JSON record to `<isolated home>/duet/ultra-codex/<session id>.json`, shared across
+workspaces and keyed by the Claude session id that the SessionStart hook exports as
 `CODEX_COMPANION_SESSION_ID`. While the record exists, the plugin's
 `UserPromptSubmit` hook (`scripts/ultra-codex-hook.mjs`, about 70 ms) appends a
 one-line versioned reminder to every prompt (shown with the repository-relative
 protocol path):
 
-> Ultra-codex mode on (thorough, max 4 workers). Apply protocol va8498869 to
+> Ultra-codex mode on (thorough, max 4 workers). Apply protocol v554ef268 to
 > substantive tasks; re-read plugins/codex/prompts/ultra-codex-protocol.md only if
-> va8498869 is not in your context.
+> v554ef268 is not in your context.
 
 Control-only invocations (`on`, `off`, `status` or no arguments) do not load the
 protocol; task invocations, including `on` with task text, use Read on its path.
@@ -32,6 +32,10 @@ The reminder requests a re-read only when that content version is absent from
 context, so the per-prompt cost is the reminder. The hook is silent for other
 sessions in the same repository, for prompts that are the command itself, when
 no session id is present, and on any error.
+On/off/status, reminders and SessionEnd all use this session-wide record, so
+changing repositories does not lose the mode or leave another workspace armed.
+Scale and `--max-workers` remain instructions for Claude's orchestration;
+the runtime does not enforce a worker scheduler limit.
 
 Three things turn the mode off:
 
@@ -40,9 +44,13 @@ Three things turn the mode off:
   request) and tells Claude that the orchestration has ended.
 - The session's end (`SessionEnd` hook) and a fresh start or `/clear` for the
   same session id (`SessionStart` with `source` other than `resume`/`compact`).
-  `claude --resume` keeps the mode.
+  `claude --resume` and compaction keep the current session mode. Workspace-keyed
+  legacy mode files are discarded, not adopted; after upgrading with only a
+  legacy record, enable the mode again.
 - Records older than 30 days are pruned at the next `SessionStart`, so a
-  session that died without `SessionEnd` cannot leave the mode armed.
+  session that died without `SessionEnd` cannot leave the mode armed. This fixed
+  policy covers global and legacy workspace mode directories and is separate
+  from configurable job retention.
 
 Without the mode, the command is one-shot: `/codex:ultra-codex <task>`
 orchestrates that task and the protocol's own scope clause ends the
@@ -127,9 +135,9 @@ read/submission; never delay questions for a batch or prewrite verdicts.
 
 The read-only `codex-live` pane shows prompts, messages, commands, file changes,
 tool calls, plans and questions at no Claude token cost. Resolved `ask_parent`
-answers are matched by call ID; Codex 0.146.0 omits that ID for custom MCP servers
-on resumed threads, so those answers are not shown. New jobs request a pane;
-`/codex-live` opens it at any width. It never starts, answers or cancels jobs.
+answers are matched by Codex's `_meta.callId`, preserved by the MCP bridge on
+fresh and resumed threads; missing/invalid call IDs remain unmatched. New jobs
+request a pane; `/codex-live` opens it at any width. It never starts, answers or cancels jobs.
 
 The Haiku `codex:codex-worker` remains a fallback when native dispatch and
 background Bash are unavailable, or for a requested forwarding-agent transcript.
@@ -183,7 +191,11 @@ Claude's own evidence.
 After writing task-level criteria, Claude runs `duet journal
 start` with stdin JSON containing `goal` and `criteria`. Tasks in that Claude
 session link automatically across workspaces and worktrees, preserving the exact
-worker brief and final compact report. Claude records each acceptance with `journal add verdict`,
+worker brief and final compact report. `task --run <id|none>` overrides linkage
+for one dispatch; follow-ups do not inherit it. An explicit run must be open in
+the same isolated home, including across workspaces; invalid/closed runs fail
+before a worker starts, and `none` skips linkage.
+Claude records each acceptance with `journal add verdict`,
 consequential decisions and accepted assumptions with `journal add decision`,
 then runs `journal validate` before `journal close` (`passed`, `blocked` or
 `abandoned`). A passed close refuses unresolved issues with exit 2 and leaves
@@ -193,6 +205,13 @@ When a fresh worker resolves REWORK or REASSIGN, its verified `ACCEPT` or
 Unknown IDs are rejected. Accepted `followUpOf`/`continuationOf` descendants also
 resolve earlier rejections; same-thread follow-ups can discover that predecessor
 across worktrees. A later rejection reopens the work.
+
+Keep the current run by default. Only for an unrelated task the user starts
+mid-run, `journal start --switch` leaves the old run open, selects the new one
+and returns `previousRunId`. When the user drops criteria, `journal add withdraw`
+takes `{"criteria":["..."],"reason":"..."}` with known exact criterion text.
+Withdrawn criteria show their reason and no longer cause unchecked/unmet
+issues; `add criteria` with the same text reactivates them.
 
 After compaction or a resumed session, `journal show` recovers the goal,
 criteria, latest worker verdicts, decisions and open items. SessionStart adds a

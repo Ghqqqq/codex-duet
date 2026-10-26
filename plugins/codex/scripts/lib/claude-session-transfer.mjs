@@ -7,29 +7,37 @@ import { ensureAbsolutePath } from "./fs.mjs";
 export const TRANSCRIPT_PATH_ENV = "CODEX_COMPANION_TRANSCRIPT_PATH";
 export const IMPORT_MAX_BYTES_ENV = "CODEX_COMPANION_IMPORT_MAX_BYTES";
 const DEFAULT_IMPORT_MAX_BYTES = 20 * 1024 * 1024;
-const projectsDirectory = (env = process.env) => path.join(env.HOME || env.USERPROFILE || os.homedir(), ".claude", "projects");
+// Match retention's configured-profile precedence; relative config roots are
+// not profiles and must not make instruction/import selection depend on cwd.
+export function resolveClaudeConfigRoot(env = process.env) {
+  return env.CLAUDE_CONFIG_DIR && path.isAbsolute(env.CLAUDE_CONFIG_DIR)
+    ? path.resolve(env.CLAUDE_CONFIG_DIR)
+    : path.join(env.HOME || env.USERPROFILE || os.homedir(), ".claude");
+}
+const projectsDirectory = (env = process.env) => path.join(resolveClaudeConfigRoot(env), "projects");
 const IMPORT_MAX_AGE_MS = 60 * 60 * 1000;
 const IMPORT_MARKER = ".duet-import.json";
 const importMarker = directory => JSON.stringify({ version: 1, kind: "duet-claude-import", directory: path.basename(directory) });
 const sameFile = (left, right) => left.dev === right.dev && left.ino === right.ino;
 
-function resolveUserPath(cwd, value) {
+function resolveUserPath(cwd, value, env) {
+  const home = env.HOME || env.USERPROFILE || os.homedir();
   if (value === "~") {
-    return os.homedir();
+    return home;
   }
   if (String(value).startsWith("~/")) {
-    return path.join(os.homedir(), String(value).slice(2));
+    return path.join(home, String(value).slice(2));
   }
   return ensureAbsolutePath(cwd, value);
 }
 
-function validateClaudeSessionPath(cwd, options = {}) {
-  const requestedPath = options.source || process.env[TRANSCRIPT_PATH_ENV];
+function validateClaudeSessionPath(cwd, options = {}, env = process.env) {
+  const requestedPath = options.source || env[TRANSCRIPT_PATH_ENV];
   if (!requestedPath) {
     throw new Error("Could not identify the current Claude transcript. Retry with --source <path-to-claude-jsonl>.");
   }
 
-  const sourcePath = resolveUserPath(cwd, requestedPath);
+  const sourcePath = resolveUserPath(cwd, requestedPath, env);
   if (path.extname(sourcePath) !== ".jsonl") {
     throw new Error(`Claude session source must be a JSONL file: ${sourcePath}`);
   }
@@ -38,22 +46,22 @@ function validateClaudeSessionPath(cwd, options = {}) {
   let projects;
   try {
     source = fs.realpathSync(sourcePath);
-    projects = fs.realpathSync(projectsDirectory());
+    projects = fs.realpathSync(projectsDirectory(env));
   } catch {
     throw new Error(`Claude session file not found: ${sourcePath}`);
   }
   const relative = path.relative(projects, source);
   if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error(`Codex can import Claude sessions only from ${projectsDirectory()}: ${source}`);
+    throw new Error(`Codex can import Claude sessions only from ${projectsDirectory(env)}: ${source}`);
   }
   const stat = fs.lstatSync(source);
   if (!stat.isFile()) throw new Error(`Claude session source must be a regular file: ${source}`);
-  if (fs.realpathSync(source) !== source || fs.realpathSync(projectsDirectory()) !== projects) throw new Error("Claude session source changed during validation.");
+  if (fs.realpathSync(source) !== source || fs.realpathSync(projectsDirectory(env)) !== projects) throw new Error("Claude session source changed during validation.");
   return { source, projects, stat };
 }
 
-export function resolveClaudeSessionPath(cwd, options = {}) {
-  return validateClaudeSessionPath(cwd, options).source;
+export function resolveClaudeSessionPath(cwd, options = {}, env = process.env) {
+  return validateClaudeSessionPath(cwd, options, env).source;
 }
 
 function inspectImportDirectory(directory, cutoff) {
@@ -126,10 +134,10 @@ export function sweepClaudeImports({ now = Date.now(), env = process.env, files 
 // Stage inside the importer's accepted projects tree, in a new owner-only
 // directory per import. A unique source path also prevents ledger reuse by a
 // second --fork of unchanged content.
-export function snapshotClaudeSession(cwd, sourcePath) {
-  sweepClaudeImports();
-  const { source, projects, stat: validated } = validateClaudeSessionPath(cwd, { source: sourcePath });
-  const maxBytes = Number(process.env[IMPORT_MAX_BYTES_ENV] ?? DEFAULT_IMPORT_MAX_BYTES);
+export function snapshotClaudeSession(cwd, sourcePath, env = process.env) {
+  sweepClaudeImports({ env });
+  const { source, projects, stat: validated } = validateClaudeSessionPath(cwd, { source: sourcePath }, env);
+  const maxBytes = Number(env[IMPORT_MAX_BYTES_ENV] ?? DEFAULT_IMPORT_MAX_BYTES);
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
     throw new Error(`${IMPORT_MAX_BYTES_ENV} must be a positive integer byte limit.`);
   }
@@ -139,7 +147,7 @@ export function snapshotClaudeSession(cwd, sourcePath) {
     const stat = fs.fstatSync(input);
     if (!stat.isFile()) throw new Error(`Claude session source must be a regular file: ${source}`);
     if (!sameFile(stat, validated) || !sameFile(stat, fs.lstatSync(source)) ||
-        fs.realpathSync(source) !== source || fs.realpathSync(projectsDirectory()) !== projects) {
+        fs.realpathSync(source) !== source || fs.realpathSync(projectsDirectory(env)) !== projects) {
       throw new Error("Claude session source changed after validation; import refused.");
     }
     if (stat.size > maxBytes) {

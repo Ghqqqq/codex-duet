@@ -624,6 +624,15 @@ async function handleLine(line) {
         emitUsage({ inputTokens: 50, cachedInputTokens: 10, cacheWriteInputTokens: 0,
           outputTokens: 10, reasoningOutputTokens: 4, totalTokens: 60 });
 
+        if (BEHAVIOR.startsWith("turn-error:")) {
+          const { error = null, notification = null, status = "failed" } = JSON.parse(BEHAVIOR.slice("turn-error:".length));
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          if (notification) send({ method: "error", params: { threadId: thread.id, turnId, error: notification, willRetry: status === "completed" } });
+          if (status === "completed") emitTurnCompleted(thread.id, turnId, [{ completed: { type: "agentMessage", id: "fixture-recovered", text: "Completed the fixture task.", phase: "final_answer" } }]);
+          else send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, status, error) } });
+          break;
+        }
+
         if (BEHAVIOR === "large-jsonl") {
           emitTurnCompleted(thread.id, turnId, { completed: { type: "agentMessage", id: "large-message", text: prompt, phase: "final_answer" } });
           break;

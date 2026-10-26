@@ -4,7 +4,7 @@
 export const COMMAND_ALIASES = { C: "cwd" };
 export const COMMAND_OPTIONS = {
   task: {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "thread", "to", "continue", "source", "sandbox", "lease-sec", "question-timeout-sec", "owner", "timeout-sec", "feed-limit"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "thread", "to", "continue", "run", "source", "sandbox", "lease-sec", "question-timeout-sec", "owner", "timeout-sec", "feed-limit"],
     // Companion-only values: the permission hook does not auto-approve these.
     internalValueOptions: ["session-cwd", "dispatch-nonce", "tool-use-id"],
     repeatableOptions: ["approve-browser-origin", "approve-computer-app"],

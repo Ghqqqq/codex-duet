@@ -76,6 +76,15 @@ runs it in the session.
 and a ChatGPT plan (including Free) or an OpenAI API key. Usage counts toward
 your normal Codex limits.
 
+The packaged Codex plugin declares ES modules explicitly, including for Node
+installations without automatic module detection. Setup uses a 45-second
+readiness deadline to guard against hangs; standalone availability probes use
+a 60-second overall deadline. Setup's deadline also covers optional PATH Codex
+diagnostics when a pinned runtime is broken; each probe is capped at 20 seconds
+and the remaining budget. These are safeguards, not expected startup times.
+Shutdown may add overhead; a Codex probe timeout is reported as unreachable,
+without suggesting another login.
+
 > Installing needs no GitHub credentials.
 > Upgrading from `codex@codex-isolated-local`? Uninstall it, remove that
 > marketplace and install `codex@duet`. Job history is
@@ -106,15 +115,22 @@ For a substantial task, hand the whole orchestration over:
 | `/codex:transfer` | Continue the current Claude conversation directly in Codex |
 | `/codex:setup` | Check the runtime; opt into browser/desktop tools and other settings |
 
-Claude prefers `codex:codex-native` when the first accepted non-command person
-prompt after registration reports native workers ready; otherwise it uses
-background `duet task`. Continue by sending the native agent a message,
+Claude prefers `codex:codex-native` once the native adapter has registered: the
+first accepted non-command person prompt reports native workers ready, and every
+request that offers the Agent tool carries a `codex:native-dispatch` system-prompt
+section, which survives compaction. Background `duet task` is the fallback for an
+unavailable adapter, per-call overrides the `DUET:` line rejects, and Bash-launched
+workers; browser and Computer Use work run natively. Continue by sending the native agent a message,
 or use `duet task --to <worker>` with a new brief. A pending question uses
 SendMessage for native agents. For Bash workers, use the report's `next` command
 verbatim, or `duet answer <worker> --question '<questionId>'` with the ID you saw
 and the answer on stdin. A bare `duet answer <worker>` answers whatever question
 is pending now, which may be newer. Native SendMessage already pins the displayed
-question; its answer path is unchanged. Both paths continue the same turn.
+question. A late native answer returns the old job with a notice when no
+unanswered pending slot remains or the job has ended; send a subsequent new
+brief to start work. A still-present slot past its deadline instead has its
+answer refused by the companion. Both answer paths continue the same turn
+while the displayed question remains answerable.
 
 Every command and flag: [docs/commands.md](docs/commands.md).
 
@@ -143,13 +159,29 @@ DUET_TASK
 with the completion notification. Only if missing, run `duet result <worker>`.
 The report separates captured `checks.ran` from `checks.claimed`, and supplies
 `next` and `details` commands. `duet result <worker> --details` shows full evidence,
-settings, handles and artifact paths. Each worker gets a name (Ada, Noether,
-Turing, …) reused by `--to` follow-ups. → [Direct mode and worker lifecycle](docs/direct-mode.md)
+settings, handles and artifact paths, including complete review findings.
+Busy-thread reports point to the owner's question or recovery action, while
+compact blockers retain the relevant app/tab/session or safe approval identifiers.
+Each worker gets a name (Ada, Noether, Turing, …) from a weighted pool of 1,089,
+reused by `--to` follow-ups. → [Direct mode and worker lifecycle](docs/direct-mode.md)
+
+If a tracked job ends without an emitted report or live owner wait, the next
+typed prompt can give Claude one recovery line for up to five jobs, after a
+10-second grace period. Each job is noticed once; pre-1.4.4 jobs are excluded.
+Lookup failures leave the prompt unchanged. → [Notice limits](docs/worker-lifecycle.md#unreported-endings)
+
+Typed provider refusals, usage/session-budget limits, full context windows and
+missing runtime authorization produce actionable `blocked` reports (exit 2);
+other failed turns remain `failed` (exit 1). → [Runtime blockers](docs/worker-operations.md#direct-mode)
 
 Claude's loaded CLAUDE.md/rules are forwarded automatically; opt out on a fresh
 task with `--no-claude-md` or `CODEX_COMPANION_CLAUDE_MD=0`. Without the loaded
 inventory, forwarding uses an approximate scan that excludes auto-memory by
-real path, including indirect symlink aliases. `duet task --fork` explicitly
+real path, including indirect symlink aliases. An absolute `CLAUDE_CONFIG_DIR`
+selects the profile for that scan and transcript imports; otherwise they use
+`~/.claude`. When another profile is selected, the fallback ancestor scan skips
+the unselected `HOME/.claude`, including for workspaces under HOME.
+`duet task --fork` explicitly
 imports the current conversation into a new thread before running the brief,
 labelled “imported Claude conversation (fidelity not verified)”. → [Context configuration](docs/configuration.md#claude-instructions-and-conversation-imports)
 
@@ -164,8 +196,20 @@ whether it is shown at the current width. `/codex-live` opens and focuses it at 
 Follow-ups on the same Codex thread stay in one row, with retained turns in one
 continuous transcript; new jobs preserve your selection and scroll position.
 Refused follow-ups stay in history without hiding the live owner's status or
-question. Unresolved turns show attention, and **Clear finished** keeps any
-conversation with an active or unresolved turn.
+question. Active questions say **Question for Claude**; `needs_input` and
+`blocked` say **Needs your attention** in different colours; unresolved turns
+say **Outcome unknown**. Non-question waits keep **Waiting for Claude**.
+The status line counts questions, attention and unknown outcomes separately.
+**Clear finished** keeps any
+conversation with an active or unresolved turn. Up to 40 uncleared
+blocked/needs-input sessions receive additional history protection, subject to
+the state budget; attention counts include omitted terminal-attention sessions.
+Feeds show only the newest 500 stored activity events per job, subject to the
+pane's tighter display limits; tool-use totals survive that window. A selected
+name ending in `-N` has a hint explaining name reuse after the session exhausted
+the pool. Hidden finished jobs still follow your Duet cleanup settings. Narrow panes retain
+navigation, discovery failures show a warning, and damaged pane caches are
+rediscovered without rewriting job records.
 `/tasks` shows compact progress with outcomes first. Neither costs Claude tokens.
 
 <p align="center">
@@ -181,12 +225,19 @@ acceptance protocol (scope check, diff review, criterion → evidence → verdic
 then `ACCEPT` / `ACCEPT WITH GLUE` / `REWORK` / `REASSIGN`). →
 [docs/ultra-codex.md](docs/ultra-codex.md)
 
+Session mode follows the Claude session across repositories; other sessions keep
+their own mode. Legacy workspace-keyed mode records require enabling it again.
+
 ### Run journal
 
 Each orchestrated task keeps a journal in the isolated home. It records the goal
 and acceptance criteria, every worker's brief and report, Claude's verdicts and
 decisions, and the final judgment. After compaction or on resume, Claude runs
 `journal show` to recover it; `journal validate` must pass before a passed close.
+Use `journal add withdraw` with exact criterion text and a reason when the user
+drops a requirement. For an unrelated task the user starts mid-run, `journal
+start --switch` leaves the old run open and selects a new one. `duet task --run
+<id|none>` overrides linkage for one dispatch; follow-ups do not inherit it.
 → [docs/run-journal.md](docs/run-journal.md)
 
 ### Browser and desktop work
@@ -199,6 +250,27 @@ displayed option (`Allow this call`, `Allow for this task`, `Allow always
 `call`/`once`/`task`/`always`/`deny`/`no`. Answers are trimmed and case-insensitive;
 exact labels allow a trailing period. Anything else, including `yes` or a
 qualified reply, denies the request. → [Computer Use approvals](docs/computer-use-approvals.md#forwarded-approvals-owned-jobs)
+
+Denied or unsupported server requests force a blocked report even when the
+worker claims completion. Codex App tool sync validates its executable and
+launcher before writing; optional tool availability remains separate from core
+runtime readiness.
+
+### Reviews and history
+
+Reviews cover the repository from any subdirectory. Slash commands forward raw
+arguments unchanged; the companion reads the option prefix and preserves the
+focus text and order, with exact trailing execution flags still treated as
+options. Explicit `--` makes its entire tail literal. Reviews bound collected
+untracked content and fail on invalid/empty output. Full findings remain
+available through result details and artifacts. Status lists
+apply history limits within the selected session and disclose omitted records.
+Cleanup and thread inventory use a shared read-only check to exempt proven-inert
+index-less workspaces from blocking other work. The check uses the retention
+cutoff for cleanup and a 24-hour minimum for inventory; directories without
+private job files are exempt. Classification moves or deletes nothing. Cleanup lists
+inert workspaces with a manual removal hint, valid only while inactive. See
+[commands](docs/commands.md) and [retention](docs/state-and-retention.md).
 
 ## Defaults
 

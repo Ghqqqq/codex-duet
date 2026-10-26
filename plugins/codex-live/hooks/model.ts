@@ -7,6 +7,45 @@ const object = (value: unknown): Record<string, unknown> =>
 const string = (value: unknown): string => typeof value === 'string' ? value : '';
 const number = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+const validBlockerCode = (value: unknown): value is string =>
+  typeof value === 'string' && /^[a-z0-9_.:-]{1,64}$/i.test(value);
+
+// Persisted atoms can contain valid JSON with an invalid shape. Check every
+// nested collection consumed by rendering/polling before trusting the cache.
+export function validView(value: unknown): value is CodexLiveState {
+  const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const text = (v: unknown) => typeof v === 'string';
+  const finite = (v: unknown) => number(v) !== undefined;
+  const bool = (v: unknown) => typeof v === 'boolean';
+  const list = (v: unknown, check: (item: unknown) => boolean) => Array.isArray(v) && v.every(check);
+  const strings = (v: unknown) => list(v, text);
+  const optional = (v: Record<string, unknown>, keys: string[], check: (item: unknown) => boolean) =>
+    keys.every(key => v[key] === undefined || check(v[key]));
+  const dictionary = (v: unknown, check: (item: unknown) => boolean) => record(v) && Object.values(v).every(check);
+  const event = (v: unknown) => record(v) && finite(v.seq) && text(v.type) &&
+    optional(v, ['at', 'status', 'lifecycle', 'text', 'body', 'command', 'path', 'kind', 'server', 'tool', 'questionText', 'answer'], text) &&
+    optional(v, ['exitCode', 'durationMs', 'added', 'removed'], finite) && optional(v, ['steps', 'statuses'], strings);
+  const job = (v: unknown) => record(v) &&
+    ['id', 'label', 'status', 'createdAt', 'startedAt', 'completedAt', 'model', 'effort', 'sandbox', 'finalStatus'].every(key => text(v[key])) &&
+    ['active', 'finished', 'fast', 'detailsUnavailable'].every(key => bool(v[key])) &&
+    optional(v, ['threadId', 'agentName', 'workspaceRoot', 'prompt', 'currentOperation', 'lastActivityAt'], text) &&
+    optional(v, ['blockerCode'], validBlockerCode) &&
+    optional(v, ['unresolved', 'notStarted', 'promptReport', 'detailsLoaded', 'detailsOmitted'], bool) &&
+    optional(v, ['toolUses', 'lastUpdateMs'], finite) && (v.fileCount === null || finite(v.fileCount)) &&
+    (v.question === null || record(v.question) && text(v.question.text) && strings(v.question.options) &&
+      optional(v.question, ['createdAt'], text) && optional(v.question, ['expiresAt'], finite)) &&
+    list(v.events, event);
+  const feed = (v: unknown) => record(v) && finite(v.feedOffset) && bool(v.following) && finite(v.seenLines) &&
+    optional(v, ['columns', 'rows'], finite) && optional(v, ['surface'], text) && optional(v, ['expandedPromptIds'], strings) &&
+    optional(v, ['anchor'], a => record(a) && text(a.source) && finite(a.offset)) &&
+    optional(v, ['seenItems'], items => dictionary(items, item => record(item) && finite(item.length) && finite(item.hash)));
+  return record(value) && list(value.jobs, job) && (value.selectedId === null || text(value.selectedId)) && finite(value.nowMs) &&
+    optional(value, ['sessionId', 'discoveryWarning'], text) && optional(value, ['jobsExpanded'], bool) &&
+    optional(value, ['hiddenFinishedBefore', 'spinnerTick', 'historyPage', 'attentionOmitted'], finite) &&
+    optional(value, ['newSessionIds', 'viewedSessionIds', 'hiddenJobIds', 'recentEndedIds', 'seenJobIds', 'autoOpenedJobIds'], strings) &&
+    optional(value, ['turnCounts', 'firstEndedAtMs'], v => dictionary(v, finite)) &&
+    optional(value, ['feeds'], v => dictionary(v, feed));
+}
 
 // Display text only: discard terminal escapes, control codes and bidi controls.
 export function cleanBody(value: unknown): string {
@@ -144,12 +183,18 @@ function summaryFields(job: Pick<CodexLiveJob, 'currentOperation' | 'lastActivit
   return { currentOperation: limitChars(clean(job.currentOperation), 60), lastActivityAt: isoTime(job.lastActivityAt) };
 }
 
-export function jobView(value: unknown, marker: CodexLiveMarker, details = true): CodexLiveJob {
+export function expireQuestion(job: CodexLiveJob, nowMs: number): CodexLiveJob {
+  return job.question?.expiresAt !== undefined && nowMs >= job.question.expiresAt ? { ...job, question: null } : job;
+}
+
+export function jobView(value: unknown, marker: CodexLiveMarker, details = true, nowMs = Date.now()): CodexLiveJob {
   const job = object(value);
   if (job.id !== marker.jobId || !string(job.status)) throw new Error('Invalid job');
   const request = object(job.request);
   const report = object(job.report);
   const result = object(job.result);
+  const blockers = Array.isArray(report.blockers) && report.blockers.length ? report.blockers : result.blockers;
+  const blockerCode = clean(object(Array.isArray(blockers) ? blockers[0] : undefined).code);
   const unresolved = unresolvedTask(job);
   const notStarted = [object(job.recovery).turnStatus, result.turnStatus].includes('notStarted') ||
     (job.status === 'blocked' || report.status === 'blocked') && ![job.turnId, result.turnId, report.turnId].some(Boolean);
@@ -159,8 +204,11 @@ export function jobView(value: unknown, marker: CodexLiveMarker, details = true)
   // Companion questions carry expiry + timeout rather than a creation timestamp.
   const questionTime = isoTime(pending.createdAt) ?? (number(pending.expiresAt) === undefined ? undefined
     : isoTime(number(pending.expiresAt)! - (number(job.questionTimeoutSec) ?? 900) * 1000));
-  const question = active && typeof pending.text === 'string' && pending.answer === undefined
-    ? { ...(questionTime ? { createdAt: questionTime } : {}), text: limitChars(clean(pending.text), 2000), options: Array.isArray(pending.options)
+  // Match the companion's comparison: null is zero, absent/invalid is NaN.
+  const deadline = Number(pending.expiresAt), expiresAt = number(deadline);
+  const question = active && typeof pending.text === 'string' && pending.answer === undefined && !(deadline <= nowMs)
+    ? { ...(questionTime ? { createdAt: questionTime } : {}), ...(expiresAt === undefined ? {} : { expiresAt }),
+      text: limitChars(clean(pending.text), 2000), options: Array.isArray(pending.options)
       ? pending.options.map(option => limitChars(clean(typeof option === 'string' ? option :
         object(option).label ?? object(option).text), 300)).slice(0, 20) : [] } : null;
   const activity = Array.isArray(job.activity) ? job.activity : [];
@@ -204,11 +252,13 @@ export function jobView(value: unknown, marker: CodexLiveMarker, details = true)
     sandbox: limitChars(clean(job.sandbox), 100), workspaceRoot: marker.workspaceRoot,
     ...summaryFields({ currentOperation, lastActivityAt: string(latest.at) }),
     question, finalStatus: clean(report.status) || status,
+    ...(validBlockerCode(blockerCode) ? { blockerCode } : {}),
     ...(details && typeof request.prompt === 'string'
       ? { prompt: limitChars(cleanBody(request.prompt), 20_000), promptReport: request.report === true } : {}),
     fileCount: Array.isArray(report.touchedFiles) ? report.touchedFiles.length : null,
     events: details ? events : [], detailsLoaded: details,
-    toolUses: paired.filter(event => ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall'].includes(event.type)).length,
+    toolUses: number(object(job.activityTotals).toolUses)
+      ?? paired.filter(event => ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall'].includes(event.type)).length,
     detailsUnavailable: false,
   };
 }
@@ -253,18 +303,37 @@ export function attentionOrder(a: CodexLiveJob, b: CodexLiveJob): number {
   return time(a) - time(b) || a.id.localeCompare(b.id);
 }
 
-export function statusLine(jobs: readonly CodexLiveJob[]): string | undefined {
+export function attentionCounts(jobs: readonly CodexLiveJob[], attentionOmitted = 0) {
+  // Active questions and unresolved sessions are never evicted. Omissions are
+  // terminal attention beyond the retention cap or serialized state budget.
+  const counts = { question: 0, blocked: attentionOmitted, unresolved: 0 };
+  for (const job of groupedSessions(jobs)) {
+    const kind = attention(job);
+    if (kind) counts[kind]++;
+  }
+  return counts;
+}
+
+export function reusedAgentName(job: Pick<CodexLiveJob, 'agentName'>): boolean {
+  return /-\d+$/.test(job.agentName ?? '');
+}
+
+export function statusLine(jobs: readonly CodexLiveJob[], attentionOmitted = 0): string | undefined {
+  const counts = attentionCounts(jobs, attentionOmitted);
   jobs = groupedSessions(jobs);
   const waiting = jobs.filter(job => attention(job));
   const running = jobs.filter(job => jobLifecycle(job).active && job.status === 'running' && !job.question).length;
   const queued = jobs.filter(job => jobLifecycle(job).active && job.status === 'queued' && !job.question).length;
   const otherWaiting = jobs.filter(job => jobLifecycle(job).active && job.status === 'waiting' && !job.question).length;
-  const needsYou = waiting.length === 1 ? `${waiting[0]!.agentName || '1'} waiting for you`
-    : waiting.length ? `${waiting.length} waiting for you` : '';
-  const parts = [needsYou, running ? `${running} running` : '', queued ? `${queued} queued` : '',
-    otherWaiting ? `${otherWaiting} waiting for answer` : ''].filter(Boolean);
+  const parts = [counts.question ? `${counts.question} ${counts.question === 1 ? 'question' : 'questions'} for Claude` : '',
+    counts.blocked ? `${counts.blocked} needs your attention` : '',
+    counts.unresolved ? `${counts.unresolved} outcome unknown` : '',
+    running ? `${running} running` : '', queued ? `${queued} queued` : '',
+    otherWaiting ? `${otherWaiting} waiting for answer` : '', attentionOmitted
+      ? `${attentionOmitted} older attention sessions omitted · attention cap ${ATTENTION_SESSION_LIMIT}, subject to state budget` : ''].filter(Boolean);
   const active = jobs.filter(job => jobLifecycle(job).active);
-  const name = !waiting.length && active.length === 1 ? active[0]?.agentName : undefined;
+  const name = active.length === 1 ? active[0]?.agentName
+    : !active.length && waiting.length === 1 && !attentionOmitted ? waiting[0]?.agentName : undefined;
   return parts.length ? `${name || 'Codex'} · ${parts.join(' · ')}` : undefined;
 }
 
@@ -303,6 +372,8 @@ export function groupedSessions(jobs: readonly CodexLiveJob[], turnCounts: Reado
 
 export const TURN_LIMIT = 20;
 export const DETAIL_TURN_LIMIT = 5;
+// Additional terminal attention protection, below the existing state ceiling.
+export const ATTENTION_SESSION_LIMIT = 40;
 
 export function retainedTurns(session: CodexLiveSession): CodexLiveJob[] {
   const latest = session.turns.at(-1)!;
@@ -335,6 +406,7 @@ export function turnKey(key: string, jobId: string): string {
 // Old views used job IDs for selection/feeds and unqualified event anchors.
 // Normalize at read as well as write time, so the first render needs no poll.
 export function normalizeSessions(state: CodexLiveState): CodexLiveState {
+  state = { ...state, jobs: state.jobs.map(job => expireQuestion(job, state.nowMs)) };
   const sessions = groupedSessions(state.jobs);
   const selectedId = sessionForId(sessions, state.selectedId)?.id ?? state.selectedId;
   const viewedSessionIds = [...new Set([
@@ -395,7 +467,7 @@ export function clearFinished(state: CodexLiveState, nowMs: number): CodexLiveSt
     b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
   const selectedId = sessionForId(jobs, state.selectedId)?.id
     ?? jobs.find(job => jobLifecycle(job).active)?.id ?? jobs[0]?.id ?? null;
-  return { ...cleared, selectedId, historyPage: 0 };
+  return { ...cleared, selectedId, historyPage: 0, attentionOmitted: 0 };
 }
 
 // Header-only summaries are the only information retained for unselected jobs.
@@ -405,7 +477,7 @@ export function jobSummary(job: CodexLiveJob): CodexLiveJob {
     prompt: undefined, promptReport: undefined,
     toolUses: job.toolUses ?? job.events.filter(event => ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall'].includes(event.type)).length,
     question: lifecycle.active && job.question ? { text: questionExcerpt(job.question.text), options: [],
-      createdAt: isoTime(job.question.createdAt) } : null };
+      createdAt: isoTime(job.question.createdAt), ...(job.question.expiresAt === undefined ? {} : { expiresAt: job.question.expiresAt }) } : null };
 }
 
 export function boundState(state: CodexLiveState): CodexLiveState {
@@ -489,14 +561,19 @@ export function fitState(state: CodexLiveState): CodexLiveState {
     if (size < 899_000) break;
     remove(job);
   }
-  // Then discard whole finished, unselected sessions, oldest first.
-  for (const session of sessions.sort(oldestJob)) {
+  // Ordinary finished history yields before attention; if the byte ceiling
+  // still requires eviction, keep the newest attention and count the omission.
+  let attentionOmitted = state.attentionOmitted ?? 0;
+  const visible = new Set(visibleSessions(state).map(session => session.id));
+  const needsAttention = (session: CodexLiveSession) => visible.has(session.id) && !!attention(session);
+  for (const session of sessions.sort((a, b) => Number(needsAttention(a)) - Number(needsAttention(b)) || oldestJob(a, b))) {
     if (size < 899_000) break;
     if (session.id === state.selectedId || !session.finished || session.turns.some(job => jobLifecycle(job).active || job.unresolved)) continue;
     for (const job of session.turns) remove(job);
+    if (needsAttention(session)) attentionOmitted++;
   }
   const jobs = state.jobs.filter(job => !removed.has(job.id));
-  const result = trim({ ...state, jobs });
+  const result = trim({ ...state, jobs, attentionOmitted });
   if (JSON.stringify(result).length >= 900_000) throw new Error('View exceeds the 900,000 character budget');
   return result;
 }

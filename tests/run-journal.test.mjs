@@ -3,9 +3,9 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { makeTempDir, initGitRepo, run, requireLocalSockets } from "./helpers.mjs";
+import { makeTempDir, initGitRepo, run, requireLocalSockets, waitForCondition } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { resolveStateDir, resolveStateRoot } from "../plugins/codex/scripts/lib/state.mjs";
+import { resolveStateDir, resolveStateRoot, unresolvedTask } from "../plugins/codex/scripts/lib/state.mjs";
 import { linkJournalJob, finishJournalJob, validateRun } from "../plugins/codex/scripts/lib/run-journal.mjs";
 import { planRetention, applyRetention, runAutomaticRetention } from "../plugins/codex/scripts/lib/retention.mjs";
 
@@ -106,6 +106,36 @@ test("journal validation is read-only and passed close preserves state until ver
   assert.deepEqual(json(f.journal(["validate"])), { runId, ok: true, issues: [] });
   assert.deepEqual(json(f.journal(["close"], { judgment: "passed", summary: "Now checked" })).openIssues, []);
   assert.equal(fs.existsSync(f.pointer), false);
+
+  const changed = f.start("Changed requirements", ["Obsolete", "Negative"]);
+  json(f.journal(["add", "verdict"], { ...verdict("historical-job"), criteria: [
+    { criterion: "Negative", evidence: "Old requirement failed", result: "not_met" },
+    { criterion: "Verdict-only", evidence: "No longer needed", result: "cannot_verify" }
+  ] }));
+  const original = snapshot(f.stateRoot);
+  for (const input of [{ criteria: ["Obsolete", "Unknown"], reason: "Changed" }, { criteria: ["obsolete"], reason: "Case matters" },
+    { criteria: ["Obsolete "] , reason: "Whitespace matters" }, { criteria: ["Obsolete"] }, { criteria: ["Obsolete"], reason: " " }]) {
+    const rejected = f.journal(["add", "withdraw"], input);
+    assert.equal(rejected.status, 1);
+    assert.deepEqual(snapshot(f.stateRoot), original, "invalid withdrawal must not partially append");
+  }
+  const unchecked = JSON.parse(f.journal(["validate"]).stdout);
+  assert.deepEqual(unchecked.issues.map(issue => issue.kind), ["unmet_criterion", "unmet_criterion", "unchecked_criterion"]);
+  const withdrawal = { criteria: ["Obsolete", "Negative", "Verdict-only"], reason: "Requirements changed" };
+  assert.equal(json(f.journal(["add", "withdraw"], withdrawal)).type, "criteria_withdrawn");
+  assert.deepEqual(json(f.journal(["validate"])), { runId: changed, ok: true, issues: [] });
+  const withdrawn = json(f.journal(["show"]));
+  assert.deepEqual(withdrawn.withdrawnCriteria, withdrawal.criteria.map(criterion => ({ criterion, reason: withdrawal.reason })));
+  assert.ok(withdrawn.criterionResults.every(item => item.result === "withdrawn" && item.reason === withdrawal.reason));
+  assert.equal(f.call(["journal", "show"]).status, 0);
+  json(f.journal(["add", "criteria"], { criteria: ["Obsolete", "Negative"] }));
+  const reactivated = f.journal(["validate"]);
+  assert.equal(reactivated.status, 2);
+  assert.deepEqual(JSON.parse(reactivated.stdout).issues.map(issue => [issue.kind, issue.criterion]), [["unmet_criterion", "Negative"], ["unchecked_criterion", "Obsolete"]]);
+  assert.equal(f.journal(["close"], { judgment: "passed", summary: "Still required" }).status, 2);
+  json(f.journal(["add", "withdraw"], withdrawal));
+  assert.equal(f.rows(changed).filter(row => row.type === "criteria_withdrawn").length, 2, "reactivation preserves withdrawal history");
+  assert.deepEqual(json(f.journal(["close"], { judgment: "passed", summary: "Obsolete requirements withdrawn" })).openIssues, []);
 });
 
 function age(f, runId) {
@@ -303,6 +333,150 @@ test("direct tasks link exact worker brief and one terminal compact report; unli
   const unlinked = json(f.call(["task", "--fresh", "--direct", "--sandbox", "read-only"], "Check without a run."));
   assert.equal(unlinked.status, "completed"); assert.deepEqual(snapshot(f.runs), before);
   assert.equal(JSON.parse(fs.readFileSync(path.join(f.state, "jobs", `${unlinked.jobId}.json`))).runId, undefined);
+
+  const g = fixture(); initGitRepo(g.cwd); installFakeCodex(g.root, "slow-recovery-task");
+  const gate = path.join(g.root, "finish-turn"); g.env.CODEX_FIXTURE_TURN_GATE = gate;
+  const oldRun = g.start("Previous release", []);
+  const pending = json(g.call(["task", "--background", "--json", "--sandbox", "read-only"], "Finish the previous release."));
+  const jobRecord = (jobId, cwd = g.cwd) => JSON.parse(fs.readFileSync(path.join(resolveStateDir(cwd, g.env), "jobs", `${jobId}.json`)));
+  await waitForCondition(() => jobRecord(pending.jobId).status === "running" && jobRecord(pending.jobId).turnId, "old run's active turn");
+  assert.equal(g.journal(["start"], { goal: "Refused duplicate", criteria: [] }).status, 1);
+  const switched = json(g.journal(["start", "--switch"], { goal: "Next release", criteria: [] }));
+  assert.equal(switched.previousRunId, oldRun);
+  assert.notEqual(switched.runId, oldRun);
+  assert.equal(json(g.journal(["show"])).runId, switched.runId);
+  assert.equal(json(g.journal(["show", "--run", oldRun])).state, "open");
+  assert.equal(g.rows(oldRun).filter(row => row.type === "job_finished").length, 0);
+  assert.equal(JSON.parse(g.journal(["validate", "--run", oldRun]).stdout).issues[0].kind, "unfinished_job");
+  assert.equal(g.journal(["close", "--run", oldRun], { judgment: "passed", summary: "Too soon" }).status, 2);
+  fs.writeFileSync(gate, "finish");
+  json(g.call(["wait", pending.jobId, "--owner", pending.ownerId, "--direct"]));
+  assert.equal(g.rows(oldRun).find(row => row.type === "job_finished").jobId, pending.jobId);
+  assert.equal(g.rows(switched.runId).some(row => row.jobId === pending.jobId), false);
+  const newest = json(g.call(["task", "--fresh", "--direct", "--sandbox", "read-only"], "New release default."));
+  assert.equal(jobRecord(newest.jobId).runId, switched.runId);
+
+  const elsewhere = path.join(g.root, "elsewhere"); fs.mkdirSync(elsewhere); initGitRepo(elsewhere);
+  const selected = json(run(process.execPath, [cli, "task", "--fresh", "--direct", "--sandbox", "read-only", "--run", oldRun, "--cwd", elsewhere], { cwd: elsewhere, env: g.env, input: "Explicit previous run in another workspace." }));
+  const selectedRecord = jobRecord(selected.jobId, elsewhere);
+  assert.equal(selectedRecord.request.run, oldRun); assert.equal(selectedRecord.runId, oldRun); assert.equal(selectedRecord.runStateDir, g.state);
+  const toOld = json(g.call(["task", "--to", newest.jobId, "--run", oldRun, "--direct"], "Follow up in the previous run."));
+  assert.equal(jobRecord(toOld.jobId).request.run, oldRun); assert.equal(jobRecord(toOld.jobId).runId, oldRun);
+  const detachedRun = json(g.call(["task", "--thread", jobRecord(toOld.jobId).threadId, "--run", "none", "--json"], "No journal for this turn."));
+  assert.equal(jobRecord(detachedRun.jobId).request.run, "none"); assert.equal(jobRecord(detachedRun.jobId).runId, undefined);
+  const continuedOld = json(g.call(["task", "--continue", detachedRun.jobId, "--run", oldRun, "--direct"], "Resume with an explicit run."));
+  assert.equal(jobRecord(continuedOld.jobId).request.run, oldRun); assert.equal(jobRecord(continuedOld.jobId).runId, oldRun);
+  const defaultAgain = json(g.call(["task", "--continue", continuedOld.jobId, "--direct"], "Default follow-up uses the active run."));
+  assert.equal(jobRecord(defaultAgain.jobId).runId, switched.runId); assert.equal(jobRecord(defaultAgain.jobId).request.run, undefined);
+  assert.deepEqual(jobRecord(continuedOld.jobId).request.approvedBrowserOrigins, jobRecord(detachedRun.jobId).request.approvedBrowserOrigins);
+  assert.deepEqual(jobRecord(continuedOld.jobId).request.approvedComputerApps, jobRecord(detachedRun.jobId).request.approvedComputerApps);
+  for (const jobId of [pending.jobId, selected.jobId, toOld.jobId, continuedOld.jobId]) {
+    assert.equal(g.rows(oldRun).filter(row => row.type === "job_finished" && row.jobId === jobId).length, 1);
+    json(g.journal(["add", "verdict", "--run", oldRun], { ...verdict(jobId), criteria: [] }));
+  }
+  assert.equal(json(g.journal(["validate", "--run", oldRun])).ok, true);
+  json(g.journal(["close", "--run", oldRun], { judgment: "passed", summary: "Previous release complete" }));
+  assert.equal(json(g.journal(["show"])).runId, switched.runId, "closing the old run preserves the current pointer");
+  const beforeNone = snapshot(g.runs);
+  const none = json(g.call(["task", "--fresh", "--run", "none", "--direct", "--sandbox", "read-only"], "No run for this job."));
+  assert.equal(jobRecord(none.jobId).request.run, "none"); assert.equal(jobRecord(none.jobId).runId, undefined);
+  assert.deepEqual(snapshot(g.runs), beforeNone);
+  const beforeInvalid = snapshot(g.stateRoot), runtime = fs.readFileSync(path.join(g.root, "fake-codex-state.json"), "utf8");
+  for (const runId of [oldRun, "run-unknown", "../escape", ""]) for (const follow of [[], ["--to", newest.jobId], ["--thread", jobRecord(newest.jobId).threadId], ["--continue", newest.jobId]]) {
+    const rejected = g.call(["task", ...follow, "--run", runId, "--direct"], "Invalid run must not dispatch.");
+    assert.equal(rejected.status, 1);
+    if (runId === oldRun) {
+      const report = JSON.parse(rejected.stdout);
+      assert.equal(report.status, "error");
+      assert.ok(report.summary.includes(runId));
+      for (const command of ["duet journal start", "--run <id>", "--run none"]) assert.ok(report.summary.includes(command));
+    }
+    assert.deepEqual(snapshot(g.stateRoot), beforeInvalid);
+    assert.equal(fs.readFileSync(path.join(g.root, "fake-codex-state.json"), "utf8"), runtime);
+  }
+
+  const reservations = h => {
+    const root = path.join(path.dirname(h.stateRoot), "agent-names");
+    return fs.existsSync(root) ? fs.readdirSync(root).flatMap(session => fs.readdirSync(path.join(root, session)).map(name => `${session}/${name}`)).sort() : [];
+  };
+  for (const retrySelection of ["none", "open"]) {
+    const h = fixture(); initGitRepo(h.cwd);
+    const bin = path.join(h.root, "codex"), source = fs.readFileSync(bin, "utf8");
+    // Availability is checked after --run validation and before reservation/link.
+    // Install before broker startup so the executable's identity never changes.
+    const close = `if (process.argv.includes('--version') && process.env.CODEX_FIXTURE_CLOSE_RUN) {
+      const closed = require('node:child_process').spawnSync(process.execPath,
+        [${JSON.stringify(cli)}, 'journal', 'close', '--run', process.env.CODEX_FIXTURE_CLOSE_RUN, '--cwd', ${JSON.stringify(h.cwd)}],
+        {env:process.env, input:JSON.stringify({judgment:'passed', summary:'Closed between validation and link'}), encoding:'utf8'});
+      if (closed.status !== 0) throw new Error(closed.stderr);
+    }\n`;
+    fs.writeFileSync(bin, source.replace('const fs = require("node:fs");', close + 'const fs = require("node:fs");'));
+    const freshRun = h.start("Reject a fresh reservation", []);
+    const freshRejected = h.call(["task", "--fresh", "--run", freshRun, "--direct", "--sandbox", "read-only"], "Rejected fresh dispatch.", { CODEX_FIXTURE_CLOSE_RUN: freshRun });
+    assert.equal(freshRejected.status, 1, freshRejected.stderr + freshRejected.stdout);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(h.state, "state.json"))).jobs, []);
+    assert.deepEqual(reservations(h), [], "a rejected fresh task releases its exclusive name");
+    assert.equal(h.rows(freshRun).some(row => row.type === "job_started"), false);
+    const initial = json(h.call(["task", "--fresh", "--direct", "--sandbox", "read-only"], "Establish the retry thread."));
+    const jobsDir = path.join(h.state, "jobs"), indexFile = path.join(h.state, "state.json");
+    const indexed = () => JSON.parse(fs.readFileSync(indexFile)).jobs;
+    const records = () => fs.readdirSync(jobsDir).filter(name => /^[A-Za-z0-9_-]+\.json$/.test(name)).map(name => JSON.parse(fs.readFileSync(path.join(jobsDir, name))));
+    const beforeRejectedFiles = fs.readdirSync(jobsDir).sort();
+    const inheritedNames = reservations(h);
+    assert.equal(inheritedNames.length, 1);
+    const threadId = records().find(job => job.id === initial.jobId).threadId;
+    const selectedRun = h.start("Close after validation", []);
+    const rejected = h.call(["task", "--thread", threadId, "--run", selectedRun, "--direct"], "Rejected before launch.", { CODEX_FIXTURE_CLOSE_RUN: selectedRun });
+    assert.equal(rejected.status, 1, rejected.stderr + rejected.stdout);
+    assert.equal(json(h.journal(["show", "--run", selectedRun])).state, "closed");
+    assert.deepEqual(indexed().map(job => job.id), [initial.jobId], "no rejected reservation in the index, admission, retention or notice scan");
+    assert.deepEqual(records().map(job => job.id), [initial.jobId], "no rejected private record can be recovered as an ending");
+    assert.deepEqual(fs.readdirSync(jobsDir).sort(), beforeRejectedFiles);
+    assert.deepEqual(reservations(h), inheritedNames, "rollback preserves the earlier thread owner's name");
+    assert.ok(records().every(job => !unresolvedTask(job)), "no phantom thread owner remains");
+    assert.equal(h.rows(selectedRun).some(row => row.type === "job_started"), false);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(h.root, "fake-codex-state.json"))).nextTurnId, 2);
+    const retryRun = retrySelection === "none" ? "none" : h.start("Valid retry run", []);
+    const retry = json(h.call(["task", "--thread", threadId, "--run", retryRun, "--direct"], "Retry the same thread."));
+    assert.equal(retry.status, "completed");
+    const retried = records().find(job => job.id === retry.jobId);
+    assert.equal(retried.threadId, threadId); assert.equal(retried.runId, retryRun === "none" ? undefined : retryRun);
+    assert.ok(records().every(job => !unresolvedTask(job)));
+    assert.equal(JSON.parse(fs.readFileSync(path.join(h.root, "fake-codex-state.json"))).nextTurnId, 3);
+  }
+
+  const h = fixture(); initGitRepo(h.cwd);
+  const postLinkRun = h.start("Fail persistence after linking", []), fault = path.join(h.root, "postlink-fault.cjs");
+  fs.writeFileSync(fault, `const fs = require('node:fs'), write = fs.writeFileSync;
+    let armedJob, thrown = false;
+    fs.writeFileSync = function(file, data, ...args) {
+      if (typeof file === 'number' && typeof data === 'string') {
+        try { const row = JSON.parse(data); if (row.type === 'job_started') armedJob = row.jobId; } catch {}
+      }
+      if (armedJob && !thrown && typeof file === 'string' && file.includes('/jobs/.' + armedJob + '.json.')) {
+        thrown = true;
+        const error = new Error('Injected post-link job-file failure'); error.code = 'EIO'; throw error;
+      }
+      return write.call(this, file, data, ...args);
+    };
+    require('node:module').syncBuiltinESMExports();\n`);
+  const rejected = h.call(["task", "--fresh", "--run", postLinkRun, "--direct", "--sandbox", "read-only"], "Must not launch after persistence fails.", { NODE_OPTIONS: `${h.env.NODE_OPTIONS ?? ""} --require=${JSON.stringify(fault)}` });
+  assert.equal(rejected.status, 1, rejected.stderr + rejected.stdout);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(h.state, "state.json"))).jobs, []);
+  assert.deepEqual(reservations(h), []);
+  assert.equal(fs.readdirSync(path.join(h.state, "jobs")).filter(name => name.endsWith(".json")).length, 0);
+  const view = json(h.journal(["show", "--run", postLinkRun]));
+  assert.equal(view.jobs.length, 1); assert.equal(view.jobs[0].status, "failed");
+  const finish = h.rows(postLinkRun).find(row => row.type === "job_finished");
+  assert.equal(finish.status, "failed"); assert.equal(finish.jobId, view.jobs[0].jobId);
+  const failureReport = JSON.parse(fs.readFileSync(path.join(h.runs, postLinkRun, finish.report)));
+  assert.equal(failureReport.status, "failed"); assert.ok(failureReport.summary.length > 0);
+  const checked = h.journal(["validate", "--run", postLinkRun]);
+  assert.equal(checked.status, 2); assert.equal(JSON.parse(checked.stdout).ok, false);
+  assert.ok(JSON.parse(checked.stdout).issues.some(issue => issue.kind === "no_verdict"));
+  assert.equal(h.journal(["close", "--run", postLinkRun], { judgment: "passed", summary: "Must not silently pass." }).status, 2);
+  const runtimeFile = path.join(h.root, "fake-codex-state.json");
+  assert.equal(fs.existsSync(runtimeFile) ? JSON.parse(fs.readFileSync(runtimeFile)).nextTurnId : 1, 1);
 });
 
 test("concurrent terminal observers serialize exactly one finish, including after close", async () => {

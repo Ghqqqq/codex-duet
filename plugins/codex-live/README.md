@@ -41,24 +41,44 @@ time is cached and persisted with session identity so reloads preserve the grace
 no jobs are active. At two minutes an unselected ended job moves into history;
 selection, its transcript and the retained jobs are unchanged.
 Unanswered questions/approvals, unresolved turns and uncleared blocked/needs-input results override this recency order with `?`/`!` markers and status-line attention while preserving selection; active rows show the pending question or current operation and quiet time after one minute.
+Terminal-attention protection is bounded by `ATTENTION_SESSION_LIMIT` (40) and
+the state budget below. The status line counts questions for Claude, results
+needing your attention and unknown outcomes separately. The attention count
+includes omitted terminal-attention sessions and reports their count and the
+cap. Clear removes ended attention
+and resets that count, without changing job records.
+When the empty pane contains hidden finished jobs, it says: “Finished jobs are
+hidden. Their records follow your Duet cleanup settings.”
 New workers preserve the selected conversation and its scroll position, showing `• new` until selected; returning to a viewed conversation restores its saved scroll position.
 
 `+N more` counts omitted sessions. Its first press expands up to ten rows: active
 sessions first, the collapsed rows, then the remaining history newest first. Further
 presses page through every retained session, then collapse after the final page. When
 all sessions fit, `− Show fewer` collapses immediately. Very short panes put a
-`+N more` control in the footer (hotkey `j`) that cycles through all sessions. Selecting history keeps that session in the collapsed header. A rule
+`+N more` control in the footer (hotkey `j`) that cycles through all sessions.
+At narrow widths, header navigation can also shorten to `j`; Clear finished
+shortens to `Clear` or `c`. Clear never displaces the history navigation control.
+Selecting history keeps that session in the collapsed header. A rule
 separates the list from the feed; with one single-turn session its identity
-appears in the footer instead. The footer always shows the selected job's status,
+appears in the footer instead. Unless a discovery warning takes priority, the footer shows the selected job's status,
 age and tool count (waiting jobs show who they await). Running jobs animate once
 per second while the pane is open. Queued jobs say `Queued` with a stationary
 ellipsis and have their own status-line count. Within a resolved turn, terminal
-status or completion time wins over a stale unanswered question; needs-input jobs
-show `Needs input`.
-An unresolved turn shows `Unresolved` with `!` attention instead of a finished
+status or completion time wins over a stale unanswered question. An active
+question says `Question for Claude`; a non-question wait still says
+`Waiting for Claude`. Both `needs_input` and `blocked` say `Needs your attention`,
+using the warning and error colours respectively in rows, headers and footer; the
+footer appends the first blocker code when one is recorded, for example
+`Needs your attention (provider_refused)`. An unanswered question disappears once
+its deadline passes, even if no file changes, matching the companion.
+An unresolved turn shows `Outcome unknown` with `!` attention instead of a finished
 failure or stop. It mirrors the companion's unresolved-turn checks for missing
 results, transport loss and an interrupt whose turn end is unconfirmed. Such a
 turn stays visible until its outcome is resolved; the pane does not resolve it.
+When the selected worker's name ends in `-N` and the pane has more than one body
+row, a line above the footer explains: `-N: name reused after this session used every name`.
+Tool counts prefer the stored `activityTotals.toolUses`; older records fall back
+to counting paired retained events.
 
 The plugin scrolls the feed itself. Wheel/arrows move by rows, page keys by the
 feed window's height, and Home/End go to its start/end. Wheels over the pinned
@@ -70,13 +90,21 @@ the layout reserves those cells. Narrow footers shorten status before shortening
 the button, down to `↓ Jump`.
 
 Retention keeps the newest 20 sessions plus any active, unresolved or selected
-sessions outside that group. Each session retains up to 20 turns; active and
+sessions outside that group, and the newest 40 uncleared terminal-attention
+sessions (`ATTENTION_SESSION_LIMIT`), subject to the state ceiling. A selected
+older attention session can remain outside that additional protection cap.
+Each session retains up to 20 turns; active and
 unresolved turns, the lifecycle owner and the latest turn are always protected,
 even when that exceeds the cap. Full activity is limited to 5 turns of the selected
 session, reserving a slot for its active owner and filling the rest with the
 newest turns. Rows still show the total turn count, and capped transcripts
 start with an earlier-turns notice; older retained turns show only their headers.
-Evicted markers can be rediscovered. Each detailed turn keeps up to 200 collapsed events and displays the
+Evicted markers can be rediscovered. Job records supply only their newest 500
+activity events; the pane cannot retrieve events already evicted from that window.
+Their cumulative totals survive eviction (legacy records seed totals from their
+remaining events). At most 100 hashed pending tool identities are kept for
+pairing; an evicted start can make its later completion count as another use.
+Each detailed turn keeps up to 200 collapsed events and displays the
 last 80 items with only its latest todo plan. Serialized events across all selected
 turns share a 450,000-character budget, shortening
 oldest message bodies first; the whole state has a 900,000-character ceiling.
@@ -84,8 +112,10 @@ Seen/auto-opened IDs, end-time observations and turn counts shrink with retained
 jobs and sessions; clear tombstones are capped at 2,000. Poll bookkeeping also
 drops entries for markers no longer present, so a failed publication can recover
 on the next poll instead of growing an unpublishable lifetime history.
-If needed, the pane drops the oldest finished, unselected turns, then finished
-unselected sessions, to fit that ceiling. Polling hydrates before composing a
+If needed, the pane drops the oldest finished, unselected history turns, then
+ordinary finished unselected sessions before uncleared attention sessions, to
+fit that ceiling. If attention must also be evicted, the newest is kept and
+omissions are counted. Cleared attention has no special protection. Polling hydrates before composing a
 single candidate view and reuses it for state publication; a concurrent pane
 interaction triggers one extra composition from the latest view state in the same
 update, preserving the interaction without delaying new jobs or status updates.
@@ -100,6 +130,10 @@ Surface measurements are separate and anchors work across surfaces. Rendering
 normalizes immediately without writing state; the next scroll or poll persists
 the clamp. Reaching the bottom resumes following. Session identity, selection,
 anchors, expansion, seen/auto-opened jobs and fallback end times survive reloads.
+Malformed top-level or nested pane caches are reset to an empty view with one
+repair diagnostic per invalid-cache episode, then rediscovered from disk. This
+can lose pane-only selection, anchors and clear tombstones; job/marker files
+are never repaired or rewritten.
 Emoji widths and cuts use whole grapheme clusters (code points as fallback when
 `Intl.Segmenter` is unavailable). The drawing reserves
 64,000 characters for visible feed text and the rest of the 100,000-character
@@ -116,7 +150,7 @@ anchor or following the bottom.
 
 The requested tree height is `scroll.offset + scroll.bodyRows + 1`. After
 `scroll.offset` blank rows, it contains: job header,
-feed window, footer, then a blank sentinel. The footer is at the last visible
+feed window, optional name-reuse hint, footer, then a blank sentinel. The footer is at the last visible
 body row; the sentinel is just beyond it. The 2.1.302 API says an exactly
 fitting tree has no scroll range and arrows dispatch only while rows can scroll.
 The sentinel supplies that range; the `ui.scroll` hook consumes every move
@@ -126,7 +160,8 @@ on all four surfaces, docked and inline, with offsets 0, 1 and 5. They check the
 footer's position, unchanged job rows, following and stopped feeds, page and
 wheel scrolling, the footer's jump control and polling at the smaller height.
 Very short panes reduce the job list; a one-row body shows only the footer,
-and a two-row body shows one transcript row above the footer.
+and a two-row body shows the name-reuse hint when applicable, otherwise one
+transcript row above the footer.
 
 Known limitation: while Claude Code's slash-command suggestions are open, they cover
 the lower rows of a docked pane, including its footer, until the menu closes. The
@@ -152,8 +187,14 @@ changes. Finished jobs are stat-checked every ten seconds for recovery rewrites.
 Failed marker/job reads retry after five seconds, without consuming the marker
 or mtime. A failed read keeps the last good view and a pinned
 `⚠ stale · last update <age> ago` warning. Reload-time marker failures also keep
-the persisted view. Commands and tool calls pair overlapping starts/completions
+the valid persisted view. Directory listing and new-marker failures have a
+separate discovery warning, even with no selected job or with healthy cached
+jobs. The warning replaces empty-inventory copy and takes footer priority;
+diagnostics are emitted on changes/recovery rather than repeated for each retry.
+A fresh absent directory is quiet, but disappearance after known jobs warns.
+Recovery clears the discovery warning. Commands and tool calls pair overlapping starts/completions
 FIFO at the completion’s sequence position. Cancelled/declined calls say
 `Cancelled`; unmatched starts in ended jobs say `Interrupted` without an age,
-and starts in unresolved turns say `Unresolved`. No logs/results/diffs are
+and individual tool starts in unresolved turns still say `Unresolved` (the
+worker status says `Outcome unknown`). No logs/results/diffs are
 loaded into the view. Requires Claude Code's 2.1.302 function-hooks pane API.

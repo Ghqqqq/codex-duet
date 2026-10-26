@@ -49,7 +49,7 @@ export type CodexLiveJob = {
   fast: boolean;
   sandbox: string;
   workspaceRoot?: string;
-  question: { text: string; options: string[]; createdAt?: string } | null;
+  question: { text: string; options: string[]; createdAt?: string; expiresAt?: number } | null;
   // Only detailed turns retain the bounded Claude brief.
   prompt?: string;
   promptReport?: boolean;
@@ -57,6 +57,7 @@ export type CodexLiveJob = {
   currentOperation?: string;
   lastActivityAt?: string;
   finalStatus: string;
+  blockerCode?: string;
   fileCount: number | null;
   events: CodexLiveEvent[];
   detailsUnavailable: boolean;
@@ -107,6 +108,10 @@ export type CodexLiveState = {
   autoOpenedJobIds?: string[];
   firstEndedAtMs?: Record<string, number>;
   historyPage?: number;
+  // Discovery health is independent of an individually readable cached job.
+  discoveryWarning?: string;
+  // Uncleared terminal attention outside the retention/state budgets.
+  attentionOmitted?: number;
 };
 
 declare module 'claude-code' {

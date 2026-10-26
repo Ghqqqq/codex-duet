@@ -79,7 +79,7 @@ export function unsupportedServerRequest(message) {
 
 export function decideServerRequest(message, { approvedBrowserOrigins = [], approvedComputerApps = [], threadId = null, turnId = null } = {}) {
   const method = methods.has(message.method) ? message.method : `unrecognized:${hash(message.method)}`;
-  /** @type {{ method: string, requestId: string | number, kind: string, decision: string, reason: string, origin?: string, app?: string, fields?: string[] }} */
+  /** @type {{ method: string, requestId: string | number, kind: string, decision: string, reason: string, origin?: string, app?: string, server?: string, fields?: string[] }} */
   const summary = {
     method,
     requestId: Number.isSafeInteger(message.id) ? message.id : `sha256:${hash(message.id)}`,
@@ -87,6 +87,8 @@ export function decideServerRequest(message, { approvedBrowserOrigins = [], appr
   };
   const reply = unsupportedServerRequest(message);
   const p = message.params;
+  // Retain only a bounded server identifier, never request messages or schemas.
+  if (typeof p?.serverName === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,79}$/.test(p.serverName)) summary.server = p.serverName;
   if (message.method === "mcpServer/elicitation/request") {
     summary.decision = "cancelled";
     summary.reason = "unsupported-elicitation-nonpersistent";

@@ -86,7 +86,10 @@ export function executableOnPath(name, env = process.env) {
 }
 
 // Diagnose the selected runtime, never silently bypass a broken private pin.
-export function codexRuntimeDiagnostic(cwd, availability, env = process.env) {
+// Optional PATH probes share the caller's readiness deadline; they only enrich
+// guidance and must never hang setup after the selected runtime has failed.
+const DIAGNOSTIC_PROBE_TIMEOUT_MS = 20000;
+export function codexRuntimeDiagnostic(cwd, availability, env = process.env, { deadline = Date.now() + DIAGNOSTIC_PROBE_TIMEOUT_MS } = {}) {
   const { binary, source, runtimeFile } = resolveCodexSelection(env);
   const executable = path.isAbsolute(binary) ? binary : executableOnPath(binary, env) ?? binary;
   const result = { executable, source, pathCodex: null, guidance: null };
@@ -102,9 +105,11 @@ export function codexRuntimeDiagnostic(cwd, availability, env = process.env) {
   // Diagnostic probes obey the same fixture boundary as normal runtime startup.
   const allowed = candidate && (env.CODEX_COMPANION_TEST_MODE !== "1" || contains(canonicalPath(env.CODEX_COMPANION_TEST_ROOT), canonicalPath(candidate)));
   if (allowed) {
-    const options = { cwd, env: isolatedCodexEnv(env) };
-    const version = binaryAvailable(candidate, ["--version"], options);
-    result.pathCodex = { path: candidate, available: version.available && binaryAvailable(candidate, ["app-server", "--help"], options).available };
+    const probe = args => {
+      const remaining = Math.min(DIAGNOSTIC_PROBE_TIMEOUT_MS, deadline - Date.now());
+      return remaining > 0 ? binaryAvailable(candidate, args, { cwd, env: isolatedCodexEnv(env), timeoutMs: remaining }) : { available: false };
+    };
+    result.pathCodex = { path: candidate, available: probe(["--version"]).available && probe(["app-server", "--help"]).available };
   }
   const setting = source === "CODEX_COMPANION_BIN" ? "CODEX_COMPANION_BIN" : `codexBinary in ${runtimeFile}`;
   const fallback = result.pathCodex?.available ? ` PATH has a working Codex at ${candidate}.` : "";

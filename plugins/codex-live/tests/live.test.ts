@@ -1,9 +1,9 @@
 import { test, expect } from 'claude-code/testing';
 import type { On } from 'claude-code';
 import type { CodexLiveMarker, CodexLiveState } from '../types';
-import { attention, boundState, clearFinished, groupedSessions, isHiddenJob, normalizeSessions, visibleJobs, visibleSessions,
-  collapseActivity, jobView, markerView, statusLine } from '../hooks/model';
-import { activityItems, eventItem, feedItems, feedLines, feedWindow, headerLayout, jobRow, recentEndedJobIds,
+import { attention, attentionCounts, boundState, clearFinished, groupedSessions, isHiddenJob, normalizeSessions, visibleJobs, visibleSessions,
+  collapseActivity, jobSummary, jobView, markerView, reusedAgentName, statusLine, validView } from '../hooks/model';
+import { activityItems, eventItem, feedItems, feedLines, feedWindow, footerLayout, headerLayout, jobRow, jobRowColor, recentEndedJobIds,
   normalizeFeed, paneLayout, reconcileFeed, scrollFeed, selectedJob, width } from '../hooks/layout';
 
 const createdAt = '2026-10-18T00:00:00.000Z';
@@ -83,7 +83,7 @@ test('golden: rich pane with tools, Markdown, current plan and pending question'
   job.agentName = 'Ada';
   const waiting = jobView({ id: 'waiting', status: 'running', agentName: 'Grace',
     pendingQuestion: { text: 'Use the existing API?', expiresAt: epoch + 899000 },
-  }, { ...marker('waiting'), createdAt: new Date(epoch - 2000).toISOString() });
+  }, { ...marker('waiting'), createdAt: new Date(epoch - 2000).toISOString() }, true, epoch);
   const quiet = jobView({ id: 'quiet', status: 'running', agentName: 'Linus',
     activity: [{ seq: 1, at: new Date(epoch - 120000).toISOString(), type: 'commandExecution',
       command: 'npm test', lifecycle: 'started' }],
@@ -97,7 +97,7 @@ test('golden: rich pane with tools, Markdown, current plan and pending question'
   ⏺ Linus  npm test                           38s · quiet 2m
 ────────────────────────────────────────────────────────────
 ⏺ Ada(Task job-a)
-  ⎿  Waiting for Claude · 6 tool uses · 38s
+  ⎿  Question for Claude · 6 tool uses · 38s
      gpt-6-astra · xhigh · fast · read-only
 
 ⏺ Review
@@ -130,12 +130,12 @@ test('golden: rich pane with tools, Markdown, current plan and pending question'
      ☐ Check lease gaps
      ☐ Write the verdict
 
-⏺ Waiting for Claude
+⏺ Question for Claude
   ⎿  Which approach?
      1. Check leases
      2. Run tests
 
-? Waiting for Claude · 38s`);
+? Question for Claude · 38s`);
   await ui.unmount();
 });
 
@@ -149,7 +149,8 @@ test('golden: clearing the final job leaves an empty pane with retention notice'
   expect(writes.at(-1)?.jobs.map(job => job.id)).toEqual([job.id]);
   expect(await paneText(ui)).toBe(`No Codex jobs in this session yet. They appear here when
 Claude starts one.
-Finished jobs are hidden. Their records stay for 30 days.`);
+Finished jobs are hidden. Their records follow your Duet
+cleanup settings.`);
   expect(await ui.find({ key: 'clear-finished' })).toBe(undefined);
   await ui.unmount();
 });
@@ -210,7 +211,7 @@ test('clearing against newer state preserves jobs that ended after the click tim
   expect(cleared.selectedId).toBe('new');
 });
 
-test('live and unresolved members control lifecycle, pending questions, status counts and clearing', () => {
+test('live and unresolved members control lifecycle, pending questions, status counts and clearing', async ($, on) => {
   const old = { ...conversationTurn('old', 0), question: { text: 'Obsolete question', options: [] } };
   const latest = jobView({ id: 'latest', threadId: 'shared', status: 'waiting',
     pendingQuestion: { text: 'Continue?', options: ['Yes', { label: 'No' }] } }, marker('latest'));
@@ -221,10 +222,20 @@ test('live and unresolved members control lifecycle, pending questions, status c
   expect(feedItems(session, epoch).at(-1)?.results[0]?.text).toBe('Continue?');
   expect(JSON.stringify(feedItems(session, epoch))).not.toContain('Obsolete question');
   const queued = jobView({ id: 'queued', status: 'queued' }, marker('queued'));
-  const counts = statusLine([...state.jobs, running(), queued])!;
-  expect(counts.match(/(\d+) running/)?.[1]).toBe('1');
-  expect(counts.match(/(\d+) queued/)?.[1]).toBe('1');
-  expect(counts.match(/(\d+) waiting/)?.[1]).toBe('1');
+  const countedJobs = [...state.jobs, running(), queued];
+  const sessions = groupedSessions(countedJobs);
+  expect(sessions.filter(job => job.active && job.status === 'running' && !job.question).length).toBe(1);
+  expect(sessions.filter(job => job.active && job.status === 'queued' && !job.question).length).toBe(1);
+  expect(attentionCounts(countedJobs)).toEqual({ question: 1, blocked: 0, unresolved: 0 });
+  const terminalAttention = ['needs_input', 'blocked'].map(status => jobView({ id: status, status,
+    pendingQuestion: { text: 'Stale question' }, completedAt: createdAt }, marker(status)));
+  const unknown = jobView({ id: 'unknown', jobClass: 'task', status: 'failed' }, marker('unknown'));
+  expect(terminalAttention.map(attention)).toEqual(['blocked', 'blocked']);
+  expect(terminalAttention.every(job => job.question === null && job.finished)).toBe(true);
+  expect(attention(unknown)).toBe('unresolved');
+  expect(attentionCounts([...countedJobs, ...terminalAttention, unknown], 3))
+    .toEqual({ question: 1, blocked: 5, unresolved: 1 });
+  expect(attentionCounts([])).toEqual({ question: 0, blocked: 0, unresolved: 0 });
   expect(visibleSessions(clearFinished(state, state.nowMs)).length).toBe(1);
   const done = { ...state, jobs: [old, { ...latest, status: 'needs_input', completedAt: createdAt }] };
   expect(selectedJob(done)).toMatchObject({ active: true, finished: false, lifecycleJobId: old.id });
@@ -280,6 +291,49 @@ test('live and unresolved members control lifecycle, pending questions, status c
     { status: 'interrupted', result: { turnEnded: false, interruptionConfirmed: true } },
     { status: 'cancelled', result: { turnEnded: false, interruptionConfirmed: false }, turnId: undefined },
   ]) expect(jobView({ id: 'resolved', jobClass: 'task', turnId: 'turn', ...fields }, marker('resolved')).finished).toBe(true);
+
+  const pending = { id: 'expires', status: 'running', pendingQuestion: { text: 'Continue?', expiresAt: epoch + 1000 } };
+  const expires = jobView(pending, marker('expires'), true, epoch);
+  expect(expires.question?.expiresAt).toBe(epoch + 1000);
+  expect(jobSummary(expires).question?.expiresAt).toBe(epoch + 1000);
+  expect(jobView(pending, marker('expires'), true, epoch + 1000).question).toBe(null);
+  const expired = boundState({ jobs: [expires], selectedId: expires.id, nowMs: epoch + 1000 });
+  expect(expired.jobs[0]?.question).toBe(null);
+  expect(attentionCounts(expired.jobs).question).toBe(0);
+  expect(feedItems(selectedJob(expired)!, expired.nowMs).some(item => item.key.endsWith(':pending-question'))).toBe(false);
+  expect(validView({ ...expired, jobs: [{ ...expires, question: { ...expires.question, expiresAt: 'bad' } }] })).toBe(false);
+  for (const [deadline, present] of [[null, false], [String(epoch - 1), false], [String(epoch), false],
+    [String(epoch + 1000), true], [undefined, true], ['bad', true]] as const) {
+    const question = { text: 'Continue?', ...(deadline === undefined ? {} : { expiresAt: deadline }) };
+    const projected = jobView({ ...pending, pendingQuestion: question }, marker('expires'), true, epoch);
+    expect(Boolean(projected.question)).toBe(present);
+    expect(validView({ jobs: [projected], selectedId: projected.id, nowMs: epoch })).toBe(true);
+    if (deadline === String(epoch + 1000)) {
+      expect(projected.question?.expiresAt).toBe(epoch + 1000);
+      expect(boundState({ jobs: [projected], nowMs: epoch + 1000 }).jobs[0]?.question).toBe(null);
+    }
+  }
+
+  const coded = ['needs_input', 'blocked'].map((status, i) => jobView({ id: status, status, completedAt: createdAt,
+    [i ? 'result' : 'report']: { blockers: [{ code: 'provider_refused' }, { code: 'ignored' }] } }, marker(status)));
+  expect(coded.map(job => job.blockerCode)).toEqual(['provider_refused', 'provider_refused']);
+  expect(coded.map(jobRowColor)).toEqual(['warning', 'error']);
+  const codedState = boundState({ jobs: coded, selectedId: coded[0]!.id, nowMs: epoch });
+  expect(validView(codedState)).toBe(true);
+  expect(codedState.jobs.map(job => job.blockerCode)).toEqual(['provider_refused', 'provider_refused']);
+  for (const job of coded) expect(footerLayout(job, codedState, 200, true, 0).left.includes(job.blockerCode!)).toBe(true);
+  for (const code of ['', 'invalid code', 'bad\ncode', 'x'.repeat(65), '<bad>', 12]) {
+    const malformed = jobView({ id: 'bad', status: 'blocked', report: { blockers: [{ code }] } }, marker('bad'));
+    expect(malformed.blockerCode).toBe(undefined);
+    expect(validView({ ...codedState, jobs: [{ ...coded[0]!, blockerCode: code }] })).toBe(false);
+  }
+  seed(on, codedState);
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props });
+  const texts = await ui.findAll({ type: 'Text' });
+  const bullet = jobRow(coded[0]!, true, props.bodyColumns, epoch).bullet;
+  expect(texts.filter(text => text.text === bullet).map(text => text.props.color))
+    .toEqual(headerLayout(codedState, selectedJob(codedState)!, props.scroll.bodyRows).jobs.map(jobRowColor));
+  await ui.unmount();
 });
 
 test('attention keeps an old waiting worker visible with its question and orders unanswered questions by age', () => {
@@ -291,7 +345,7 @@ test('attention keeps an old waiting worker visible with its question and orders
     { id: 'tests', status: 'running', ago: 400000 },
     { id: 'build', status: 'running', ago: 300000 },
     { id: 'quiet', status: 'running', ago: 200000 },
-  ].map(({ ago, ...job }) => jobView(job, { ...marker(job.id), createdAt: new Date(epoch - ago).toISOString() }, false));
+  ].map(({ ago, ...job }) => jobView(job, { ...marker(job.id), createdAt: new Date(epoch - ago).toISOString() }, false, epoch));
   const state = boundState({ jobs, selectedId: 'tests', nowMs: epoch });
   const header = headerLayout(state, selectedJob(state)!, 14);
   expect(header.jobs.map(job => job.id)).toEqual(['waiting', 'blocked', 'tests']);
@@ -302,7 +356,7 @@ test('attention keeps an old waiting worker visible with its question and orders
   // A newer worker's older approval takes priority over worker creation order.
   const approval = jobView({ id: 'build', status: 'running', questionTimeoutSec: 60,
     pendingQuestion: { text: 'Allow access?', kind: 'approval', expiresAt: epoch + 40000 },
-  }, { ...marker('build'), createdAt: jobs[3]!.createdAt }, false);
+  }, { ...marker('build'), createdAt: jobs[3]!.createdAt }, false, epoch);
   const next = boundState({ ...state, jobs: state.jobs.map(job => job.id === 'build' ? approval : job) });
   expect(headerLayout(next, selectedJob(next)!, 14).jobs.map(job => job.id)).toEqual(['build', 'waiting', 'tests']);
   expect(headerLayout({ ...next, jobsExpanded: true }, selectedJob(next)!, 14).jobs.map(job => job.id))
@@ -339,6 +393,29 @@ test('transcript projection rejects bad identities, bounds events and preserves 
   const row = jobRow({ ...clean, agentName: '艾达 👩‍💻', lastActivityAt: createdAt,
     question: { text: '检查 é?', options: [] } }, false, 12, epoch + 120000, true);
   expect(width(Object.values(row).join('')) <= 12).toBe(true);
+
+  const toolActivity = Array.from({ length: 100 }, (_, seq) => ({ seq, type: 'commandExecution', lifecycle: 'completed' }));
+  const raw = { id: 'job-a', status: 'running', activity: toolActivity };
+  for (const details of [true, false]) {
+    const totalled = jobView({ ...raw, activityTotals: { events: 500, toolUses: 300 } }, marker(), details);
+    expect(totalled.toolUses).toBe(300);
+    expect(totalled.events.length).toBe(details ? 100 : 0);
+    expect(jobSummary(totalled).toolUses).toBe(300);
+    const bounded = boundState({ jobs: [totalled], selectedId: totalled.id, nowMs: epoch });
+    expect(bounded.jobs[0]?.toolUses).toBe(300);
+    expect(validView(bounded)).toBe(true);
+    expect(jobView({ ...raw, activity: toolActivity.slice(-10), activityTotals: { toolUses: 300 } }, marker(), details).toolUses).toBe(300);
+    for (const toolUses of [undefined, null, '300', NaN, Infinity, -Infinity]) {
+      expect(jobView({ ...raw, activityTotals: { toolUses } }, marker(), details).toolUses).toBe(100);
+    }
+    expect(jobView(raw, marker(), details).toolUses).toBe(100);
+    expect(jobView({ ...raw, activityTotals: { toolUses: 0 } }, marker(), details).toolUses).toBe(0);
+  }
+  for (const agentName of ['Tesla-3', 'Tesla-12']) expect(reusedAgentName(jobView({ ...raw, agentName }, marker()))).toBe(true);
+  for (const agentName of [undefined, 'Tesla', 'Tesla3', 'Tesla-three', 'Tesla-3-more']) {
+    expect(reusedAgentName(jobView({ ...raw, agentName }, marker()))).toBe(false);
+  }
+  expect(reusedAgentName(jobView(raw, { ...marker(), name: 'Tesla-3' }))).toBe(true);
 });
 
 test('pane navigation pins controls, preserves selection and anchors through resize, and resumes following', async ($, on) => {
@@ -493,6 +570,20 @@ test('history paging reaches retained jobs, excludes cleared history and keeps t
   expect(writes.at(-1)?.jobsExpanded).toBe(false);
   expect(writes.at(-1)?.selectedId).toBe('h-19');
   expect(await ui.find({ key: 'h-19' })).toBeDefined();
+  // Selection must remain possible with Clear present, including explicit
+  // opens too narrow to show the full control labels.
+  for (const bodyColumns of [1, 14, 20, 24]) for (const bodyRows of [2, 14]) {
+    await ui.redraw({ ...inlineProps, bodyColumns, scroll: { offset: 0, bodyRows } });
+    for (const job of jobs) {
+      if (bodyRows === 2) {
+        for (let n = 0; n < jobs.length && writes.at(-1)?.selectedId !== job.id; n++) await ui.press({ key: 'toggle-jobs' });
+      } else {
+        for (let n = 0; n < 4 && !await ui.find({ key: job.id }); n++) await ui.press({ key: 'toggle-jobs' });
+        await ui.press({ key: job.id });
+      }
+      expect(writes.at(-1)?.selectedId).toBe(job.id);
+    }
+  }
   await ui.redraw({ ...inlineProps, scroll: { offset: 0, bodyRows: 2 } });
   await ui.press({ key: 'toggle-jobs' });
   expect(writes.at(-1)?.selectedId).toBe('h-0');

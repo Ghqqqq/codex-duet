@@ -472,9 +472,9 @@ function readWorkspaceRecords(dir, onlyId = null) {
   }
   return { config: state.config, records };
 }
-function readLegacyRecords(legacyDir, onlyId = null) {
+function readLegacyRecords(legacyDir, onlyId = null, { lockTimeoutMs = LEGACY_LOCK_TIMEOUT_MS } = {}) {
   try {
-    return lockStateDir(legacyDir, () => readWorkspaceRecords(legacyDir, onlyId), { lockTimeoutMs: LEGACY_LOCK_TIMEOUT_MS, create: false });
+    return lockStateDir(legacyDir, () => readWorkspaceRecords(legacyDir, onlyId), { lockTimeoutMs: Math.min(lockTimeoutMs, LEGACY_LOCK_TIMEOUT_MS), create: false });
   } catch (error) {
     if (/Timed out waiting for the Codex job-state lock/.test(error.message)) return null;
     throw error;
@@ -491,7 +491,7 @@ function mergeLegacyRecords(stateDir, legacyDir, legacy, marker, selected = null
   let pending = 0;
   for (const { id, index, file } of legacy.records.values()) {
     if (selected && !selected.has(id)) continue;
-    const entry = { ...(index ?? {}), ...(file ? indexEntryOf(file) : {}) };
+    const entry = withoutPrivateActivity({ ...(index ?? {}), ...(file ? indexEntryOf(file) : {}) });
     if (isLive(entry)) {
       if (!marker.pending.some(item => item.id === id)) marker.pending.push({ id, stateDir: legacyDir, pid: entry.pid ?? null, noticedAt: nowIso() });
       pending += 1;
@@ -525,10 +525,10 @@ function mergeLegacyConfig(config, legacyConfig) {
 }
 
 // Re-check jobs served in place; merge each one as soon as its worker is gone.
-function settlePending(stateDir, marker) {
+function settlePending(stateDir, marker, lockOptions = {}) {
   let changed = false;
   for (const item of [...marker.pending]) {
-    const legacy = isDirectory(item.stateDir) ? readLegacyRecords(item.stateDir, item.id) : { config: {}, records: new Map() };
+    const legacy = isDirectory(item.stateDir) ? readLegacyRecords(item.stateDir, item.id, lockOptions) : { config: {}, records: new Map() };
     if (legacy === null) continue;
     const record = legacy.records.get(item.id);
     if (record && isLive(record.file ?? record.index, record.index?.pid ?? item.pid)) continue;
@@ -548,7 +548,7 @@ const PENDING_RECHECK_MS = 1000;
 
 // Runs with the new directory's lock held. Cheap once memoized: a process
 // scans for legacy directories once; only pending (in-place) jobs are re-read.
-function migrateUnderLock(stateDir) {
+function migrateUnderLock(stateDir, lockOptions = {}) {
   const memo = MIGRATION.get(stateDir);
   const retryDue = memo?.retryAt != null && Date.now() >= memo.retryAt;
   if (memo && !retryDue && (!memo.pending.length || Date.now() - memo.checkedAt < PENDING_RECHECK_MS)) return memo;
@@ -559,13 +559,13 @@ function migrateUnderLock(stateDir) {
     for (const root of legacyStateRoots()) {
       const legacyDir = path.join(root, key);
       if (marker.sources[legacyDir] || !isDirectory(legacyDir)) continue;
-      const legacy = readLegacyRecords(legacyDir);
+      const legacy = readLegacyRecords(legacyDir, null, lockOptions);
       if (legacy === null) { retryAt = Date.now() + LEGACY_RETRY_MS; continue; }
       marker.sources[legacyDir] = mergeLegacyRecords(stateDir, legacyDir, legacy, marker);
       changed = true;
     }
   }
-  if (marker.pending.length && settlePending(stateDir, marker)) changed = true;
+  if (marker.pending.length && settlePending(stateDir, marker, lockOptions)) changed = true;
   if (changed || !fs.existsSync(markerFileOf(stateDir))) writeMarker(stateDir, marker);
   return remember(stateDir, marker, retryAt);
 }
@@ -581,14 +581,14 @@ function ensureMigrated(stateDir, lockOptions = {}) {
     if (Date.now() - memo.checkedAt < PENDING_RECHECK_MS) return memo;
   }
   // Inside this process's own critical section the lock is already held.
-  if (HELD_LOCKS.has(stateDir)) return migrateUnderLock(stateDir);
-  return lockStateDir(stateDir, () => migrateUnderLock(stateDir), lockOptions);
+  if (HELD_LOCKS.has(stateDir)) return migrateUnderLock(stateDir, lockOptions);
+  return lockStateDir(stateDir, () => migrateUnderLock(stateDir, lockOptions), lockOptions);
 }
 
 // A job served in place lives in its legacy directory until its worker ends.
-function jobStateDir(cwd, jobId) {
+function jobStateDir(cwd, jobId, lockOptions = {}) {
   const stateDir = resolveStateDir(cwd);
-  const status = ensureMigrated(stateDir);
+  const status = ensureMigrated(stateDir, lockOptions);
   return status.pending.find(item => item.id === jobId)?.stateDir ?? stateDir;
 }
 function pendingJobs(stateDir, status) {
@@ -729,23 +729,30 @@ export function generateJobId(prefix = "job") {
   return `${prefix}-${Date.now().toString(36)}-${random}`;
 }
 
+// Pairing state belongs only to the private job file, never the index or reports.
+export function withoutPrivateActivity(job) {
+  if (!job) return job;
+  const { activityPendingTools, ...visible } = job;
+  return visible;
+}
+
 export function upsertJob(cwd, jobPatch) {
   return updateState(cwd, (state) => {
     const timestamp = nowIso();
     const existingIndex = state.jobs.findIndex((job) => job.id === jobPatch.id);
     if (existingIndex === -1) {
-      state.jobs.unshift({
+      state.jobs.unshift(withoutPrivateActivity({
         createdAt: timestamp,
         updatedAt: timestamp,
         ...jobPatch
-      });
+      }));
       return;
     }
-    state.jobs[existingIndex] = {
+    state.jobs[existingIndex] = withoutPrivateActivity({
       ...state.jobs[existingIndex],
       ...jobPatch,
       updatedAt: timestamp
-    };
+    });
   });
 }
 
@@ -811,7 +818,7 @@ export function readJobFile(jobFile) {
 // One lock covers both the full record and index, including concurrent lease,
 // answer, cancellation and progress updates. A stale reader cannot erase them.
 export function updateJob(cwd, jobId, mutate, options = {}) {
-  return lockStateDir(jobStateDir(cwd, jobId), stateDir => {
+  return lockStateDir(jobStateDir(cwd, jobId, { lockTimeoutMs: options.lockTimeoutMs }), stateDir => {
     const state = readState(path.join(stateDir, STATE_FILE_NAME));
     const file = path.join(stateDir, JOBS_DIR_NAME, `${jobId}.json`);
     const indexed = state.jobs.find(j => j.id === jobId);
@@ -825,7 +832,7 @@ export function updateJob(cwd, jobId, mutate, options = {}) {
     // Keep raw results/output and the activity journal in the private job file.
     // Status reads the index: cursor updates after completion must not copy raw
     // tool payloads into its output, or duplicate a growing journal there.
-    const { result, report, rendered, activity, ...indexedNext } = next;
+    const { result, report, rendered, activity, activityPendingTools, ...indexedNext } = next;
     const interruptionReason = result?.interruptionReason ?? report?.interruptionReason;
     if (interruptionReason) Object.assign(indexedNext, { interruptionReason, interruptionConfirmed: result?.interruptionConfirmed ?? report?.interruptionConfirmed });
     commitState(stateDir, state, { ...state, jobs: [indexedNext, ...jobs] });

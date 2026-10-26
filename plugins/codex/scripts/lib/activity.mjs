@@ -1,5 +1,57 @@
 import { createHash } from "node:crypto";
 
+export const ACTIVITY_RETAINED_MAX = 500;
+export const ACTIVITY_PENDING_MAX = 100;
+
+function countToolUses(events, pending) {
+  let count = 0;
+  for (const event of events) {
+    if (!["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall"].includes(event.type)) continue;
+    count += 1;
+    if (event.type === "fileChange") continue;
+    // Mirror codex-live/model.ts collapseActivity: starts pair FIFO with a
+    // terminal event by command, or by type/server/tool (not callId). Count a
+    // pair once, unmatched events once, and each file-change entry once.
+    const text = value => typeof value === "string" ? value : "";
+    const identity = event.type === "commandExecution"
+      ? [event.type, text(event.command)] : [event.type, text(event.server), text(event.tool)];
+    // Persist only counts of outstanding starts, not completed item history.
+    // Hashes keep command excerpts out of the index and bound each key's size.
+    const key = createHash("sha256").update(JSON.stringify(identity)).digest("base64url");
+    if (event.lifecycle === "started") {
+      pending[key] = (pending[key] ?? 0) + 1;
+      const keys = Object.keys(pending);
+      if (keys.length > ACTIVITY_PENDING_MAX) {
+        // A completion whose start was evicted counts as unmatched; accept that overcount to bound persisted state.
+        for (const oldest of keys.slice(0, keys.length - ACTIVITY_PENDING_MAX)) delete pending[oldest];
+      }
+    } else if ((event.lifecycle === "completed" || ["completed", "failed", "cancelled", "declined"].includes(event.status)) && pending[key]) {
+      count -= 1;
+      if (--pending[key] === 0) delete pending[key];
+    }
+  }
+  return count;
+}
+
+export function appendActivity(stored, events, at = new Date().toISOString()) {
+  const retained = stored.activity ?? [];
+  const pending = stored.activityTotals ? { ...stored.activityPendingTools } : {};
+  // Legacy records have no totals: seed from their available history once.
+  // Keep outstanding pairs across window eviction and updater/process restarts.
+  const totals = stored.activityTotals ?? {
+    events: retained.length,
+    toolUses: countToolUses([...retained].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0)), pending)
+  };
+  const seq = stored.activitySeq ?? retained.at(-1)?.seq ?? 0;
+  const appended = events.map((event, index) => ({ ...event, seq: seq + index + 1, at }));
+  return {
+    activity: [...retained, ...appended].slice(-ACTIVITY_RETAINED_MAX),
+    activitySeq: seq + appended.length,
+    activityTotals: { events: totals.events + appended.length, toolUses: totals.toolUses + countToolUses(appended, pending) },
+    activityPendingTools: pending
+  };
+}
+
 // Display cleanup only: strip ANSI escapes and control/bidi characters so
 // snippets stay single-line and terminal-safe. Credential redaction was removed
 // deliberately (it blanked ordinary `NAME=value` text such as `ANSWER=Yes`);

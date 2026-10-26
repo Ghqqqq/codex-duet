@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { makeTempDir, initGitRepo, run } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { PROTOCOL_PATH, protocolVersion, readMode, reminderText, setMode } from "../plugins/codex/scripts/lib/ultra-codex-mode.mjs";
+import { PROTOCOL_PATH, protocolVersion, readMode, reminderText, setMode, modeFile } from "../plugins/codex/scripts/lib/ultra-codex-mode.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
@@ -21,14 +21,24 @@ function fixture() {
   const json = result => { assert.equal(result.status, 0, result.stderr + result.stdout); return JSON.parse(result.stdout); };
   const prompt = (text, sessionId = SESSION, extra = {}) => run(process.execPath, [promptHook], { cwd: repo, env: baseEnv, input: JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: sessionId, cwd: repo, prompt: text, ...extra }) });
   const lifecycle = (event, input) => run(process.execPath, [lifecycleHook, event], { cwd: repo, env: baseEnv, input: JSON.stringify({ hook_event_name: event, cwd: repo, ...input }) });
-  const modeFile = sessionId => path.join(resolveStateDir(repo, baseEnv), "ultra-codex", `${sessionId}.json`);
-  return { dir, repo, env, baseEnv, call, json, prompt, lifecycle, modeFile };
+  return { dir, repo, env, baseEnv, call, json, prompt, lifecycle, modeFile: sessionId => modeFile(repo, sessionId, baseEnv) };
 }
 test("ultra-codex mode is a per-session switch: on/off/status, the prompt reminder, and session cleanup", () => {
   const f = fixture();
+  const other = path.join(f.dir, "other"); fs.mkdirSync(other); initGitRepo(other);
+  const legacy = (cwd, sessionId = SESSION) => {
+    const file = path.join(resolveStateDir(cwd, f.env), "ultra-codex", `${sessionId}.json`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ sessionId, scale: "quick", maxWorkers: 1 }));
+    return file;
+  };
+  const oldModes = () => [legacy(f.repo), legacy(other)];
+  const assertRemoved = files => files.forEach(file => assert.equal(fs.existsSync(file), false));
+  const ignored = oldModes();
   // Off by default; status never needs the session id and the preamble points to the protocol.
   const off = f.json(f.call("ultra-codex", "status", "--json"));
   assert.deepEqual([off.mode, off.sessionId, off.protocolFile], ["off", SESSION, PROTOCOL_PATH]);
+  assertRemoved(ignored);
   const forCommand = f.call("ultra-codex", "status", "--for-command");
   assert.equal(forCommand.status, 0, forCommand.stderr);
   assert.equal(run(process.execPath, [script, "ultra-codex", "status", "--json"], { cwd: f.repo, env: f.baseEnv }).status, 0, "status without a session id still answers");
@@ -47,27 +57,39 @@ test("ultra-codex mode is a per-session switch: on/off/status, the prompt remind
   assert.deepEqual([on.mode, on.scale, on.maxWorkers], ["on", "thorough", 4]);
   assert.ok(fs.existsSync(f.modeFile(SESSION)));
   assert.equal(fs.statSync(f.modeFile(SESSION)).mode & 0o777, 0o600);
+  assert.equal(modeFile(other, SESSION, f.env), f.modeFile(SESSION));
+  const shared = f.json(f.call("ultra-codex", "status", "--cwd", other, "--json"));
+  assert.deepEqual(shared, on);
+  assert.ok(f.prompt("refactor in another workspace", SESSION, { cwd: other }).stdout.trim().length > 0);
   const reminder = f.prompt("refactor the parser so it streams");
   assert.equal(reminder.status, 0, reminder.stderr);
   assert.ok(reminder.stdout.trim().length > 0);
-  assert.equal(f.prompt("/codex:ultra-codex off").stdout, "", "the command's own prompt gets no reminder");
+  const fromPrompt = oldModes();
+  assert.equal(f.prompt("/codex:ultra-codex off", SESSION, { cwd: other }).stdout, "", "the command's own prompt gets no reminder");
+  assertRemoved(fromPrompt);
   assert.equal(f.prompt("/ultra-codex status").stdout, "", "nor the user-level alias");
   assert.equal(f.prompt("refactor", "22222222-aaaa-4bbb-8ccc-000000000002").stdout, "", "another session in the same repository is unaffected");
   assert.equal(f.prompt("refactor", undefined, { session_id: undefined }).stdout, "", "no session id, no reminder");
   assert.equal(run(process.execPath, [promptHook], { cwd: f.repo, env: f.baseEnv, input: "not json" }).status, 0, "a broken hook input never blocks the prompt");
   // on again keeps `since` and the worker cap unless given; scale follows the flags.
-  const again = f.json(f.call("ultra-codex", "on", "--json"));
+  const fromOn = oldModes();
+  const again = f.json(f.call("ultra-codex", "on", "--cwd", other, "--json"));
+  assertRemoved(fromOn);
   assert.deepEqual([again.scale, again.maxWorkers, again.since], ["auto", 4, on.since]);
   // Resume and compact keep the mode; a fresh start or /clear for the same id drops it.
   for (const source of ["resume", "compact"]) {
-    assert.equal(f.lifecycle("SessionStart", { session_id: SESSION, source }).status, 0, source);
+    const fromStart = oldModes();
+    assert.equal(f.lifecycle("SessionStart", { session_id: SESSION, source, cwd: other }).status, 0, source);
+    assertRemoved(fromStart);
     assert.ok(fs.existsSync(f.modeFile(SESSION)), `${source} keeps the mode`);
   }
   assert.equal(f.lifecycle("SessionStart", { session_id: SESSION, source: "clear" }).status, 0);
   assert.equal(fs.existsSync(f.modeFile(SESSION)), false, "/clear starts without the mode");
   // Off: idempotent, reports what ran, and the reminder stops.
   f.json(f.call("ultra-codex", "on", "--json"));
-  const turnedOff = f.json(f.call("ultra-codex", "off", "--json"));
+  const fromOff = oldModes();
+  const turnedOff = f.json(f.call("ultra-codex", "off", "--cwd", other, "--json"));
+  assertRemoved(fromOff);
   assert.deepEqual([turnedOff.mode, turnedOff.wasOn, turnedOff.runningJobs], ["off", true, []]);
   assert.equal(fs.existsSync(f.modeFile(SESSION)), false);
   assert.equal(f.prompt("refactor the parser").stdout, "");
@@ -75,14 +97,20 @@ test("ultra-codex mode is a per-session switch: on/off/status, the prompt remind
   assert.equal(alreadyOff.status, 0, alreadyOff.stderr);
   // SessionEnd clears a mode left on.
   f.json(f.call("ultra-codex", "on", "--json"));
-  assert.equal(f.lifecycle("SessionEnd", { session_id: SESSION }).status, 0);
+  const fromEnd = oldModes(), foreign = legacy(other, "foreign-session");
+  assert.equal(f.lifecycle("SessionEnd", { session_id: SESSION, cwd: other }).status, 0);
+  assertRemoved(fromEnd);
+  assert.ok(fs.existsSync(foreign), "another session's recent legacy record is left for retention");
   assert.equal(fs.existsSync(f.modeFile(SESSION)), false, "SessionEnd removes the mode");
   // A stale file from a session that never ended is pruned at the next start.
   const stale = setMode(f.repo, "33333333-aaaa-4bbb-8ccc-000000000003", {}, f.baseEnv);
   const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
   fs.utimesSync(stale.file, old, old);
+  const staleLegacy = legacy(other, "stale-legacy"); fs.utimesSync(staleLegacy, old, old);
   assert.equal(f.lifecycle("SessionStart", { session_id: SESSION, source: "startup" }).status, 0);
   assert.equal(fs.existsSync(stale.file), false, "stale modes are pruned");
+  assert.equal(fs.existsSync(staleLegacy), false, "stale legacy modes in other workspaces are pruned");
+  assert.ok(fs.existsSync(foreign));
 });
 
 test("control invocations omit the protocol and the safe preamble requests a versioned task-only Read", () => {

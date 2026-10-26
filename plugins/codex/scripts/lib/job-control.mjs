@@ -2,7 +2,7 @@ import { leaseSnapshot, leaseExpiryReport } from "./job-runtime.mjs";
 import fs from "node:fs";
 
 import { getSessionRuntimeStatus } from "./codex.mjs";
-import { getConfig, importLegacyJob, listJobs, readJobFile, resolveJobFile, unresolvedTask, visibleJobs } from "./state.mjs";
+import { getConfig, importLegacyJob, listJobs, readJobFile, resolveJobFile, unresolvedTask, visibleJobs, withoutPrivateActivity } from "./state.mjs";
 import { SESSION_ID_ENV } from "./tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
@@ -162,7 +162,7 @@ function inferLegacyJobPhase(job, progressPreview = []) {
 export function enrichJob(job, options = {}) {
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
   const enriched = {
-    ...job,
+    ...withoutPrivateActivity(job),
     kindLabel: getJobTypeLabel(job),
     ...leaseSnapshot(job), ...leaseExpiryReport(job),
     progressPreview:
@@ -235,9 +235,10 @@ export function buildStatusSnapshot(cwd, options = {}) {
   const recordForJob = job => job.jobClass === "task" ? readStoredJob(workspaceRoot, job.id) ?? job : job;
   // Tasks need their private record to be observable. Keep legacy index-only
   // review listings; retention removes dangling entries under the state lock.
-  const workspaceJobs = visibleJobs(listJobs(workspaceRoot).filter(job =>
-    job.jobClass !== "task" || !["queued", "running"].includes(job.status) || fs.existsSync(resolveJobFile(workspaceRoot, job.id))), recordForJob);
-  const jobs = sortJobsNewestFirst(options.all ? workspaceJobs : filterJobsForCurrentSession(workspaceJobs, options));
+  const workspaceJobs = listJobs(workspaceRoot).filter(job =>
+    job.jobClass !== "task" || !["queued", "running"].includes(job.status) || fs.existsSync(resolveJobFile(workspaceRoot, job.id)));
+  const scopedJobs = options.all ? workspaceJobs : filterJobsForCurrentSession(workspaceJobs, options);
+  const jobs = sortJobsNewestFirst(visibleJobs(scopedJobs, recordForJob));
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
   const statusJob = (job) => {
@@ -267,6 +268,7 @@ export function buildStatusSnapshot(cwd, options = {}) {
     running,
     latestFinished,
     recent,
+    historyOmitted: scopedJobs.length - running.length - Number(Boolean(latestFinished)) - recent.length,
     needsReview: Boolean(config.stopReviewGate)
   };
 }

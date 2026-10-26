@@ -183,7 +183,7 @@ test("broker relay routes only to the owner, rejects other sockets and fails clo
 test("task requests are logged, origin flags persist in task/status/result without becoming global", () => {
   const f = fixture();
   const first = f.call("task", "--json", "--report", "--approve-browser-origin", "HTTPS://EXAMPLE.COM:443", "--approve-browser-origin", "https://second.example", "fixture");
-  assert.equal(first.status, 0, first.stderr);
+  assert.equal(first.status, 2, first.stderr);
   const report = JSON.parse(first.stdout);
   assert.deepEqual(report.approvedBrowserOrigins, ["https://example.com", "https://second.example"]);
   const status = JSON.parse(f.call("status", report.jobId, "--json").stdout);
@@ -197,7 +197,7 @@ test("task requests are logged, origin flags persist in task/status/result witho
   assert.doesNotMatch(log + first.stderr, /DO_NOT_LOG_FIXTURE|access_browser_origin|networkApprovalContext/);
 
   const follow = f.call("task", "--json", "--fresh", "fixture separate task");
-  assert.equal(follow.status, 0, follow.stderr);
+  assert.equal(follow.status, 2, follow.stderr);
   assert.deepEqual(JSON.parse(follow.stdout).approvedBrowserOrigins, []);
   assert.ok(f.state().serverRequestReplies.slice(8).every(r => r.error?.code === -32601 || r.result?.action === "cancel"));
   assert.match(follow.stderr, /no-flag/);
@@ -226,7 +226,7 @@ test("background jobs persist invocation origins and expose them after completio
     if (!["queued", "running"].includes(status.job.status)) break;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  assert.equal(status.job.status, "completed");
+  assert.equal(status.job.status, "blocked");
   const result = JSON.parse(f.call("result", queued.jobId, "--json").stdout);
   assert.deepEqual(result.storedJob.request.approvedBrowserOrigins, ["https://example.com"]);
   assert.deepEqual(result.storedJob.result.approvedBrowserOrigins, ["https://example.com"]);
@@ -238,7 +238,7 @@ test("shared broker delivers task server requests and origin approvals to the ac
   const broker = await readyBroker(f.repo, f.env); t.after(broker.close);
   try {
     const r = f.call("task", "--report", "--json", "--approve-browser-origin", "https://example.com", "fixture");
-    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.status, 2, r.stderr);
     const report = JSON.parse(r.stdout);
     const status = JSON.parse(f.call("status", report.jobId, "--json").stdout);
     const all = JSON.parse(f.call("status", "--json").stdout);

@@ -9,6 +9,9 @@ user-invocable: false
 Background `duet task`/`wait`/`answer` reports arrive with the completion notification;
 native `codex:codex-native` reports arrive as agent results. Only if a report is
 missing, use `duet result <worker>`. Do not parse output files or poll.
+A typed prompt may carry a `Duet: … ended while nothing was waiting …` line for
+endings no wait or notification delivered; read each listed `duet result … --details`
+before acting on that work.
 Report v2 gives `status`, `worker`, `jobId`, `summary`, nonempty evidence, `next`
 and `details`. `checks.ran` is captured evidence; `checks.claimed` is Codex's
 account. Use `duet result <worker> --details` for shortened fields, full handles,
@@ -30,7 +33,7 @@ or `call`/`once`/`task`/`always`/`deny`/`no`. Answers are trimmed and
 case-insensitive; exact labels allow a trailing period. Anything else, including
 `yes`, negations or qualified replies, denies the request. Do not add an
 explanation or infer permission from ambiguous text. This also applies to native
-SendMessage; see [approval choices](../../../../docs/computer-use-approvals.md#forwarded-approvals-owned-jobs).
+SendMessage; see [approval choices](https://github.com/Ghqqqq/codex-duet/blob/main/docs/computer-use-approvals.md#forwarded-approvals-owned-jobs).
 
 When the helper returns Codex output:
 - Preserve the helper's verdict, summary, findings, and next steps structure.

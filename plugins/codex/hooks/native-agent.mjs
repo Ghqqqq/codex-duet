@@ -7,6 +7,8 @@ const WAIT_TIMEOUT_SEC = '3600';
 const HEARTBEAT_MS = 30000;
 const EARLY_HANDLES_MS = 1500;
 const READY = 'Native Codex workers ready: Agent(subagent_type: "codex:codex-native", prompt) — optional first line "DUET: <flags>"; SendMessage to continue or answer; stop from /tasks; live progress shows inside the agent and in codex-live.';
+const GUIDE_ID = 'codex:native-dispatch';
+const NATIVE_GUIDE = 'Native Codex workers are ready. Dispatch Codex with Agent(subagent_type: "codex:codex-native", name: "<label>", prompt: "<brief>"); an optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast|--normal --fork --cwd <dir> sets task flags. The agent result is the Duet report; continue a worker or answer its question with SendMessage. Browser work and Computer Use run natively: an app not yet approved arrives as an approval question answered through SendMessage. Use background-Bash duet task only when the agent reports native_adapter_unavailable, a dispatch needs a per-call override the DUET line rejects (--run, --approve-browser-origin, --approve-computer-app, --lease-sec, --question-timeout-sec), or you follow up a worker that Bash launched.';
 const PERSON_ORIGINS = ['composer', 'bridge', 'sdk'];
 // Final statuses whose Codex turn is known to have ended. Interrupted,
 // cancelled and failed jobs need a confirmed cancellation instead.
@@ -31,7 +33,14 @@ const keyFor = (session, id) => `${PREFIX}${session}:${id}`;
 const closedKey = (session, id) => `${CLOSED}${session}:${id}`;
 const bindingFailedKey = (session, id) => `${BINDING_FAILED}${session}:${id}`;
 const nonceFor = (session, agent, turn) => [session, agent, turn].map(encodeURIComponent).join(':');
-const nativeNext = (state, status) => `SendMessage to ${state.name || state.agentId} ${status === 'needs_answer' ? 'with the answer' : 'to continue'}`;
+const nativeNext = (state, status, blockers = []) => {
+  const blocker = status === 'blocked' && blockers.find(blocker =>
+    ['context_window_exceeded', 'provider_refused', 'auth_required'].includes(blocker.code));
+  if (blocker?.code === 'context_window_exceeded') return 'Start a new native agent with a shorter brief.';
+  if (blocker?.code === 'provider_refused') return 'Start a new native agent with a reworded brief.';
+  if (blocker?.code === 'auth_required') return 'Run /codex:setup, then start a new native agent.';
+  return `SendMessage to ${state.name || state.agentId} ${status === 'needs_answer' ? 'with the answer' : 'to continue'}`;
+};
 // Catch next is replay-safe (d.ts 1211-1213), even after a successful spawn.
 function passthrough($, e, next) { return next(e); }
 // Count the UTF-8 bytes of JSON string content, including escaped controls and
@@ -281,17 +290,31 @@ async function drive($, e, state, progress) {
     await handles($, state, state.jobId);
   } else {
     let input = state.incoming.text, args, questionChanged = false;
+    const answeringDisplayedQuestion = state.answer?.status === 'needs_answer';
     if (!input.trim()) return blocked('Empty native-agent message; nothing was dispatched.', state);
     // Overlapping stop handlers may have saved a stale status; the job record
     // decides before a new message is routed as a dispatch or an answer.
-    if (state.jobId && (ACTIVE.includes(state.status) || state.status === 'needs_answer')) {
+    if (state.jobId && (answeringDisplayedQuestion || ACTIVE.includes(state.status) || state.status === 'needs_answer')) {
       // Read only: the save below persists it together with the new intent.
       const job = await handles($, state, state.jobId, false, false);
       // questionId is the question last returned to Claude, never merely the
       // latest one read by a heartbeat, recovery or this pre-answer refresh.
-      questionChanged = job.pendingQuestion?.id !== state.questionId;
+      const pending = ACTIVE.includes(job.status) && job.pendingQuestion?.answer === undefined ? job.pendingQuestion : null;
+      questionChanged = pending?.id !== state.questionId;
       // A pending question keeps the job running; its report says needs_answer.
-      if (ACTIVE.includes(job.status) && job.pendingQuestion) state.status = 'needs_answer';
+      if (pending) state.status = 'needs_answer';
+      if (answeringDisplayedQuestion && !pending) {
+        // The persisted displayed result fixes this message's intent, even if
+        // another answer path completed the job while the adapter was unloaded.
+        state.intent = { session: state.session, agentId: e.agentId, turnId: e.turnId, kind: 'answer', nonce: nonceFor(state.session, e.agentId, e.turnId) };
+        delete state.incoming;
+        await save($, state);
+        const current = await companion($, state, ['result', state.jobId, '--report']);
+        if (current.jobId !== state.jobId) throw new Error('Duet report does not match the recorded job handle.');
+        state.status = current.status;
+        return { ...current, next: nativeNext(state, current.status),
+          notice: 'The earlier question was already resolved or ended. Send a new brief to start new work.' };
+      }
       if (state.status === 'needs_answer' && state.permissionMode === 'plan' && job.request?.sandbox !== 'read-only') {
         return blocked('Plan mode cannot resume a writable Codex turn; answer outside plan mode or start a read-only agent.', state, 'native_plan_mode_read_only');
       }
@@ -364,7 +387,7 @@ async function drive($, e, state, progress) {
     await handles($, state, state.jobId);
   }
   if (report.status === 'needs_answer') await progress.line(`? Waiting for Claude: ${report.question?.text || report.summary}`);
-  return { ...report, next: nativeNext(state, report.status) };
+  return { ...report, next: report.blockers?.some(blocker => blocker.code === 'thread_busy') ? report.next : nativeNext(state, report.status, report.blockers) };
 }
 async function cancel($, state, deadline) {
   let job;
@@ -761,12 +784,27 @@ export function register(on) {
   });
   on('turn.complete', async ($, e, next) => {
     if (e.isAborted && await ours($, e.agentId)) {
-      const state = await $.store.get(keyFor(await $.session.id(), e.agentId));
+      const sessionId = await $.session.id();
+      const state = await $.store.get(keyFor(sessionId, e.agentId));
       // A cancelled wait may report owner_stopped before this callback. Still
       // cancel its recorded job; do not rely on the report's status label.
       // stopJob closes the turn (for a later SendMessage) only with evidence it
       // ended; a job that may still run keeps it open until duet cancel.
-      if (state?.intent?.turnId === e.turnId) await stopJob($, state);
+      if (state?.intent?.turnId === e.turnId) {
+        const deadline = await $.clock.now() + 4500;
+        // An aborted step may have synthesized its stop report because process
+        // calls were already forbidden. Claude received that report even if
+        // the worker has not finished interrupting yet.
+        if (state.jobId && state.answer?.jobId === state.jobId
+            && ['interrupted', 'cancelled', 'owner_stopped'].includes(state.answer.status)) {
+          try {
+            await $.process.run(['node', `${$.plugin.root}/scripts/lib/report-delivery.mjs`, '--mark-emitted'], {
+              stdin: JSON.stringify({ sessionId, jobIds: [state.jobId] }), timeoutMs: 500
+            });
+          } catch { /* Leave an undelivered-ending notice as the fallback. */ }
+        }
+        await stopJob($, state, deadline);
+      }
     }
     return next(e);
   }).catch(passthrough);
@@ -791,6 +829,15 @@ export function register(on) {
       if (!result?.drop) { announced.add(session); await $.store.set(key, true); }
       return result;
     } finally { announcing.delete(session); release(); }
+  }).catch(passthrough);
+  // The one-time notice above is lost when the conversation compacts; the
+  // system prompt is rebuilt for every request, including mid-turn after an
+  // automatic compaction. Only requests that can dispatch agents get it.
+  on('prompt.compose', async ($, e, next) => {
+    const result = await next(e);
+    if (!registered || !e.tools?.includes('Agent') || !Array.isArray(result?.sections)
+        || result.sections.some(section => section.id === GUIDE_ID)) return result;
+    return { ...result, sections: [...result.sections, { id: GUIDE_ID, text: NATIVE_GUIDE, scope: 'session' }] };
   }).catch(passthrough);
   registered = true;
 }

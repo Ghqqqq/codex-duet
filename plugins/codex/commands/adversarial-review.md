@@ -35,7 +35,7 @@ Execution mode rules:
   - `Run in background`
 
 Argument handling:
-- Preserve the user's arguments exactly, passing them through the single-quoted heredoc below without shell expansion.
+- Pass the raw `$ARGUMENTS` unchanged through the single-quoted heredoc below, without shell expansion. Do not split, reorder, unquote or rewrite the arguments; the companion parses them deterministically.
 - If an argument line is exactly `DUET_ARGS`, choose a delimiter absent from the arguments and change both heredoc delimiters together.
 - Do not strip `--wait` or `--background` yourself.
 - Do not weaken the adversarial framing or rewrite the user's focus text.
@@ -43,9 +43,9 @@ Argument handling:
 - `/codex:adversarial-review` uses the same review target selection as `/codex:review`.
 - It supports working-tree review, branch review, and `--base <ref>`.
 - It does not support `--scope staged` or `--scope unstaged`.
-- Unlike `/codex:review`, it can still take extra focus text after the flags.
-- Unknown flags within two character edits of a supported option are rejected as likely typos, with a suggested option and usage. Other unknown flags (for example, `--focus-on-races`) remain focus text.
-- Use `--` before literal focus text that resembles an option: `-- --baes main` passes `--baes main` as focus without changing the review target.
+- Unlike `/codex:review`, it can take extra focus text. Without an explicit separator, the first non-option starts literal focus; trailing `--wait`, `--background` and `--json` tokens are still options.
+- In the option prefix, unknown flags within two character edits of a supported option are rejected as likely typos, with a suggested option and usage. Unknown flags inside focus remain unchanged.
+- Users should put `--` before focus that starts with something option-like: `-- --baes main` passes `--baes main` as focus without changing the review target.
 
 Foreground flow:
 - Run:

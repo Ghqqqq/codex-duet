@@ -46,8 +46,17 @@ To restore that tool profile, preview and apply
 `setup --sync-tools --profile chrome --replace-cua`; sandbox and browser approval
 remain separate settings.
 
+Before any write, including a dry-run or an otherwise identical definition,
+`codex-app` validates a regular executable node file and a regular readable CUA
+launcher. Missing or stale asset paths fail without a config write or backup;
+repair the installation or select a current template before retrying.
+
 Desktop Accessibility and Screen Recording permissions must already be granted
-to **Codex Computer Use.app**. Setup does not grant OS permissions or probe tools.
+to **Codex Computer Use.app**. Setup does not grant OS permissions or run live tools.
+`setup --json` checks the configured enabled CUA executable locally and reports
+`tools.cuaReplReason` when it cannot launch. Other assets and extension connections
+remain unprobed. Missing optional CUA tools do not by themselves make core
+runtime/invocation/authentication readiness (`ready`) false.
 After changing tool/browser configuration, restart the Claude session/shared
 Codex runtime when other workers have finished.
 
@@ -197,6 +206,11 @@ The isolated home may contain `runtime.json` with an absolute `codexBinary` path
 `CODEX_COMPANION_BIN` overrides it; otherwise `codex` on PATH is used. A binary
 change affects newly started runtimes; an existing workspace broker keeps its
 executable until it exits (after 60 s idle by default) or is restarted.
+If a pinned runtime is missing or unusable, setup may probe PATH's `codex` to
+enrich its repair guidance, but it still reports the broken pin. These optional
+version/help probes share setup's 45-second deadline, with a 20-second cap per
+probe and no probe when the budget is exhausted. Repair or remove the pin to
+select another runtime; installing a global Codex does not override it.
 A custom absolute `CODEX_COMPANION_HOME` is supported; homes overlapping
 the normal Codex home are rejected. Failures never fall back to the normal
 session store.
@@ -223,7 +237,21 @@ readable managed policy, user CLAUDE.md/rules and the ancestors of the Claude
 session's directory (the worker cwd when that is unknown). It cannot
 reproduce effective settings, exclusions, external-import approvals, inline
 policy or later path-triggered rules. Managed environments skip user-supplied `prompt.context` hooks, so a personally
-installed plugin uses this fallback there.
+installed plugin uses this fallback there. Project and local files, `.claude/rules`
+and their `@` imports are read only when their real path lies inside the ancestor
+directory that owns them: a repository's symlinked `.claude` or `.claude/rules`
+cannot pull in files from elsewhere on disk. User and managed profiles may still be
+symlinks.
+
+User instructions/rules and auto-memory exclusions use an absolute
+`CLAUDE_CONFIG_DIR` when set, otherwise `~/.claude`. Missing, empty or relative
+values fall back to `~/.claude` for instruction scanning and transcript imports.
+Real-path exclusions also cover symlinked profile and memory directories; the
+loaded inventory, when available, remains authoritative.
+When the selected profile resolves to a different directory from `HOME/.claude`,
+the fallback ancestor scan skips that unselected default profile's CLAUDE.md and
+rules. A workspace under HOME therefore does not pick them up as project
+instructions. The comparison uses real paths, including symlinked profiles.
 
 Threads retain the instructions captured at their creation. Start a new Claude
 session and a fresh task to apply changed instructions. To disable forwarding,
@@ -246,12 +274,17 @@ from the isolated config; custom lists remain unchanged.
 then runs the stdin brief. The recorded label is “imported Claude conversation
 (fidelity not verified)”. It does not promise a lossless copy of Claude's context.
 `--source '<jsonl>'` overrides the source; the file must resolve beneath
-`~/.claude/projects/`. Imports above the byte limit fail rather than truncate.
+the selected Claude profile's `projects/` directory (`~/.claude/projects/` by
+default), including when the profile root is symlinked. Both discovered and
+explicit sources are checked by real path; sources or symlink targets outside
+that root are refused. Private fork/transfer staging and abandoned-stage cleanup
+use that same profile's projects root. Imports above the byte limit fail rather than truncate.
 `--fork` cannot combine with `--to`, `--thread`, `--continue` or resume flags;
 use `--to` after the fork completes.
 
 | Environment variable | Effect |
 | --- | --- |
+| `CLAUDE_CONFIG_DIR` | Absolute Claude profile root for fallback instructions/rules, auto-memory exclusions, transcript discovery/validation and import staging/cleanup; missing, empty or relative values use `~/.claude` for these operations |
 | `CODEX_COMPANION_CLAUDE_MD=0` | Disable instruction capture/forwarding; use a fresh thread to opt out |
 | `CODEX_COMPANION_IMPORT_MAX_BYTES` | Positive integer import byte limit; default 20 MiB (20,971,520 bytes) |
 | `CODEX_COMPANION_SESSION_ID` | Session scope, exported by SessionStart; `--session <id>` overrides it |

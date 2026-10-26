@@ -8,9 +8,10 @@ allowed-tools: Bash(node:*)
 !`node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status "$ARGUMENTS"`
 
 If the user did not pass a job ID:
-- Render the command output as a single Markdown table for the current and past runs in this session.
+- Render the command output as a single Markdown table for the current and past runs in this session (or all sessions with `--all`).
 - Keep it compact. Do not include progress blocks or extra prose outside the table.
-- Preserve the actionable fields from the command output, including job ID, kind, status, phase, elapsed or duration, summary, and follow-up commands. Preserve `orphaned` labels, remaining lease seconds and the exact adopt instruction for running jobs whose owners are not renewing. A `blocked` status means a known runtime refusal (for example a Computer Use app the isolated runtime has not approved); keep it distinct from `completed` and `needs_input`, and preserve the approved browser origins / Computer Use apps lines when a job shows them. A `needs_answer` job whose `question.kind` is `approval` is waiting for the parent's decision on a Computer Use app request; show the question and its four options verbatim.
+- Preserve the selected scope and any nonzero `historyOmitted` count as a table row. Session filtering precedes history limits; omissions count retained jobs hidden in that scope, not deleted records.
+- Preserve the actionable fields from the command output, including job ID, kind, status, phase, elapsed or duration, summary, and follow-up commands. Preserve `orphaned` labels, remaining lease seconds and the exact adopt instruction for running jobs whose owners are not renewing. A `blocked` status means work stopped for a reported blocker, including runtime refusals, usage limits, full context or missing authorization; preserve its code and actionable message, keep it distinct from `completed` and `needs_input`, and preserve the approved browser origins / Computer Use apps lines when a job shows them. A `needs_answer` job whose `question.kind` is `approval` is waiting for the parent's decision on a Computer Use app request; show the question and its four options verbatim.
 
 If the user did pass a job ID:
 - Present the full command output to the user.

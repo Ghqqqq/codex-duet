@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing';
 import type { EngineInterface, On, PaneOpenArgs, UiScrollArgs } from 'claude-code';
-import { boundState, clearFinished, visibleJobs, visibleSessions } from '../hooks/model';
+import { ATTENTION_SESSION_LIMIT, attention, attentionCounts, boundState, clearFinished, validView, visibleJobs, visibleSessions } from '../hooks/model';
 import { feedItems, feedLines, feedWindow, normalizeFeed, scrollFeed, selectedJob } from '../hooks/layout';
 import { createPoller } from '../hooks/poll';
 import { writeView } from '../hooks/runtime';
@@ -73,7 +73,7 @@ function fixture(on: On, failure: () => string | undefined = () => undefined) {
 // The kit validates trees but does not paint a scrollable window. These unit
 // tests use an entirely in-memory engine and assert no engine scrolls occur;
 // Mounted session/timer integration tests use the real kit.
-function scrollFixture() {
+function scrollFixture(diagnostics?: Parameters<typeof createPoller>[1]) {
   const files = new Map<string, { text: string; mtime: number }>();
   const markers: string[] = [];
   const scrolls: UiScrollArgs[] = [];
@@ -132,7 +132,7 @@ function scrollFixture() {
   engine.session = guard(engine.session, 'session');
   const guarded = guard(engine, 'engine') as unknown as EngineInterface;
   const checkedPoller = () => {
-    const raw = createPoller(guarded);
+    const raw = createPoller(guarded, diagnostics);
     return async (force = false) => {
       await raw(force);
       // Assert outside product catch blocks: a rejected call cannot hide a violation.
@@ -152,7 +152,8 @@ function scrollFixture() {
       id, status: 'running', startedAt: createdAt, activity: [{ seq: 1, type: 'agentMessage', text: 'Working' }],
     }) });
   }
-  return { forbidden, poll, add, files, scrolls, opens, reads, logs, statuses, unreadable,
+  return { engine, forbidden, poll, add, files, scrolls, opens, reads, logs, statuses, unreadable,
+    seedState: (value: CodexLiveState) => { state = value; },
     rejectNextWrite: () => { rejectWrite = true; },
     remove: (id: string) => {
       const index = markers.indexOf(`${id}.json`);
@@ -175,7 +176,6 @@ function patchJob(files: Map<string, { text: string; mtime: number }>, id: strin
 const created = (ms: number) => new Date(ms).toISOString();
 const historyPane = { title: 'Codex', isFocused: true, bodyColumns: 56, placement: 'inline' as const,
   scroll: { offset: 0, bodyRows: 14 }, view: {} };
-const waitingCount = (text: string | undefined) => Number(text?.match(/(\d+) waiting/)?.[1] ?? 0);
 
 test('discovery caches unchanged files, respects closed panes and opens new active jobs', async ($, on) => {
   let failure: string | undefined;
@@ -342,6 +342,91 @@ test('malformed markers and missing jobs recover while preserving the last trans
   await f.clock.advance(10000);
   expect(f.latest()?.jobs[0]?.status).toBe('completed');
   await ui.unmount();
+
+  // Inventory health survives cold starts, retry backoff, cache reload and
+  // unreadable new markers without confusing a healthy individual job.
+  const discovery = scrollFixture();
+  discovery.add('readable');
+  const list = discovery.engine.fs.list;
+  discovery.engine.fs.list = async () => { throw Object.assign(new Error('Fixture directory missing'), { code: 'ENOENT' }); };
+  await discovery.poll(true);
+  expect(discovery.latest().discoveryWarning).toBe(undefined);
+  expect(discovery.logs.length).toBe(0);
+  discovery.engine.fs.list = async () => { throw new Error('Fixture EACCES'); };
+  await discovery.poll(true); await discovery.poll(true);
+  expect(!!discovery.latest().discoveryWarning).toBe(true);
+  expect(discovery.logs.length).toBe(1);
+  discovery.engine.fs.list = list;
+  await discovery.poll(true);
+  expect(discovery.latest().discoveryWarning).toBe(undefined);
+  discovery.engine.fs.list = async () => { throw Object.assign(new Error('Fixture directory removed'), { code: 'ENOENT' }); };
+  await discovery.poll(true);
+  expect(!!discovery.latest().discoveryWarning).toBe(true);
+  expect(discovery.latest().jobs.length).toBe(1);
+  discovery.engine.fs.list = list;
+  await discovery.poll(true);
+  discovery.add('bad-marker');
+  const markerPath = '/home/duet/sessions/session-a/bad-marker.json';
+  discovery.unreadable.add(markerPath);
+  await discovery.poll(true);
+  expect(!!discovery.latest().discoveryWarning).toBe(true);
+  expect(discovery.latest().jobs[0]?.detailsUnavailable).toBe(false);
+  const logCount = discovery.logs.length;
+  discovery.advance(5000); await discovery.poll(true);
+  expect(discovery.logs.length).toBe(logCount);
+  discovery.unreadable.delete(markerPath);
+  discovery.advance(5000); await discovery.poll(true);
+  expect(discovery.latest().discoveryWarning).toBe(undefined);
+  expect(discovery.latest().jobs.length).toBe(2);
+
+  // Malformed JSON shapes reset only pane state, including nested corruption;
+  // a successful poll rediscovers the same untouched job/marker files.
+  const savedFiles = [...discovery.files];
+  const healthy = discovery.latest();
+  for (const malformed of [{ ...healthy, jobs: null },
+    { ...healthy, jobs: [{ ...healthy.jobs[0], events: [null] }] },
+    { ...healthy, feeds: { readable: { anchor: { source: 42 } } } }]) {
+    expect(validView(malformed)).toBe(false);
+    discovery.seedState(malformed as unknown as CodexLiveState);
+    const beforeLogs = discovery.logs.length;
+    await discovery.poll(true); await discovery.poll(true);
+    expect(validView(discovery.latest())).toBe(true);
+    expect(discovery.latest().jobs.length).toBe(2);
+    expect(discovery.logs.length).toBe(beforeLogs + 1);
+    expect([...discovery.files]).toEqual(savedFiles);
+  }
+
+  // Recovered terminal attention remains part of the inventory across normal
+  // retention and reload; only its named cap or Clear may remove it.
+  const retained = scrollFixture();
+  for (const status of ['needs_input', 'blocked']) {
+    retained.add(status, -100);
+    patchJob(retained.files, status, { status, completedAt: created(epoch), report: { status } });
+  }
+  retained.add('selected', 1);
+  await retained.poll(true);
+  for (let n = 0; n < 20; n++) {
+    retained.add(`done-${n}`, n - 20);
+    patchJob(retained.files, `done-${n}`, { status: 'completed', completedAt: created(epoch) });
+  }
+  await retained.poll(true);
+  expect(visibleSessions(retained.latest()).filter(attention).length).toBe(2);
+  expect(attentionCounts(retained.latest().jobs, retained.latest().attentionOmitted).blocked).toBe(2);
+  for (let n = 0; n < ATTENTION_SESSION_LIMIT; n++) {
+    retained.add(`attention-${n}`, n + 2);
+    patchJob(retained.files, `attention-${n}`, { status: n % 2 ? 'blocked' : 'needs_input', completedAt: created(epoch) });
+  }
+  await retained.poll(true); await retained.reload()(true);
+  expect(visibleSessions(retained.latest()).filter(attention).length).toBe(ATTENTION_SESSION_LIMIT);
+  expect(retained.latest().attentionOmitted).toBe(2);
+  expect(attentionCounts(retained.latest().jobs, retained.latest().attentionOmitted).blocked).toBe(ATTENTION_SESSION_LIMIT + 2);
+  expect(retained.latest().jobs.some(job => job.id === 'needs_input' || job.id === 'blocked')).toBe(false);
+  const attentionFiles = [...retained.files];
+  await writeView(retained.engine as unknown as EngineInterface, state => clearFinished(state, epoch));
+  await retained.poll(true);
+  expect(visibleSessions(retained.latest()).filter(attention).length).toBe(0);
+  expect(retained.latest().attentionOmitted).toBe(0);
+  expect([...retained.files]).toEqual(attentionFiles);
 });
 
 test('mounted pane preserves stopped content across polling and resizing, then follows on jump', async ($, on) => {
@@ -844,7 +929,8 @@ test('twenty long-summary conversations stay below budget and publish an active 
 });
 
 test("unchanged large conversations reread no jobs and retain bounded details", async () => {
-  const f = scrollFixture();
+  let bounds = 0, layouts = 0;
+  const f = scrollFixture({ onBound: () => { bounds++; }, onLayout: () => { layouts++; } });
   const activity = Array.from({ length: 200 }, (_, seq) => ({ seq, type: 'agentMessage', body: 'x'.repeat(4000) }));
   for (let n = 0; n < 200; n++) {
     const id = `turn-${n}`;
@@ -852,7 +938,9 @@ test("unchanged large conversations reread no jobs and retain bounded details", 
     patchJob(f.files, id, { threadId: 'shared', status: n === 199 ? 'running' : 'completed',
       completedAt: n === 199 ? undefined : created(epoch), activity: n >= 195 ? activity : [] });
   }
+  patchJob(f.files, 'turn-199', { pendingQuestion: { text: 'Continue?', expiresAt: epoch + 1500 } });
   await f.poll(true);
+  expect(attentionCounts(f.latest().jobs).question).toBe(1);
   f.latest().feeds = { 'thread:shared': { feedOffset: 0, following: true, seenLines: 0, columns: 60, rows: 8 } };
   f.reads.length = 0;
   f.advance(1000);
@@ -863,6 +951,39 @@ test("unchanged large conversations reread no jobs and retain bounded details", 
   expect(f.latest().jobs.filter(job => job.detailsLoaded).length).toBe(5);
   await f.poll(true); // No clock, file, or feed change at all.
   expect(f.reads.filter(path => path.startsWith('/jobs/'))).toEqual([]);
+  const feed = f.latest().feeds!['thread:shared'];
+  f.close();
+  await f.poll(true); // Establish the closed projection after the open feed update.
+  const before = { bounds, layouts };
+  await f.poll(true);
+  expect({ bounds, layouts }).toEqual(before);
+  f.advance(500); // Expire without changing the file or the five-second age bucket.
+  await f.poll(true);
+  expect(f.latest().jobs.find(job => job.id === 'turn-199')?.question).toBe(null);
+  expect(attentionCounts(f.latest().jobs).question).toBe(0);
+  expect(layouts).toBe(before.layouts);
+  expect(f.latest().feeds!['thread:shared']).toEqual(feed);
+  expect(f.reads.filter(path => path.startsWith('/jobs/'))).toEqual([]);
+  const afterExpiry = bounds;
+  await f.poll(true);
+  expect(bounds).toBe(afterExpiry);
+  f.advance(5000);
+  await f.poll(true);
+  expect(bounds).toBe(afterExpiry);
+  f.advance(5000); // Rediscover omitted markers without changing retained transcript inputs.
+  await f.poll(true);
+  expect(bounds).toBe(afterExpiry);
+  patchJob(f.files, 'turn-199', { activity: [{ seq: 201, type: 'agentMessage', body: 'Updated' }] });
+  await f.poll(true);
+  expect(bounds).toBe(afterExpiry + 1);
+  expect(layouts).toBe(before.layouts);
+  expect(f.latest().jobs.find(job => job.id === 'turn-199')?.question).toBe(null);
+  expect(selectedJob(f.latest())?.events.map(event => event.seq)).toEqual([201]);
+  // Reopening performs the deferred layout, using current content and the saved feed.
+  await f.engine.ui.open({ id: 'codex-live', title: 'Codex' });
+  await f.poll(true);
+  expect(layouts).toBe(before.layouts + 1);
+  expect(validView(f.latest())).toBe(true);
   expect(f.logs).toEqual([]);
 });
 
@@ -983,7 +1104,7 @@ test('scroll conflicts on six consecutive polls never starve a waiting follow-up
     expect(f.latest().jobsExpanded).toBe(true);
     expect(f.latest().jobs.find(job => job.id === 'follow-up')?.question?.text).toBe(question);
     expect(feedItems(selectedJob(f.latest())!, f.latest().nowMs).at(-1)?.results[0]?.text).toBe(question);
-    expect(waitingCount(f.statuses.at(-1))).toBe(1);
+    expect(attentionCounts(f.latest().jobs, f.latest().attentionOmitted).question).toBe(1);
     expect(f.opens.length).toBe(1);
     expect(f.latest().autoOpenedJobIds).toEqual(['follow-up']);
     expect(selectedJob(f.latest())?.turnCount).toBe(2);
@@ -997,6 +1118,7 @@ test('scroll conflicts on six consecutive polls never starve a waiting follow-up
 
 test('the second state budget pass evicts history when a new feed snapshot crosses the ceiling', async () => {
   const f = scrollFixture();
+  await f.engine.ui.open({ id: 'codex-live', title: 'Codex' });
   const activity = Array.from({ length: 200 }, (_, seq) => ({ seq, type: 'agentMessage', body: 'x'.repeat(4000) }));
   for (let session = 0; session < 20; session++) for (let turn = 0; turn < 20; turn++) {
     const id = `s${session}-t${turn}`;

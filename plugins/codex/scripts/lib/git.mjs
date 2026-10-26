@@ -2,19 +2,30 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { isProbablyText } from "./fs.mjs";
-import { formatCommandFailure, runCommand, runCommandChecked } from "./process.mjs";
+import { formatCommandFailure, runCommand } from "./process.mjs";
 
 const MAX_UNTRACKED_BYTES = 24 * 1024;
 const DEFAULT_INLINE_DIFF_MAX_FILES = 2;
 const DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
+const MAX_INLINE_UNTRACKED_BYTES = 256 * 1024;
+const MAX_INLINE_UNTRACKED_FILES = 32;
+const MAX_GIT_METADATA_BYTES = 8 * 1024 * 1024;
 
 // Git is directly executable on Windows. Repository-derived arguments must never pass through a shell.
 function git(cwd, args, options = {}) {
-  return runCommand("git", args, { cwd, ...options, shell: false });
+  const result = runCommand("git", args, { cwd, maxBuffer: MAX_GIT_METADATA_BYTES, ...options, shell: false });
+  // Diff measurement supplies its own buffer and handles overflow as a size signal.
+  if (options.maxBuffer === undefined && result.error && /** @type {NodeJS.ErrnoException} */ (result.error).code === "ENOBUFS") {
+    throw new Error(`Review Git output exceeded the ${MAX_GIT_METADATA_BYTES} byte metadata limit (git ${args[0]}). Reduce the review scope or inspect the repository manually.`);
+  }
+  return result;
 }
 
 function gitChecked(cwd, args, options = {}) {
-  return runCommandChecked("git", args, { cwd, ...options, shell: false });
+  const result = git(cwd, args, options);
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(formatCommandFailure(result));
+  return result;
 }
 
 function listUniqueFiles(...groups) {
@@ -67,6 +78,7 @@ function measureCombinedGitOutputBytes(cwd, argSets, maxBytes) {
 }
 
 function buildBranchComparison(cwd, baseRef) {
+  validateReviewBase(cwd, baseRef);
   const mergeBase = gitChecked(cwd, ["merge-base", "HEAD", baseRef]).stdout.trim();
   return {
     mergeBase,
@@ -96,7 +108,9 @@ export function detectDefaultBranch(cwd) {
   if (symbolic.status === 0) {
     const remoteHead = symbolic.stdout.trim();
     if (remoteHead.startsWith("refs/remotes/origin/")) {
-      return remoteHead.replace("refs/remotes/origin/", "");
+      const branch = remoteHead.slice("refs/remotes/origin/".length);
+      const local = git(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+      return local.status === 0 && !local.error ? branch : `origin/${branch}`;
     }
   }
 
@@ -120,6 +134,7 @@ export function getCurrentBranch(cwd) {
 }
 
 export function getWorkingTreeState(cwd) {
+  cwd = getRepoRoot(cwd);
   const staged = gitChecked(cwd, ["diff", "--cached", "--name-only", "-z"]).stdout.split("\0").filter(Boolean);
   const unstaged = gitChecked(cwd, ["diff", "--name-only", "-z"]).stdout.split("\0").filter(Boolean);
   const untracked = gitChecked(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]).stdout.split("\0").filter(Boolean);
@@ -133,7 +148,7 @@ export function getWorkingTreeState(cwd) {
 }
 
 export function resolveReviewTarget(cwd, options = {}) {
-  ensureGitRepository(cwd);
+  cwd = ensureGitRepository(cwd);
 
   const requestedScope = options.scope ?? "auto";
   const baseRef = options.base ?? null;
@@ -141,6 +156,7 @@ export function resolveReviewTarget(cwd, options = {}) {
   const supportedScopes = new Set(["auto", "working-tree", "branch"]);
 
   if (baseRef) {
+    validateReviewBase(cwd, baseRef);
     return {
       mode: "branch",
       label: `branch diff against ${baseRef}`,
@@ -165,6 +181,7 @@ export function resolveReviewTarget(cwd, options = {}) {
 
   if (requestedScope === "branch") {
     const detectedBase = detectDefaultBranch(cwd);
+    validateReviewBase(cwd, detectedBase);
     return {
       mode: "branch",
       label: `branch diff against ${detectedBase}`,
@@ -182,6 +199,7 @@ export function resolveReviewTarget(cwd, options = {}) {
   }
 
   const detectedBase = detectDefaultBranch(cwd);
+  validateReviewBase(cwd, detectedBase);
   return {
     mode: "branch",
     label: `branch diff against ${detectedBase}`,
@@ -190,29 +208,45 @@ export function resolveReviewTarget(cwd, options = {}) {
   };
 }
 
+function validateReviewBase(cwd, baseRef) {
+  const result = git(cwd, ["rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`]);
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`Review base ${JSON.stringify(baseRef)} does not resolve to a commit. Pass --base <existing-ref> or use --scope working-tree.`);
+  }
+}
+
 function formatSection(title, body) {
   return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
 }
 
-function formatUntrackedFile(cwd, relativePath) {
+function formatUntrackedFile(cwd, relativePath, budget) {
   const absolutePath = path.join(cwd, relativePath);
   let stat;
+  const omit = (reason) => {
+    budget.omitted.push({ path: relativePath, size: stat?.size ?? null, reason });
+    return `### ${relativePath}\n(${reason})`;
+  };
   try {
     stat = fs.lstatSync(absolutePath);
   } catch {
-    return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
+    return omit("skipped: broken symlink or unreadable file");
   }
   if (stat.isSymbolicLink()) {
-    return `### ${relativePath}\n(symlink, not inlined)`;
+    return omit("symlink, not inlined");
   }
   if (stat.isDirectory()) {
-    return `### ${relativePath}\n(skipped: directory)`;
+    return omit("skipped: directory");
   }
   if (!stat.isFile()) {
-    return `### ${relativePath}\n(skipped: not a regular file)`;
+    return omit("skipped: not a regular file");
   }
   if (stat.size > MAX_UNTRACKED_BYTES) {
-    return `### ${relativePath}\n(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+    return omit(`skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit`);
+  }
+  if (budget.files >= MAX_INLINE_UNTRACKED_FILES || budget.bytes + stat.size > MAX_INLINE_UNTRACKED_BYTES) {
+    omit("skipped: aggregate untracked inline budget");
+    return "";
   }
 
   let buffer;
@@ -220,17 +254,25 @@ function formatUntrackedFile(cwd, relativePath) {
     const file = fs.realpathSync(absolutePath);
     const relative = path.relative(fs.realpathSync(cwd), file);
     if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-      return `### ${relativePath}\n(skipped: outside repository)`;
+      return omit("skipped: outside repository");
     }
     buffer = fs.readFileSync(file);
   } catch {
-    return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
+    return omit("skipped: broken symlink or unreadable file");
   }
   if (!isProbablyText(buffer)) {
-    return `### ${relativePath}\n(skipped: binary file)`;
+    return omit("skipped: binary file");
   }
 
-  return [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
+  const content = [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
+  const bytes = Buffer.byteLength(content, "utf8") + 2;
+  if (buffer.length > MAX_UNTRACKED_BYTES || budget.bytes + bytes > MAX_INLINE_UNTRACKED_BYTES) {
+    omit("skipped: aggregate untracked inline budget");
+    return "";
+  }
+  budget.bytes += bytes;
+  budget.files += 1;
+  return content;
 }
 
 function collectWorkingTreeContext(cwd, state, options = {}) {
@@ -244,12 +286,13 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
   }
   const status = statusLines.join("\n");
   const changedFiles = listUniqueFiles(state.staged, state.unstaged, state.untracked);
+  const budget = { bytes: 0, files: 0, omitted: [] };
+  const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file, budget)).filter(Boolean).join("\n\n");
 
   let parts;
   if (includeDiff) {
     const stagedDiff = gitChecked(cwd, ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
     const unstagedDiff = gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
-    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
     parts = [
       formatSection("Git Status", status),
       formatSection("Staged Diff", stagedDiff),
@@ -259,7 +302,6 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
   } else {
     const stagedStat = gitChecked(cwd, ["diff", "--shortstat", "--cached"]).stdout.trim();
     const unstagedStat = gitChecked(cwd, ["diff", "--shortstat"]).stdout.trim();
-    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
     parts = [
       formatSection("Git Status", status),
       formatSection("Staged Diff Stat", stagedStat),
@@ -268,12 +310,19 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
       formatSection("Untracked Files", untrackedBody)
     ];
   }
+  if (budget.omitted.length) {
+    parts.push(formatSection("Untracked Omission Manifest", budget.omitted.map(entry =>
+      `- ${JSON.stringify(entry.path)}: ${entry.size ?? "unknown"} bytes (${entry.reason})`).join("\n")));
+  }
 
   return {
     mode: "working-tree",
     summary: `Reviewing ${state.staged.length} staged, ${state.unstaged.length} unstaged, and ${state.untracked.length} untracked file(s).`,
     content: parts.join("\n"),
-    changedFiles
+    changedFiles,
+    untrackedInlineBytes: budget.bytes,
+    untrackedInlineFiles: budget.files,
+    omittedUntracked: budget.omitted
   };
 }
 
@@ -359,7 +408,9 @@ export function collectReviewContext(cwd, target, options = {}) {
     fileCount: details.changedFiles.length,
     diffBytes,
     inputMode: includeDiff ? "inline-diff" : "self-collect",
-    collectionGuidance: buildAdversarialCollectionGuidance({ includeDiff }),
+    collectionGuidance: buildAdversarialCollectionGuidance({ includeDiff }) + (details.omittedUntracked?.length
+      ? " Read the omitted regular files listed in the Untracked Omission Manifest yourself with read-only commands before finalizing findings; do not follow symlinks outside the repository. Report any files you could not inspect."
+      : ""),
     ...details
   };
 }

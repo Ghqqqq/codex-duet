@@ -33,6 +33,19 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --json $ARGUMENTS
 If Codex is already installed or npm is unavailable:
 - Do not ask about installation.
 
+Setup readiness uses a 45-second overall deadline. Node/npm version checks cap
+at 10 seconds each, Codex version/help probes at 20 seconds each, initialization
+at 30 seconds and account/config requests at 20 seconds each within the
+remaining setup deadline. Optional PATH Codex version/help diagnostics for a
+broken pin share that same deadline, with a 20-second cap per probe and no probe
+once the budget is exhausted. They only enrich repair guidance; setup still
+reports the broken pin. Outside setup, availability/auth probes default to
+a 60-second overall deadline. These generous safeguards only guard against
+hangs; they do not predict startup duration. Shutdown may add brief overhead.
+A stalled Codex probe returns
+`ready: false`, `auth.status: unreachable`, `auth.reason: timeout`; do not treat
+it as a missing installation or logout.
+
 If `auth.status` is `unreachable` (including workspace routing discovery timeouts, network/socket errors, EPERM or EACCES):
 - Automatically retry setup once with Bash `dangerouslyDisableSandbox: true` and report the first failure and retry.
 - If still unreachable, say: "Codex authentication could not be checked. Rerun the companion with Bash dangerouslyDisableSandbox: true, or allow network access and local sockets, then rerun setup --json. Do not log in again for this transport failure."
@@ -48,6 +61,9 @@ NODE_REPL_TRUSTED_CODE_PATHS. This retains desktop/Sky, browser backends,
 instructions, tool visibility/output limits and exactly the template's timeouts.
 It never adds a tool timeout. Unknown fields/credentials/env forwarding are
 rejected. `--chatgpt-resources` is incompatible with this profile.
+The resolved node must be a regular executable file and the launcher a regular
+readable file. Validation runs before any write, even on dry-runs or identical
+definitions; missing/stale assets fail without config changes or backups.
 
 For a different existing CUA server, dry-run shows `toolSync.diff` with old values
 redacted and `requiresReplace: true`. Applying refuses to clobber it without
@@ -55,6 +71,10 @@ redacted and `requiresReplace: true`. Applying refuses to clobber it without
 private backup, preserving unrelated configuration; an identical server is a
 no-op. Desktop permissions must already belong to Codex Computer Use.app. Setup
 does not grant OS permissions or run a live tool probe.
+`setup --json` checks the configured enabled CUA executable locally and adds
+`tools.cuaReplReason` if it is missing/non-executable. Other assets and extension
+connectivity are unprobed; missing optional CUA does not itself make core `ready`
+false.
 
 Setup and tool sync share one PID-aware `.duet-lock` per config file, wait only
 for a bounded interval, and recheck content before replacement. TOML changes
@@ -128,6 +148,12 @@ and `--json` (`projectDocs`: `projectDocs`, `fallbackFilenames`, `custom`,
 separately forwards Claude's loaded CLAUDE.md/rules, including user-level files,
 as developer instructions (approximate scan when the inventory is unavailable).
 That scan excludes auto-memory by real path, including indirect symlink aliases.
+An absolute `CLAUDE_CONFIG_DIR` selects the user instructions/rules and memory
+exclusions; missing, empty or relative values use `~/.claude`. Transcript import
+validation and staging use that same selected profile's `projects/` root.
+If another profile is selected, the fallback ancestor scan skips the unselected
+`HOME/.claude` by real path, including for workspaces beneath HOME, so its
+CLAUDE.md/rules are not picked up as project instructions.
 Use `duet task --fresh --no-claude-md` or `CODEX_COMPANION_CLAUDE_MD=0` to opt out
 of forwarding; existing threads retain their original instructions.
 
@@ -149,6 +175,6 @@ operations. Never run these commands automatically after a denial or from a work
 Unsupported MCP elicitations now return nonpersistent cancel. The task-only
 `--approve-browser-origin` flag remains a separate per-invocation network-egress
 grant; it is normally unnecessary because every sandbox mode keeps network access
-on. See [persistence evidence](../../../docs/browser-approvals.md).
+on. See [persistence evidence](https://github.com/Ghqqqq/codex-duet/blob/main/docs/browser-approvals.md).
 Browser assignments use fresh owned tabs, close them in cleanup, and report stale
 claims with the full session ID. Setup never opens or controls a browser.

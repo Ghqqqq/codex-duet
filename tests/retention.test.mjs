@@ -4,6 +4,7 @@ import net from "node:net";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { makeTempDir, run, requireLocalSockets } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
@@ -101,7 +102,7 @@ test("SessionEnd deletes only its instruction snapshot and retention rechecks th
 });
 
 test("automatic retention sweeps only stale owned import copies and leaves fresh copies and symlinks intact", async () => {
-  const f = fixture(), projects = path.join(f.env.HOME, ".claude", "projects");
+  const f = fixture(), projects = path.join(f.env.CLAUDE_CONFIG_DIR, "projects");
   const source = path.join(projects, "repo", "session.jsonl"); json(source, { type: "user" });
   const module = new URL("../plugins/codex/scripts/lib/claude-session-transfer.mjs", import.meta.url).href;
   const probe = run(process.execPath, ["--input-type=module", "-e", `
@@ -404,7 +405,7 @@ test("automatic cleanup persists its report, serializes overlapping runs and wai
   assert.equal(after.threadsDeleted, 1);
 });
 
-test("cleanup dry-run is read-only, apply uses its candidates and ignores automatic throttling", () => {
+test("cleanup dry-run is read-only, apply uses its candidates and ignores automatic throttling", async () => {
   const f = fixture(), old = seedJob(f, "old"), recent = seedJob(f, "recent", { completedAt: f.recent }); marker(f, "old.json");
   json(path.join(f.home, "duet", "retention.json"), { lastRunAt: new Date(f.now).toISOString(), lastReport: {} });
   const before = fs.readFileSync(old.indexFile, "utf8"), p = cliResult(f, "--dry-run", "--json");
@@ -417,6 +418,136 @@ test("cleanup dry-run is read-only, apply uses its candidates and ignores automa
   assert.equal(cliResult(f, "--days", "0", "--dry-run", "--json").days, 1);
   const bad = run(process.execPath, [cli, "cleanup", "--days", "1.5"], { cwd: f.cwd, env: f.env });
   assert.equal(bad.status, 1); assert.match(bad.stderr, /integer/);
+
+  const g = fixture(), stateRoot = path.dirname(resolveStateDir(g.cwd, g.env));
+  const age = directory => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) age(file);
+      else if (!entry.isSymbolicLink()) fs.utimesSync(file, new Date(g.old), new Date(g.old));
+    }
+    fs.utimesSync(directory, new Date(g.old), new Date(g.old));
+  };
+  const leftover = (name, record = { id: "old", status: "completed" }) => {
+    const cwd = path.join(g.root, name); fs.mkdirSync(cwd);
+    const directory = resolveStateDir(cwd, g.env);
+    json(path.join(directory, "jobs", "old.json"), record);
+    fs.writeFileSync(path.join(directory, "jobs", "broken.json"), "{broken");
+    age(directory);
+    return directory;
+  };
+  const safe = leftover("safe"), deadLock = leftover("dead-lock"), recentTree = leftover("recent"), activeTree = leftover("active", { id: "old", status: "running" });
+  const liveTree = leftover("live", { id: "old", status: "completed", pid: process.pid });
+  const unresolved = leftover("unresolved", { id: "old", status: "failed", jobClass: "task", result: { failureSource: "transport", turnEnded: false } });
+  const brokerTree = leftover("broker"), journalTree = leftover("journal"), unknown = leftover("unknown", {}), linked = leftover("linked"), changed = leftover("changed");
+  const foreign = path.join(stateRoot, "another-tool"), foreignArtifact = leftover("foreign-artifact"), markerless = leftover("markerless");
+  json(path.join(foreign, "config.json"), { tool: "unrelated" }); fs.writeFileSync(path.join(foreign, "data.db"), "foreign data"); age(foreign);
+  fs.writeFileSync(path.join(foreignArtifact, "jobs", "data.db"), "foreign data"); age(foreignArtifact);
+  fs.rmSync(path.join(markerless, "jobs"), { recursive: true }); age(markerless);
+  json(path.join(unknown, ".legacy-migration.json"), { pending: [] }); age(unknown);
+  const closedRun = path.join(safe, "runs", "run-closed");
+  json(path.join(closedRun, "jobs", "old.brief.md"), "brief");
+  json(path.join(closedRun, "jobs", "old.report.json"), { status: "completed" });
+  fs.writeFileSync(path.join(closedRun, "journal.jsonl"), [
+    { type: "run_started", runId: "run-closed", recordedAt: g.old },
+    { type: "run_closed", recordedAt: g.recent }
+  ].map(row => JSON.stringify(row)).join("\n") + "\n"); age(safe);
+  json(path.join(brokerTree, "broker.json"), {}); age(brokerTree);
+  json(path.join(journalTree, "runs", "run-open", "journal.jsonl"), { type: "run_started", runId: "run-open", recordedAt: g.recent }); age(journalTree);
+  fs.mkdirSync(path.join(deadLock, ".state-lock")); fs.writeFileSync(path.join(deadLock, ".state-lock", "owner-2147483647-00000000-0000-0000-0000-000000000000"), ""); age(deadLock);
+  fs.symlinkSync(path.join(safe, "jobs", "old.json"), path.join(linked, "outside")); age(linked);
+  fs.utimesSync(path.join(recentTree, "jobs", "old.json"), new Date(g.recent), new Date(g.recent));
+  const pendingWrite = leftover("pending-write");
+  fs.writeFileSync(path.join(pendingWrite, "jobs", `.old.json.${process.pid}.${randomUUID()}.tmp`), "temporary"); age(pendingWrite);
+  const snapshot = directory => Object.fromEntries(fs.readdirSync(directory).map(name => {
+    const file = path.join(directory, name), stat = fs.lstatSync(file);
+    return [name, { ino: stat.ino, mtime: stat.mtimeMs, ctime: stat.ctimeMs, mode: stat.mode,
+      value: stat.isDirectory() ? snapshot(file) : stat.isSymbolicLink() ? fs.readlinkSync(file) : fs.readFileSync(file).toString("base64") }];
+  }));
+  const beforeTrees = snapshot(stateRoot), preview = cliResult(g, "--dry-run", "--json");
+  // Old id-less/unparsable artifacts are ignored only inside a proven layout.
+  assert.deepEqual(preview.inertWorkspaces.map(item => item.workspace).sort(), [safe, deadLock, changed, unknown].sort());
+  assert.deepEqual(snapshot(stateRoot), beforeTrees);
+  assert.equal(fs.existsSync(path.join(g.home, "duet", "quarantine")), false);
+  for (const workspace of [recentTree, activeTree, liveTree, unresolved, brokerTree, journalTree, linked]) assert.ok(preview.workspacesRetained.some(item => item.workspace === workspace));
+  assert.ok(preview.workspacesRetained.some(item => item.workspace === foreignArtifact && item.reason === "unknown-content"));
+  for (const workspace of [foreign, markerless]) assert.equal(preview.workspacesRetained.some(item => item.workspace === workspace), false);
+  assert.ok(preview.workspacesRetained.some(item => item.workspace === pendingWrite && item.reason === "pending-write"));
+  const pending = plan(g);
+  json(path.join(changed, "jobs", "old.json"), { id: "old", status: "running" });
+  const beforeApply = snapshot(stateRoot), applied = await applyRetention(pending);
+  assert.equal(applied.inertWorkspaces.length, 3); assert.deepEqual(applied.errors, []);
+  assert.ok(applied.workspacesRetained.some(item => item.workspace === changed));
+  assert.deepEqual(snapshot(stateRoot), beforeApply);
+  for (const result of [preview, applied]) for (const field of ["quarantine", "expiredQuarantine", "workspacesQuarantined", "quarantineDeleted"]) assert.equal(Object.hasOwn(result, field), false);
+  // Pre-release quarantine directories are no longer inspected or expired.
+  const quarantineRoot = path.join(g.home, "duet", "quarantine");
+  fs.cpSync(foreignArtifact, path.join(quarantineRoot, `${path.basename(foreignArtifact)}-${Date.now()}`), { recursive: true }); age(quarantineRoot);
+  const beforeQuarantine = snapshot(quarantineRoot);
+  await applyRetention(planRetention({ now: Date.now() + 31 * DAY, env: g.env }));
+  assert.deepEqual(snapshot(quarantineRoot), beforeQuarantine);
+  leftover("automatic");
+  const beforeAutomatic = snapshot(stateRoot), automatic = await runAutomaticRetention({ env: g.env, now: g.now });
+  assert.ok(automatic.inertWorkspaces.some(item => path.basename(item.workspace).startsWith("automatic-")));
+  assert.deepEqual(snapshot(stateRoot), beforeAutomatic);
+
+  const h = fixture(), workspace = resolveStateDir(h.cwd, h.env), thread = randomUUID();
+  json(path.join(workspace, "jobs", "victim.json"), { turnId: "unique" });
+  json(path.join(workspace, ".legacy-migration.json"), { pending: [] }); age(workspace);
+  rollout(h, thread);
+  const noJobs = path.join(path.dirname(workspace), "another-tool");
+  json(path.join(noJobs, "config.json"), { tool: "unrelated" }); age(noJobs);
+  const beforeNoJobs = snapshot(noJobs);
+  const inventoryUrl = new URL("../plugins/codex/scripts/lib/job-runtime.mjs", import.meta.url).href;
+  const inventory = () => {
+    const result = run(process.execPath, ["--input-type=module", "-e", `import {recordedThreadJobs} from ${JSON.stringify(inventoryUrl)}; console.log(JSON.stringify(recordedThreadJobs('unique')));`], { cwd: h.cwd, env: h.env });
+    assert.equal(result.status, 0, result.stderr); return JSON.parse(result.stdout);
+  };
+  assert.equal(inventory().complete, true);
+  const inertPlan = plan(h), beforeInert = snapshot(workspace), deleted = [];
+  assert.deepEqual(inertPlan.inertWorkspaces.map(item => item.workspace), [workspace]);
+  assert.deepEqual(inertPlan.threads.map(item => item.threadId), [thread]);
+  const inertReport = await applyRetention(inertPlan, { deleteThread: async id => { deleted.push(id); return {}; } });
+  assert.equal(inertReport.inertWorkspaces.length, 1); assert.deepEqual(inertReport.errors, []);
+  assert.deepEqual(deleted, [thread]); assert.equal(inertReport.threadsDeleted, 1);
+  assert.deepEqual(snapshot(workspace), beforeInert);
+  assert.deepEqual(snapshot(noJobs), beforeNoJobs);
+  // The inventory exemption uses a fixed 24-hour age, not retention's 30 days.
+  fs.utimesSync(path.join(workspace, "jobs", "victim.json"), new Date(), new Date());
+  assert.equal(inventory().complete, false);
+  fs.utimesSync(path.join(workspace, "jobs", "victim.json"), new Date(h.now - 2 * DAY), new Date(h.now - 2 * DAY));
+  assert.equal(inventory().complete, true); assert.equal(plan(h).inertWorkspaces.length, 0);
+  age(workspace);
+  fs.writeFileSync(path.join(workspace, "jobs", "broken.json"), "{broken"); age(workspace);
+  assert.equal(inventory().complete, true);
+
+  // A real private-record/index writer waits on a fixture-held lock while
+  // cleanup runs. Cleanup must neither disturb its reservation nor move jobs/.
+  const racePlan = plan(h), ready = path.join(h.root, "writer-ready"), output = path.join(h.root, "writer-result.json");
+  const lock = path.join(workspace, ".state-lock"), owner = path.join(lock, `owner-${process.pid}-${randomUUID()}`);
+  fs.mkdirSync(lock); fs.writeFileSync(owner, "");
+  const stateUrl = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
+  const childCode = `import fs from 'node:fs'; import path from 'node:path'; import {upsertJob,writeJobFile} from ${JSON.stringify(stateUrl)};
+    const mkdir = fs.mkdirSync; fs.mkdirSync = function(p, ...args) { const result = mkdir.call(this, p, ...args); if (path.basename(p).startsWith('.owner-')) fs.writeFileSync(${JSON.stringify(ready)}, 'ready'); return result; };
+    try { const job = {id:'new', status:'queued', workspaceRoot:${JSON.stringify(h.cwd)}}; writeJobFile(${JSON.stringify(h.cwd)}, job.id, job); upsertJob(${JSON.stringify(h.cwd)}, job); fs.writeFileSync(${JSON.stringify(output)}, JSON.stringify({ok:true})); }
+    catch (error) { fs.writeFileSync(${JSON.stringify(output)}, JSON.stringify({ok:false, code:error.code, message:error.message})); process.exitCode = 1; }`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", childCode], { cwd: h.cwd, env: h.env, stdio: "ignore" });
+  const exited = new Promise((resolve, reject) => { child.once("exit", resolve); child.once("error", reject); });
+  let race;
+  try {
+    const until = Date.now() + 5000;
+    while (!fs.existsSync(ready) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    assert.ok(fs.existsSync(ready), "writer reserved its lock");
+    race = await applyRetention(racePlan, { deleteThread: async () => assert.fail("new writer protects threads") });
+  } finally { fs.unlinkSync(owner); fs.rmdirSync(lock); await exited; }
+  assert.deepEqual(JSON.parse(fs.readFileSync(output)), { ok: true });
+  assert.equal(race.inertWorkspaces.length, 0); assert.equal(race.threadsSkipped, 1);
+  assert.deepEqual(race.errors.map(error => error.threadId), [thread]);
+  assert.ok(race.workspacesRetained.some(item => item.workspace === workspace));
+  assert.ok(JSON.parse(fs.readFileSync(path.join(workspace, "state.json"))).jobs.some(job => job.id === "new"));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(workspace, "jobs", "new.json"))).id, "new");
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(workspace, "jobs", "victim.json"))), { turnId: "unique" });
+
 });
 
 test("prewarm runs retention after broker startup and real broker unsupported RPC leaves rollout intact", async t => {

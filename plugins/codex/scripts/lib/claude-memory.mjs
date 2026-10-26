@@ -8,11 +8,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveStateRoot, withJournalLock } from "./state.mjs";
 import { instructionInventory } from "../../hooks/claude-memory.mjs";
+import { resolveClaudeConfigRoot } from "./claude-session-transfer.mjs";
 
 export const EXECUTOR_FRAMING = "The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.";
 export const INSTRUCTION_LIMIT = 60000; // UTF-16 units, including framing and omissions.
 const SNAPSHOT_BYTES = 8 * 1024 * 1024;
-const FALLBACK_NOTE = "Approximate startup scan: readable managed policy, ~/.claude/CLAUDE.md and rules, then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.";
+const FALLBACK_NOTE = "Approximate startup scan: readable managed policy, CLAUDE.md and rules under the absolute CLAUDE_CONFIG_DIR (otherwise ~/.claude), then session-cwd ancestors (CLAUDE.md, .claude/CLAUDE.md, unconditional rules, CLAUDE.local.md). Scan root: --session-cwd, then CODEX_COMPANION_SESSION_CWD, then the worker cwd. Imports stay within their directory tree, at most four hops. Scan budget: 256 files, 1,000,000 characters, 2,048 rule directories. Effective settings, exclusions, external-import approvals, inline policy, AGENTS fallback and later path-triggered rules cannot be reproduced without Claude's loaded inventory.";
 const hash = value => createHash("sha256").update(value).digest("hex");
 const digest = value => hash(JSON.stringify(value));
 export const CLAUDE_MEMORY_DIR = "claude-memory";
@@ -127,14 +128,15 @@ const inside = (root, file) => {
   const relative = path.relative(root, file);
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 };
-const autoMemory = file => /[\\/]\.claude[\\/](?:projects[\\/].*[\\/]memory|agent-memory(?:-local)?)[\\/]/.test(file);
+const autoMemory = (file, config) => /[\\/]\.claude[\\/](?:projects[\\/].*[\\/]memory|agent-memory(?:-local)?)[\\/]/.test(file)
+  || /^(?:projects[\\/].*[\\/]memory|agent-memory(?:-local)?)[\\/]/.test(path.relative(config, file));
 
 // Deliberately approximate, never a second implementation of Claude's loader.
 // Do not follow symlinks/imports out of the containing tree or read auto memory.
 export function scanClaudeInstructions(cwd, env = process.env) {
   const files = [], seen = new Set();
   const managed = process.platform === "darwin" ? "/Library/Application Support/ClaudeCode" : process.platform === "win32" ? path.join(env.ProgramFiles || "C:\\Program Files", "ClaudeCode") : "/etc/claude-code";
-  const user = path.join(env.HOME || env.USERPROFILE || os.homedir(), ".claude");
+  const user = resolveClaudeConfigRoot(env);
   const ancestors = [];
   for (let dir = path.resolve(cwd); path.dirname(dir) !== dir; dir = path.dirname(dir)) ancestors.unshift(dir);
   const memoryRoots = new Set();
@@ -162,8 +164,8 @@ export function scanClaudeInstructions(cwd, env = process.env) {
     if (files.length >= 256 || bytes >= 1000000) { bounded = true; return; }
     try {
       const file = fs.realpathSync(candidate), tree = fs.realpathSync(root);
-      if (!inside(tree, file) || seen.has(file) || autoMemory(logical) || autoMemory(file)
-          || autoMemory(path.resolve(root, path.relative(tree, file)))
+      if (!inside(tree, file) || seen.has(file) || autoMemory(logical, user) || autoMemory(file, user)
+          || autoMemory(path.resolve(root, path.relative(tree, file)), user)
           || [...memoryRoots].some(memory => inside(memory, file))) return;
       const stat = fs.statSync(file);
       if (!stat.isFile() || stat.size > 4 * 1024 * 1024) return;
@@ -197,11 +199,20 @@ export function scanClaudeInstructions(cwd, env = process.env) {
   }
   add(path.join(managed, "CLAUDE.md"), "managed"); rules(path.join(managed, ".claude", "rules"), "managed");
   add(path.join(user, "CLAUDE.md"), "user"); rules(path.join(user, "rules"), "user");
+  // HOME/.claude is a user profile, not project config. When CLAUDE_CONFIG_DIR
+  // selects another profile, a workspace under HOME must not pull it back in.
+  const real = directory => { try { return fs.realpathSync(directory); } catch { return path.resolve(directory); } };
+  const defaultProfile = real(path.join(env.HOME || env.USERPROFILE || os.homedir(), ".claude"));
+  const unselectedProfile = defaultProfile !== real(user) ? defaultProfile : null;
   for (const dir of ancestors) {
-    add(path.join(dir, "CLAUDE.md"), "project");
-    add(path.join(dir, ".claude", "CLAUDE.md"), "project");
-    rules(path.join(dir, ".claude", "rules"), "project");
-    add(path.join(dir, "CLAUDE.local.md"), "local");
+    // Project aliases cannot widen the owning ancestor's containment tree.
+    const root = real(dir);
+    add(path.join(dir, "CLAUDE.md"), "project", root);
+    if (real(path.join(dir, ".claude")) !== unselectedProfile) {
+      add(path.join(dir, ".claude", "CLAUDE.md"), "project", root);
+      rules(root, "project", path.join(dir, ".claude", "rules"));
+    }
+    add(path.join(dir, "CLAUDE.local.md"), "local", root);
   }
   const inventory = instructionInventory(files);
   return snapshotOf({ sessionId: null, cwd: path.resolve(cwd), ...inventory, complete: false, bounded });

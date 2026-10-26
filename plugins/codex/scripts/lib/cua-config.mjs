@@ -38,6 +38,14 @@ export function buildCodexAppCuaConfig({ normal, isolated, cuaTemplate, chatgptR
   if (!template.command.endsWith(`/${nodeSuffix}`) || !Array.isArray(template.args) || template.args.length !== 1) reject();
   absolute(template.args[0], "CUA launcher");
   if (!template.args[0].endsWith("/@oai/cua-repl/bin/cua-repl.mjs")) reject();
+  for (const [label, file] of [["node executable", template.command], ["launcher", template.args[0]]]) {
+    try {
+      if (!fs.statSync(file).isFile()) throw new Error("Not a file");
+      fs.accessSync(file, label === "node executable" ? fs.constants.X_OK : fs.constants.R_OK);
+    } catch {
+      throw new Error(`Codex App CUA ${label} is missing or ${label === "node executable" ? "not executable" : "unreadable"}; repair the app or select a current template. No configuration was written.`);
+    }
+  }
   if (template.enabled !== undefined && typeof template.enabled !== "boolean") reject();
   exactList(template.enabled_tools, toolNames, "enabled_tools");
   exactList(template.omit_tools_from, visibility, "omit_tools_from");

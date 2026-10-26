@@ -3,6 +3,7 @@ import process from "node:process";
 
 import { readJobFile, resolveJobFile, resolveJobLogFile, upsertJob, writeJobFile, updateJob } from "./state.mjs";
 import { recordFinishedJob } from "./job-runtime.mjs";
+import { appendActivity } from "./activity.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 
@@ -103,10 +104,7 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
     }
 
     updateJob(workspaceRoot, jobId, stored => ({ ...patch,
-      ...(normalized.activity?.length ? {
-        activity: [...(stored.activity ?? []), ...normalized.activity.map((event, index) => ({ ...event, seq: (stored.activitySeq ?? 0) + index + 1, at: nowIso() }))],
-        activitySeq: (stored.activitySeq ?? 0) + normalized.activity.length
-      } : {}),
+      ...(normalized.activity?.length ? appendActivity(stored, normalized.activity) : {}),
       startupTimings: { ...stored.startupTimings, ...normalized.startupTimings, ...(normalized.timing ? { [normalized.timing.phase]: normalized.timing } : {}) },
       ...(normalized.startupWarning ? { startupWarning: normalized.startupWarning } : {}),
       ...(normalized.item ? normalized.item.lifecycle === "completed" ? { currentItem: null, completedItems: [...(stored.completedItems ?? []), normalized.item].slice(-4) } : { currentItem: normalized.item } : {})
@@ -159,6 +157,14 @@ export async function runTrackedJob(job, runner, options = {}) {
   try {
     const execution = await runner();
     const completionStatus = execution.jobStatus ?? (execution.exitStatus === 0 ? "completed" : "failed");
+    const reviewArtifacts = job.jobClass === "review"
+      ? { rawOutputFile: job.rawOutputFile, resultFile: job.resultFile }
+      : {};
+    if (job.jobClass === "review") {
+      Object.assign(execution.payload, reviewArtifacts);
+      fs.writeFileSync(job.rawOutputFile, execution.payload.codex?.stdout ?? execution.payload.rawOutput ?? "", { mode: 0o600 });
+      fs.writeFileSync(job.resultFile, `${JSON.stringify(execution.payload, null, 2)}\n`, { mode: 0o600 });
+    }
     const completedAt = nowIso();
     recordFinishedJob(updateJob(job.workspaceRoot, job.id, () => ({
       status: completionStatus,
@@ -169,6 +175,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       phase: completionStatus === "completed" ? "done" : completionStatus,
       completedAt,
       result: execution.payload,
+      ...reviewArtifacts,
       report: execution.report ?? null,
       rendered: execution.rendered
     })));

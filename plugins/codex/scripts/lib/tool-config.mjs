@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-import { resolveIsolatedCodexHome } from "./codex-home.mjs";
+import { resolveIsolatedCodexHome, executableOnPath } from "./codex-home.mjs";
 import { buildCuaConfig, buildCodexAppCuaConfig, CUA_SETTING_KEYS } from "./cua-config.mjs";
 import { tryAcquirePidLock } from "./state.mjs";
 
@@ -392,7 +392,18 @@ export function getToolAvailability(env = process.env) {
     const repl = config.mcp_servers?.node_repl;
     const nodeRepl = Boolean(repl?.command) && repl.enabled !== false;
     const cua = config.mcp_servers?.cua_repl;
-    const cuaRepl = Boolean(cua?.command) && cua.enabled !== false;
+    let cuaRepl = Boolean(cua?.command) && cua.enabled !== false;
+    let cuaReplReason = null;
+    if (cuaRepl) {
+      try {
+        const command = path.isAbsolute(cua.command) ? cua.command : executableOnPath(cua.command, env);
+        if (!command || !fs.statSync(command).isFile()) throw new Error("Missing command");
+        fs.accessSync(command, fs.constants.X_OK);
+      } catch {
+        cuaRepl = false;
+        cuaReplReason = "Configured CUA command is missing or not executable.";
+      }
+    }
     const cuaBrowser = cuaRepl && cua.env?.CUA_REPL_ENABLED_SURFACES?.split(",").includes("browser");
     const cuaComputer = cuaRepl && cua.env?.CUA_REPL_ENABLED_SURFACES?.split(",").includes("computer");
     const marketplace = Boolean(config.marketplaces?.["openai-bundled"]);
@@ -401,7 +412,8 @@ export function getToolAvailability(env = process.env) {
       computerUse: cuaComputer || marketplace && nodeRepl && (enabled("computer-use") || enabled("unified-computer-use")) ? "available" : "missing",
       nodeRepl: nodeRepl ? "available" : "missing",
       cuaRepl: cuaRepl ? "available" : "missing",
-      basis: "configuration-only; assets, extension connection and live tools are not probed"
+      ...(cuaReplReason ? { cuaReplReason } : {}),
+      basis: "configuration and CUA executable check; other assets, extension connection and live tools are not probed"
     };
   } catch {
     return { browser: "unknown", computerUse: "unknown", nodeRepl: "unknown", cuaRepl: "unknown", basis: "config could not be read safely" };

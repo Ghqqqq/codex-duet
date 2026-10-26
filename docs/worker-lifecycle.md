@@ -61,6 +61,14 @@ Act on `status`:
   see [approval choices](computer-use-approvals.md#forwarded-approvals-owned-jobs).
 - `ownership_moved`: report it and stop using that owner; never re-adopt.
 
+Native SendMessage keeps its displayed-question intent across reloads. When no
+unanswered pending slot remains or the job has ended, the adapter returns the
+old job with a notice and does not run the late answer as a brief. A subsequent
+new message can start work; if a different answerable question is pending, it
+is returned instead. The adapter performs no local expiry check: a pinned answer
+to a still-present expired slot is refused by the companion, as in 1.4.2, rather
+than receiving an expiry-specific notice.
+
 Never run two waits for one job. Exit codes are completed 0, blocked/needs_input
 2, other terminal states 1, running/needs_answer 0, ownership_moved 2,
 and stopped owner wait 130. Direct mode rejects `--follow`, `--detached`,
@@ -84,6 +92,49 @@ Code decides whether to show it at the current width. Its `codex-live` slash
 command opens it at any width. It is read-only: it never starts, answers or
 cancels a job and costs no Claude tokens.
 
+## Unreported endings
+
+New task records carry `reportTracking: 1`. Terminal reports record
+`reportEmittedAt` through foreground output, `duet result` (compact or details),
+an owner wait's final or owner-stop line, task-notification delivery, or the
+native adapter's synthesized stop on abort. A native-dispatched job's owner-stop
+line is not marked by the companion, because the host discards an aborted native
+stream; the adapter marks the stop it actually returns. Index reads retry briefly
+when a concurrent write replaces the file. These markers are best effort.
+A task-notification attachment is marked only after the prompt carrying it is
+accepted; a dropped notification leaves the ending eligible for a notice.
+
+On the next typed prompt (`origin.kind === "composer"`), Claude receives one
+context line for up to five tracked jobs in this session that ended at least
+10 seconds earlier, have no emitted report or previous notice, and have no
+live attached owner wait. The line looks like:
+
+```text
+Duet: 1 worker ended while nothing was waiting for it: <worker> <status> (<reason>) — duet result '<id>' --cwd '<root>' --details
+```
+
+The reason is omitted when absent; multiple jobs share the line. Worker names
+are display-cleaned, a reason must be a plain code, and `--cwd` is omitted when
+the path contains control or bidi characters. Before attaching, the helper
+claims each job under its state lock with a random token (`endingClaim`), so
+concurrent prompts cannot attach the same ending and a report delivered before
+the claim suppresses the notice. After the prompt is accepted, the claim is
+confirmed as `endingNoticedAt` and the job is never noticed again; if the prompt
+is dropped or downstream handling fails, the claim is released. Jobs created before
+1.4.4 are not tracked and never receive this notice. It is a recovery cue for
+Claude to read the result, not a restart or a substitute for accepting it.
+
+Lookup errors, invalid/oversized state or the 2-second lookup timeout leave the
+prompt unchanged. The scan allows at most 256 state-root entries (including
+non-directories), 2 MiB per index and 8 MiB of indexes in total; exceeding a
+limit produces no notice. Claims expire after `ENDING_CLAIM_TTL_MS` (10 minutes), so a
+crash, a lost helper response or a failed release only delays the notice to a
+later prompt. If confirming an accepted notice fails, the hook remembers it and
+confirms it silently when it is claimed again; a plugin reload or new hook
+instance loses that memory, so an accepted notice can repeat once per instance.
+The Node helper runs on each typed
+prompt, with an estimated cost of about 60 ms that varies by machine and state.
+
 ## Fallback and compatibility feed mode
 
 Never pass `model` or `effort` to `Agent(subagent_type: "codex:codex-worker")`;
@@ -99,7 +150,12 @@ The companion's non-direct `--follow --report` feed and `--detached` launch
 remain available for compatibility; the launcher always adds `--direct` to
 task/wait/answer. A compatibility `wait <job> --owner <ownerId> --report` streams
 one line per event, then a JSON report with `activity` (at most 12 newest events),
-`activityCount`/`activityOmitted` and `cursor`. Its feed limit is 60 lines;
+`activityCount`/`activityOmitted` and `cursor`. Here `activityCount` counts events
+collected by that wait and `activityOmitted` counts those left out of its JSON
+tail. Events evicted from the stored 500-event window before the wait read them
+are added to both counts and reported separately as `activityEvicted`. Separately, `duet result <worker> --details` uses the job's cumulative
+event total for `activityCount` when the stored payload supplies no count.
+Its feed limit is 60 lines;
 `--json` suppresses the feed. Its wait budget defaults to 570 s (range 1–3600);
 `--min-interval-sec` opts into early returns on activity. Terminal results and
 new questions return immediately.
@@ -123,8 +179,17 @@ independent cursor, and ownerless observers share a separate cursor. Reading as
 an observer cannot consume the worker's feed or renew its lease. Feed cursors
 advance after flushed lines; pure JSON advances after its final write. An abrupt
 stop between delivery and cursor persistence may replay lines; run one wait per
-owner at a time. The journal is retained with the job (no silent event dropping).
-Legacy jobs without a journal return empty activity and cursor 0.
+owner at a time.
+
+Job records keep only the newest `ACTIVITY_RETAINED_MAX` (500) events.
+`activityTotals: { events, toolUses }` counts all appended activity; legacy
+records seed totals once from the events they still hold. The pane and
+`/codex:status` feed can show only retained events, so a reader that falls
+behind the window cannot recover older events there. Tool starts/completions
+are paired across window eviction using at most `ACTIVITY_PENDING_MAX` (100)
+hashed pending identities. Evicting an identity can overcount by one for each
+later completion whose start was forgotten; an identity can hold several starts.
+Legacy jobs without activity return an empty feed and cursor 0.
 
 The fallback never re-prints progress. After forwarding a question once, it uses
 `duet wait <worker> --after-question '<id>' --timeout-sec 20` to wait without
@@ -144,6 +209,9 @@ Use app elicitations go to the parent. There is no plan-mode switch.
 Request-user-input availability in ordinary mode was not assumed. A valid tool
 call keeps its RPC response pending while a private job record carries
 text/options/expiry. Answer stdin resolves that call and continues the **same turn**.
+Questions and forwarded approvals share one slot, admitted atomically under the
+job lock. Concurrent callers cannot overwrite each other: the winner remains
+pending and the loser receives `busy` guidance.
 
 Dynamic-tool fallback schema evidence (scratch files excluded from promotion):
 
@@ -173,12 +241,21 @@ are not evidence; verify job/thread/turn handles, artifacts and actual changes.
 Question text is bounded to 1000 characters and six options of 160 characters;
 answers to 8000 characters. Neither is copied into progress logs. The worker's
 contract forbids secrets/page content in questions. The default timeout is 900
-seconds (`task --question-timeout-sec`), after which the same response channel
-instructs conservative assumptions and final needs_input for essential missing
-input. Interrupt resolves the question with stop guidance. An answer pinned with
+seconds (`task --question-timeout-sec`), after which a live callback uses the same
+response channel to instruct conservative assumptions and final `needs_input`
+for essential missing input. A dead bridge cannot deliver timeout guidance.
+Unanswered expired questions no longer appear as answerable. `wait` also ignores
+that slot as an early-return trigger and keeps waiting under its normal rules.
+Admission of a new question archives the abandoned slot with resolution `expired`.
+Late predecessor cleanup cannot clear the successor. Answers accepted before
+expiry remain deliverable. Interrupt resolves the question with stop guidance.
+An answer pinned with
 `--question '<id>'` (as every report's `next` is) fails once that question is no
 longer pending, rather than continuing a different question. A bare
 `duet answer <worker>` answers whichever question is pending now.
+Submission also checks an explicitly supplied owner, cancellation and lease
+expiry, including the submit-only path. A retired owner gets `ownership_moved`;
+an unrelated owner, stopping job or expired lease cannot submit an answer.
 
 Both `thread/start.config.mcp_servers.duet_parent` and the corresponding
 `thread/resume` override point Codex at `scripts/parent-bridge-mcp.mjs` (stdio MCP).
@@ -281,6 +358,14 @@ descendant tree, so Claude Code stopping a background `task --direct` or
 `--follow` shell lets its worker confirm `owner_stopped` while the broker and
 other jobs keep running. Broker output still goes to its log. If the launcher
 fails, a one-line stderr warning accompanies a direct detached-spawn fallback.
+Before starting its turn, each task-worker atomically claims its queued job
+(`executionClaim`). A second worker for the same job, for example from that
+fallback after a launcher timed out under load, finds the claim and exits 0
+without running. A claim whose worker died is reclaimable only while the job is
+still queued.
+Each progress event rewrites the job record. Long, message-heavy jobs therefore
+write far more data than they add (known limitation; a split activity log is
+planned).
 
 For an interrupted or failed job, `duet result <worker> --details` exposes the
 compatibility `continuationCommand`. Use `duet task --continue <jobId> --cwd
@@ -342,9 +427,13 @@ a turn only when exactly one candidate started at or after the job's start, no
 other recorded job owns it (whether that job's wrapper is alive or dead), and no
 other handle-less job on the thread could have started it in the same window.
 Missing timestamps, multiple candidates, unreadable or inconsistent ownership
-records (a malformed index, or job files without an index) leave the outcome
-unresolved. Only a readable history with no matching candidate establishes that
-the turn never started. A missing-handle cancel interrupts only such a uniquely
+records (a malformed index, or job files without an index unless the workspace
+is proven inert) leave the outcome unresolved. The shared read-only
+[inert-workspace check](state-and-retention.md#retention) uses a 24-hour minimum
+for this inventory; directories without private job files are exempt. Valid
+terminal records still retain turn attribution. Only a readable history with
+no matching candidate establishes that the turn never started. A missing-handle
+cancel interrupts only such a uniquely
 attributed live turn; otherwise it reports `interrupt_unconfirmed` (exit 2).
 
 Before starting a follow-up, Duet also checks the server for in-progress turns,

@@ -1,6 +1,6 @@
 import type { ThemeKey } from 'claude-code';
 import type { CodexLiveEvent, CodexLiveFeedView, CodexLiveJob, CodexLiveSession, CodexLiveState } from '../types';
-import { attention, attentionOrder, clean, cleanBody, detailedTurns, elapsed, jobLifecycle, questionExcerpt, sessionForId, taskText, turnKey, unwrapCommand, visibleSessions } from './model';
+import { attention, attentionOrder, clean, cleanBody, detailedTurns, elapsed, jobLifecycle, questionExcerpt, reusedAgentName, sessionForId, taskText, turnKey, unwrapCommand, visibleSessions } from './model';
 
 import { cells, clusters, fit, width } from './text';
 export { fit, width } from './text';
@@ -31,15 +31,16 @@ export function wrap(text: string, columns: number, maxRows: number): string[] {
 
 export function jobState(job: CodexLiveJob): { word: string; color: ThemeKey } {
   const { status, active } = jobLifecycle(job);
-  if (active && (job.question || status === 'waiting')) return { word: 'Waiting for Claude', color: 'warning' };
+  if (active && job.question) return { word: 'Question for Claude', color: 'warning' };
+  if (active && status === 'waiting') return { word: 'Waiting for Claude', color: 'warning' };
   switch (status) {
-    case 'unresolved': return { word: 'Unresolved', color: 'warning' };
+    case 'unresolved': return { word: 'Outcome unknown', color: 'warning' };
     case 'queued': return { word: 'Queued', color: 'inactive' };
     case 'running': return { word: 'Running', color: 'claude' };
     case 'completed': return { word: 'Done', color: 'success' };
     case 'failed': return { word: 'Failed', color: 'error' };
-    case 'needs_input': return { word: 'Needs input', color: 'warning' };
-    case 'blocked': return { word: 'Blocked', color: 'error' };
+    case 'needs_input': return { word: 'Needs your attention', color: 'warning' };
+    case 'blocked': return { word: 'Needs your attention', color: 'error' };
     case 'cancelled':
     case 'stopped':
     case 'interrupted': return { word: 'Stopped', color: 'inactive' };
@@ -48,15 +49,15 @@ export function jobState(job: CodexLiveJob): { word: string; color: ThemeKey } {
 }
 
 export function jobRowColor(job: CodexLiveJob): ThemeKey {
-  return attention(job) === 'blocked' ? 'error' : jobState(job).color;
+  return jobState(job).color;
 }
 
 export function jobRow(job: CodexLiveJob | CodexLiveSession, selected: boolean, columns: number, now: number, isNew = false) {
   const selector = fit(`${selected ? '❯' : ' '} `, columns);
   const { word } = jobState(job);
   const { active } = jobLifecycle(job);
-  const glyph = attention(job) === 'blocked' ? '!' : ({ Running: '⏺', Queued: '…', 'Needs input': '?', 'Waiting for Claude': '?', Done: '✓', Failed: '✗',
-    Blocked: '✗', Stopped: '■', Unresolved: '!' } as Record<string, string>)[word] ?? '·';
+  const glyph = attention(job) === 'blocked' ? '!' : ({ Running: '⏺', Queued: '…', 'Question for Claude': '?', 'Waiting for Claude': '?', Done: '✓', Failed: '✗',
+    Stopped: '■', 'Outcome unknown': '!' } as Record<string, string>)[word] ?? '·';
   const bullet = fit(`${glyph} `, Math.max(0, columns - width(selector)));
   const available = Math.max(0, columns - width(selector + bullet));
   const marker = isNew && !selected && available >= 7 ? ' • new' : '';
@@ -213,7 +214,7 @@ export function feedItems(job: CodexLiveJob | CodexLiveSession, now: number): Fe
     const prompt: FeedItem[] = detailed && turn.prompt !== undefined ? [{ key: 'prompt', title: 'Prompt', bold: 'Prompt', maxRows: 1,
       color: 'suggestion', results: [], prompt: { turnId: turn.id, text: turn.prompt, report: turn.promptReport === true } }] : [];
     const items = [headerItem(turn, now), ...prompt, ...(detailed ? activityItems(turn).map(event => eventItem(event, turn, now)) : [])];
-    if (turn.id === ownerId && jobLifecycle(turn).active && turn.question) items.push({ key: 'pending-question', title: 'Waiting for Claude', color: 'warning',
+    if (turn.id === ownerId && jobLifecycle(turn).active && turn.question) items.push({ key: 'pending-question', title: 'Question for Claude', color: 'warning',
       results: [{ text: turn.question.text, color: 'subtle' },
         ...turn.question.options.map((option, i): ResultLine => ({ text: `${i + 1}. ${option}`, color: 'subtle' }))] });
     if (detailed && turn.detailsLoaded === false && !turn.detailsUnavailable) items.push({ key: 'loading', title: 'Loading transcript…', color: 'subtle', results: [] });
@@ -492,11 +493,14 @@ export function headerLayout(state: CodexLiveState, selected: CodexLiveJob, body
 export function paneLayout(state: CodexLiveState, selected: CodexLiveJob | undefined,
   availableRows: number, failure = false) {
   const bodyRows = Math.max(0, Math.floor(availableRows));
-  const footerRows = bodyRows > 0 && (selected || failure) ? 1 : 0;
-  const header = selected ? headerLayout(state, selected, bodyRows)
+  const nameHint = selected && reusedAgentName(selected) && bodyRows > 1
+    ? '-N: name reused after this session used every name' : undefined;
+  const hintRows = nameHint ? 1 : 0;
+  const footerRows = bodyRows > 0 && (selected || failure) ? 1 + hintRows : 0;
+  const header = selected ? headerLayout(state, selected, bodyRows - hintRows)
     : { jobs: [], toggle: false, clear: false, more: 0, rows: 0 };
   const pinnedRows = header.rows;
-  return { bodyRows, header, pinnedRows, rows: Math.max(0, bodyRows - pinnedRows - footerRows) };
+  return { bodyRows, header, pinnedRows, footerRows, nameHint, rows: Math.max(0, bodyRows - pinnedRows - footerRows) };
 }
 
 function hash(text: string): number {
@@ -569,11 +573,13 @@ export function togglePrompt(job: CodexLiveJob, now: number, columns: number, ro
 
 export function footerLayout(job: CodexLiveJob, state: CodexLiveState, columns: number, following: boolean, newLines: number) {
   const { word, color: stateColor } = jobState(job);
+  const label = attention(job) === 'blocked' && job.blockerCode ? `${word} (${job.blockerCode})` : word;
   const age = elapsed(job, state.nowMs);
   const uses = `${job.toolUses ?? toolUseCount(job.events)} tool uses`;
   const spinner = ['·', '✢', '✳', '✶', '✻', '✽'][(state.spinnerTick ?? 0) % 6];
   let status = word === 'Running' ? `${spinner} Running… ${age} · ${uses}`
-    : word === 'Waiting for Claude' ? `? Waiting for Claude · ${age}` : `${word === 'Queued' ? '…' : word === 'Needs input' ? '?' : '⏺'} ${word} · ${uses} · ${age}`;
+    : word === 'Question for Claude' || word === 'Waiting for Claude' ? `? ${word} · ${age}`
+      : `${word === 'Queued' ? '…' : jobLifecycle(job).status === 'needs_input' ? '?' : '⏺'} ${label} · ${uses} · ${age}`;
   if (visibleSessions(state).length === 1) status += ` · ${job.agentName || taskText(job.label)}`;
   const stale = job.detailsUnavailable ? `⚠ stale · last update ${job.lastUpdateMs === undefined ? 'unknown' : `${Math.max(0, Math.floor((state.nowMs - job.lastUpdateMs) / 1000))}s`} ago` : '';
   if (stale) status = `${stale} · ${status}`;

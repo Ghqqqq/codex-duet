@@ -1,4 +1,4 @@
-// No Node globals/imports in a function-hook module. The read-only helper uses
+// No Node globals/imports in a function-hook module. The helper uses
 // descriptor-level file checks and bounded reads unavailable in $.fs.
 const prefix = "report-delivery:v1:", retentionMs = 7 * 24 * 60 * 60 * 1000, sessionLimit = 2000;
 // Within the 10 s hook budget, after this dispatch's own helper lookup.
@@ -26,9 +26,32 @@ async function capSession($, sessionId) {
   }
 }
 
+async function finishNotices($, sessionId, entries, confirm, endsAtStart, unconfirmed, sessionEnds) {
+  if (!entries.length) return;
+  let ok = false;
+  try {
+    const result = await $.process.run(["node", `${$.plugin.root}/scripts/lib/report-delivery.mjs`, confirm ? "--confirm-noticed" : "--release-noticed"], {
+      stdin: JSON.stringify({ sessionId, claims: entries.map(entry => ({ jobId: entry?.jobId, token: entry?.token })) }), timeoutMs: 1000
+    });
+    ok = result.exitCode === 0 && !result.isStdoutTruncated && JSON.parse(result.stdout)?.ok === true;
+  } catch { /* Bookkeeping must not change the downstream result. */ }
+  if (confirm && (sessionEnds.get(sessionId) ?? 0) === endsAtStart) {
+    // Retained accepted claims attach once per hook instance despite repeated
+    // confirm failures; reloads/new instances can repeat once per instance.
+    // As with other dedupe markers, the oldest entries yield at sessionLimit.
+    for (const entry of entries) {
+      const key = `${sessionId}:${entry.jobId}`;
+      if (ok) unconfirmed.delete(key);
+      else unconfirmed.add(key);
+    }
+    for (const key of [...unconfirmed].slice(0, Math.max(0, unconfirmed.size - sessionLimit))) unconfirmed.delete(key);
+  }
+}
+
 export function register(on) {
   let pending = Promise.resolve(), pruneOffset = 0;
   const inFlight = new Map(), unpersisted = new Set();
+  const noticing = new Set(), unconfirmed = new Set();
   // A SessionEnd that lands while a delivery is in next() must not have its
   // cleanup undone by that delivery's marker write.
   const sessionEnds = new Map();
@@ -38,6 +61,54 @@ export function register(on) {
     return current;
   };
   on("prompt.submit", async ($, e, next) => {
+    if (e.origin?.kind === "composer") {
+      let sessionId, entries, context, reserved = false, accepted = false, endsAtStart = 0;
+      let confirm = [], release = [];
+      try {
+        try {
+          sessionId = await $.session.id();
+          endsAtStart = sessionEnds.get(sessionId) ?? 0;
+          if (!noticing.has(sessionId)) {
+            noticing.add(sessionId); reserved = true;
+            const result = await $.process.run(["node", `${$.plugin.root}/scripts/lib/report-delivery.mjs`, "--claim-unreported"], {
+              stdin: JSON.stringify({ sessionId }), timeoutMs: 2000
+            });
+            if (result.exitCode === 0 && !result.isStdoutTruncated) {
+              entries = JSON.parse(result.stdout);
+              if (Array.isArray(entries) && entries.length <= 5) release = entries;
+              if (Array.isArray(entries) && entries.length > 0 && entries.length <= 5 && entries.every(entry => entry
+                  && /^[A-Za-z0-9_-]{1,128}$/.test(entry.jobId)
+                  && typeof entry.worker === "string" && entry.worker.length <= 128
+                  && ["completed", "needs_input", "blocked", "failed", "cancelled", "interrupted", "owner_stopped", "error"].includes(entry.status)
+                  && (entry.reason === null || typeof entry.reason === "string" && /^[A-Za-z0-9_.:-]{1,96}$/.test(entry.reason))
+                  && typeof entry.details === "string" && entry.details.length <= 4096
+                  && typeof entry.token === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(entry.token))
+                  && new Set(entries.map(entry => entry.jobId)).size === entries.length) {
+                confirm = entries.filter(entry => unconfirmed.has(`${sessionId}:${entry.jobId}`));
+                release = entries.filter(entry => !unconfirmed.has(`${sessionId}:${entry.jobId}`));
+                const existing = e.context ?? [];
+                const line = `Duet: ${release.length === 1 ? "1 worker" : `${release.length} workers`} ended while nothing was waiting for ${release.length === 1 ? "it" : "them"}: ${release.map(entry =>
+                  `${entry.worker} ${entry.status}${entry.reason ? ` (${entry.reason})` : ""} — ${entry.details}`).join("; ")}`;
+                if (release.length && Array.isArray(existing) && existing.every(item => typeof item === "string" && item.length <= 100000)
+                    && existing.reduce((sum, item) => sum + item.length, line.length) <= 200000) context = [...existing, line];
+              }
+            }
+          }
+        } catch { /* A failed lookup leaves the prompt untouched. */ }
+        if (!context && confirm.length) {
+          await finishNotices($, sessionId, confirm, true, endsAtStart, unconfirmed, sessionEnds);
+          confirm = [];
+        }
+        const result = await next(context ? { ...e, context } : e);
+        accepted = !!context && !!result && result.drop === undefined;
+        return result;
+      } finally {
+        if (accepted) { confirm.push(...release); release = []; }
+        await finishNotices($, sessionId, confirm, true, endsAtStart, unconfirmed, sessionEnds);
+        await finishNotices($, sessionId, release, false, endsAtStart, unconfirmed, sessionEnds);
+        if (reserved) noticing.delete(sessionId);
+      }
+    }
     if (e.origin?.kind !== "task-notification") return next(e);
     let sessionId, key, delivery, context, own = null, endsAtStart = 0;
     try {
@@ -50,7 +121,8 @@ export function register(on) {
       });
       if (result.exitCode !== 0 || result.isStdoutTruncated) return next(e);
       delivery = JSON.parse(result.stdout);
-      if (!delivery || !/^[A-Za-z0-9_-]{1,128}$/.test(delivery.taskId) || typeof delivery.entry !== "string") return next(e);
+      if (!delivery || !/^[A-Za-z0-9_-]{1,128}$/.test(delivery.taskId)
+          || !/^[A-Za-z0-9_-]{1,128}$/.test(delivery.jobId) || typeof delivery.entry !== "string") return next(e);
       context = e.context ?? [];
       if (!Array.isArray(context) || context.some(item => typeof item !== "string" || item.length > 100000)
           || !delivery.entry.length || delivery.entry.length > 100000
@@ -76,6 +148,13 @@ export function register(on) {
     try {
       const result = await next({ ...e, context: [...context, delivery.entry] });
       if (result && result.drop === undefined) {
+        if (["completed", "needs_input", "blocked", "failed", "cancelled", "interrupted", "owner_stopped", "error"].includes(delivery.status)) {
+          try {
+            await $.process.run(["node", `${$.plugin.root}/scripts/lib/report-delivery.mjs`, "--mark-delivered"], {
+              stdin: JSON.stringify({ sessionId, text: e.text, jobId: delivery.jobId, status: delivery.status }), timeoutMs: 1000
+            });
+          } catch { /* The accepted attachment survives bookkeeping failure. */ }
+        }
         await serialize(async () => {
           if ((sessionEnds.get(sessionId) ?? 0) !== endsAtStart) return;
           // Retain dedupe in this module even if the post-delivery write fails.
@@ -101,6 +180,7 @@ export function register(on) {
     await serialize(async () => {
       const sessionPrefix = `${prefix}${e.session_id}:`, failed = [];
       sessionEnds.set(e.session_id, (sessionEnds.get(e.session_id) ?? 0) + 1);
+      for (const key of unconfirmed) if (key.startsWith(`${e.session_id}:`)) unconfirmed.delete(key);
       for (const key of unpersisted) if (key.startsWith(sessionPrefix)) unpersisted.delete(key);
       try {
         for (const key of await $.store.keys()) {

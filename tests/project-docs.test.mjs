@@ -9,6 +9,7 @@ import { instructionInventory } from "../plugins/codex/hooks/claude-memory.mjs";
 import { register } from "../plugins/codex/hooks/register.mjs";
 import { approveDuet } from "../plugins/codex/scripts/duet-permission-hook.mjs";
 import { claudeSnapshotFile, readClaudeSnapshot, writeClaudeSnapshot, prepareClaudeInstructions, renderClaudeInstructions, EXECUTOR_FRAMING, INSTRUCTION_LIMIT } from "../plugins/codex/scripts/lib/claude-memory.mjs";
+import { resolveClaudeConfigRoot, resolveClaudeSessionPath, snapshotClaudeSession, planClaudeImports, sweepClaudeImports } from "../plugins/codex/scripts/lib/claude-session-transfer.mjs";
 
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
 
@@ -210,8 +211,9 @@ test("first prompt.context wins, preserves loaded instructions, and leaves incom
   }
   // Both logical memory paths and aliases resolving into real memory paths
   // are excluded, including when .claude itself is a directory symlink.
-  for (const linkedConfig of [false, true]) {
-    const home = path.join(f.dir, `scan-home-${linkedConfig}`), config = path.join(home, ".claude");
+  for (const profile of ["default", "custom"]) for (const linkedConfig of [false, true]) {
+    const home = path.join(f.dir, `scan-home-${profile}-${linkedConfig}`), config = path.join(home, profile === "custom" ? "selected-profile" : ".claude");
+    const env = { ...f.env, HOME: home, CLAUDE_CONFIG_DIR: profile === "custom" ? config : "" };
     fs.mkdirSync(home);
     if (linkedConfig) {
       const target = path.join(home, "config-target"); fs.mkdirSync(target); fs.symlinkSync(target, config);
@@ -230,11 +232,81 @@ test("first prompt.context wins, preserves loaded instructions, and leaves incom
     fs.writeFileSync(path.join(config, "CLAUDE.md"), "USER_SCAN_RULE\n@inside.md\n@projects/p/memory/MEMORY.md\n@agent-memory/reviewer/MEMORY.md\n@agent-memory-local/reviewer/MEMORY.md\n@alias/MEMORY.md");
     fs.appendFileSync(path.join(config, "CLAUDE.md"), "\n@projects-p-memory-alias.md\n@agent-memory-reviewer-alias.md\n@agent-memory-local-reviewer-alias.md");
     fs.writeFileSync(path.join(config, "inside.md"), "SAFE_IMPORT");
-    const prepared = prepareClaudeInstructions({ sessionId: `scan-links-${linkedConfig}`, cwd: f.repo }, { ...f.env, HOME: home });
+    fs.mkdirSync(path.join(config, "rules"));
+    fs.writeFileSync(path.join(config, "rules", "global.md"), "USER_PROFILE_RULE");
+    if (profile === "custom") {
+      fs.mkdirSync(path.join(home, ".claude"));
+      fs.writeFileSync(path.join(home, ".claude", "CLAUDE.md"), "WRONG_DEFAULT_PROFILE");
+    }
+    assert.equal(resolveClaudeConfigRoot(env), config);
+    assert.equal(resolveClaudeConfigRoot({ ...env, CLAUDE_CONFIG_DIR: "relative-profile" }), path.join(home, ".claude"));
+    const prepared = prepareClaudeInstructions({ sessionId: `scan-links-${profile}-${linkedConfig}`, cwd: f.repo }, env);
     assert.equal(prepared.claudeMd.source, "scan");
     assert.match(prepared.developerInstructions, /USER_SCAN_RULE/);
     assert.match(prepared.developerInstructions, /SAFE_IMPORT/);
     assert.doesNotMatch(prepared.developerInstructions, /EXCLUDED_AUTO_MEMORY/);
+    assert.match(prepared.developerInstructions, /USER_PROFILE_RULE/);
+    assert.doesNotMatch(prepared.developerInstructions, /WRONG_DEFAULT_PROFILE/);
+    const source = path.join(config, "projects", "real", "session.jsonl"), transcript = '{"type":"user","message":"fixture"}\n';
+    fs.writeFileSync(source, transcript);
+    assert.equal(resolveClaudeSessionPath(f.repo, { source }, env), fs.realpathSync(source));
+    assert.equal(resolveClaudeSessionPath(f.repo, {}, { ...env, CODEX_COMPANION_TRANSCRIPT_PATH: source }), fs.realpathSync(source));
+    const outside = path.join(home, "outside.jsonl"); fs.writeFileSync(outside, transcript);
+    const alias = path.join(config, "projects", "outside.jsonl"); fs.symlinkSync(outside, alias);
+    assert.throws(() => resolveClaudeSessionPath(f.repo, { source: outside }, env));
+    assert.throws(() => resolveClaudeSessionPath(f.repo, { source: alias }, env));
+    const staged = snapshotClaudeSession(f.repo, source, env);
+    assert.equal(path.dirname(path.dirname(staged.snapshotPath)), fs.realpathSync(path.join(config, "projects")));
+    assert.equal(fs.readFileSync(staged.snapshotPath, "utf8"), transcript);
+    staged.cleanup(); assert.equal(fs.existsSync(staged.snapshotPath), false);
+    const abandoned = snapshotClaudeSession(f.repo, source, env), directory = path.dirname(abandoned.snapshotPath);
+    const old = new Date(Date.now() - 2 * 3600000);
+    for (const name of fs.readdirSync(directory)) fs.utimesSync(path.join(directory, name), old, old);
+    fs.utimesSync(directory, old, old);
+    assert.deepEqual(planClaudeImports({ env }).imports.map(item => item.path), [directory]);
+    assert.equal(sweepClaudeImports({ env }).importsDeleted, 1);
+    assert.ok(fs.existsSync(source));
+  }
+  // Project directory aliases must not widen the owning ancestor's boundary;
+  // aliases within it and the user-profile aliases above remain supported.
+  const put = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
+  for (const variant of ["plain", "rules", "config", "import", "internal-rules", "internal-config"]) {
+    const directory = path.join(f.dir, `project-links-${variant}`), repo = path.join(directory, "repo");
+    const outside = path.join(directory, "outside.txt"), config = path.join(repo, ".claude");
+    put(outside, "OUTSIDE_PROJECT_FILE");
+    put(path.join(repo, "CLAUDE.md"), "INSIDE_PROJECT_ROOT\n@root.txt\n@escape.txt\n@../outside.txt");
+    put(path.join(repo, "root.txt"), "INSIDE_ROOT_IMPORT");
+    put(path.join(repo, "CLAUDE.local.md"), "INSIDE_PROJECT_LOCAL\n@local.txt\n@escape.txt\n@../outside.txt");
+    put(path.join(repo, "local.txt"), "INSIDE_LOCAL_IMPORT");
+    fs.symlinkSync(outside, path.join(repo, "escape.txt"));
+
+    const configTarget = variant === "config" ? path.join(directory, "outside-config")
+      : variant === "internal-config" ? path.join(repo, "shared-config") : config;
+    put(path.join(configTarget, "CLAUDE.md"), `${variant === "config" ? "OUTSIDE_PROJECT_CONFIG" : "INSIDE_PROJECT_CONFIG"}\n@config.txt\n@escape.txt`);
+    put(path.join(configTarget, "config.txt"), variant === "config" ? "OUTSIDE_PROJECT_CONFIG_IMPORT" : "INSIDE_CONFIG_IMPORT");
+    fs.symlinkSync(outside, path.join(configTarget, "escape.txt"));
+    if (configTarget !== config) fs.symlinkSync(configTarget, config);
+
+    const rules = path.join(config, "rules");
+    const rulesTarget = variant === "rules" ? path.join(directory, "outside-rules")
+      : variant === "internal-rules" ? path.join(repo, "shared-rules") : variant === "import" ? directory : rules;
+    // The widened root can discover a real repository file whose non-Markdown
+    // import escapes. Keep that importer loaded while rejecting its import.
+    const ruleDirectory = variant === "import" ? path.join(repo, "docs") : path.join(rulesTarget, "nested");
+    const outsideRule = variant === "rules" || variant === "config";
+    put(path.join(ruleDirectory, "rule.md"), `${outsideRule ? "OUTSIDE_PROJECT_RULE" : "INSIDE_PROJECT_RULE"}\n@rule.txt\n@escape.txt\n@${path.relative(ruleDirectory, outside)}`);
+    put(path.join(ruleDirectory, "rule.txt"), outsideRule ? "OUTSIDE_PROJECT_RULE_IMPORT" : "INSIDE_RULE_IMPORT");
+    fs.symlinkSync(outside, path.join(ruleDirectory, "escape.txt"));
+    if (rulesTarget !== rules) fs.symlinkSync(rulesTarget, rules);
+
+    const prepared = prepareClaudeInstructions({ sessionId: `project-links-${variant}`, cwd: repo }, f.env);
+    assert.equal(prepared.claudeMd.source, "scan");
+    assert.doesNotMatch(prepared.developerInstructions, /OUTSIDE_PROJECT_/, variant);
+    for (const marker of ["INSIDE_PROJECT_ROOT", "INSIDE_ROOT_IMPORT", "INSIDE_PROJECT_LOCAL", "INSIDE_LOCAL_IMPORT",
+      ...(variant === "config" ? [] : ["INSIDE_PROJECT_CONFIG", "INSIDE_CONFIG_IMPORT"]),
+      ...(outsideRule ? [] : ["INSIDE_PROJECT_RULE", "INSIDE_RULE_IMPORT"])]) {
+      assert.ok(prepared.developerInstructions.includes(marker), `${variant}: ${marker}`);
+    }
   }
   for (const session_id of ["captured-session", "next-session", "incomplete-session-0", "incomplete-session-1", ...filteredSessions]) {
     const ended = { session_id, hook_event_name: "SessionEnd" };

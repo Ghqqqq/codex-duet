@@ -25,6 +25,7 @@ function fixture(on: any) {
   on('session.cwd', () => ({ value: root + '/repo' }));
   on('session.root', () => ({ value: root + '/repo' }));
   on('prompt.submit', (_: any, e: any) => ({ text: e.text, context: e.context, origin: e.origin }));
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'Intro', scope: 'shared' }] }));
   on('store.get', (_: any, e: any) => {
     if (getFailure) { getFailure = false; throw new Error('Injected hook failure'); }
     return { value: store.get(e.key) };
@@ -61,6 +62,8 @@ function fixture(on: any) {
       if (!normalized.argv[1].endsWith('/plugins/codex/bin/duet')) problems.push('Wrong launcher');
       normalized.argv[0] = '/host/node';
       normalized.argv[1] = '/plugin/bin/duet';
+    } else if (normalized.argv[1]?.endsWith('/plugins/codex/scripts/lib/report-delivery.mjs') && normalized.argv[2] === '--mark-emitted') {
+      normalized.argv[1] = '/plugin/scripts/lib/report-delivery.mjs';
     }
     if (!expected || expected.kind !== kind || JSON.stringify(expected.request) !== JSON.stringify(normalized)) {
       // Structural comparison below also ignores harmless key order differences.
@@ -85,9 +88,18 @@ function fixture(on: any) {
     // envelope into structural evidence of an exited companion's rejection.
     return { value: record.error ? { ...record.exit, code: null } : record.exit };
   });
-  on('process.run', (_: any, e: any) => ({ value: missingNode
-    ? { exitCode: 127, stdout: '', stderr: 'Node unavailable', isStdoutTruncated: false, isStderrTruncated: false }
-    : take('run', e).value }));
+  on('process.run', (_: any, e: any) => {
+    // Native captures contain only the native prompt handler. The separate
+    // report-delivery host contract exercises the composer lookup itself.
+    const argv = [...e.argv];
+    if (argv[1]?.endsWith('/plugins/codex/scripts/lib/report-delivery.mjs')) argv[1] = '/plugin/scripts/lib/report-delivery.mjs';
+    if (JSON.stringify(argv) === JSON.stringify(['node', '/plugin/scripts/lib/report-delivery.mjs', '--claim-unreported'])) {
+      return { value: { exitCode: 0, stdout: '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } };
+    }
+    return { value: missingNode
+      ? { exitCode: 127, stdout: '', stderr: 'Node unavailable', isStdoutTruncated: false, isStderrTruncated: false }
+      : take('run', e).value };
+  });
   return {
     async replay($: any, capture: any, discoveryDown = false) {
       store = new Map(); processes = clone(capture.processes); agents = [];
@@ -160,6 +172,30 @@ function fixture(on: any) {
         expect(modelCalls).toBe(initialModelCalls);
       }
     },
+    async report($: any, fields: any) {
+      const capture = clone(captures[3]);
+      const step = capture.events.find((event: any) => event.event === 'turn.step');
+      store = new Map(); agents = []; processes = capture.processes.slice(0, step.processCount);
+      const task = processes.find((record: any) => record.kind === 'spawn' && record.request.argv[2] === 'task');
+      const lines = task.chunks.filter((chunk: any) => chunk.stream === 'stdout').map((chunk: any) => chunk.text).join('').trimEnd().split('\n');
+      const report = { ...JSON.parse(lines.pop()), ...fields };
+      task.chunks = [{ stream: 'stdout', text: [...lines, JSON.stringify(report)].join('\n') + '\n' }];
+      task.exit.code = report.status === 'blocked' ? 2 : 0;
+      if (calls > 0 && processes[0]?.request.argv[0] === 'node') processes.shift();
+      const spawn = capture.events.find((event: any) => event.event === 'agent.spawn');
+      const start = capture.events.find((event: any) => event.event === 'turn.start');
+      expectedPrompt = start.input.text;
+      await $.agent.spawn(spawn.input);
+      await $.turn.start(start.input);
+      const { result } = await drain($.turn.step(step.input));
+      const answer = JSON.parse(result.answer);
+      expect(answer.status).toBe(report.status);
+      expect(answer.blockers).toEqual(report.blockers);
+      expect(processes).toHaveLength(0);
+      expect(problems).toEqual([]);
+      expect(modelCalls).toBe(0);
+      return answer;
+    },
   };
 }
 
@@ -173,6 +209,27 @@ test('other loops pass untouched; process and hook failures block without a mode
   const f = fixture(on);
   await f.isolation($);
   await f.errors($);
+});
+
+test('typed runtime blockers select recovery without overriding thread-busy actions', async ($, on) => {
+  const f = fixture(on), reports = new Map();
+  for (const code of ['fixture_blocker', 'usage_limit', 'context_window_exceeded', 'provider_refused', 'auth_required']) {
+    reports.set(code, await f.report($, { status: 'blocked', blockers: [{ code }] }));
+  }
+  const continuation = reports.get('fixture_blocker').next;
+  expect(reports.get('usage_limit').next).toBe(continuation);
+  for (const code of ['context_window_exceeded', 'provider_refused', 'auth_required']) {
+    const { next } = reports.get(code);
+    expect(typeof next).toBe('string');
+    expect(next.length > 0).toBe(true);
+    expect(next === continuation).toBe(false);
+    expect(next.includes('native-worker')).toBe(false);
+    const nextAction = 'duet status predecessor --json';
+    const busy = await f.report($, { status: 'blocked', blockers: [{ code }, { code: 'thread_busy' }], next: nextAction });
+    expect(busy.next).toBe(nextAction);
+  }
+  expect(reports.get('context_window_exceeded').next === reports.get('provider_refused').next).toBe(false);
+  expect(reports.get('auth_required').next.match(/\/[a-z]+:[a-z]+/g)).toEqual(['/codex:setup']);
 });
 
 test('SubagentStart identifies the first native turn while discovery rejects; other types still pass through', async ($, on) => {

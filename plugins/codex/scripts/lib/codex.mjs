@@ -60,7 +60,7 @@ import { classifyRuntimeError } from "./runtime-errors.mjs";
 import { computerUseSetup, computerUseSessionFile, grantComputerAppsForThread, readTomlField, setTomlField } from "./setup-config.mjs";
 import { withJournalLock, tryAcquirePidLock, updateJob, unresolvedTask } from "./state.mjs";
 import { APPROVAL_CHOICES } from "./server-requests.mjs";
-import { dedupeBlockers, toolCallBlockers } from "./blockers.mjs";
+import { dedupeBlockers, normalizeCodexErrorInfo, toolCallBlockers } from "./blockers.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
@@ -719,6 +719,10 @@ function applyTurnNotification(state, message) {
         scheduleInferredCompletion(state);
         break;
       }
+      if (message.params.turn.error) {
+        state.error = { ...message.params.turn.error,
+          codexErrorInfo: message.params.turn.error.codexErrorInfo ?? state.error?.codexErrorInfo ?? null };
+      }
       emitProgress(
         state.onProgress,
         `Turn ${message.params.turn.status === "completed" ? "completed" : message.params.turn.status}.`,
@@ -1164,13 +1168,22 @@ function buildAppServerAuthStatus(accountResponse, configResponse) {
   });
 }
 
-async function getCodexAuthStatusFromClient(client, cwd) {
+// These deadlines only stop a hung runtime from blocking forever. Keep them
+// generous: availability runs before every task, and a loaded machine must
+// never turn a slow but healthy runtime into "unavailable".
+const READINESS_TIMEOUT_MS = 60000;
+const EXECUTABLE_PROBE_TIMEOUT_MS = 20000;
+const INITIALIZE_PROBE_TIMEOUT_MS = 30000;
+const AUTH_REQUEST_TIMEOUT_MS = 20000;
+const probeBudget = (deadline, limit) => Math.max(1, Math.min(limit, deadline - Date.now()));
+
+async function getCodexAuthStatusFromClient(client, cwd, deadline) {
   try {
-    const accountResponse = await client.request("account/read", { refreshToken: false });
+    const accountResponse = await client.request("account/read", { refreshToken: false }, { timeoutMs: probeBudget(deadline, AUTH_REQUEST_TIMEOUT_MS) });
     const configResponse = await client.request("config/read", {
       includeLayers: false,
       cwd
-    });
+    }, { timeoutMs: probeBudget(deadline, AUTH_REQUEST_TIMEOUT_MS) });
 
     return buildAppServerAuthStatus(accountResponse, configResponse);
   } catch (error) {
@@ -1182,18 +1195,19 @@ async function getCodexAuthStatusFromClient(client, cwd) {
   }
 }
 
-export function getCodexAvailability(cwd) {
-  const versionStatus = binaryAvailable(resolveCodexBinary(), ["--version"], { cwd, env: isolatedCodexEnv() });
+export function getCodexAvailability(cwd, { deadline = Date.now() + READINESS_TIMEOUT_MS, env = process.env } = {}) {
+  const probe = args => binaryAvailable(resolveCodexBinary(env), args, { cwd, env: isolatedCodexEnv(env), timeoutMs: probeBudget(deadline, EXECUTABLE_PROBE_TIMEOUT_MS) });
+  const versionStatus = probe(["--version"]);
   if (!versionStatus.available) {
     return versionStatus;
   }
 
-  const appServerStatus = binaryAvailable(resolveCodexBinary(), ["app-server", "--help"], { cwd, env: isolatedCodexEnv() });
+  const appServerStatus = probe(["app-server", "--help"]);
   if (!appServerStatus.available) {
     return {
       available: false,
-      status: "unavailable",
-      reason: "runtime-unavailable",
+      status: appServerStatus.status ?? "unavailable",
+      reason: appServerStatus.reason ?? "runtime-unavailable",
       detail: `${versionStatus.detail}; advanced runtime unavailable: ${appServerStatus.detail}`
     };
   }
@@ -1224,12 +1238,13 @@ export function getSessionRuntimeStatus(env = process.env, cwd = process.cwd()) 
 }
 
 export async function getCodexAuthStatus(cwd, options = {}) {
-  const availability = getCodexAvailability(cwd);
+  const deadline = options.deadline ?? Date.now() + READINESS_TIMEOUT_MS;
+  const availability = options.availability ?? getCodexAvailability(cwd, { deadline, env: options.env });
   if (!availability.available) {
     return {
       available: false,
-      status: "unavailable",
-      reason: "runtime-unavailable",
+      status: availability.status === "unreachable" ? "unreachable" : "unavailable",
+      reason: availability.reason ?? "runtime-unavailable",
       loggedIn: false,
       detail: availability.detail,
       source: "availability",
@@ -1244,9 +1259,10 @@ export async function getCodexAuthStatus(cwd, options = {}) {
   try {
     client = await CodexAppServerClient.connect(cwd, {
       env: options.env,
+      connectTimeoutMs: probeBudget(deadline, INITIALIZE_PROBE_TIMEOUT_MS),
       reuseExistingBroker: true
     });
-    return await getCodexAuthStatusFromClient(client, cwd);
+    return await getCodexAuthStatusFromClient(client, cwd, deadline);
   } catch (error) {
     return buildAuthStatus({
       loggedIn: false,
@@ -1507,6 +1523,14 @@ export async function runAppServerTurn(cwd, options = {}) {
     emitProgress(options.onProgress, `Server request ${JSON.stringify(summary)}`, null);
     if (summary.kind === "computer-use-app" && !["approved", "pending"].includes(summary.decision) && summary.app) {
       serverRequestBlockers.push({ code: "computer_use_app_not_approved", app: summary.app, message: `Computer Use elicitation for ${summary.app} ${summary.decision} (${summary.reason})` });
+    } else if (summary.kind !== "computer-use-app" && ["cancelled", "unsupported"].includes(summary.decision)) {
+      // The message repeats only these safe identifiers, never request content.
+      serverRequestBlockers.push({ code: summary.decision === "cancelled" ? "approval_denied" : "approval_unsupported",
+        message: `Codex request ${summary.method} (${summary.kind})${summary.server ? ` from ${summary.server}` : ""}${summary.origin ? ` for ${summary.origin}` : ""} was ${summary.decision === "cancelled" ? "declined" : "not supported"}; Duet workers cannot approve it.`,
+        method: summary.method, kind: summary.kind, requestId: summary.requestId,
+        ...(summary.app ? { app: summary.app } : {}),
+        ...(summary.server ? { server: summary.server } : {}),
+        ...(summary.origin ? { origin: summary.origin } : {}) });
     }
   };
   const approvalPolicy = approvalPolicyFor(options);
@@ -1663,6 +1687,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       releaseComputerApps();
     }
 
+    const codexErrorInfo = normalizeCodexErrorInfo(turnState.error?.codexErrorInfo);
     return {
       status: buildResultStatus(turnState),
       sandbox,
@@ -1681,6 +1706,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       reasoningSummary: turnState.reasoningSummary,
       turn: turnState.finalTurn,
       error: turnState.error,
+      ...(codexErrorInfo !== null ? { codexErrorInfo } : {}),
       stderr: cleanCodexStderr(client.stderr),
       fileChanges: turnState.fileChanges,
       touchedFiles: collectTouchedFiles(turnState.fileChanges),

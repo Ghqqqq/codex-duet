@@ -11,6 +11,7 @@ import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run, requireLocalSockets, readyBroker } from "./helpers.mjs";
 import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { resolveStateDir, upsertJob, writeJobFile } from "../plugins/codex/scripts/lib/state.mjs";
+import { parseArgs, splitReviewArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
@@ -234,12 +235,12 @@ test("review commands preserve stdin arguments and native terminal results", () 
   assert.ok(payload.threadId);
 
   const marker = path.join(binDir, "focus-executed");
-  const literal = `$(touch ${marker}) \`touch ${marker}\` $HOME`;
+  const literal = `reject --focus-on-races but allow --focus-on-errors; $(touch ${marker}) \`touch ${marker}\` $HOME`;
   for (const command of ["review", "adversarial-review"]) {
     const templates = fs.readFileSync(path.join(PLUGIN_ROOT, "commands", `${command}.md`), "utf8");
     for (const [, template] of templates.matchAll(/```bash\n([\s\S]*?)\n```/g)) {
-      const args = `--wait --scope working-tree --json ${literal}`;
-      const shell = template.replaceAll("${CLAUDE_PLUGIN_ROOT}", PLUGIN_ROOT).replaceAll("$ARGUMENTS", args);
+      const shell = template.replaceAll("${CLAUDE_PLUGIN_ROOT}", PLUGIN_ROOT)
+        .replaceAll("$ARGUMENTS", `--wait --scope working-tree --json ${literal}`);
       const reviewed = run("bash", ["-c", shell], { cwd: repo, env });
       // Native review rejects focus; adversarial review sends it as data.
       assert.equal(reviewed.status, command === "review" ? 1 : 0, reviewed.stderr);
@@ -251,7 +252,101 @@ test("review commands preserve stdin arguments and native terminal results", () 
     }
   }
 
+  const argumentConfig = { rejectOptionTypos: true, rejectSeparatorValues: true,
+    valueOptions: ["base", "scope", "model", "cwd", "session"], booleanOptions: ["json", "background", "wait"],
+    aliasMap: { C: "cwd", m: "model" } };
+  const literalCode = String.raw`check "x" and /\bnull\b/; don't miss 'y'`;
+  const cases = [
+    ["--scope working-tree reject --focus-on-races but allow --focus-on-errors", { scope: "working-tree" }, "reject --focus-on-races but allow --focus-on-errors"],
+    ["don't miss the race in parser.js", {}, "don't miss the race in parser.js"],
+    [`--base main ${literalCode}`, { base: "main" }, literalCode],
+    ["check auth --background", { background: true }, "check auth"],
+    ["-- --baes main", {}, "--baes main"],
+    ["--baes main", null, null],
+    ["--model", null, null],
+    ["--model\n--\n", null, null],
+    ["-m --", null, null],
+    ["--session test -C 'a b' -m model --base main --scope=branch --json=false --wait --background", { session: "test", cwd: "a b", model: "model", base: "main", scope: "branch", json: false, wait: true, background: true }, ""],
+    ['check "unmatched --baes main --wait --json', { wait: true, json: true }, 'check "unmatched --baes main'],
+    ["-- check auth --background --json", {}, "check auth --background --json"],
+    [String.raw`check\ -- auth`, {}, String.raw`check\ -- auth`],
+    ['check "--background"', {}, 'check "--background"']
+  ];
+  for (const [index, [input, options, focus]] of cases.entries()) {
+    const parse = () => parseArgs(splitReviewArgumentString(input, argumentConfig), argumentConfig);
+    if (options === null) assert.throws(parse);
+    else assert.deepEqual(parse(), { options, positionals: focus ? [focus] : [] });
+    if (index >= 7) continue;
+    const before = fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8");
+    const reviewed = run("node", [SCRIPT, "adversarial-review", "--json", "--args-stdin"], { cwd: repo, env, input });
+    assert.equal(reviewed.status, options === null ? 1 : 0, reviewed.stderr);
+    const after = fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8");
+    if (options === null) assert.equal(after, before);
+    else assert.equal(JSON.parse(after).lastTurnStart.prompt.split("User focus: ")[1].split("\n</task>")[0], focus);
+  }
+
+  const focus = String.raw`check "x" and /\bnull\b/; don't miss 'y'` + "\n  --help\t--baes main";
+  for (const separator of [" -- ", "\n--\n"]) {
+    const reviewed = run("node", [SCRIPT, "adversarial-review", "--args-stdin"], {
+      cwd: path.join(repo, "src"), env, input: `--scope working-tree --json${separator}${focus}\n`
+    });
+    assert.equal(reviewed.status, 0, reviewed.stderr);
+    const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+    assert.equal(state.lastThreadStart.cwd, repo);
+    assert.equal(state.lastTurnStart.prompt.split("User focus: ")[1].split("\n</task>")[0], focus);
+  }
+
   const fake = path.join(binDir, "codex"), source = fs.readFileSync(fake, "utf8");
+  const callReview = (command = "adversarial-review") => run("node", [SCRIPT, command, "--json"], { cwd: repo, env });
+  const storedReview = result => {
+    const id = /Job handle: ([^;]+);/.exec(result.stderr)[1];
+    const compact = JSON.parse(run("node", [SCRIPT, "result", id], { cwd: repo, env }).stdout);
+    const details = JSON.parse(run("node", [SCRIPT, "result", id, "--details"], { cwd: repo, env }).stdout);
+    const stored = JSON.parse(run("node", [SCRIPT, "status", id, "--json"], { cwd: repo, env }).stdout).job;
+    assert.equal(compact.status, stored.status);
+    assert.equal(details.status, stored.status);
+    assert.equal(details.rawOutputFile, stored.rawOutputFile);
+    assert.equal(details.resultFile, stored.resultFile);
+    assert.deepEqual(JSON.parse(fs.readFileSync(details.resultFile, "utf8")), JSON.parse(result.stdout));
+    return { compact, details };
+  };
+  const validReview = {
+    verdict: "needs-attention", summary: "Review findings.", next_steps: [],
+    findings: Array.from({ length: 24 }, (_, index) => ({ severity: "high", title: `Finding ${index}`,
+      body: "Concrete failure scenario. ".repeat(22), file: "src/app.js", line_start: 1, line_end: 2,
+      confidence: 0.9, recommendation: `Guard case ${index}.` }))
+  };
+  const inject = raw => fs.writeFileSync(fake, source.replace("function structuredReviewPayload(prompt) {",
+    `function structuredReviewPayload(prompt) { return ${JSON.stringify(raw)};`));
+  inject(JSON.stringify(validReview));
+  const longReview = callReview();
+  assert.equal(longReview.status, 0, longReview.stderr);
+  const complete = storedReview(longReview);
+  assert.equal(complete.compact.summaryTruncated, true);
+  assert.equal(complete.compact.summary.length, 8000);
+  assert.ok(complete.compact.details.includes("--details"));
+  assert.deepEqual(complete.details.findings, validReview.findings);
+  assert.ok(complete.details.reviewOutput.includes(validReview.findings.at(-1).recommendation));
+  assert.equal(fs.readFileSync(complete.details.rawOutputFile, "utf8"), JSON.stringify(validReview));
+  for (const raw of ["not valid JSON", "", JSON.stringify({ ...validReview, verdict: "unknown" }),
+    JSON.stringify({ ...validReview, findings: [{ ...validReview.findings[0], confidence: 2 }] })]) {
+    inject(raw);
+    const invalid = callReview();
+    assert.equal(invalid.status, 1, invalid.stderr);
+    assert.equal(JSON.parse(invalid.stdout).errorCode, "review_output_invalid");
+    const { compact, details } = storedReview(invalid);
+    assert.equal(compact.status, "failed");
+    assert.equal(compact.blockers[0].code, "review_output_invalid");
+    assert.equal(details.errorCode, "review_output_invalid");
+    assert.equal(fs.readFileSync(details.rawOutputFile, "utf8"), raw);
+  }
+  const nativeText = '"Reviewed uncommitted changes.\\nNo material issues found."';
+  assert.ok(source.includes(nativeText));
+  fs.writeFileSync(fake, source.replace(nativeText, '""'));
+  const emptyNative = callReview("review");
+  assert.equal(emptyNative.status, 1, emptyNative.stderr);
+  assert.equal(storedReview(emptyNative).compact.blockers[0].code, "review_output_invalid");
+
   const reply = 'send({ id: message.id, result: { turn: buildTurn(turnId), reviewThreadId: reviewThread.id } });';
   assert.ok(source.includes(reply));
   fs.writeFileSync(fake, source.replace(reply, `${reply}
@@ -1990,7 +2085,7 @@ test("session end requests scoped interrupts and retains history without killing
   assert.equal(state.jobs.find(job => job.id === "review-other").cancelRequested, undefined);
 });
 
-test("stop hook runs a stop-time review task and blocks on findings when the review gate is enabled", () => {
+test("stop hook blocks on findings once and skips review when stop_hook_active is true", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   const fakeStatePath = path.join(binDir, "fake-codex-state.json");
@@ -2026,8 +2121,34 @@ test("stop hook runs a stop-time review task and blocks on findings when the rev
   assert.equal(blocked.status, 0, blocked.stderr);
   const blockedPayload = JSON.parse(blocked.stdout);
   assert.equal(blockedPayload.decision, "block");
+  assert.match(blockedPayload.reason, /Missing empty-state guard in src\/app\.js:4-6/);
 
   const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+  const statePath = path.join(resolveStateDir(repo), "state.json");
+  const jobsBefore = JSON.parse(fs.readFileSync(statePath, "utf8")).jobs;
+
+  for (let i = 0; i < 2; i += 1) {
+    const allowed = run("node", [STOP_HOOK], {
+      cwd: repo,
+      env: buildEnv(binDir),
+      input: JSON.stringify({
+        cwd: repo,
+        session_id: "sess-stop-review",
+        stop_hook_active: true,
+        last_assistant_message: "I fixed the review findings."
+      })
+    });
+    assert.equal(allowed.status, 0, allowed.stderr);
+    assert.equal(allowed.stdout.trim(), "");
+    assert.equal(allowed.stderr.trim().split("\n").length, 1);
+    assert.match(allowed.stderr, /review already ran for this turn/);
+    assert.match(allowed.stderr, /Changes made afterwards are not re-reviewed automatically/);
+    assert.match(allowed.stderr, /\/codex:review --wait/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(fakeStatePath, "utf8")), fakeState,
+      "stop-hook continuation must not start another Codex review turn");
+    assert.deepEqual(JSON.parse(fs.readFileSync(statePath, "utf8")).jobs, jobsBefore,
+      "stop-hook continuation must not create another review job");
+  }
 
   const status = run("node", [SCRIPT, "status"], {
     cwd: repo,
@@ -2143,31 +2264,42 @@ test("stop hook does not block when Codex is unavailable even if the review gate
   assert.equal(allowed.stdout.trim(), "");
 });
 
-test("stop hook runs the actual task when auth status looks stale", () => {
-  const repo = makeTempDir();
-  const binDir = makeTempDir();
-  installFakeCodex(binDir, "refreshable-auth");
-  initGitRepo(repo);
-  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
-  run("git", ["add", "README.md"], { cwd: repo });
-  run("git", ["commit", "-m", "init"], { cwd: repo });
+test("stop hook runs the actual task with stale auth and allows technical failures", () => {
+  for (const [behavior, failureReason] of [
+    ["refreshable-auth", null],
+    ["auth-run-fails", /authentication expired; run codex login/],
+    ["verbose-task", /returned an unexpected answer/]
+  ]) {
+    const repo = makeTempDir();
+    const binDir = makeTempDir();
+    installFakeCodex(binDir, behavior);
+    initGitRepo(repo);
+    fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+    run("git", ["add", "README.md"], { cwd: repo });
+    run("git", ["commit", "-m", "init"], { cwd: repo });
 
-  const setup = run("node", [SCRIPT, "setup", "--enable-review-gate", "--json"], {
-    cwd: repo,
-    env: buildEnv(binDir)
-  });
-  assert.equal(setup.status, 0, setup.stderr);
+    const setup = run("node", [SCRIPT, "setup", "--enable-review-gate", "--json"], {
+      cwd: repo,
+      env: buildEnv(binDir)
+    });
+    assert.equal(setup.status, 0, setup.stderr);
 
-  const allowed = run("node", [STOP_HOOK], {
-    cwd: repo,
-    env: buildEnv(binDir),
-    input: JSON.stringify({ cwd: repo })
-  });
+    const result = run("node", [STOP_HOOK], {
+      cwd: repo,
+      env: buildEnv(binDir),
+      input: JSON.stringify({ cwd: repo, stop_hook_active: false })
+    });
 
-  assert.equal(allowed.status, 0, allowed.stderr);
-  const payload = JSON.parse(allowed.stdout);
-  assert.equal(payload.decision, "block");
-
+    assert.equal(result.status, 0, result.stderr);
+    if (failureReason) {
+      assert.equal(result.stdout.trim(), "", `${behavior} must not block the stop`);
+      assert.match(result.stderr, failureReason);
+    } else {
+      const payload = JSON.parse(result.stdout);
+      assert.equal(payload.decision, "block");
+      assert.match(payload.reason, /Missing empty-state guard in src\/app\.js:4-6/);
+    }
+  }
 });
 
 test("review, adversarial review, setup and status reuse one ready shared app-server", async (t) => {

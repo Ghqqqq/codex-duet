@@ -13,6 +13,8 @@ import { AGENT_TYPE } from '../hooks/native-agent.mjs';
 import { instructionInventory } from '../hooks/claude-memory.mjs';
 import { EXECUTOR_FRAMING, writeClaudeSnapshot } from '../scripts/lib/claude-memory.mjs';
 import { isC2Report } from '../scripts/lib/report-delivery.mjs';
+import { updateJob } from '../scripts/lib/state.mjs';
+import { register as reportHooks } from '../hooks/report-delivery.mjs';
 
 const plugin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const captures = [];
@@ -242,7 +244,7 @@ function fixture(behavior) {
     now = end;
     await delay(0);
   }
-  return { root, $, turn, reload, readStore, save, invoke, env, capture, jobs, advance, timers,
+  return { abort: () => controller.abort(), root, $, turn, reload, readStore, save, invoke, env, capture, jobs, advance, timers,
     withUsage: usage => { syntheticUsage = usage; },
     setStore: data => fs.writeFileSync(storeFile, JSON.stringify(data)),
     codexState: () => JSON.parse(fs.readFileSync(`${root}/bin/fake-codex-state.json`, 'utf8')),
@@ -362,6 +364,44 @@ test('real companion: question/answer stays on the job; abort interrupts fake Co
   assert.ok(JSON.stringify(question.codexState().serverRequestReplies).includes('Small'));
   question.save();
 
+  const late = fixture('parent-question-sequence');
+  const displayed = await late.turn('Ask before an external answer.', 1);
+  const original = late.jobs()[0];
+  const externalAnswer = pending => {
+    const response = spawnSync(process.execPath, [plugin + '/scripts/codex-companion.mjs', 'answer', original.id,
+      '--question', pending.id, '--owner', original.ownerId, '--json', '--session', 'native-session'],
+    { cwd: original.workspaceRoot, env: late.env, input: 'Small', encoding: 'utf8' });
+    assert.equal(response.status, 0, response.stderr);
+  };
+  externalAnswer(displayed.question);
+  const laterQuestion = await until(() => late.jobs().find(job => job.id === original.id)?.pendingQuestion?.id !== displayed.question.id
+    && late.jobs().find(job => job.id === original.id)?.pendingQuestion);
+  externalAnswer(laterQuestion);
+  await until(() => late.jobs().find(job => job.id === original.id)?.status === 'completed');
+  late.reload();
+  const resolvedAnswer = await late.turn('Late Q1 answer', 2);
+  assert.equal(resolvedAnswer.jobId, original.id); assert.equal(resolvedAnswer.status, 'completed');
+  assert.equal(late.codexState().nextTurnId, 2);
+  assert.equal(late.capture.processes.filter(p => p.kind === 'spawn' && p.request.argv[2] === 'task').length, 1);
+  late.reload();
+  const continuation = await late.turn('Start the next assignment.', 3);
+  assert.notEqual(continuation.jobId, original.id);
+  assert.equal(late.jobs().find(job => job.id === continuation.jobId).threadId, original.threadId);
+  assert.equal(late.codexState().nextTurnId, 3);
+
+  const approvals = fixture('server-requests');
+  const denied = await approvals.turn('Run fixture approval requests.', 1);
+  assert.equal(denied.status, 'blocked');
+  const blockers = approvals.jobs()[0].result.blockers;
+  assert.equal(blockers.length, 8);
+  assert.equal(blockers.filter(blocker => blocker.code === 'approval_denied').length, 1);
+  assert.equal(blockers.filter(blocker => blocker.code === 'approval_unsupported').length, 7);
+  const elicitation = blockers.find(blocker => blocker.code === 'approval_denied');
+  assert.equal(elicitation.method, 'mcpServer/elicitation/request'); assert.equal(elicitation.kind, 'elicitation-form');
+  assert.equal(elicitation.server, 'cua_repl'); assert.equal(elicitation.origin, 'https://example.com');
+  assert.ok(blockers.every(blocker => Object.keys(blocker).every(key => ['code', 'message', 'method', 'kind', 'requestId', 'app', 'server', 'origin'].includes(key))));
+  assert.doesNotMatch(JSON.stringify(blockers), /DO_NOT_LOG_FIXTURE|access_browser_origin|requestedSchema/);
+
   const questionSave = fixture('parent-question-sequence'), questionSet = questionSave.$.store.set;
   let finalFailed = false;
   questionSave.$.store.set = async (key, value) => {
@@ -448,9 +488,57 @@ test('real companion: question/answer stays on the job; abort interrupts fake Co
   assert.equal(state.cancellation.confirmation, 'confirmed');
   assert.equal(state.cancellation.reason, 'owner_stopped');
   assert.equal(state.status, job.status);
+  const endingNotices = async (f, job) => {
+    const keys = ['HOME', 'USERPROFILE', 'CODEX_COMPANION_HOME', 'CODEX_COMPANION_TEST_MODE',
+      'CODEX_COMPANION_TEST_ROOT', 'CODEX_HOME', 'CODEX_SQLITE_HOME', 'CLAUDE_PLUGIN_DATA'];
+    const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    try {
+      for (const key of keys) process.env[key] = f.env[key];
+      updateJob(`${f.root}/repo`, job.id, () => ({ completedAt: new Date(Date.now() - 30000).toISOString() }));
+    } finally {
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+      }
+    }
+    const hooks = new Map();
+    reportHooks((event, fn) => { hooks.set(event, fn); return { catch() {} }; });
+    const submit = () => hooks.get('prompt.submit')(f.$, { text: 'Status', origin: { kind: 'composer' }, context: [] }, async e => e);
+    return [(await submit()).context.length, (await submit()).context.length];
+  };
+  assert.ok(job.reportEmittedAt);
+  assert.equal(cancellation.capture.processes.filter(p => p.kind === 'run' && p.request.argv.includes('--mark-emitted')).length, 1);
   // The closure marker, not the overwritable state record, admits the next SendMessage.
   assert.ok(Object.entries(cancellation.readStore()).some(([key, value]) => key.startsWith('native:closed:v1:') && value.turnId === 'turn-1'));
   cancellation.save();
+  assert.deepEqual(await endingNotices(cancellation, job), [0, 0]);
+
+  // Gate thread creation before the adapter learns any handles. The host
+  // rejects this aborted stream even though the signal handler wrote a line.
+  const startup = fixture('slow-task'), binary = startup.env.CODEX_COMPANION_BIN;
+  const starting = `${startup.root}/starting`, release = `${startup.root}/release`;
+  const source = fs.readFileSync(binary, 'utf8');
+  const gated = source.replace('case "thread/start": {', `case "thread/start": {
+    fs.writeFileSync(${JSON.stringify(starting)}, 'ready');
+    while (!fs.existsSync(${JSON.stringify(release)})) await new Promise(resolve => setTimeout(resolve, 25));`);
+  assert.notEqual(gated, source);
+  fs.writeFileSync(binary, gated);
+  const pending = startup.turn('Stop before startup completes.', 1, true);
+  await until(() => fs.existsSync(starting));
+  assert.equal(startup.jobs().length, 1);
+  assert.equal(startup.jobs()[0].dispatchNonce, 'native-session:native-agent:turn-1');
+  assert.equal(Object.values(startup.readStore()).some(state => !!state.jobId), false);
+  startup.abort();
+  await until(() => startup.jobs().some(job => job.ownerAttached === false));
+  fs.writeFileSync(release, 'continue');
+  const unconfirmed = await pending;
+  const startupJob = await until(() => startup.jobs().find(job => !['queued', 'running'].includes(job.status)));
+  assert.equal(unconfirmed.jobId, null);
+  assert.equal(unconfirmed.status, 'blocked');
+  assert.equal(startupJob.status, 'interrupted');
+  assert.equal(startup.codexState().nextTurnId, 1);
+  assert.equal(startupJob.reportEmittedAt, undefined);
+  assert.equal(startup.capture.processes.filter(p => p.kind === 'run' && p.request.argv.includes('--mark-emitted')).length, 0);
+  assert.deepEqual(await endingNotices(startup, startupJob), [1, 0]);
 
   // Exercise completion after the worker has already recorded its interrupt,
   // and a real duet cancel racing the native stop. User cancellation keeps its
@@ -892,6 +980,14 @@ test('readiness attaches once to a user prompt per session; classic startup expo
   assert.ok(!fs.existsSync(`${f.root}/data/native-ready`));
   // The function sandbox cannot see CLAUDE_PLUGIN_DATA; readiness needs no env.
   f.$.env.get = async () => undefined;
+  // Dispatch guidance lives in the per-request system prompt, so compaction
+  // cannot remove it; requests without the Agent tool do not get it.
+  const compose = tools => f.invoke('prompt.compose', { model: 'm', promptModel: 'm', surfaces: [], tools, outputStyle: null, traits: [] },
+    async () => ({ sections: [{ id: 'intro', text: 'Intro', scope: 'shared' }] }));
+  const guided = await compose(['Agent', 'Bash']);
+  assert.deepEqual(guided.sections.map(section => [section.id, section.scope]), [['intro', 'shared'], ['codex:native-dispatch', 'session']]);
+  assert.ok(guided.sections[1].text.includes('codex:codex-native'));
+  assert.deepEqual((await compose(['Bash'])).sections.map(section => section.id), ['intro']);
   const submit = origin => f.invoke('prompt.submit', { text: 'Hello', wait: false, origin: { kind: origin }, context: ['Existing context'] },
     async e => ({ text: e.text, context: e.context, origin: e.origin }));
   assert.deepEqual((await submit('plugin')).context, ['Existing context']);

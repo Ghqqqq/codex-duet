@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { listJobs, updateJob, readJobFile, resolveJobFile, resolveStateRoot, resolveStateDirForRoot, unresolvedTask } from "./state.mjs";
+import { inertIndexlessWorkspace } from "./indexless-state.mjs";
 import { APPROVAL_OPTIONS, parseApprovalAnswer } from "./server-requests.mjs";
 import { finishJournalJob } from "./run-journal.mjs";
 import { buildWorkerReport } from "./worker-report.mjs";
@@ -12,6 +13,7 @@ import { resolveWorkspaceRoot } from "./workspace.mjs";
 import { reserveAgentName } from "./agent-names.mjs";
 
 export const ACTIVE = new Set(["queued", "running"]);
+const INERT_INDEXLESS_MIN_AGE_MS = 24 * 60 * 60 * 1000;
 // Thread IDs are global to the isolated runtime, unlike workspace job indexes.
 // Read matching records and check for unindexed owners across workspaces.
 export function recordedThreadJobs(threadId) {
@@ -43,9 +45,14 @@ export function recordedThreadJobs(threadId) {
     try {
       files = fs.readdirSync(path.join(directory, "jobs")).filter(name => /^[\w-]+\.json$/.test(name));
     } catch (error) { if (error.code !== "ENOENT") inventory.complete = false; }
-    // Broker/journal-only workspaces need no index. An index is required once
-    // private records exist, even when the readable orphans belong elsewhere.
-    if (indexMissing && files.length) inventory.complete = false;
+    // Broker/journal-only workspaces need no index. Other private records require
+    // one unless the whole tree is proven old and inert, even when the records
+    // belong to another thread.
+    let inert = false;
+    if (indexMissing && files.length) {
+      try { inert = !inertIndexlessWorkspace(directory, { minAgeMs: INERT_INDEXLESS_MIN_AGE_MS }).reason; } catch { /* Fail closed. */ }
+      if (!inert) inventory.complete = false;
+    }
     const present = new Set(files.map(name => name.slice(0, -5)));
     for (const job of indexed.values()) {
       if (job.threadId === threadId && !present.has(job.id)) inventory.complete = false;
@@ -56,6 +63,7 @@ export function recordedThreadJobs(threadId) {
       try {
         const stored = readJobFile(path.join(directory, "jobs", name));
         if (!job) {
+          if (inert && (typeof stored?.id !== "string" || !/^[\w-]+$/.test(stored.id))) continue;
           if (!stored || typeof stored !== "object" || Array.isArray(stored) ||
               (stored.threadId != null && (typeof stored.threadId !== "string" || !stored.threadId))) {
             inventory.complete = false;
@@ -82,7 +90,11 @@ export function recordedThreadJobs(threadId) {
           else if (!stored.turnId) continue;
         }
         inventory.jobs.push(stored);
-      } catch { inventory.complete = false; }
+      } catch (error) { if (!inert || !(error instanceof SyntaxError)) inventory.complete = false; }
+    }
+    if (inert) {
+      try { if (inertIndexlessWorkspace(directory, { minAgeMs: INERT_INDEXLESS_MIN_AGE_MS }).reason) inventory.complete = false; }
+      catch { inventory.complete = false; }
     }
   }
   return inventory;
@@ -188,7 +200,7 @@ export function fullReport(payload, job = {}) {
     ...(job.backgroundTerminals ? { backgroundTerminals: job.backgroundTerminals } : {}),
     ...(job.request?.claudeMd ? { claudeMd: job.request.claudeMd } : {}),
     ...(job.request?.settingsInheritance ? { settingsInheritance: job.request.settingsInheritance } : {}),
-    ...(payload.activityCount === undefined && job.activity ? { activityCount: job.activity.length } : {}),
+    ...(payload.activityCount === undefined && (job.activityTotals || job.activity) ? { activityCount: job.activityTotals?.events ?? job.activity.length } : {}),
     ...(job.agentName ? { agentName: job.agentName } : {}) };
   // Older stored reports may predate status normalization. Project their
   // decision without rewriting the record or overriding failure states.
@@ -209,6 +221,11 @@ export function fullReport(payload, job = {}) {
       report.answerCommand = companionCommand(`answer ${target} --question ${quote(question.id)} --json`);
       report.answerAndWaitCommand = companionCommand(`answer ${target} --question ${quote(question.id)} --direct`);
     }
+  } else if (report.blockers?.some(blocker => blocker.code === "thread_busy")) {
+    const blocker = report.blockers.find(blocker => blocker.code === "thread_busy");
+    report.next = blocker.answerCommand ?? blocker.recoveryCommand ?? null;
+    delete report.continuationCommand;
+    delete report.continuationNote;
   } else if (report.status !== "completed" && report.status !== "ownership_moved" && job.threadId) {
     Object.assign(report, continuationReport({ ...job, direct: true }));
   }
@@ -251,8 +268,13 @@ function truncate(text, limit) {
 }
 
 const duetTarget = value => /^[\w.-]+$/.test(value) ? value : quote(value);
-const envelopeBytes = ({ summary, ...envelope }) => Buffer.byteLength(JSON.stringify(envelope));
+export const envelopeBytes = ({ summary, ...envelope }) => Buffer.byteLength(JSON.stringify(envelope));
 const brief = value => truncate(redactActivity(value).replace(/\s+/g, " ").trim(), 240);
+const blockerIdentifiers = ["app", "tabId", "sessionId", "predecessorJobId", "predecessorStatus", "method", "kind", "server", "origin"];
+const compactQuestion = question => ({ id: question.id ?? null, kind: question.kind ?? "question", text: redactActivity(question.text),
+  options: (question.options ?? []).map(redactActivity),
+  ...(question.optionsOmitted ? { optionsOmitted: question.optionsOmitted } : {}),
+  expiresInSec: Number.isFinite(question.expiresAt) ? Math.max(0, Math.ceil((question.expiresAt - Date.now()) / 1000)) : question.expiresInSec ?? null });
 
 // Budget serialized UTF-8, not JS character counts: escaping and multibyte text
 // both count. Details always retains the unabridged report behind this view.
@@ -260,7 +282,7 @@ function fitDirectEnvelope(report) {
   const lists = [
     [report, "keyFindings"], [report, "assumptions"],
     [report.checks, "ran"], [report.checks, "claimed"], [report, "changedFiles"],
-    [report.question, "options"],
+    [report.question, "options"], ...(report.blockers ?? []).map(blocker => [blocker.question, "options"]),
     [report, "blockers", 1]
   ];
   while (envelopeBytes(report) > 2000) {
@@ -269,14 +291,15 @@ function fitDirectEnvelope(report) {
     const [object, key] = candidates.sort(([a, ak], [b, bk]) => Buffer.byteLength(JSON.stringify(b[bk])) - Buffer.byteLength(JSON.stringify(a[ak])))[0];
     object[key].pop();
     if (key === "changedFiles") report.changedFilesOmitted = (report.changedFilesOmitted ?? 0) + 1;
-    else if (key === "options") report.question.optionsOmitted = (report.question.optionsOmitted ?? 0) + 1;
+    else if (key === "options") object.optionsOmitted = (object.optionsOmitted ?? 0) + 1;
     else if (object === report.checks) report.checks.omitted += 1;
     else if (!object[key].length) delete object[key];
   }
   while (envelopeBytes(report) > 2000) {
     const strings = [
       ...(report.blockers ?? []).map(blocker => [blocker, "message"]),
-      ...(report.question ? [[report.question, "text"], ...report.question.options.map((_, i) => [report.question.options, i])] : [])
+      ...[report.question, ...(report.blockers ?? []).map(blocker => blocker.question)].filter(Boolean)
+        .flatMap(question => [[question, "text"], ...question.options.map((_, i) => [question.options, i])])
     ].filter(([object, key]) => object[key].length > 8);
     if (!strings.length) break; // Valid job handles and fixed fields fit on their own.
     const [object, key] = strings.sort(([a, ak], [b, bk]) => Buffer.byteLength(JSON.stringify(b[bk])) - Buffer.byteLength(JSON.stringify(a[ak])))[0];
@@ -307,14 +330,16 @@ export function directReport(payload, job = {}, env = process.env) {
     summary: truncate(summary, DIRECT_SUMMARY_LIMIT),
     ...(full.summaryTruncated || summary.length > DIRECT_SUMMARY_LIMIT ? { summaryTruncated: true } : {})
   };
-  if (full.blockers?.length) report.blockers = full.blockers.map(blocker => ({ code: blocker.code, message: brief(blocker.message ?? ""),
+  if (full.blockers?.length) report.blockers = full.blockers.map(blocker => ({ code: truncate(blocker.code, 64), message: brief(blocker.message ?? ""),
+    ...Object.fromEntries(blockerIdentifiers.filter(key => typeof blocker[key] === "string" && blocker[key])
+      .map(key => [key, truncate(redactActivity(blocker[key]), 240)])),
+    ...(typeof blocker.closed === "boolean" ? { closed: blocker.closed } : {}),
+    ...(blocker.code === "thread_busy" && blocker.question ? { question: compactQuestion(blocker.question) } : {}),
     ...(blocker.code === "thread_busy" && blocker.cancelCommand ? { cancelCommand: blocker.cancelCommand } : {}),
     ...(blocker.code === "thread_busy" && blocker.recoveryCommand ? { recoveryCommand: blocker.recoveryCommand } : {}) }));
   if (full.question) {
     const question = typeof full.question === "string" ? { text: full.question } : full.question;
-    report.question = { id: question.id ?? null, kind: question.kind ?? "question", text: redactActivity(question.text),
-      options: (question.options ?? []).map(redactActivity),
-      expiresInSec: Number.isFinite(question.expiresAt) ? Math.max(0, Math.ceil((question.expiresAt - Date.now()) / 1000)) : null };
+    report.question = compactQuestion(question);
   }
   if (full.touchedFiles?.length || full.touchedFilesOmitted) {
     report.changedFiles = (full.touchedFiles ?? []).map(brief);
@@ -329,7 +354,12 @@ export function directReport(payload, job = {}, env = process.env) {
   if (full.assumptions?.length) report.assumptions = full.assumptions.slice(0, 12).map(brief);
   if (full.keyFindings?.length) report.keyFindings = full.keyFindings.slice(0, 12).map(brief);
   if (full.usage) report.usage = full.usage;
-  const nextCommand = target => !target || ["completed", "ownership_moved"].includes(full.status) ? null
+  const busy = full.blockers?.find(blocker => blocker.code === "thread_busy");
+  const runtimeBlocker = full.status === "blocked" && full.blockers?.find(blocker =>
+    ["context_window_exceeded", "provider_refused", "auth_required"].includes(blocker.code));
+  const nextCommand = target => busy ? busy.answerCommand ?? report.blockers.find(blocker => blocker.code === "thread_busy")?.recoveryCommand ?? null
+    : runtimeBlocker ? runtimeBlocker.code === "auth_required" ? "duet setup" : `duet task --fresh${cwdOption}`
+    : !target || ["completed", "ownership_moved"].includes(full.status) ? null
     : full.status === "needs_answer" ? full.question?.id ? `duet answer ${target} --question ${quote(full.question.id)}` : null
     : ACTIVE.has(full.status) ? `duet wait ${target}`
     : `duet task --to ${target}`;
@@ -345,6 +375,7 @@ export function directReport(payload, job = {}, env = process.env) {
         if (blocker[key]) blocker[key] = `duet ${action} ${duetTarget(predecessor)} --json`;
       }
     });
+    report.next = nextCommand(command);
   }
   fitDirectEnvelope(report);
   // Long workspace paths can exceed the fixed-field budget even after text
@@ -362,9 +393,21 @@ export function directReport(payload, job = {}, env = process.env) {
       .sort(([a, ak], [b, bk]) => Buffer.byteLength(b[bk]) - Buffer.byteLength(a[ak]));
     for (const [blocker, key] of commands) {
       delete blocker[key];
+      report.next = nextCommand(cwdOption && jobId ? duetTarget(jobId) : command);
       if (envelopeBytes(report) <= 2000) break;
     }
   }
+  // Identifier fields are bounded independently; trim unusually large values
+  // only after optional prose and recovery-command copies have been fitted.
+  while (envelopeBytes(report) > 2000) {
+    const identifiers = (report.blockers ?? []).flatMap(blocker => blockerIdentifiers
+      .filter(key => typeof blocker[key] === "string" && blocker[key].length > 64).map(key => [blocker, key]));
+    if (!identifiers.length) break;
+    const [blocker, key] = identifiers.sort(([a, ak], [b, bk]) => Buffer.byteLength(b[bk]) - Buffer.byteLength(a[ak]))[0];
+    blocker[key] = truncate(blocker[key], Math.max(64, Math.floor(blocker[key].length / 2)));
+  }
+  // A fresh task must keep its workspace. Omit a command that still cannot fit.
+  if (envelopeBytes(report) > 2000) report.next = null;
   return report;
 }
 export function ownershipNotice(job, owner) {
@@ -426,7 +469,9 @@ export function answerQuestion(cwd, id, questionId, answer, owner) {
   if (typeof answer !== "string" || !answer.trim() || answer.length > 8000) throw new Error("Answer stdin must contain 1–8000 characters.");
   return updateJob(cwd, id, job => {
     if (ownershipNotice(job, owner)) return null;
+    if (owner !== undefined && (!owner || job.ownerId !== owner)) throw new Error("Answer requires the current --owner; no answer was sent.");
     if (!ACTIVE.has(job.status) || !job.pendingQuestion || job.pendingQuestion.id !== questionId || job.pendingQuestion.expiresAt <= Date.now() || job.pendingQuestion.answer !== undefined) throw new Error("Question is no longer pending; no answer was sent.");
+    if (job.cancelRequested || (job.leaseExpiresAt && job.leaseExpiresAt <= Date.now())) throw new Error("Owner lease expired or job is stopping; no answer was sent.");
     return { pendingQuestion: { ...job.pendingQuestion, answer: answer.trim() } };
   });
 }
@@ -467,17 +512,38 @@ export async function askParentQuestion(cwd, id, { question, options = [], kind 
     answeredAt: answer === undefined ? null : new Date(Date.now()).toISOString(),
     answer: answer === undefined ? null : answer.slice(0, 2000), resolution
   }] });
-  const job = readJobFile(resolveJobFile(cwd, id));
-  if (!ACTIVE.has(job.status) || job.cancelRequested) {
-    updateJob(cwd, id, current => historyPatch(current, "interrupted"));
+  let admission;
+  const admittedJob = updateJob(cwd, id, current => {
+    let patch = {};
+    const previous = current.pendingQuestion;
+    // A dead bridge cannot run its finally. Reclaim only unanswered expired
+    // slots; an answer accepted before the deadline still belongs to its caller.
+    if (previous && previous.answer === undefined && Date.now() >= previous.expiresAt) {
+      patch = { pendingQuestion: null, phase: current.cancelRequested ? "interrupting" : "running",
+        lastQuestion: { id: previous.id, resolution: "expired" },
+        questionHistory: [...(current.questionHistory ?? []).slice(-19), {
+          id: previous.id, callId: previous.callId ?? null, kind: previous.kind ?? "question",
+          text: previous.text, options: previous.options, askedAt: previous.askedAt,
+          answeredAt: null, answer: null, resolution: "expired"
+        }] };
+      current = { ...current, ...patch };
+    }
+    if (!ACTIVE.has(current.status) || current.cancelRequested) admission = "interrupted";
+    else if (current.pendingQuestion) admission = "busy";
+    else {
+      const pending = { id: questionId, callId, kind, text: question, options, askedAt,
+        expiresAt: Date.now() + (current.questionTimeoutSec ?? 900) * 1000 };
+      return { ...patch, pendingQuestion: pending, phase: "needs_answer" };
+    }
+    return { ...patch, ...historyPatch(current, admission) };
+  });
+  if (admission === "interrupted") {
     return { text: "The owner cancelled this task. Stop work and report interrupted.", resolution: "interrupted" };
   }
-  if (job.pendingQuestion) {
-    updateJob(cwd, id, current => historyPatch(current, "busy"));
+  if (admission === "busy") {
     return { text: "Another parent question is pending. Proceed on a conservative assumption and report it.", resolution: "busy" };
   }
-  const pending = { id: questionId, callId, kind, text: question, options, askedAt, expiresAt: Date.now() + (job.questionTimeoutSec ?? 900) * 1000 };
-  updateJob(cwd, id, () => ({ pendingQuestion: pending, phase: "needs_answer" }));
+  const pending = admittedJob.pendingQuestion;
   onProgress?.({ message: `Parent question pending: ${questionId}.`, phase: "needs_answer" });
   let text = "No answer arrived before the timeout. Proceed on a conservative assumption within the authorized scope and report the assumption. If essential input is missing, finish with needs_input.";
   let resolution = "timeout";
@@ -496,10 +562,13 @@ export async function askParentQuestion(cwd, id, { question, options = [], kind 
     return { text, resolution };
   } finally {
     updateJob(cwd, id, current => {
-      const answer = current.pendingQuestion?.id === questionId ? current.pendingQuestion.answer : undefined;
-      return { ...historyPatch(current, resolution, answer), lastQuestion: { id: questionId, resolution },
-        ...(current.pendingQuestion?.id === questionId || current.phase === "needs_answer"
-          ? { pendingQuestion: null, phase: resolution === "interrupted" || current.cancelRequested ? "interrupting" : "running" } : {}) };
+      if (current.pendingQuestion?.id !== questionId) {
+        // Admission may already have archived this abandoned question. Never
+        // clear a successor's slot, restore its phase or duplicate its history.
+        return current.questionHistory?.some(entry => entry.id === questionId) ? {} : historyPatch(current, resolution);
+      }
+      return { ...historyPatch(current, resolution, current.pendingQuestion.answer), lastQuestion: { id: questionId, resolution },
+        pendingQuestion: null, phase: resolution === "interrupted" || current.cancelRequested ? "interrupting" : "running" };
     });
     onProgress?.(`Parent question ${resolution}: ${questionId}.`);
   }
@@ -523,8 +592,9 @@ export function recordBackgroundTerminals(signal, backgroundTerminals) {
 }
 
 export class JobRuntime {
-  constructor(cwd, id, { foreground = false, onProgress = null } = {}) {
+  constructor(cwd, id, { foreground = false, parentPid = null, onProgress = null } = {}) {
     this.cwd = cwd; this.id = id; this.onProgress = onProgress;
+    const startPpid = foreground ? parentPid ?? process.ppid : null;
     this.abort = new AbortController(); this.reason = null;
     runtimeJobs.set(this.abort.signal, this);
     this.handlers = new Map();
@@ -536,6 +606,7 @@ export class JobRuntime {
     let lastTickAt = Date.now();
     const tick = () => {
       if (this.reason) return;
+      if (foreground && process.ppid !== startPpid) { this.stop("parent_exit"); return; }
       const now = Date.now(), gap = now - lastTickAt;
       lastTickAt = now;
       const paused = gap > PAUSE_THRESHOLD_MS;
@@ -593,7 +664,7 @@ export function safeItem(item, lifecycle) {
     ...(Number.isInteger(item.exitCode) ? { exitCode: item.exitCode } : {}) };
 }
 export function progressSnapshot(job) {
-  const pending = job.pendingQuestion?.answer === undefined ? job.pendingQuestion : null;
+  const pending = job.pendingQuestion?.answer === undefined && !(Date.now() >= job.pendingQuestion?.expiresAt) ? job.pendingQuestion : null;
   const elapsedMs = Math.max(0, (job.completedAt ? Date.parse(job.completedAt) : Date.now()) - Date.parse(job.startedAt ?? job.createdAt));
   const seconds = Math.floor(elapsedMs / 1000), elapsed = `${Math.floor(seconds / 60)}m${seconds % 60}s`;
   const phase = pending ? "needs_answer" : job.phase === "needs_answer" ? "running" : job.phase ?? job.status;

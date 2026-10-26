@@ -80,14 +80,17 @@ function target(job, cwd, snapshot = false) {
   return { job: record, reference: record.id, cwd: record.request?.cwd ?? record.workspaceRoot ?? cwd };
 }
 
-function resolutionError(reference, reason, candidates) {
+function resolutionError(reference, reason, candidates, command) {
   const listing = candidates.map(job => `${job.agentName ?? "(unnamed)"} | jobId=${job.id} | threadId=${job.threadId ?? "none"} | cwd=${job.request?.cwd ?? job.workspaceRoot ?? "unknown"} | status=${job.status}`).join("\n");
-  return new Error(`Worker "${reference}": ${reason}. Pass a jobId or --thread <id>. Candidates:\n${listing || "(none in the current session/workspace)"}`);
+  const guidance = ["wait", "answer", "cancel"].includes(command)
+    ? `Pass an exact positional job ID: duet ${command} <jobId>. Find job IDs with duet status --all.`
+    : "Pass a jobId or --thread <id>.";
+  return new Error(`Worker "${reference}": ${reason}. ${guidance} Candidates:\n${listing || "(none in the current session/workspace)"}`);
 }
 
 // Names are scoped; explicit legacy IDs/threads remain usable in their workspace.
 // Repeated jobs on one thread represent one worker. Reused names across threads do not.
-export function resolveWorkerTarget(cwd, reference, { pending = false, nameState = null, legacyReferences = false, sessionId = process.env.CODEX_COMPANION_SESSION_ID?.trim(), jobs: snapshot = null } = {}) {
+export function resolveWorkerTarget(cwd, reference, { command = "task", pending = false, nameState = null, legacyReferences = false, sessionId = process.env.CODEX_COMPANION_SESSION_ID?.trim(), jobs: snapshot = null } = {}) {
   const jobs = scopedJobs(cwd, sessionId, snapshot);
   const named = jobs.filter(job => job.agentName?.toLowerCase() === reference.toLowerCase());
   let matches = jobs.filter(job => job.id === reference);
@@ -100,7 +103,7 @@ export function resolveWorkerTarget(cwd, reference, { pending = false, nameState
     // Generated IDs use task/review (or generateJobId's default job) prefixes.
     // A known worker name does not need the all-workspace exact-ID fallback.
     matches = reportJobs({ workspaceRoot: resolveWorkspaceRoot(cwd) }, process.env, { allWorkspaces: true, filter: job => job.id === reference });
-    if (matches.length > 1) throw resolutionError(reference, "ambiguous job ID across workspaces", matches);
+    if (matches.length > 1) throw resolutionError(reference, "ambiguous job ID across workspaces", matches, command);
   }
   if (!matches.length) {
     matches = named;
@@ -114,8 +117,8 @@ export function resolveWorkerTarget(cwd, reference, { pending = false, nameState
       if (!fitting.length && nameState === "pending" && !pending) fitting = candidates.filter(activeJob);
       if (!fitting.length && nameState === "pending" && !pending) fitting = candidates.filter(unresolvedTask);
       if (!fitting.length && ["wait", "cancel"].includes(nameState)) fitting = candidates.filter(unresolvedTask);
-      if (!fitting.length && nameState === "cancel") throw resolutionError(reference, "no active or unresolved job", candidates);
-      if (!fitting.length && (pending || nameState === "pending")) throw resolutionError(reference, "no pending unanswered question", candidates);
+      if (!fitting.length && nameState === "cancel") throw resolutionError(reference, "no active or unresolved job", candidates, command);
+      if (!fitting.length && (pending || nameState === "pending")) throw resolutionError(reference, "no pending unanswered question", candidates, command);
       matches = fitting.length ? fitting : candidates;
       if (new Set(matches.map(job => job.threadId ?? job.id)).size > 1) {
         // 1.3 assigned names within each workspace. Preserve a unique local
@@ -124,7 +127,7 @@ export function resolveWorkerTarget(cwd, reference, { pending = false, nameState
         const local = matches.filter(job => resolveWorkspaceRoot(job.workspaceRoot ?? job.request?.cwd ?? cwd) === workspace);
         if (local.length) matches = local;
       }
-      if (new Set(matches.map(job => job.threadId ?? job.id)).size > 1) throw resolutionError(reference, "ambiguous name across threads", candidates);
+      if (new Set(matches.map(job => job.threadId ?? job.id)).size > 1) throw resolutionError(reference, "ambiguous name across threads", candidates, command);
     }
   }
   if (!matches.length && legacyReferences) {
@@ -137,11 +140,14 @@ export function resolveWorkerTarget(cwd, reference, { pending = false, nameState
     if (!matches.length) matches = local.filter(job => job.threadId === reference);
     if (!matches.length) {
       matches = local.filter(job => job.id.startsWith(reference));
-      if (matches.length > 1) throw resolutionError(reference, "ambiguous job ID", matches);
+      if (matches.length > 1) throw resolutionError(reference, "ambiguous job ID", matches, command);
     }
   }
+  const resolvedJob = command === "answer" && matches.length === 1 && matches[0].id === reference
+    ? snapshot ? matches[0] : stored(matches[0], cwd) : null;
   if (pending) matches = matches.filter(job => pendingQuestion(snapshot ? job : stored(job, cwd)));
-  if (!matches.length) throw resolutionError(reference, pending ? "no pending unanswered question" : "no match", jobs);
+  if (!matches.length) throw Object.assign(resolutionError(reference, pending ? "no pending unanswered question" : "no match", jobs, command),
+    resolvedJob ? { resolvedJob } : {});
   return target(matches[0], cwd, snapshot !== null);
 }
 

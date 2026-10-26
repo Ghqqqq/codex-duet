@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { lifecycleHarness } from './fake-codex-fixture.mjs';
+import { TIER_1_NAMES, TIER_2_NAMES, TIER_3_NAMES, NAME_TIER_WEIGHTS } from '../plugins/codex/scripts/lib/agent-name-pool.mjs';
+import { ACTIVITY_RETAINED_MAX, ACTIVITY_PENDING_MAX } from '../plugins/codex/scripts/lib/activity.mjs';
+import { createJobProgressUpdater } from '../plugins/codex/scripts/lib/tracked-jobs.mjs';
+import { buildWorkerReport, parseStructuredReport } from '../plugins/codex/scripts/lib/worker-report.mjs';
+import { fullReport, directReport } from '../plugins/codex/scripts/lib/job-runtime.mjs';
 const {
   fs, path, makeTempDir, initGitRepo, buildEnv, installFakeCodex, resolveStateDir, delay, run, browserOriginSetup, transportSetup, resolveIsolatedCodexHome, redactActivity, itemActivity, planActivity, activityReader, writeJobFile, upsertJob, updateJob, readJobFile, resolveJobFile, JobRuntime, pauseAdjustment, renewLease, markOwnerAttachment, leaseSnapshot, questionMessage, adoptJob, ownershipNotice, answerQuestion, askParentQuestion, ownerLost, PARENT_BRIDGE_ENV, resolveSessionMarkersRoot, AGENT_NAMES, pickAgentName, splitRawArgumentString, bridgeScript, spawnOwned, script, alive, fixture, json, directLines, direct, directError, waitUntil, patchJob, job
 } = await lifecycleHarness();
@@ -116,9 +121,23 @@ async function backpressureScenario(script, { timeoutSec = 30, signalStop = fals
 }
 
 test("agent names avoid collisions when the pool is exhausted", () => {
-  assert.equal(new Set(AGENT_NAMES).size, AGENT_NAMES.length);
+  assert.ok(AGENT_NAMES.length >= 1000);
+  assert.ok(AGENT_NAMES.every(name => /^[A-Z][A-Za-z]{1,11}$/.test(name)));
+  assert.equal(new Set(AGENT_NAMES.map(name => name.toLowerCase())).size, AGENT_NAMES.length);
+  const reserved = new Set([
+    "task", "answer", "wait", "result", "status", "cancel", "adopt", "setup", "review", "journal",
+    "list", "help", "main", "next", "done", "stop", "all", "none", "true", "false", "null",
+    // Remaining subcommands in codex-companion.mjs, including internal ones.
+    "cleanup", "adversarial-review", "transfer", "task-worker", "task-resume-candidate", "ultra-codex"
+  ]);
+  assert.ok(AGENT_NAMES.every(name => !reserved.has(name.toLowerCase())));
   const first = pickAgentName([], () => 0);
-  assert.ok(AGENT_NAMES.includes(first));
+  assert.equal(first, TIER_1_NAMES[0]);
+  const totalWeight = [TIER_1_NAMES, TIER_2_NAMES, TIER_3_NAMES]
+    .reduce((sum, names, tier) => sum + names.length * NAME_TIER_WEIGHTS[tier], 0);
+  const tierOneIndex = Math.floor(TIER_1_NAMES.length / 2);
+  const tierOneDraw = (tierOneIndex + 0.5) * NAME_TIER_WEIGHTS[0] / totalWeight;
+  assert.equal(pickAgentName([], () => tierOneDraw), TIER_1_NAMES[tierOneIndex]);
   assert.notEqual(pickAgentName([first], () => 0), first);
   const exhausted = pickAgentName(AGENT_NAMES, () => 0);
   assert.ok(!AGENT_NAMES.includes(exhausted));
@@ -324,7 +343,7 @@ test("names stay unique across a session's workspaces, preserve local reservatio
   t.diagnostic(JSON.stringify({ command: "task --fresh --direct (after index pruning)", workspace: "other-workspace", ...retained }));
 });
 
-test("detached wait returns bounded safe progress, startup phases and confirmed cancellation", () => {
+test("detached wait returns bounded safe progress, startup phases and confirmed cancellation", async () => {
   const f = fixture(); const launch = json(f.call("task", "--detached", "--report", "--json", "fixture work"));
   const snapshot = json(f.call("wait", launch.jobId, "--timeout-sec", "4", "--json", "--report"));
   assert.equal(snapshot.status, "running"); assert.ok(snapshot.headline.length <= 60);
@@ -339,6 +358,96 @@ test("detached wait returns bounded safe progress, startup phases and confirmed 
   assert.deepEqual(result.activity, []); // This observer already consumed the command/plan events.
   assert.ok(result.cursor > 0);
   assert.doesNotMatch(fs.readFileSync(job(f, launch.jobId).logFile, "utf8"), /PRIVATE_FIXTURE/);
+
+  // Race two real workers on one queued record. Hold the claimant outside the
+  // state lock, before runtime startup, so a loser's writes cannot be hidden by
+  // the winner's subsequent progress. Exercise dead-PID reclamation as well.
+  const stateModule = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
+  const expired = spawnOwned(process.execPath, ["-e", ""], { env: f.env, stdio: "ignore" });
+  await new Promise(resolve => expired.once("close", resolve));
+  assert.equal(alive(expired.pid), false);
+  for (const previousClaim of [null, { pid: expired.pid, at: new Date().toISOString() }]) {
+    const claim = fixture("review-ok"), id = "claim-fixture";
+    const ready = path.join(claim.dir, "ready"), claimed = path.join(claim.dir, "claimed");
+    const start = path.join(claim.dir, "start"), release = path.join(claim.dir, "release");
+    fs.mkdirSync(ready); fs.mkdirSync(claimed);
+    const record = { id, jobClass: "task", kind: "task", workspaceRoot: claim.repo,
+      sessionId: claim.env.CODEX_COMPANION_SESSION_ID, ownerId: "claim-owner",
+      status: "queued", phase: "queued", createdAt: new Date().toISOString(), pid: process.pid,
+      ...(previousClaim ? { executionClaim: previousClaim } : {}),
+      logFile: path.join(claim.dir, "job.log"),
+      request: { cwd: claim.repo, jobId: id, prompt: "fixture claim", model: "gpt-6-astra", effort: "xhigh",
+        sandbox: "read-only", detached: true, resumeLast: false } };
+    fs.writeFileSync(record.logFile, "");
+    const seeded = run(process.execPath, ["--input-type=module", "-e", `
+      import { writeJobFile, upsertJob } from ${JSON.stringify(stateModule)};
+      const record = ${JSON.stringify(record)};
+      const file = writeJobFile(process.cwd(), record.id, record); upsertJob(process.cwd(), record);
+      console.log(JSON.stringify(file));
+    `], { cwd: claim.repo, env: claim.env });
+    const file = json(seeded), index = path.join(path.dirname(path.dirname(file)), "state.json");
+    const preload = path.join(claim.dir, "claim-gate.mjs");
+    fs.writeFileSync(preload, `
+      import fs from "node:fs";
+      import path from "node:path";
+      const wait = gate => { while (!fs.existsSync(gate)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); };
+      fs.writeFileSync(path.join(${JSON.stringify(ready)}, String(process.pid)), "");
+      wait(${JSON.stringify(start)});
+      const rmdir = fs.rmdirSync;
+      fs.rmdirSync = function(directory, ...args) {
+        const result = rmdir.call(this, directory, ...args);
+        if (path.basename(directory) === ".state-lock") {
+          const job = fs.readFileSync(${JSON.stringify(file)}, "utf8"), current = JSON.parse(job);
+          if (current.status === "queued" && current.executionClaim?.pid === process.pid) {
+            fs.writeFileSync(path.join(${JSON.stringify(claimed)}, String(process.pid)),
+              JSON.stringify({ job, index: fs.readFileSync(${JSON.stringify(index)}, "utf8") }));
+            wait(${JSON.stringify(release)});
+          }
+        }
+        return result;
+      };
+    `);
+    const workers = Array.from({ length: 2 }, () => {
+      const child = spawnOwned(process.execPath, ["--import", preload, script, "task-worker", "--cwd", claim.repo, "--job-id", id],
+        { cwd: claim.repo, env: claim.env, stdio: ["ignore", "ignore", "pipe"] });
+      const worker = { child, done: null, result: null, stderr: "" };
+      child.stderr.on("data", data => { worker.stderr += data; });
+      worker.done = new Promise(resolve => child.once("close", (code, signal) => { worker.result = { code, signal }; resolve(worker.result); }));
+      return worker;
+    });
+    try {
+      await waitUntil(() => fs.readdirSync(ready).length === 2);
+      fs.writeFileSync(start, "");
+      await waitUntil(() => fs.readdirSync(claimed).length && workers.some(worker => worker.result));
+      assert.equal(fs.readdirSync(claimed).length, 1);
+      const winnerPid = Number(fs.readdirSync(claimed)[0]);
+      const before = JSON.parse(fs.readFileSync(path.join(claimed, String(winnerPid)), "utf8"));
+      const loser = workers.find(worker => worker.child.pid !== winnerPid);
+      assert.deepEqual(await loser.done, { code: 0, signal: null }, loser.stderr);
+      assert.equal(fs.readFileSync(file, "utf8"), before.job);
+      assert.equal(fs.readFileSync(index, "utf8"), before.index);
+      assert.equal(fs.readFileSync(record.logFile, "utf8").split("\n").filter(Boolean).length, 1);
+      assert.equal(fs.existsSync(path.join(claim.dir, "fake-codex-state.json")), false);
+      const held = JSON.parse(before.job);
+      assert.equal(held.pid, winnerPid);
+      assert.equal(held.executionClaim.pid, winnerPid);
+      assert.ok(Number.isFinite(Date.parse(held.executionClaim.at)));
+      fs.writeFileSync(release, "");
+      assert.deepEqual(await workers.find(worker => worker.child.pid === winnerPid).done, { code: 0, signal: null });
+      assert.equal(JSON.parse(fs.readFileSync(file)).status, "completed");
+      assert.equal(claim.requests().filter(request => request.method === "turn/start").length, 1);
+      // Even after the claimant exits, a completed job cannot be replayed.
+      const completed = fs.readFileSync(file, "utf8"), completedIndex = fs.readFileSync(index, "utf8");
+      assert.equal(claim.call("task-worker", "--job-id", id).status, 0);
+      assert.equal(fs.readFileSync(file, "utf8"), completed);
+      assert.equal(fs.readFileSync(index, "utf8"), completedIndex);
+      assert.equal(claim.requests().filter(request => request.method === "turn/start").length, 1);
+    } finally {
+      fs.writeFileSync(start, ""); fs.writeFileSync(release, "");
+      for (const worker of workers) if (worker.child.exitCode === null) worker.child.kill("SIGTERM");
+      await Promise.all(workers.map(worker => worker.done));
+    }
+  }
 });
 
 test("parent question and stdin answer continue the same turn; reports do not log answer text", () => {
@@ -423,6 +532,31 @@ test("question history caps entries and answer length and retains timeout resolu
   assert.equal(stopped.questionHistory.at(-1).callId, "stopped-call"); assert.equal(stopped.questionHistory.at(-1).resolution, "interrupted");
   assert.equal(stopped.questionHistory.length, 20); assert.deepEqual(stopped.lastQuestion, interrupted.lastQuestion); assert.equal(stopped.pendingQuestion, null);
   assert.equal(itemActivity({ type: "mcpToolCall", id: "mcp-call", tool: "ask_parent" }, "completed", new Map(), "mcp-call")[0].callId, "mcp-call");
+
+  // An abandoned bridge's question is invisible once expired, then reclaimed
+  // by admission. Its delayed finally must leave the replacement approval alone.
+  const { progressSnapshot } = await import('../plugins/codex/scripts/lib/job-runtime.mjs');
+  updateJob(cwd, id, () => ({ status: "running" }));
+  const abandoned = askParentQuestion(cwd, id, { question: "Bridge question?", callId: "abandoned-call" });
+  const expired = readJobFile(resolveJobFile(cwd, id)).pendingQuestion;
+  now = expired.expiresAt;
+  const snapshot = progressSnapshot(readJobFile(resolveJobFile(cwd, id)));
+  assert.equal(snapshot.status, "running"); assert.equal(snapshot.phase, "running");
+  assert.equal(snapshot.question, undefined);
+  assert.throws(() => answerQuestion(cwd, id, expired.id, "Too late", "owner"));
+  const replacement = askParentQuestion(cwd, id, { question: "Approve replacement?", kind: "approval" });
+  const admitted = readJobFile(resolveJobFile(cwd, id)).pendingQuestion;
+  assert.notEqual(admitted.id, expired.id);
+  assert.equal((await abandoned).resolution, "timeout");
+  const preserved = readJobFile(resolveJobFile(cwd, id));
+  assert.deepEqual(preserved.pendingQuestion, admitted); assert.equal(preserved.phase, "needs_answer");
+  assert.deepEqual(preserved.questionHistory.filter(entry => entry.id === expired.id).map(entry => entry.resolution), ["expired"]);
+  assert.equal((await askParentQuestion(cwd, id, { question: "Competing question?" })).resolution, "busy");
+  assert.deepEqual(readJobFile(resolveJobFile(cwd, id)).pendingQuestion, admitted);
+  answerQuestion(cwd, id, admitted.id, "deny", "owner");
+  assert.equal((await replacement).resolution, "answered");
+  const resolved = readJobFile(resolveJobFile(cwd, id));
+  assert.equal(resolved.pendingQuestion, null); assert.equal(resolved.phase, "running");
 });
 
 test("an answer accepted before the deadline survives a worker poll after the deadline unless stopped", async t => {
@@ -484,16 +618,80 @@ test("task-worker SIGTERM resolves a pending question and confirms its turn inte
   await waitUntil(() => !alive(owned.pid));
 });
 
-test("cancel also interrupts a currently running review without killing a saved PID", async () => {
-  const f = fixture("w5-review");
-  const child = spawnOwned(process.execPath, [script, "review", "--scope", "working-tree", "--json"], { cwd: f.repo, env: f.env, stdio: ["ignore", "ignore", "pipe"] });
-  let stderr = ""; child.stderr.on("data", chunk => { stderr += chunk; });
-  const id = await waitUntil(() => /Job handle: ([^;]+);/.exec(stderr)?.[1]);
-  await waitUntil(() => job(f, id).turnId);
-  const cancelled = json(f.call("cancel", id, "--json"));
-  assert.equal(cancelled.confirmation, "confirmed");
-  assert.equal(f.state().lastInterrupt.turnId, job(f, id).turnId);
-  await waitUntil(() => !alive(child.pid));
+test("cancel or parent exit interrupts foreground work without killing a saved PID", async () => {
+  for (const [command, reason, scenario] of [["review", "cancelled_by_user"], ["review", "parent_exit"], ["task", "parent_exit"],
+    ["task", "parent_exit", "startup"], ["task", "parent_exit", "closed-stderr"]]) {
+    const f = fixture(command === "review" ? "w5-review" : "w5-working");
+    const probing = path.join(f.dir, "probing"), release = path.join(f.dir, "release-probe");
+    if (scenario === "startup") {
+      const binary = path.join(f.dir, "codex"), anchor = 'const fs = require("node:fs");';
+      const source = fs.readFileSync(binary, "utf8");
+      assert.ok(source.includes(anchor));
+      fs.writeFileSync(binary, source.replace(anchor, `${anchor}
+        if (process.argv.includes('--version') && !fs.existsSync(${JSON.stringify(release)})) {
+          fs.writeFileSync(${JSON.stringify(probing)}, 'ready');
+          while (!fs.existsSync(${JSON.stringify(release)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+        }
+      `));
+    }
+    if (command === "task") json(run(process.execPath, [script, "journal", "start", "--json"], {
+      cwd: f.repo, env: f.env, input: JSON.stringify({ goal: "Persist foreground interruption", criteria: [] })
+    }));
+    const args = command === "review" ? ["review", "--scope", "working-tree", "--json"] : ["task", "--fresh", "--json", "fixture"];
+    const processModule = new URL("../plugins/codex/scripts/lib/process.mjs", import.meta.url).href;
+    const parent = spawnOwned(process.execPath, ["--input-type=module", "-e", `
+      import { spawnOwned } from ${JSON.stringify(processModule)};
+      const child = spawnOwned(process.execPath, ${JSON.stringify([script, ...args])}, { stdio: ['ignore', 'ignore', 2] });
+      child.on('exit', code => { process.exitCode = code; });
+    `], { cwd: f.repo, env: f.env, stdio: ["ignore", "ignore", "pipe"] });
+    const parentExit = new Promise(resolve => parent.once("exit", resolve));
+    let stderr = ""; parent.stderr.on("data", chunk => { stderr += chunk; });
+    const id = await waitUntil(() => /Job handle: ([^;]+);/.exec(stderr)?.[1]);
+    const read = () => readJobFile(path.join(resolveStateDir(f.repo, f.env), "jobs", `${id}.json`));
+    if (scenario === "startup") await until(() => fs.existsSync(probing));
+    const initial = scenario === "startup" ? read() : await until(() => { const current = read(); return current.turnId && current; });
+    assert.equal(initial.status, "running");
+    if (command === "task" && scenario !== "startup") await until(() => read().leaseRenewedAt > initial.leaseRenewedAt);
+    if (scenario === "closed-stderr") {
+      const closed = new Promise(resolve => parent.stderr.once("close", resolve));
+      parent.stderr.destroy();
+      await closed;
+    }
+    if (reason === "parent_exit") {
+      parent.kill("SIGKILL");
+      await parentExit;
+      if (scenario === "startup") fs.writeFileSync(release, "go");
+    }
+    else {
+      const cancelled = json(f.call("cancel", id, "--json"));
+      assert.equal(cancelled.confirmation, "confirmed");
+    }
+    await until(() => !alive(initial.pid) && !alive(parent.pid));
+    const stopped = read();
+    assert.equal(stopped.status, reason === "parent_exit" ? "interrupted" : "cancelled");
+    assert.equal(stopped.result.interruptionReason, reason);
+    assert.equal(stopped.result.interruptionConfirmed, scenario !== "startup");
+    if (scenario === "startup") {
+      assert.ok(!stopped.turnId);
+      const requests = fs.existsSync(path.join(f.dir, "fake-codex-state.json.requests.jsonl")) ? f.requests() : [];
+      assert.ok(!requests.some(request => ["thread/start", "thread/resume", "turn/start"].includes(request.method)), "parent loss during availability must not dispatch a turn");
+    } else assert.equal(f.state().lastInterrupt.turnId, initial.turnId);
+    if (command === "task") {
+      const runDir = path.join(stopped.runStateDir, "runs", stopped.runId);
+      const finishes = fs.readFileSync(path.join(runDir, "journal.jsonl"), "utf8").trim().split("\n").map(JSON.parse).filter(event => event.type === "job_finished");
+      assert.equal(finishes.length, 1, "finalize the journal before any result query can recover the job");
+      assert.equal(finishes[0].status, "interrupted");
+      assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, finishes[0].report), "utf8")).interruptionReason, reason);
+    }
+    const details = json(f.call("result", id, "--details"), 1);
+    assert.equal(details.status, stopped.status);
+    assert.equal(details.interruptionReason, reason);
+    if (command === "task") {
+      await delay(500);
+      assert.equal(read().leaseRenewedAt, stopped.leaseRenewedAt);
+      assert.equal(read().leaseExpiresAt, stopped.leaseExpiresAt);
+    }
+  }
 });
 
 test("transport setup is opt-in, merges the hand-written provider, backs up once and is idempotent", () => {
@@ -594,6 +792,33 @@ test("per-job owners ignore ambient identity; adoption transfers the same turn a
   // Orphan thresholds are covered with an explicit clock in the pause-policy test.
   // An old wait already in flight must notice rotation, too.
   const pending = json(f.call("wait", first.jobId, "--owner", first.ownerId, "--json"));
+  const refused = direct(f.call("task", "--thread", first.threadId, "--direct", "follow-up"), 2);
+  const ownerReport = json(f.call("result", first.jobId));
+  const blocker = refused.blockers.find(blocker => blocker.code === "thread_busy");
+  assert.equal(refused.next, ownerReport.next);
+  for (const key of ["id", "kind", "text", "options"]) assert.deepEqual(blocker.question[key], ownerReport.question[key]);
+  assert.ok(Number.isInteger(blocker.question.expiresInSec));
+  assert.equal(refused.details.includes(refused.jobId), true);
+  for (const directMode of [false, true]) {
+    const rejected = run(process.execPath, [script, "answer", first.jobId, "--owner", "unrelated-owner", "--question", pending.question.id,
+      ...(directMode ? ["--direct", "--quiet"] : ["--json"])], { cwd: f.repo, env: f.env, input: "Do not deliver" });
+    assert.equal(rejected.status, 1);
+    assert.equal(job(f, first.jobId).pendingQuestion.answer, undefined);
+  }
+  const guardedCwd = makeTempDir();
+  for (const stopping of [false, true]) {
+    const guarded = { id: `guarded-answer-${stopping}`, jobClass: "task", status: "running", workspaceRoot: guardedCwd, pid: process.pid,
+      ownerId: "owner", leaseExpiresAt: stopping ? Date.now() + 60000 : Date.now() - 1,
+      ...(stopping ? { cancelRequested: { reason: "cancelled_by_user" } } : {}),
+      pendingQuestion: { id: "question", text: "Choose?", options: [], expiresAt: Date.now() + 60000 } };
+    writeJobFile(guardedCwd, guarded.id, guarded); upsertJob(guardedCwd, guarded);
+    for (const directMode of [false, true]) {
+      const rejected = run(process.execPath, [script, "answer", guarded.id, "--owner", guarded.ownerId, "--question", "question",
+        ...(directMode ? ["--direct", "--quiet"] : ["--json"])], { cwd: guardedCwd, input: "Do not deliver" });
+      assert.equal(rejected.status, 1);
+      assert.equal(readJobFile(resolveJobFile(guardedCwd, guarded.id)).pendingQuestion.answer, undefined);
+    }
+  }
   const oldWait = spawnOwned(process.execPath, [script, "wait", first.jobId, "--owner", first.ownerId, "--after-question", pending.question.id, "--timeout-sec", "30", "--json"], { cwd: f.repo, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
   let oldOutput = ""; oldWait.stdout.on("data", chunk => { oldOutput += chunk; });
   const oldDone = new Promise((resolve, reject) => { oldWait.on("close", resolve); oldWait.on("error", reject); });
@@ -1155,12 +1380,96 @@ test("a direct owner renews while stdout is undrained longer than the owner grac
   assert.equal(result.measurements.statusBeforeDrain, "running");
   assert.ok(result.omissionLines.length >= 1, "the undrained pipe overflows the progress queue");
   assert.ok(result.measurements.omittedLines > 200, "the bounded queue sheds excess progress");
-  assert.equal(result.measurements.progressLines - result.omissionLines.length + result.measurements.omittedLines, result.saved.activity.length, "display omissions do not lose event accounting");
+  assert.equal(result.measurements.progressLines - result.omissionLines.length + result.measurements.omittedLines, result.saved.activityTotals.events, "display omissions do not lose event accounting");
+  assert.equal(result.saved.activity.length, ACTIVITY_RETAINED_MAX);
   const stopped = await backpressureScenario(script, { signalStop: true });
   const final = direct({ status: stopped.code, stdout: stopped.stdout, stderr: stopped.stderr }, 130);
   assert.equal(final.status, "owner_stopped");
   assert.equal(final.jobId, stopped.saved.id);
   assert.equal(stopped.stderr, "");
+
+  // The durable window and totals also survive legacy migration and a new
+  // updater, including tool completions whose starts have left the window.
+  const cwd = makeTempDir(), id = "retained-activity", createdAt = new Date().toISOString();
+  const early = [
+    { type: "commandExecution", command: "node --test", lifecycle: "started" },
+    { type: "commandExecution", command: "node --test", lifecycle: "completed", exitCode: 0 },
+    ...Array(2).fill({ type: "commandExecution", command: "npm run build", lifecycle: "started" }),
+    { type: "mcpToolCall", server: "fixture", tool: "check", callId: "start", lifecycle: "started" },
+    { type: "dynamicToolCall", server: "fixture", tool: "check", lifecycle: "completed" },
+    ...["a.mjs", "b.mjs"].map(path => ({ type: "fileChange", path, lifecycle: "completed" }))
+  ].map((event, i) => ({ ...event, seq: i + 1, at: createdAt }));
+  const commands = [{ command: "node --test", status: "completed", exitCode: 0 }];
+  const workerResult = { status: 0, rawOutput: "Completed.", commandExecutions: commands,
+    structured: parseStructuredReport(JSON.stringify({ status: "completed", summary: "Completed.", verification: ["node --test: passed"] })) };
+  const report = buildWorkerReport(workerResult, { jobId: id });
+  const record = { id, workspaceRoot: cwd, jobClass: "task", status: "completed", createdAt, result: workerResult, report,
+    activity: early, activitySeq: early.length, activityCursors: { [activityReader("late")]: 1 } };
+  writeJobFile(cwd, id, record); upsertJob(cwd, record);
+  assert.equal(fullReport(report, record).activityCount, early.length);
+  const legacy = json(run(process.execPath, [script, "wait", id, "--json"], { cwd }));
+  assert.equal(legacy.activityCount, early.length);
+  assert.deepEqual(legacy.verification, report.verification);
+  const late = [
+    { type: "commandExecution", command: "npm run build", status: "failed" },
+    { type: "commandExecution", command: "npm run build", lifecycle: "completed" },
+    { type: "mcpToolCall", server: "fixture", tool: "check", callId: "different", lifecycle: "completed" },
+    { type: "dynamicToolCall", server: "fixture", tool: "check", lifecycle: "started" },
+    { type: "dynamicToolCall", server: "fixture", tool: "check", status: "declined" },
+    { type: "commandExecution", command: "echo observed", lifecycle: "completed" }
+  ];
+  const filler = Array.from({ length: 600 - early.length - late.length }, () => ({ type: "plan", steps: [], statuses: [] }));
+  createJobProgressUpdater(cwd, id)({ activity: filler });
+  assert.deepEqual(readJobFile(resolveJobFile(cwd, id)).activityTotals, { events: early.length + filler.length, toolUses: 7 });
+  createJobProgressUpdater(cwd, id)({ activity: late });
+  const retained = readJobFile(resolveJobFile(cwd, id)), all = [...early, ...filler, ...late];
+  assert.equal(retained.activity.length, ACTIVITY_RETAINED_MAX);
+  assert.deepEqual(retained.activityTotals, { events: all.length, toolUses: 9 });
+  assert.deepEqual(retained.activityPendingTools, {});
+  assert.equal(retained.activity[0].seq, all.length - ACTIVITY_RETAINED_MAX + 1);
+  assert.equal(retained.activity.at(-1).seq, all.length);
+  assert.deepEqual(fullReport(report, retained), fullReport(report, { ...record, activity: all }));
+  assert.deepEqual(directReport(report, retained), directReport(report, record));
+  const fresh = json(run(process.execPath, [script, "wait", id, "--owner", "fresh", "--json"], { cwd }));
+  assert.equal(fresh.activityEvicted, 100);
+  assert.equal(fresh.activityCount, all.length);
+  assert.equal(fresh.activityOmitted, all.length - fresh.activity.length);
+  const behind = json(run(process.execPath, [script, "wait", id, "--owner", "late", "--json"], { cwd }));
+  assert.equal(behind.activityEvicted, 99);
+  assert.equal(behind.activityCount, all.length - 1);
+  assert.equal(behind.activityOmitted, behind.activityCount - behind.activity.length);
+  assert.equal(behind.cursor, all.length);
+  const observed = json(run(process.execPath, [script, "wait", id, "--json"], { cwd }));
+  assert.equal(observed.activityEvicted, 100 - early.length);
+  assert.equal(observed.activityCount, all.length - early.length);
+  const replay = json(run(process.execPath, [script, "wait", id, "--owner", "late", "--json"], { cwd }));
+  assert.equal(replay.activityCount, 0);
+  assert.equal(Object.hasOwn(replay, "activityEvicted"), false);
+  createJobProgressUpdater(cwd, id)({ activity: Array.from({ length: 150 }, (_, i) => ({
+    type: "commandExecution", command: `pending-${i}`, lifecycle: "started"
+  })) });
+  const cappedPending = readJobFile(resolveJobFile(cwd, id));
+  assert.ok(Object.keys(cappedPending.activityPendingTools).length <= ACTIVITY_PENDING_MAX
+    && Number.isInteger(cappedPending.activityTotals.events) && Number.isInteger(cappedPending.activityTotals.toolUses));
+  const stateFile = path.join(resolveStateDir(cwd), "state.json");
+  const indexed = () => JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  assert.equal(Object.hasOwn(indexed().jobs.find(job => job.id === id), "activityPendingTools"), false);
+  upsertJob(cwd, cappedPending);
+  assert.equal(Object.hasOwn(indexed().jobs.find(job => job.id === id), "activityPendingTools"), false);
+  // Old indexes may already contain pairing state: both status and raw results
+  // must hide it, while private reads keep it for subsequent completions.
+  const staleIndex = indexed();
+  staleIndex.jobs.find(job => job.id === id).activityPendingTools = cappedPending.activityPendingTools;
+  fs.writeFileSync(stateFile, JSON.stringify(staleIndex));
+  for (const args of [["status", id, "--json"], ["status", "--all", "--json"], ["result", id, "--json"], ["result", id, "--details"]]) {
+    const output = json(run(process.execPath, [script, ...args], { cwd }));
+    assert.equal(JSON.stringify(output).includes('"activityPendingTools"'), false);
+  }
+  upsertJob(cwd, { id });
+  assert.equal(Object.hasOwn(indexed().jobs.find(job => job.id === id), "activityPendingTools"), false);
+  assert.deepEqual(readJobFile(resolveJobFile(cwd, id)).activityPendingTools, cappedPending.activityPendingTools);
+  createJobProgressUpdater(cwd, id)({ activity: [{ type: "commandExecution", command: "pending-149", lifecycle: "completed" }] });
+  assert.equal(readJobFile(resolveJobFile(cwd, id)).activityTotals.toolUses, cappedPending.activityTotals.toolUses);
 });
 
 test("a direct wait replaces a previously stored follow continuation after cancellation", () => {

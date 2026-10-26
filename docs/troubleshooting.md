@@ -23,6 +23,18 @@ background `duet task`. Do not treat the fallback as zero Claude usage.
 report v2. If it cannot, run `duet result <worker>`; use `--details` for full
 evidence, handles and settings. Do not parse the task output file.
 
+**A worker ended while nothing was waiting.** On a typed prompt, Duet can give
+Claude one recovery line for up to five jobs in this session that ended at least
+10 seconds ago without an emitted report, previous notice or live attached
+owner wait. Follow its `duet result '<id>' --cwd '<root>' --details` command.
+Only tasks created with 1.4.4 tracking qualify. Lookup errors, oversized state
+or the 2-second timeout leave the prompt unchanged; the scan caps at 256
+state-root entries and 8 MiB of indexes (2 MiB each). Each notice is claimed
+before it is attached and confirmed after the prompt is accepted; an unconfirmed
+claim expires after 10 minutes, so a failure delays or, rarely, repeats a notice
+instead of losing it. The helper costs an estimated 60 ms per typed
+prompt; see [unreported endings](worker-lifecycle.md#unreported-endings).
+
 **Claude instructions are approximate.** Managed environments skip user-supplied
 `prompt.context` hooks. If the session's first loaded instruction inventory is
 missing or invalid, Duet falls back to a startup scan and records
@@ -47,12 +59,31 @@ prewarmed asynchronously at session start. Evidence:
 **`auth.status: "unreachable"`, EPERM or socket errors.** The auth check could not
 complete because of a timeout, network, socket or permission failure. If Claude's
 Bash sandbox caused it, retry outside the sandbox rather than logging in again.
+Setup's 45-second total deadline and the standalone availability probes'
+60-second overall deadline guard against hangs. Codex executable probes cap at
+20 seconds, initialization at 30 seconds and account/config requests at 20
+seconds each within the remaining deadline (see [setup](commands.md#codexsetup)
+for all stage limits). These are generous safeguards, not normal startup timings.
+If a pinned runtime is broken, optional PATH Codex version/help diagnostics
+also share setup's deadline, capped at 20 seconds each and skipped when no time
+remains. A working PATH candidate only informs repair guidance; setup still
+reports the broken pin.
+A stalled Codex probe returns `ready: false`,
+`auth.status: "unreachable"` and `auth.reason: "timeout"`; shutdown may add brief
+overhead. This does not imply logout, and setup does not suggest logging in.
+
+**CUA sync reports missing/non-executable node or an unreadable launcher.** The
+`codex-app` profile validates both files before writes, including dry-runs and
+identical definitions. Repair the app or select a current `--cua-template`.
+`setup --json` also reports `tools.cuaReplReason` for a stale configured command;
+this is an offline executable check, not a live browser/desktop test. Optional
+CUA availability is separate from core `ready`.
 
 **`stale_browser_tab_claim`.** Another browser session owns that tab. Start the
 assignment again with a fresh tab; do not steal the claim.
 
 **`status: blocked` with `computer_use_app_not_approved`.** The worker tried to
-drive an app (`blockers[].app` in `duet result <worker> --details`) that the isolated runtime has not approved. Check
+drive an app (`blockers[].app` in the compact report and `--details`) that the isolated runtime has not approved. Check
 `setup --list-computer-apps --json`: in `mirror` mode the app must be "Always"
 allowed in the user's Codex app (or added with `setup --allow-computer-app`); in
 `ask` mode mirrored grants are dropped but explicit ones remain. Approve with
@@ -65,9 +96,27 @@ case-insensitive; exact labels allow a trailing period. Anything else, including
 [approval choices](computer-use-approvals.md#forwarded-approvals-owned-jobs).
 `computer_use_app_blocked_by_policy`/`computer_use_app_forbidden` come from
 Codex's own policy and cannot be overridden here. `browser_tab_debugger_unattached`
-names a tab (`tabId`, `sessionId`, `closed` in `--details`) the worker could not inspect or
+names a tab (`tabId`, `sessionId`, `closed` in compact blockers and `--details`) the worker could not inspect or
 close; close it manually if `closed` is `false`. `reported_blocked` means Codex's
 own final answer declared itself blocked. Blocked tasks exit 2, like `needs_input`.
+`approval_denied`/`approval_unsupported` mean a non-Computer-Use server request
+was denied or unsupported. They force a blocked report even if Codex claims
+completion; safe method/kind/server/origin fields identify the request without
+exposing its payload. Resolve the prerequisite instead of retrying around it.
+
+**`provider_refused`, `usage_limit`, `context_window_exceeded` or `auth_required`.**
+These are typed failed-turn blockers, with `status: blocked` and exit 2:
+`cyberPolicy` maps to `provider_refused`; `usageLimitExceeded` and
+`sessionBudgetExceeded` to `usage_limit`; `contextWindowExceeded` to
+`context_window_exceeded`; and `unauthorized` to `auth_required`. Respect the
+provider refusal and clarify legitimate defensive scope before a fresh dispatch;
+for usage limits wait for reset or change model/plan; for full context start a
+fresh worker with a shorter brief; for missing auth run `duet setup` and log in
+to the isolated home. Details preserve the original `error` text with display
+cleanup. The sole text fallback is “flagged for possible cybersecurity risk”,
+case-insensitive, when typed information is absent. Other failures remain
+`failed`, exit 1. An error notification on a turn that later succeeds does not
+alone make it blocked. See [runtime blocker details](worker-operations.md#direct-mode).
 
 **Interrupted worker or lost connection.** Inspect `duet status <worker>` and
 `duet result <worker> --details` in the original workspace: an eligible lost turn
@@ -79,7 +128,10 @@ handle is resolved as failed.
 
 A follow-up on a busy or unresolved thread is blocked with `thread_busy`. The
 server pre-check also catches external turns and turns in other workspaces.
-Use `recoveryCommand` or `cancelCommand` when supplied for a tracked owning job;
+Use `next` verbatim: it answers the tracked owner's pinned question when one
+blocks progress, otherwise observes recovery/status, or is null. The blocker's
+nested question and `cancelCommand` belong to that owner; `details` targets the
+refused attempt. Use recovery or cancel only when supplied for a tracked owning job;
 external turns have no Duet recovery/cancel command and must be resolved by
 their owner. Commands shortened out of a compact report remain in `--details`.
 Do not resubmit blindly; that starts a new turn.
@@ -141,10 +193,11 @@ More: [worker operations](worker-operations.md) and
   (`computer-use/config.toml`, `computer-use/sessions/<thread>.toml`); a future
   runtime may change them. Session-level ("This session") approvals in the
   user's Codex app are deliberately not mirrored.
-- Blocker detection matches fixed runtime signatures (`Computer Use was not
+- Blocker detection includes the typed failed-turn errors above, typed
+  server-request refusals and fixed runtime signatures (`Computer Use was not
   approved to use …`, `Debugger unattached`, `Tab … is already part of browser
   session …`) and a final answer that starts with "Blocked" or states
-  `status: blocked`; a refusal phrased differently is reported through
+  `status: blocked`; an otherwise uncaptured refusal phrased differently is reported through
   `keyFindings` and the raw output only.
 - File tracking cannot attribute edits when several writers share a checkout, and
   ignored files and submodule contents are not hashed.

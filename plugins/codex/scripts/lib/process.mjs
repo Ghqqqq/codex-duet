@@ -81,6 +81,8 @@ export function runCommand(command, args = [], options = {}) {
     encoding: "utf8",
     input: options.input,
     maxBuffer: options.maxBuffer,
+    timeout: options.timeoutMs,
+    killSignal: options.timeoutMs ? "SIGKILL" : undefined,
     stdio: options.stdio ?? "pipe",
     shell: options.shell ?? (process.platform === "win32" ? (process.env.SHELL || true) : false),
     windowsHide: true
@@ -114,6 +116,9 @@ export function binaryAvailable(command, versionArgs = ["--version"], options = 
     return { available: false, detail: "not found" };
   }
   if (result.error) {
+    if (/** @type {NodeJS.ErrnoException} */ (result.error).code === "ETIMEDOUT") {
+      return { available: false, status: "unreachable", reason: "timeout", detail: `${command} ${versionArgs.join(" ")} probe timed out.` };
+    }
     return { available: false, detail: result.error.message };
   }
   if (result.status !== 0) {

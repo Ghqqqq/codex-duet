@@ -4,6 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
 import { resolveStateRoot, removeJobsFromState, unresolvedTask } from "./state.mjs";
+import { inertIndexlessWorkspace } from "./indexless-state.mjs";
 import { planSessionMarkers, pruneSessionMarkers } from "./session-markers.mjs";
 import { planRuns, pruneRuns, RUN_SESSIONS_DIR } from "./run-journal.mjs";
 import { CodexAppServerClient } from "./app-server.mjs";
@@ -154,8 +155,11 @@ function workspaceRecords(workspace, { state = null, locked = false, cache = nul
   if (before?.ino !== after?.ino || before?.mtimeMs !== after?.mtimeMs || before?.size !== after?.size || (!locked && fs.existsSync(lock))) throw new Error("Workspace changed while reading; skipping.");
   return records;
 }
+
 function inspectWorkspaces(env, cutoff, { retainAll = false, cache = null } = {}) {
   const jobs = [], referenced = new Set(), errors = [], retained = [];
+  const inertWorkspaces = [], workspacesRetained = [];
+  let incomplete = false;
   try {
     const root = resolveStateRoot(env);
     realDirectory(root);
@@ -167,6 +171,27 @@ function inspectWorkspaces(env, cutoff, { retainAll = false, cache = null } = {}
         continue;
       }
       try {
+        if (!fs.lstatSync(path.join(workspace, "state.json"), { throwIfNoEntry: false })) {
+          try {
+            // Match thread inventory: broker/journal-only or empty directories
+            // have no private job records and cannot hold thread references.
+            let files = [];
+            try {
+              const jobsDir = path.join(workspace, "jobs");
+              realDirectory(jobsDir);
+              files = fs.readdirSync(jobsDir).filter(name => /^[\w-]+\.json$/.test(name));
+            } catch (error) { if (error.code !== "ENOENT") throw error; }
+            if (!files.length) continue;
+            const inspected = inertIndexlessWorkspace(workspace, { cutoffMs: cutoff });
+            if (inspected.reason) { incomplete = true; workspacesRetained.push({ workspace, reason: inspected.reason }); }
+            else inertWorkspaces.push({ workspace, bytes: inspected.bytes });
+          } catch (error) {
+            incomplete = true;
+            workspacesRetained.push({ workspace, reason: "unreadable-or-unsafe" });
+            throw error;
+          }
+          continue;
+        }
         const records = workspaceRecords(workspace, { cache });
         const candidates = [], protectedRecords = [];
         for (const { index, record } of records.values()) {
@@ -196,7 +221,7 @@ function inspectWorkspaces(env, cutoff, { retainAll = false, cache = null } = {}
       } catch (error) { errors.push(errorEntry({ workspace }, error)); }
     }
   } catch (error) { if (error.code !== "ENOENT") errors.push(errorEntry({ scope: "state" }, error)); }
-  return { jobs, referenced, errors, retained };
+  return { jobs, referenced, errors, retained, inertWorkspaces, workspacesRetained, incomplete };
 }
 function inspectThreads(env, cutoff, referenced) {
   const grouped = new Map(), errors = [];
@@ -241,19 +266,32 @@ export function planRetention({ now = Date.now(), days, env = process.env } = {}
   const runs = planRuns(cutoffMs, { env });
   const snapshots = planClaudeSnapshots(cutoffMs, { env });
   const imports = planClaudeImports({ now, env });
-  const threads = state.errors.length ? { threads: [], errors: [] } : inspectThreads(env, cutoffMs, state.referenced);
-  const plan = { cutoff: new Date(cutoffMs).toISOString(), ...policy, jobs: state.jobs, runs: runs.runs, runSessions: runs.runSessions, markers: markers.markers, snapshots: snapshots.snapshots, imports: imports.imports, threads: threads.threads, retained: state.retained, errors: [...state.errors, ...markers.errors, ...runs.errors, ...snapshots.errors, ...imports.errors, ...threads.errors] };
+  const threads = state.errors.length || state.incomplete ? { threads: [], errors: [] } : inspectThreads(env, cutoffMs, state.referenced);
+  const plan = { cutoff: new Date(cutoffMs).toISOString(), ...policy, jobs: state.jobs, inertWorkspaces: state.inertWorkspaces, workspacesRetained: state.workspacesRetained, runs: runs.runs, runSessions: runs.runSessions, markers: markers.markers, snapshots: snapshots.snapshots, imports: imports.imports, threads: threads.threads, retained: state.retained, errors: [...state.errors, ...markers.errors, ...runs.errors, ...snapshots.errors, ...imports.errors, ...threads.errors] };
   Object.defineProperty(plan, CONTEXT, { value: { env: { ...env }, now: Number(new Date(now)), cache } });
   return plan;
 }
 
 export async function applyRetention(plan, { deleteThread } = {}) {
-  const report = { jobsDeleted: 0, runsDeleted: 0, runSessionsDeleted: 0, markersDeleted: 0, snapshotsDeleted: 0, importsDeleted: 0, threadsDeleted: 0, threadsSkipped: 0, bytesFreed: 0, retained: (plan?.retained ?? []).map(item => ({ ...item })), errors: [...(plan?.errors ?? [])], days: plan?.days, warnings: [...(plan?.warnings ?? [])] };
+  const report = { jobsDeleted: 0, runsDeleted: 0, runSessionsDeleted: 0, markersDeleted: 0, snapshotsDeleted: 0, importsDeleted: 0, threadsDeleted: 0, threadsSkipped: 0, bytesFreed: 0, inertWorkspaces: [], workspacesRetained: (plan?.workspacesRetained ?? []).map(item => ({ ...item })), retained: (plan?.retained ?? []).map(item => ({ ...item })), errors: [...(plan?.errors ?? [])], days: plan?.days, warnings: [...(plan?.warnings ?? [])] };
   const cache = plan?.[CONTEXT]?.cache ?? new Map();
   try {
     const env = plan[CONTEXT]?.env ?? process.env, cutoff = Date.parse(plan.cutoff);
     if (!Number.isFinite(cutoff)) throw new Error("Invalid retention cutoff.");
     const root = resolveStateRoot(env);
+    for (const candidate of plan.inertWorkspaces ?? []) {
+      const workspace = candidate.workspace;
+      try {
+        realDirectory(root);
+        if (path.dirname(workspace) !== root) throw new Error("Workspace is outside the state root.");
+        const inspected = inertIndexlessWorkspace(workspace, { cutoffMs: cutoff });
+        if (inspected.reason) report.workspacesRetained.push({ workspace, reason: inspected.reason });
+        else report.inertWorkspaces.push({ workspace, bytes: inspected.bytes });
+      } catch (error) {
+        report.workspacesRetained.push({ workspace, reason: "unreadable-or-unsafe" });
+        report.errors.push(errorEntry({ workspace }, error));
+      }
+    }
     const workspaces = new Map();
     for (const candidate of plan.jobs) {
       const selected = workspaces.get(candidate.workspace) ?? new Set();
@@ -331,7 +369,7 @@ export async function applyRetention(plan, { deleteThread } = {}) {
         // Even expired jobs that failed to be removed now protect their threads.
         // Recheck references and rollout mtimes immediately before each RPC.
         const state = inspectWorkspaces(env, cutoff, { retainAll: true, cache });
-        if (state.errors.length) throw new Error("Cannot safely recheck all workspace references.");
+        if (state.errors.length || state.incomplete) throw new Error("Cannot safely recheck all workspace references.");
         const current = inspectThreads(env, cutoff, state.referenced);
         if (current.errors.length) throw new Error("Cannot safely recheck rollout activity.");
         const candidate = current.threads.find(item => item.threadId === thread.threadId);

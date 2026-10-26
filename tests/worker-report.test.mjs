@@ -6,6 +6,9 @@ import assert from "node:assert/strict";
 import { buildWorkerReport, classifyWorkerOutcome, classifyBrowserBlocker, parseStructuredReport } from "../plugins/codex/scripts/lib/worker-report.mjs";
 import { makeTempDir, run, initGitRepo, waitForCondition, readyBroker } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
+import { splitRawArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
+import { directReport } from "../plugins/codex/scripts/lib/job-runtime.mjs";
+import { isC2Report } from "../plugins/codex/scripts/lib/report-delivery.mjs";
 
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
 const stateModule = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
@@ -369,7 +372,7 @@ test("question detection keeps delivered findings with an optional follow-up com
   assert.equal(report.touchedFiles.length + report.touchedFilesOmitted, 40);
 
 });
-test("Computer Use refusals and declared blocks are structured blockers with status blocked", () => {
+test("runtime refusals and declared blocks retain typed blockers and their status precedence", () => {
   const rawOutput = [
     "**Blocked before native capture.** No new screenshots were taken.",
     "- `cua.getApp(\"Google Chrome\")` failed: `Computer Use was not approved to use Google Chrome`.",
@@ -397,6 +400,65 @@ test("Computer Use refusals and declared blocks are structured blockers with sta
   assert.equal(classifyWorkerOutcome("Computer Use is blocked from using the app 'com.evil.App' by your organization's policy."), "blocked");
   assert.equal(classifyWorkerOutcome("Implemented the unblocking fix; tests passed."), "completed");
   assert.equal(buildWorkerReport({ status: 1, error: "Computer Use was not approved to use Google Chrome" }).status, "failed");
+
+  const cyberMessage = "This content was flagged for possible cybersecurity risk. Fixture evidence.";
+  const genericMessage = "Synthetic runtime failure evidence.";
+  const classified = [
+    ["cyberPolicy", "provider_refused"], ["usageLimitExceeded", "usage_limit"],
+    ["sessionBudgetExceeded", "usage_limit"], ["contextWindowExceeded", "context_window_exceeded"], ["unauthorized", "auth_required"]
+  ];
+  const cases = [
+    ...classified.map(([codexErrorInfo, code]) => ({ error: { message: genericMessage, codexErrorInfo }, code })),
+    ...classified.map(([codexErrorInfo, code]) => ({ notification: { message: genericMessage, codexErrorInfo }, code })),
+    { error: { message: cyberMessage }, code: "provider_refused" },
+    { error: { message: cyberMessage, codexErrorInfo: null }, code: "provider_refused" },
+    { error: { message: genericMessage }, notification: { message: "Earlier error evidence.", codexErrorInfo: "cyberPolicy" }, code: "provider_refused" },
+    ...["other", "serverOverloaded", undefined, { httpConnectionFailed: { httpStatusCode: 503 } }].map(codexErrorInfo => ({ error: { message: genericMessage, codexErrorInfo }, code: "error" })),
+    ...["other", "serverOverloaded"].map(codexErrorInfo => ({ error: { message: cyberMessage, codexErrorInfo }, code: "error" })),
+    { error: { message: cyberMessage, codexErrorInfo: "other" }, notification: { message: genericMessage, codexErrorInfo: "cyberPolicy" }, code: "error" },
+    { notification: { message: genericMessage, codexErrorInfo: "cyberPolicy" }, status: "completed", code: null }
+  ];
+  for (const spec of cases) {
+    const f = fixture(`turn-error:${JSON.stringify(spec)}`);
+    const response = f.call("task", "--fresh", "--direct", "--sandbox", "read-only", "Check fixture outcome.");
+    const compact = directJson(response);
+    const exit = spec.code === null ? 0 : spec.code === "error" ? 1 : 2;
+    const status = spec.code === null ? "completed" : spec.code === "error" ? "failed" : "blocked";
+    assert.equal(response.status, exit, JSON.stringify(spec));
+    assert.equal(compact.status, status);
+    assert.equal(compact.blockers?.[0]?.code ?? null, spec.code);
+    const next = spec.code === null ? null : spec.code === "auth_required" ? ["duet", "setup"]
+      : ["context_window_exceeded", "provider_refused"].includes(spec.code) ? ["duet", "task", "--fresh"]
+      : ["duet", "task", "--to", compact.worker];
+    assert.deepEqual(compact.next === null ? null : splitRawArgumentString(compact.next), next);
+    if (status === "blocked") {
+      const recoveryCommand = "duet status predecessor --json";
+      const busy = { code: "thread_busy", recoveryCommand };
+      const blocked = { ...compact, blockers: [...compact.blockers, busy] };
+      assert.equal(directReport(blocked).next, recoveryCommand);
+      assert.equal(directReport({ ...blocked, blockers: [{ ...busy, answerCommand: "duet answer predecessor --question q" }, ...compact.blockers] }).next,
+        "duet answer predecessor --question q");
+    }
+    const { summary, ...envelope } = compact;
+    assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
+    const detailsResponse = f.call("result", compact.jobId, "--details");
+    const details = directJson(detailsResponse);
+    assert.equal(detailsResponse.status, exit);
+    assert.equal(details.status, status);
+    assert.equal(details.exitCode, exit);
+    const captured = JSON.parse(fs.readFileSync(details.resultFile, "utf8"));
+    assert.equal(captured.status, spec.status === "completed" ? 0 : 1, "the runtime status stays separate from the report exit code");
+    const info = spec.error?.codexErrorInfo ?? spec.notification?.codexErrorInfo;
+    assert.equal(captured.codexErrorInfo ?? null, info && typeof info === "object" ? Object.keys(info)[0] : info ?? null);
+    if (spec.code) assert.equal(captured.error, (spec.error ?? spec.notification).message);
+    if (exit === 2) {
+      assert.equal(details.error, captured.error);
+      assert.ok(compact.blockers[0].message);
+    }
+    assert.equal(f.state().nextTurnId, 2, "classification must not replay the turn");
+  }
+  assert.equal(buildWorkerReport({ status: 1, rawOutput: cyberMessage, error: genericMessage }).status, "failed");
+  assert.equal(buildWorkerReport({ status: 1, error: "A cybersecurity policy refusal." }).status, "failed");
 });
 
 test("compact report budgets origin grants and a stale claim without losing the session ID", () => {
@@ -831,6 +893,68 @@ test("v2 budgets UTF-8 text and counts omitted files/checks while details keeps 
   const recoveryCommand = "duet status predecessor --json";
   const busy = directReport({ status: "blocked", jobId: id, blockers: [{ code: "thread_busy", message: "Active predecessor.", recoveryCommand }] });
   assert.equal(busy.blockers[0].recoveryCommand, recoveryCommand);
+  assert.equal(busy.next, recoveryCommand);
+  assert.equal(directReport({ status: "blocked", jobId: id, blockers: [{ code: "thread_busy", cancelCommand: "duet cancel original" }] }).next, null);
+  for (const fields of [
+    { app: "com.apple.TextEdit" }, { app: "Fixture  App", sessionId: "Fixture  Session" },
+    { tab_id: "123", session_id: "00000000-0000-0000-0000-000000000001" },
+    { app: "字".repeat(1000), tabId: "😀".repeat(1000), sessionId: "s".repeat(1000) }
+  ]) {
+    const parsed = parseStructuredReport(JSON.stringify({ status: "blocked", summary: "Blocked.", blockers: [{ code: "fixture", message: "字".repeat(1000), ...fields }] }));
+    const projected = directReport(buildWorkerReport({ status: 0, structured: parsed }, { jobId: id }));
+    const { summary, ...envelope } = projected;
+    assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
+    for (const key of ["app", "tabId", "sessionId"]) {
+      const value = parsed.blockers[0][key];
+      if (value && value.length <= 240) assert.equal(projected.blockers[0][key], value);
+      if (value) assert.ok(projected.blockers[0][key].length <= 240);
+    }
+  }
+  // Recovery commands must fit even when shell quoting expands a real cwd.
+  let longCwd = cwd;
+  while (longCwd.length < 935) longCwd = path.join(longCwd, "w".repeat(Math.min(70, 936 - longCwd.length)));
+  const quotedCwd = path.join(cwd, ...Array(10).fill("q" + "'".repeat(40)));
+  for (const [i, workspace] of [path.join(cwd, "short"), longCwd, quotedCwd].entries()) {
+    fs.mkdirSync(workspace, { recursive: true });
+    for (const code of [null, "context_window_exceeded", "provider_refused"]) {
+      const id = `recovery-${i}-${code ?? "answer"}`;
+      const pendingQuestion = { id: "current", text: "Continue?", options: [], expiresAt: Date.now() + 60000 };
+      const outcome = { status: "blocked", jobId: id, blockers: [{ code, message: "Fixture" }] };
+      const record = { id, jobClass: "task", workspaceRoot: workspace, request: { cwd: workspace }, createdAt,
+        status: code ? "blocked" : "running", pid: code ? null : process.pid,
+        ...(code ? { completedAt: createdAt, report: outcome, result: { status: 1, turnEnded: true, structured: outcome } }
+          : { pendingQuestion }) };
+      const file = writeJobFile(workspace, id, record); upsertJob(workspace, record);
+      const response = run(process.execPath, [script, ...(code ? ["result", id]
+        : ["answer", id, "--question", "stale", "--direct", "--quiet"])], { cwd });
+      const compact = json(response, code ? 2 : 1), { summary, ...envelope } = compact;
+      assert.equal(compact.jobId, id);
+      assert.equal(isC2Report(compact), true);
+      assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
+      assert.equal(compact.next === null, code ? workspace === quotedCwd : workspace === longCwd);
+      const details = splitRawArgumentString(compact.details);
+      assert.equal(json(run(process.execPath, [script, ...details.slice(1)], { cwd }), code ? 2 : 0).jobId, id);
+      if (compact.next !== null) assert.deepEqual(splitRawArgumentString(compact.next),
+        code ? ["duet", "task", "--fresh", "--cwd", workspace] : details.slice(0, -1));
+      if (!code) assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).pendingQuestion, pendingQuestion);
+    }
+  }
+
+  const historyCwd = makeTempDir();
+  for (let i = 0; i < 51; i++) {
+    const timestamp = new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString();
+    const entry = { id: `history-${i}`, workspaceRoot: historyCwd, jobClass: "task", status: "completed",
+      sessionId: i ? "history-other" : "history-own", threadId: `history-thread-${i}`, turnId: `history-turn-${i}`,
+      createdAt: timestamp, updatedAt: timestamp, result: { status: 0, turnEnded: true } };
+    writeJobFile(historyCwd, entry.id, entry); upsertJob(historyCwd, entry);
+  }
+  const status = (...args) => json(run(process.execPath, [script, "status", "--json", ...args],
+    { cwd: historyCwd, env: { CODEX_COMPANION_SESSION_ID: "history-own" } }));
+  const own = status(), all = status("--all");
+  assert.equal(own.latestFinished.id, "history-0");
+  assert.equal(own.historyOmitted, 0);
+  assert.equal(all.recent.length + Number(Boolean(all.latestFinished)), 50);
+  assert.equal(all.historyOmitted, 1);
 });
 
 test("report commands resolve ambiguous, cross-workspace and adopted workers through the duet CLI", t => {
@@ -848,21 +972,30 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
   for (const { id } of records) {
     const report = read(id);
     assert.equal(report.worker, "SharedWorker");
-    assert.equal(report.next, `duet task --to ${id}`);
+    assert.equal(report.next, report.blockers[0].recoveryCommand);
     assert.equal(report.details, `duet result '${id}' --details`);
     const recovered = json(run(process.execPath, [script, ...splitRawArgumentString(report.details).slice(1)], { cwd }), 2);
     assert.equal(recovered.jobId, id);
   }
   save({ ...records[1], threadId: records[0].threadId });
   assert.equal(read("first").details, "duet result 'first' --details");
-  assert.equal(read("first").next, "duet task --to first");
+  assert.equal(read("first").next, read("first").blockers[0].recoveryCommand);
   assert.equal(read("second").details, "duet result 'second' --details");
-  assert.equal(read("second").next, "duet task --to SharedWorker");
+  assert.equal(read("second").next, read("second").blockers[0].recoveryCommand);
 
   const f = fixture("review-ok"), other = path.join(f.dir, "other-workspace");
   fs.mkdirSync(other); initGitRepo(other);
   f.env.PATH = `${path.dirname(new URL("../plugins/codex/bin/duet", import.meta.url).pathname)}${path.delimiter}${f.env.PATH}`;
   const execute = (command, cwd = f.repo) => run("sh", ["-c", command], { cwd, env: f.env, input: "Complete the fixture follow-up." });
+  for (const verb of ["wait", "answer", "cancel"]) {
+    const missing = execute(`duet ${verb} MissingWorker`);
+    assert.equal(missing.status, 1);
+    assert.doesNotMatch(missing.stderr, /--thread\b/);
+    const recovery = missing.stderr.match(/duet status --all\b/)?.[0];
+    assert.ok(recovery);
+    assert.equal(execute(recovery).status, 0);
+  }
+  assert.match(execute("duet task --to MissingWorker").stderr, /--thread\b/);
   const workers = [f.repo, other].map(workspace => {
     const launched = direct(execute("duet task --fresh", workspace));
     const fixture = { ...f, repo: workspace };
@@ -905,8 +1038,26 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
   assert.equal(continued.next, null);
 
   const sequence = fixture("parent-question-sequence");
+  const observer = path.join(sequence.dir, "observer's workspace");
+  fs.mkdirSync(observer);
   sequence.env.PATH = `${path.dirname(new URL("../plugins/codex/bin/duet", import.meta.url).pathname)}${path.delimiter}${sequence.env.PATH}`;
-  const runSequence = command => run("sh", ["-c", command], { cwd: sequence.repo, env: sequence.env, input: "Small" });
+  const runSequence = (command, cwd = sequence.repo) => run("sh", ["-c", command], { cwd, env: sequence.env, input: "Small" });
+  const rejectedAnswer = response => {
+    assert.equal(response.status, 1);
+    const report = JSON.parse(response.stdout);
+    assert.equal(report.status, "error");
+    assert.equal(report.jobId, firstQuestion.jobId);
+    assert.equal(report.worker, firstQuestion.worker);
+    for (const field of ["checks", "usage", "changedFiles"]) assert.equal(report[field], undefined);
+    assert.ok(report.next && report.details);
+    for (const [field, args] of [["next", ["duet", "result", report.jobId]], ["details", ["duet", "result", report.jobId, "--details"]]]) {
+      const tokens = splitRawArgumentString(report[field]);
+      const cwdIndex = tokens.indexOf("--cwd");
+      if (cwdIndex >= 0) assert.equal(tokens.splice(cwdIndex, 2)[1], sequence.repo);
+      assert.deepEqual(tokens, args);
+      assert.equal(json(runSequence(report[field], observer)).jobId, report.jobId);
+    }
+  };
   const firstQuestion = direct(runSequence("duet task --fresh"));
   const secondQuestion = direct(runSequence(firstQuestion.next));
   assert.equal(secondQuestion.status, "needs_answer");
@@ -914,11 +1065,14 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
   const replies = sequence.state().serverRequestReplies.length;
   for (const target of [firstQuestion.worker, firstQuestion.jobId]) {
     const stale = runSequence(`duet answer ${target} --question '${firstQuestion.question.id}'`);
-    assert.notEqual(stale.status, 0);
+    rejectedAnswer(stale);
     assert.equal(sequence.state().serverRequestReplies.length, replies);
     assert.equal(storedFixtureJob(sequence, firstQuestion.jobId).pendingQuestion.id, secondQuestion.question.id);
   }
   assert.equal(direct(runSequence(secondQuestion.next)).status, "completed");
+  for (const question of ["", ` --question '${secondQuestion.question.id}'`]) {
+    rejectedAnswer(runSequence(`duet answer ${firstQuestion.jobId}${question}`, observer));
+  }
   assert.equal(sequence.state().serverRequestReplies.length, replies + 1);
 
   // Reproduce pre-upgrade duplicate names: one completed worker and one real

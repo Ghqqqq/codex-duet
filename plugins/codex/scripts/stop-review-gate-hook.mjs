@@ -71,6 +71,7 @@ function parseStopReviewOutput(rawOutput) {
   if (!text) {
     return {
       ok: false,
+      kind: "failure",
       reason:
         "The stop-time Codex review task returned no final output. Run /codex:review --wait manually or bypass the gate."
     };
@@ -84,12 +85,14 @@ function parseStopReviewOutput(rawOutput) {
     const reason = firstLine.slice("BLOCK:".length).trim() || text;
     return {
       ok: false,
+      kind: "findings",
       reason: `Codex stop-time review found issues that still need fixes before ending the session: ${reason}`
     };
   }
 
   return {
     ok: false,
+    kind: "failure",
     reason:
       "The stop-time Codex review task returned an unexpected answer. Run /codex:review --wait manually or bypass the gate."
   };
@@ -112,6 +115,7 @@ function runStopReview(cwd, input = {}) {
   if (result.error?.code === "ETIMEDOUT") {
     return {
       ok: false,
+      kind: "failure",
       reason:
         "The stop-time Codex review task timed out after 15 minutes. Run /codex:review --wait manually or bypass the gate."
     };
@@ -121,6 +125,7 @@ function runStopReview(cwd, input = {}) {
     const detail = String(result.stderr || result.stdout || "").trim();
     return {
       ok: false,
+      kind: "failure",
       reason: detail
         ? `The stop-time Codex review task failed: ${detail}`
         : "The stop-time Codex review task failed. Run /codex:review --wait manually or bypass the gate."
@@ -133,6 +138,7 @@ function runStopReview(cwd, input = {}) {
   } catch {
     return {
       ok: false,
+      kind: "failure",
       reason:
         "The stop-time Codex review task returned invalid JSON. Run /codex:review --wait manually or bypass the gate."
     };
@@ -156,6 +162,12 @@ function main() {
     return;
   }
 
+  if (input.stop_hook_active === true) {
+    logNote("A Codex stop-time review already ran for this turn. Changes made afterwards are not re-reviewed automatically. Run /codex:review --wait to review them.");
+    logNote(runningTaskNote);
+    return;
+  }
+
   const setupNote = buildSetupNote(cwd);
   if (setupNote) {
     logNote(setupNote);
@@ -164,7 +176,7 @@ function main() {
   }
 
   const review = runStopReview(cwd, input);
-  if (!review.ok) {
+  if (review.kind === "findings") {
     emitDecision({
       decision: "block",
       reason: runningTaskNote ? `${runningTaskNote} ${review.reason}` : review.reason
@@ -172,6 +184,9 @@ function main() {
     return;
   }
 
+  if (!review.ok) {
+    logNote(review.reason);
+  }
   logNote(runningTaskNote);
 }
 

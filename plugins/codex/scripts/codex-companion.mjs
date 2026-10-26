@@ -8,13 +8,14 @@ import { buildWorkerReport, parseStructuredReport, persistTaskArtifacts, taskArt
 import { normalizeBrowserOrigins, normalizeBundleIds } from "./lib/server-requests.mjs";
 import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, ensureBrowserApproval, ensureComputerUseApproval, ensureProjectDocs, projectDocsSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
 import { activityReader, formatActivity, redactActivity, snippet } from "./lib/activity.mjs";
-import { JobRuntime, ACTIVE, OWNER_GRACE_MS, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, continuationReport, fullReport, directReport, adoptJob, ownershipNotice } from "./lib/job-runtime.mjs";
-import { reserveAgentName } from "./lib/agent-names.mjs";
+import { JobRuntime, ACTIVE, OWNER_GRACE_MS, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, continuationReport, fullReport, directReport, envelopeBytes, adoptJob, ownershipNotice } from "./lib/job-runtime.mjs";
+import { reserveAgentName, releaseAgentName } from "./lib/agent-names.mjs";
 import { latestThreadJob, startedThreadSettings, recordedThreadSettings, requestGrantsInSession, resolveThreadInheritance, resolveWorkerTarget } from "./lib/worker-resolve.mjs";
 import { writeSessionMarker } from "./lib/session-markers.mjs";
-import { startRun, addEntry, closeRun, showRun, listRuns, renderRun, validateRun, renderValidation, linkJournalJob } from "./lib/run-journal.mjs";
+import { startRun, addEntry, closeRun, showRun, listRuns, renderRun, validateRun, renderValidation, linkJournalJob, finishJournalJob, validateTaskRun } from "./lib/run-journal.mjs";
 import { recordFinishedJob, recordedThreadJobs, uniqueTurnAttribution } from "./lib/job-runtime.mjs";
-import { listSessionJobs, updateJob, unresolvedTask } from "./lib/state.mjs";
+import { listSessionJobs, updateJob, unresolvedTask, withoutPrivateActivity } from "./lib/state.mjs";
+import { markReportEmitted } from "./lib/report-delivery.mjs";
 import { clearMode, DEFAULT_MAX_WORKERS, PROTOCOL_PATH, protocolVersion, readMode, setMode } from "./lib/ultra-codex-mode.mjs";
 import { snapshotWorkspace, compareWorkspaceSnapshots } from "./lib/workspace-changes.mjs";
 import fs from "node:fs";
@@ -23,7 +24,7 @@ import process from "node:process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { parseSessionArgs, splitRawArgumentString } from "./lib/args.mjs";
+import { parseSessionArgs, splitRawArgumentString, splitReviewArgumentString } from "./lib/args.mjs";
 import { COMMAND_ALIASES, COMMAND_OPTIONS, DIRECT_OPTION_CONFLICTS } from "./lib/command-options.mjs";
 import {
     buildPersistentTaskThreadName,
@@ -81,6 +82,8 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import {
   renderNativeReviewResult,
   renderReviewResult,
+  renderReviewDetails,
+  validateReviewResultShape,
   renderStoredJobResult,
   renderCancelReport,
   renderJobStatusReport,
@@ -89,6 +92,8 @@ import {
   renderTaskResult
 } from "./lib/render.mjs";
 
+// Preserve the launcher identity across blocking availability/startup work.
+const LAUNCH_PARENT_PID = process.ppid;
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const DUET_INVOCATION = process.argv[1] === path.join(ROOT_DIR, "bin", "duet");
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
@@ -104,12 +109,15 @@ let directOutputStarted = false;
 // Write callbacks handle delivery failures; the stream also emits an error
 // event, which must not crash the owner before its detach can be recorded.
 process.stdout.on("error", () => {});
+// A closed diagnostic pipe must not prevent terminal state/journal persistence.
+process.stderr.on("error", error => { if (error.code !== "EPIPE") throw error; });
 function writeDirectLineSync(payload) {
-  if (directOutputStarted) return;
+  if (directOutputStarted) return false;
   directOutputStarted = true;
   const line = Buffer.from(`${JSON.stringify(payload)}\n`), deadline = Date.now() + 2000;
   const pause = new Int32Array(new SharedArrayBuffer(4));
-  for (let offset = 0; offset < line.length && Date.now() < deadline;) {
+  let offset = 0;
+  for (; offset < line.length && Date.now() < deadline;) {
     try { offset += fs.writeSync(1, line, offset, line.length - offset); }
     catch (error) {
       if (!["EAGAIN", "EWOULDBLOCK", "EINTR"].includes(error.code)) break;
@@ -118,14 +126,19 @@ function writeDirectLineSync(payload) {
     // waiting for the reader, and never spin on a full nonblocking pipe.
     if (offset < line.length) Atomics.wait(pause, 0, 0, Math.min(10, Math.max(0, deadline - Date.now())));
   }
+  return offset === line.length;
 }
 
 const COMMAND_USAGE = {
   journal: `Usage: duet journal <start|add|close|show|validate|list> [options]
 Durable run criteria, verdicts and decisions in the isolated home.
-  start  Stdin JSON: {"goal":"...","criteria":["..."]}; prints {runId}.
-  add <criteria|verdict|decision> [--run <id>]  Stdin JSON:
+  start [--switch]  Stdin JSON: {"goal":"...","criteria":["..."]}; prints {runId}.
+    --switch leaves the previous run open, selects the new run and also prints previousRunId.
+  add <criteria|withdraw|verdict|decision> [--run <id>]  Stdin JSON:
     criteria: {"criteria":["..."]}
+      Re-adding the same text reactivates a withdrawn criterion.
+    withdraw: {"criteria":["..."],"reason":"..."}
+      Known criteria only; show as withdrawn with their reason and no unchecked/unmet issue.
     verdict: {"jobId":"...","verdict":"ACCEPT|ACCEPT_WITH_GLUE|REWORK|REASSIGN",
               "criteria":[{"criterion":"...","evidence":"...","result":"met|not_met|cannot_verify"}],"reason":"..."}
       Optional resolves: ["<jobId>", ...] names linked jobs in this run whose REWORK/REASSIGN
@@ -136,7 +149,8 @@ Durable run criteria, verdicts and decisions in the isolated home.
   show [--run <id>]  Recover criteria evidence and next actions; paths refer to saved brief/report copies.
   validate [--run <id>]  Read-only completeness check with next actions; exit 0 if clean, 2 if issues.
   list  Workspace runs, newest first.
-  --cwd, -C <dir>  Workspace for start/list/--run; --json  Full JSON view; --help, -h  Side-effect-free help.
+  --cwd, -C <dir>  Workspace for start/list; --run resolves across workspaces in the isolated home.
+  --json  Full JSON view; --help, -h  Side-effect-free help.
 Start needs CODEX_COMPANION_SESSION_ID. Add/close/show/validate use the session's active run across workspaces.
 Show/validate fall back to the newest workspace run when none is active.`,
   task: `Usage: duet task [options] <<'DUET_TASK'
@@ -161,6 +175,9 @@ Read the brief only from stdin; implies --direct. Fresh unless --to/--thread/--c
   --effort <none|minimal|low|medium|high|xhigh|max>  Default xhigh.
   --fast  Priority speed; --normal  Normal speed (fresh default); choose one.
   --cwd, -C <dir>  Workspace directory; --session <id>  Override the Claude session id.
+  --run <id|none>  Override journal linkage for this dispatch only; follow-ups do not inherit it.
+    none skips linking; an explicit run must be open in this isolated home, across workspaces.
+    Invalid or closed runs fail before a worker starts; omission uses the session's active run.
   --direct  Implied: owned wait with /tasks progress, then report v2; --quiet  JSON line only.
   --sandbox <read-only|workspace-write|danger-full-access>  Override configured/inherited sandbox.
   --write[=false]  At least workspace-write; false requests read-only absent sandbox.
@@ -349,7 +366,7 @@ function normalizeReasoningEffort(effort) {
   return normalized;
 }
 
-function normalizeArgv(argv, argsStdin = false) {
+function normalizeArgv(argv, argsStdin = false, config = {}) {
   if (argv.length === 1) {
     const [raw] = argv;
     argv = raw?.trim() ? splitRawArgumentString(raw) : [];
@@ -357,7 +374,7 @@ function normalizeArgv(argv, argsStdin = false) {
   const index = argsStdin ? argv.indexOf("--args-stdin") : -1;
   const separator = argv.indexOf("--");
   if (index >= 0 && (separator < 0 || index < separator)) {
-    return [...argv.slice(0, index), ...splitRawArgumentString(readStdinIfPiped()), ...argv.slice(index + 1)];
+    return [...argv.slice(0, index), ...splitReviewArgumentString(readStdinIfPiped(), config), ...argv.slice(index + 1)];
   }
   return argv;
 }
@@ -406,12 +423,14 @@ function firstMeaningfulLine(text, fallback) {
 }
 
 async function buildSetupReport(cwd, actionsTaken = []) {
+  const SETUP_READINESS_TIMEOUT_MS = 45000, TOOL_VERSION_TIMEOUT_MS = 10000;
+  const deadline = Date.now() + SETUP_READINESS_TIMEOUT_MS;
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
-  const npmStatus = binaryAvailable("npm", ["--version"], { cwd });
-  const codexStatus = getCodexAvailability(cwd);
-  Object.assign(codexStatus, codexRuntimeDiagnostic(cwd, codexStatus));
-  const authStatus = await getCodexAuthStatus(cwd);
+  const nodeStatus = binaryAvailable("node", ["--version"], { cwd, timeoutMs: TOOL_VERSION_TIMEOUT_MS });
+  const npmStatus = binaryAvailable("npm", ["--version"], { cwd, timeoutMs: TOOL_VERSION_TIMEOUT_MS });
+  const codexStatus = getCodexAvailability(cwd, { deadline });
+  Object.assign(codexStatus, codexRuntimeDiagnostic(cwd, codexStatus, process.env, { deadline }));
+  const authStatus = await getCodexAuthStatus(cwd, { deadline, availability: codexStatus });
   const config = getConfig(workspaceRoot);
   const canAccess = (file, mode) => {
     try { fs.accessSync(file, mode); return fs.statSync(file).isFile(); } catch { return false; }
@@ -674,8 +693,8 @@ async function resolveLatestTrackedTaskThread(cwd, options = {}) {
 }
 
 async function executeReviewRun(request) {
+  request = { ...request, cwd: ensureGitRepository(request.cwd) };
   ensureCodexAvailable(request.cwd);
-  ensureGitRepository(request.cwd);
 
   const target = resolveReviewTarget(request.cwd, {
     base: request.base,
@@ -691,9 +710,11 @@ async function executeReviewRun(request) {
       onProgress: request.onProgress,
       signal: request.signal
     });
-    const failureMessage = result.status !== 0
+    const validationError = result.status === 0 && !result.reviewText?.trim() ? "Native review returned empty output." : null;
+    const exitStatus = result.status || (validationError ? 1 : 0);
+    const failureMessage = validationError ?? (result.status !== 0
       ? result.error?.message || result.turn?.error?.message || result.stderr?.trim() || "No failure details were returned."
-      : null;
+      : null);
     const summary = failureMessage
       ? `${reviewName} failed: ${firstMeaningfulLine(failureMessage)}`
       : firstMeaningfulLine(result.reviewText, `${reviewName} completed.`);
@@ -704,6 +725,8 @@ async function executeReviewRun(request) {
       threadId: result.threadId,
       sourceThreadId: result.sourceThreadId,
       turnEnded: Boolean(result.turnEnded),
+      status: exitStatus,
+      ...(validationError ? { errorCode: "review_output_invalid", validationError } : {}),
       ...(failureMessage ? { error: failureMessage, rawOutput: [`${reviewName} failed: ${failureMessage}`, result.reviewText].filter(Boolean).join("\n\n") } : {}),
       codex: {
         status: result.status,
@@ -714,7 +737,7 @@ async function executeReviewRun(request) {
     };
     const rendered = renderNativeReviewResult(
       {
-        status: result.status,
+        status: exitStatus,
         stdout: result.reviewText,
         stderr
       },
@@ -722,7 +745,7 @@ async function executeReviewRun(request) {
     );
 
     return {
-      exitStatus: result.status,
+      exitStatus,
       threadId: result.threadId,
       turnId: result.turnId,
       payload,
@@ -748,11 +771,17 @@ async function executeReviewRun(request) {
     status: result.status,
     failureMessage: result.error?.message ?? result.stderr
   });
+  const validationError = parsed.parseError || validateReviewResultShape(parsed.parsed);
+  const outputInvalid = result.status === 0 && Boolean(validationError);
+  const exitStatus = result.status || (outputInvalid ? 1 : 0);
   const payload = {
     review: reviewName,
     target,
     threadId: result.threadId,
     turnEnded: Boolean(result.turnEnded),
+    status: exitStatus,
+    ...(outputInvalid ? { errorCode: "review_output_invalid", error: validationError } : {}),
+    validationError,
     context: {
       repoRoot: context.repoRoot,
       branch: context.branch,
@@ -771,7 +800,7 @@ async function executeReviewRun(request) {
   };
 
   return {
-    exitStatus: result.status,
+    exitStatus,
     threadId: result.threadId,
     turnId: result.turnId,
     payload,
@@ -780,7 +809,7 @@ async function executeReviewRun(request) {
       targetLabel: context.target.label,
       reasoningSummary: result.reasoningSummary
     }),
-    summary: parsed.parsed?.summary ?? parsed.parseError ?? firstMeaningfulLine(result.finalMessage, `${reviewName} finished.`),
+    summary: outputInvalid ? `${reviewName} failed: ${validationError}` : parsed.parsed?.summary ?? parsed.parseError ?? firstMeaningfulLine(result.finalMessage, `${reviewName} finished.`),
     jobTitle: `Codex ${reviewName}`,
     jobClass: "review",
     targetLabel: context.target.label
@@ -820,9 +849,12 @@ function threadBusyBlocker(workspaceRoot, stored) {
   const condition = ACTIVE.has(stored.status) ? "is already running" : "has an unresolved turn";
   const cancelCommand = ACTIVE.has(stored.status) || unresolvedTask(stored)
     ? `node ${quote(path.join(ROOT_DIR, "bin", "duet"))} cancel ${quote(stored.id)} --cwd ${quote(workspaceRoot)} --json` : null;
+  const ownerReport = directReport(progressSnapshot(stored), stored);
   const blocker = { code: "thread_busy", predecessorJobId: stored.id, predecessorStatus: stored.status,
     message: `Codex thread ${stored.threadId} ${condition} in task ${stored.id}. ${cancelCommand ? "Use recoveryCommand to check it, or cancelCommand to interrupt that exact turn and confirm it stopped." : "Resolve that predecessor with the recovery command before continuing."}`,
-    recoveryCommand, ...(cancelCommand ? { cancelCommand } : {}) };
+    recoveryCommand, ...(cancelCommand ? { cancelCommand } : {}),
+    ...(ownerReport.status === "needs_answer" && ownerReport.question?.id
+      ? { question: ownerReport.question, answerCommand: ownerReport.next } : {}) };
   return blocker;
 }
 
@@ -881,9 +913,11 @@ async function executeTaskRun(request) {
   updateJob(workspaceRoot, request.jobId, () => ({ preExistingChanges: before.preExistingChanges, sandbox, approvalPolicy }));
   request.onProgress?.(`Sandbox: ${sandbox}; approval policy: ${approvalPolicy}${request.detached ? " (Computer Use app requests are forwarded to the parent)" : ""}. Captured workspace baseline (${before.status}).`);
 
-  const runtime = new JobRuntime(workspaceRoot, request.jobId, { foreground: !request.detached, onProgress: request.onProgress });
+  const runtime = new JobRuntime(workspaceRoot, request.jobId, { foreground: !request.detached, parentPid: LAUNCH_PARENT_PID, onProgress: request.onProgress });
   let result;
-  try { result = await runAppServerTurn(workspaceRoot, {
+  try {
+    if (!request.detached) runtime.abort.signal.throwIfAborted();
+    result = await runAppServerTurn(workspaceRoot, {
     jobId: request.jobId,
     onThreadBusy: (threadId, turnIds) => {
       const owner = recordedThreadJobs(threadId).jobs.find(job => job.id !== request.jobId && (turnIds.includes(job.turnId) || (!turnIds.length && ACTIVE.has(job.status))));
@@ -949,6 +983,7 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
     rawOutput,
     ...(structured ? { structured } : {}),
     ...(result.status !== 0 && failureMessage ? { error: failureMessage } : {}),
+    ...(result.codexErrorInfo != null ? { codexErrorInfo: result.codexErrorInfo } : {}),
     touchedFiles: result.touchedFiles,
     preExistingChanges: result.preExistingChanges ?? [],
     fileTracking: result.fileTracking,
@@ -989,7 +1024,7 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
   Object.assign(payload, artifacts, { workerStatus: report.status });
 
   return {
-    exitStatus: result.status !== 0 ? result.status : exitCodeForReport(report.status),
+    exitStatus: report.status === "blocked" ? 2 : result.status !== 0 ? result.status : exitCodeForReport(report.status),
     jobStatus: report.status,
     threadId: result.threadId,
     turnId: result.turnId,
@@ -1080,7 +1115,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
     write
   });
   // Set once on creation; adoption may change sessionId, never this origin.
-  const record = { ...job, launcherPid: process.pid, dispatchSessionId: job.sessionId ?? null, ownerId: lifecycle.owner ?? ownerId(job.id), sessionId: job.sessionId ?? null, leaseRenewedAt: Date.now(), leaseSec: lifecycle.leaseSec ?? 180, questionTimeoutSec: lifecycle.questionTimeoutSec ?? 900,
+  const record = { ...job, reportTracking: 1, launcherPid: process.pid, dispatchSessionId: job.sessionId ?? null, ownerId: lifecycle.owner ?? ownerId(job.id), sessionId: job.sessionId ?? null, leaseRenewedAt: Date.now(), leaseSec: lifecycle.leaseSec ?? 180, questionTimeoutSec: lifecycle.questionTimeoutSec ?? 900,
     ...(identity.dispatchNonce ? { dispatchNonce: identity.dispatchNonce } : {}),
     ...(identity.dispatchToolUseId ? { dispatchToolUseId: identity.dispatchToolUseId,
       deliveryBindings: [{ toolUseId: identity.dispatchToolUseId, sessionId: job.sessionId ?? null }] } : {}),
@@ -1090,7 +1125,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
   // Concurrent dispatches see this queued reservation before either launches.
   const stored = listJobs(workspaceRoot);
   const inheritedPrevious = !identity.continued && identity.threadId ? resolveThreadInheritance(workspaceRoot, identity.threadId).job : null;
-  let duplicateDispatch;
+  let duplicateDispatch, reservedName;
   updateState(workspaceRoot, state => {
     const currentIds = new Set(state.jobs.map(candidate => candidate.id));
     const candidates = [...state.jobs, ...stored.filter(candidate => !currentIds.has(candidate.id))];
@@ -1110,7 +1145,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
     record.agentName = previous?.agentName && (!record.sessionId || previousSession === record.sessionId) && !liveElsewhere(previous.agentName) ? previous.agentName : reserveAgentName(candidates
       .filter(candidate => !record.sessionId || ((candidate.sessionId === undefined ? candidate.ownerId : candidate.sessionId) || null) === record.sessionId)
       .filter(candidate => ACTIVE.has(candidate.status) || Date.parse(candidate.createdAt) >= recent)
-      .map(candidate => candidate.agentName).filter(Boolean), { cwd: workspaceRoot, sessionId: record.sessionId, preferredName: previous?.agentName, threadId: identity.threadId });
+      .map(candidate => candidate.agentName).filter(Boolean), { cwd: workspaceRoot, sessionId: record.sessionId, preferredName: previous?.agentName, threadId: identity.threadId, onReserved: name => { reservedName = name; } });
     if (identity.threadId) record.threadId = identity.threadId;
     if (previous) record.followUpOf = previous.id;
     if (identity.continued) record.continuationOf = identity.continued.id;
@@ -1120,12 +1155,38 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
   // another worker, even if a competing launcher has not published handles yet.
   if (duplicateDispatch) return { ...duplicateDispatch, dispatchReused: true };
   try {
-    const linkedRun = linkJournalJob({ ...record, cwd: identity.cwd, model: identity.model, effort: identity.effort }, taskBrief(identity));
+    const linkedRun = linkJournalJob({ ...record, cwd: identity.cwd, model: identity.model, effort: identity.effort, request: { run: identity.run } }, taskBrief(identity));
     if (linkedRun) {
       Object.assign(record, linkedRun);
       updateJob(workspaceRoot, record.id, () => linkedRun);
     }
-  } catch { /* journal linkage never fails a task */ }
+  } catch (error) {
+    if (identity.run !== undefined && identity.run !== "none") {
+      // Linking may have succeeded before the private job write failed. Keep
+      // that durable start paired with a terminal report, even without a job.
+      if (record.runId) {
+        const recorded = finishJournalJob({ ...record, status: "failed" }, {
+          status: "failed", summary: `Dispatch rejected before worker launch: ${shorten(redactActivity(error.message), 240)}`
+        });
+        error.message += recorded
+          ? `\nJournal ${record.runId} recorded the rejected dispatch as failed.`
+          : `\nJournal ${record.runId} could not record the rejected dispatch; inspect the run.`;
+      }
+      // Nothing has launched. Roll back the reservation under the same state
+      // lock that published it; commitState also removes any private job file.
+      // A failed record without a result could block thread admission and
+      // advertise an undelivered ending for a worker that never started.
+      updateState(workspaceRoot, state => {
+        state.jobs = state.jobs.filter(candidate => candidate.id !== record.id);
+      });
+      if (reservedName) {
+        try { releaseAgentName(record.sessionId, reservedName); }
+        catch (releaseError) { error.message += `\nAgent name reservation could not be released: ${releaseError.message}`; }
+      }
+      throw error;
+    }
+    // Default automatic journal linkage remains best effort.
+  }
   return record;
 }
 
@@ -1194,6 +1255,14 @@ function requireTaskRequest(prompt, resumeLast, threadId) {
   }
 }
 
+async function outputTrackedResult(value, asJson, job, status = job.status) {
+  const text = asJson ? `${JSON.stringify(value, null, 2)}\n` : value;
+  await new Promise(resolve => process.stdout.write(text, error => {
+    if (!error) markReportEmitted(job, status);
+    resolve();
+  }));
+}
+
 async function runForegroundCommand(job, runner, options = {}) {
   const { logFile, progress } = createTrackedProgress(job, {
     logFile: options.logFile,
@@ -1203,7 +1272,9 @@ async function runForegroundCommand(job, runner, options = {}) {
     if (job.jobClass === "task") writeSessionMarker({ ...job, logFile });
     progress(`Job handle: ${job.id}; log: ${logFile}${job.rawOutputFile ? `; raw output: ${job.rawOutputFile}` : ""}`);
   } });
-  outputResult(options.report ? (options.json ? execution.report : `${JSON.stringify(execution.report, null, 2)}\n`) : options.json ? execution.payload : execution.rendered, options.json);
+  const output = options.report ? (options.json ? execution.report : `${JSON.stringify(execution.report, null, 2)}\n`) : options.json ? execution.payload : execution.rendered;
+  if (job.jobClass === "task") await outputTrackedResult(output, options.json, job, execution.jobStatus);
+  else outputResult(output, options.json);
   if (execution.exitStatus !== 0) {
     process.exitCode = execution.exitStatus;
   }
@@ -1238,10 +1309,10 @@ function enqueueBackgroundTask(cwd, job, request) {
   writeSessionMarker(queuedRecord);
   const child = spawnDetachedTaskWorker(cwd, job.id);
   // Publish the request before the child can read it. Do not overwrite a
-  // running/completed child record when recording its launch PID.
+  // claimed/running/completed child record when recording its launch PID.
   updateState(job.workspaceRoot, state => {
     const current = state.jobs.find(candidate => candidate.id === job.id);
-    if (current?.status === "queued") current.pid = child.pid ?? null;
+    if (current?.status === "queued" && !current.executionClaim) current.pid = child.pid ?? null;
   });
 
   return {
@@ -1264,24 +1335,26 @@ function enqueueBackgroundTask(cwd, job, request) {
 }
 
 async function handleReviewCommand(argv, config) {
-  const tokens = normalizeArgv(argv, true);
-  const separator = tokens.indexOf("--");
-  if ((separator < 0 ? tokens : tokens.slice(0, separator)).some(token => token === "--help" || token === "-h")) {
-    printUsage(config.reviewName === "Adversarial Review" ? "adversarial-review" : "review");
-    return;
-  }
-  const { options, positionals } = parseSessionArgs(tokens, {
+  const argumentConfig = {
     rejectUnknown: config.reviewName !== "Adversarial Review",
     rejectOptionTypos: config.reviewName === "Adversarial Review",
-    valueOptions: ["base", "scope", "model", "cwd"],
+    rejectSeparatorValues: true,
+    valueOptions: ["base", "scope", "model", "cwd", "session"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       ...COMMAND_ALIASES,
       m: "model"
     }
-  });
+  };
+  const tokens = normalizeArgv(argv, true, argumentConfig);
+  const separator = tokens.indexOf("--");
+  if ((separator < 0 ? tokens : tokens.slice(0, separator)).some(token => token === "--help" || token === "-h")) {
+    printUsage(config.reviewName === "Adversarial Review" ? "adversarial-review" : "review");
+    return;
+  }
+  const { options, positionals } = parseSessionArgs(tokens, argumentConfig);
 
-  const cwd = resolveCommandCwd(options);
+  const cwd = ensureGitRepository(resolveCommandCwd(options));
   const workspaceRoot = resolveCommandWorkspace(options);
   const focusText = positionals.join(" ").trim();
   const target = resolveReviewTarget(cwd, {
@@ -1299,12 +1372,15 @@ async function handleReviewCommand(argv, config) {
     jobClass: "review",
     summary: metadata.summary
   });
+  Object.assign(job, taskArtifactPaths(workspaceRoot, job.id));
   await runForegroundCommand(
     job,
     async (progress) => {
-      const runtime = new JobRuntime(workspaceRoot, job.id, { foreground: true, onProgress: progress });
+      const runtime = new JobRuntime(workspaceRoot, job.id, { foreground: true, parentPid: LAUNCH_PARENT_PID, onProgress: progress });
       let execution;
-      try { execution = await executeReviewRun({
+      try {
+        runtime.abort.signal.throwIfAborted();
+        execution = await executeReviewRun({
         cwd,
         base: options.base,
         scope: options.scope,
@@ -1399,6 +1475,9 @@ async function handleTask(argv) {
   const inherited = inheritance?.job;
   if (inherited && options.to === undefined && options.cwd === undefined) cwd = inherited.request?.cwd ?? inherited.workspaceRoot ?? cwd;
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  // Run choice belongs to this dispatch, independently of inherited runtime
+  // settings and grants. Reject invalid selections before any worker starts.
+  validateTaskRun(cwd, options.run);
   // --continue <job-id>: one more turn on a stopped/finished job's own thread,
   // inheriting that job's recorded authorization and runtime choices so a
   // replacement worker does not have to reconstruct them.
@@ -1516,7 +1595,7 @@ async function handleTask(argv) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast, threadId);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, true, { cwd, continued, threadId, resumeLast, prompt, model, effort, dispatchNonce, dispatchToolUseId, report: Boolean(options.report || options.detached || options.follow || options.direct) });
+    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, true, { cwd, continued, threadId, resumeLast, prompt, model, effort, run: options.run, dispatchNonce, dispatchToolUseId, report: Boolean(options.report || options.detached || options.follow || options.direct) });
     if (job.dispatchReused) {
       await waitForJob(workspaceRoot, job, { owner: job.ownerId, timeoutSec: options["timeout-sec"], direct: true, quiet: options.quiet, toolUseId: dispatchToolUseId });
       return;
@@ -1539,6 +1618,7 @@ async function handleTask(argv) {
       report: Boolean(options.report || options.detached || options.follow || options.direct), detached: true
     });
     if (continued) request.continuedFrom = continued.id;
+    if (options.run !== undefined) request.run = options.run;
     if (inheritance?.details) request.settingsInheritance = inheritance.details;
     Object.assign(request, forkRequest);
     const { payload } = enqueueBackgroundTask(cwd, job, request);
@@ -1563,8 +1643,9 @@ async function handleTask(argv) {
     return;
   }
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, false, { cwd, continued, threadId, resumeLast, prompt, model, effort, dispatchToolUseId, report: Boolean(options.report) });
+  const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, false, { cwd, continued, threadId, resumeLast, prompt, model, effort, run: options.run, dispatchToolUseId, report: Boolean(options.report) });
   job.request = buildTaskRequest({ ...claudeInstructions, cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins, approvedComputerApps, resumeLast, threadId, jobId: job.id, report: Boolean(options.report) });
+  if (options.run !== undefined) job.request.run = options.run;
   if (inheritance?.details) job.request.settingsInheritance = inheritance.details;
   Object.assign(job.request, forkRequest);
   await runForegroundCommand(
@@ -1615,9 +1696,23 @@ async function handleTaskWorker(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
+  let storedJob = readStoredJob(workspaceRoot, options["job-id"]);
   if (!storedJob) {
     throw new Error(`No stored job found for ${options["job-id"]}.`);
+  }
+
+  // A launcher can lose its PID receipt after spawning us, then start a
+  // fallback worker. Only the claimant may enter the runtime. Reclaim only a
+  // queued job: a dead worker that already started may still have a live turn.
+  let claimed = false;
+  storedJob = updateJob(workspaceRoot, storedJob.id, current => {
+    if (current.status !== "queued" || (current.executionClaim && processAlive(current.executionClaim.pid))) return null;
+    claimed = true;
+    return { executionClaim: { pid: process.pid, at: nowIso() }, pid: process.pid };
+  });
+  if (!claimed) {
+    appendLogLine(storedJob.logFile, "Execution already claimed or job no longer queued; duplicate worker exiting.");
+    return;
   }
 
   const request = storedJob.request;
@@ -1839,6 +1934,7 @@ async function handleStatus(argv) {
     const ended = jobs.filter(job => !ACTIVE.has(job.status));
     report.latestFinished = ended[0] ?? null;
     report.recent = ended.slice(1);
+    report.historyOmitted = 0;
     outputResult(report, true);
     return;
   }
@@ -1863,7 +1959,9 @@ async function handleStatus(argv) {
   }
 
   const report = buildStatusSnapshot(cwd, { all: options.all });
-  outputResult(renderStatusPayload(report, options.json, { all: options.all }), options.json);
+  const rendered = renderStatusPayload(report, options.json, { all: options.all });
+  outputResult(options.json || !report.historyOmitted ? rendered
+    : `${rendered}\nOlder finished jobs omitted in this scope: ${report.historyOmitted}\n`, options.json);
 }
 
 async function handleResult(argv) {
@@ -1896,19 +1994,32 @@ async function handleResult(argv) {
     const report = { ...(storedJob?.report ?? buildWorkerReport({ threadId: current.threadId ?? null, approvedBrowserOrigins: storedJob?.approvedBrowserOrigins ?? [], approvedComputerApps: storedJob?.approvedComputerApps ?? [],
       ...(storedJob?.result?.codex ? { status: current.status === "completed" ? 0 : 1, rawOutput: storedJob.result.codex.stdout } : {}),
       ...(storedJob?.result ?? { status: 1, error: storedJob?.errorMessage ?? "No stored result." }) }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile })) };
+    if (current.jobClass === "review") {
+      report.status = current.status;
+      // Review prose is not a worker status declaration or an input request.
+      if (current.status === "completed") {
+        report.blockers = [];
+        delete report.question;
+      }
+      if (current.result?.errorCode === "review_output_invalid") {
+        report.blockers = [{ code: "review_output_invalid", message: current.result.validationError }];
+      }
+    }
     Object.assign(withRunSettings(report, storedJob?.request), leaseExpiryReport(storedJob ?? job),
       storedJob?.agentName ? { agentName: storedJob.agentName } : {});
-    const output = options.details ? fullReport(report, current) : directReport(report, current);
-    outputResult(output, true);
+    const output = options.details
+      ? current.jobClass === "review" ? renderReviewDetails(fullReport(report, current), current) : fullReport(report, current)
+      : directReport(report, current);
+    await outputTrackedResult(output, true, current, output.status);
     process.exitCode = exitCodeForReport(output.status);
     return;
   }
   const payload = {
-    job,
-    storedJob
+    job: withoutPrivateActivity(job),
+    storedJob: withoutPrivateActivity(storedJob)
   };
 
-  outputCommandResult(payload, renderStoredJobResult(job, storedJob), options.json);
+  await outputTrackedResult(options.json ? payload : renderStoredJobResult(job, storedJob), options.json, storedJob ?? job);
 }
 
 function handleTaskResumeCandidate(argv) {
@@ -1952,7 +2063,7 @@ async function handleCancel(argv) {
   let cwd = resolveCommandCwd(options), reference = positionals[0] ?? "";
   let namedWorker = false;
   if (reference) {
-    const target = resolveWorkerTarget(cwd, reference, { nameState: "cancel", legacyReferences: true });
+    const target = resolveWorkerTarget(cwd, reference, { command: "cancel", nameState: "cancel", legacyReferences: true });
     namedWorker = target.job.agentName?.toLowerCase() === reference.toLowerCase();
     ({ cwd, reference } = target);
   }
@@ -2198,7 +2309,11 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
     const stopped = { status: "owner_stopped", jobId: current.id, ...(current.agentName ? { agentName: current.agentName } : {}), ownerId: current.ownerId ?? null,
       threadId: current.threadId ?? null, turnId: current.turnId ?? null, interruptionReason: "owner_stopped",
       ...(current.threadId ? { continuationCommand: continuationReport({ ...current, direct: true }).continuationCommand } : {}) };
-    writeDirectLineSync(details ? fullReport(stopped, current) : directReport(stopped, current));
+    // Native dispatches persist their nonce before startup. The host discards
+    // an aborted process stream; the adapter marks the stop it actually returns.
+    if (writeDirectLineSync(details ? fullReport(stopped, current) : directReport(stopped, current)) && !current.dispatchNonce) {
+      markReportEmitted(current, stopped.status);
+    }
   };
   const stopOwner = async reason => {
     if (stopping) return;
@@ -2235,7 +2350,7 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
     try {
       await progress?.flush();
       if (direct) directOutputStarted = true;
-      finalWrite = writeLine(line);
+      finalWrite = writeLine(line).then(() => markReportEmitted(current, output.status));
       await finalWrite;
     }
     catch (error) {
@@ -2245,9 +2360,12 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
     detach("returned");
     if (exitCode) process.exitCode = exitCode;
   };
-  const reported = () => activity.length > REPORTED_ACTIVITY_LIMIT
-    ? { activity: activity.slice(-REPORTED_ACTIVITY_LIMIT), activityCount: activity.length, activityOmitted: activity.length - REPORTED_ACTIVITY_LIMIT }
-    : { activity, activityCount: activity.length };
+  let activityEvicted = 0;
+  const reported = () => {
+    const activityOmitted = Math.max(0, activity.length - REPORTED_ACTIVITY_LIMIT) + activityEvicted;
+    return { activity: activity.slice(-REPORTED_ACTIVITY_LIMIT), activityCount: activity.length + activityEvicted,
+      ...(activityOmitted ? { activityOmitted } : {}), ...(activityEvicted ? { activityEvicted } : {}) };
+  };
   try {
     // Keep the same immediate renewal and <= 1 s cadence, independent of output.
     // Check the parent here too: a blocked final/feed write must never keep an
@@ -2275,6 +2393,7 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
         current = readStoredJob(workspaceRoot, job.id);
       }
       const next = (current.activity ?? []).filter(event => event.seq > cursor);
+      if (next[0]?.seq > cursor + 1) activityEvicted += next[0].seq - cursor - 1;
       for (const event of next) {
         if (direct && !quiet) {
           const text = redactActivity(formatActivity(event)).replace(/\s+/g, " ").trim();
@@ -2293,7 +2412,9 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
       if (next.length && !json) updateJob(workspaceRoot, job.id, stored => ({ activityCursors: { ...stored.activityCursors, [reader]: Math.max(cursor, stored.activityCursors?.[reader] ?? 0) } }));
       const pending = current.pendingQuestion;
       const terminal = !ACTIVE.has(current.status);
-      if (terminal || (pending && pending.answer === undefined && pending.id !== afterQuestion) || Date.now() - started >= timeout * 1000 || (minimum !== null && activity.length && Date.now() - started >= minimum * 1000)) {
+      // An expired slot is abandoned (its bridge is gone): wait past it, as the
+      // snapshot already reports running, instead of returning immediately.
+      if (terminal || (pending && pending.answer === undefined && !(Date.now() >= pending.expiresAt) && pending.id !== afterQuestion) || Date.now() - started >= timeout * 1000 || (minimum !== null && activity.length && Date.now() - started >= minimum * 1000)) {
         const report = terminal ? { ...(current.report ?? buildWorkerReport(current.result ?? { status: 1, error: current.errorMessage ?? "No stored result." }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile })), ...leaseExpiryReport(current) } : progressSnapshot(current);
         if (current.agentName) report.agentName = current.agentName;
         // Compact reports may contain captured commands and assistant snippets too.
@@ -2329,7 +2450,7 @@ async function handleWait(argv) {
   const toolUseId = deliveryToolUseId(options);
   validateDirectOptions(argv, DIRECT_OPTION_CONFLICTS.wait, options);
   if (!positionals[0]) throw new Error("wait requires a job id.");
-  const selected = resolveWorkerTarget(resolveCommandCwd(options), positionals[0], { nameState: "wait", legacyReferences: !DUET_INVOCATION || options.owner !== undefined });
+  const selected = resolveWorkerTarget(resolveCommandCwd(options), positionals[0], { command: "wait", nameState: "wait", legacyReferences: !DUET_INVOCATION || options.owner !== undefined });
   const { workspaceRoot, job } = buildSingleJobSnapshot(selected.cwd, selected.reference);
   if (options.owner === undefined && (DUET_INVOCATION || positionals[0].toLowerCase() === job.agentName?.toLowerCase())) options.owner = selected.job.ownerId;
   await waitForJob(workspaceRoot, job, { owner: options.owner, timeoutSec: options["timeout-sec"], minIntervalSec: options["min-interval-sec"], afterQuestion: options["after-question"], feedLimit: options["feed-limit"], json: options.json, direct: options.direct, quiet: options.quiet, details: options.details, toolUseId });
@@ -2342,26 +2463,30 @@ async function handleAnswer(argv) {
   if (!positionals[0]) throw new Error("answer requires a worker name or job id; pass answer text on stdin.");
   if (positionals.length !== 1) throw new Error("Pass answer text only on stdin, never on the command line.");
   const shortcut = options.question === undefined;
-  const selected = resolveWorkerTarget(resolveCommandCwd(options), positionals[0], { nameState: "pending", pending: shortcut, legacyReferences: !shortcut });
-  if (shortcut) {
-    options.question = selected.job.pendingQuestion.id;
+  const selected = resolveWorkerTarget(resolveCommandCwd(options), positionals[0], { command: "answer", nameState: "pending", pending: shortcut, legacyReferences: !shortcut });
+  try {
+    if (shortcut) {
+      options.question = selected.job.pendingQuestion.id;
+    }
+    options.owner ??= selected.job.ownerId;
+    if (options.direct && !options.owner) throw new Error("answer --direct requires --owner <id>.");
+    if (!options.direct && options["timeout-sec"] !== undefined) throw new Error("--timeout-sec requires --direct.");
+    const { workspaceRoot, job } = buildSingleJobSnapshot(selected.cwd, selected.reference);
+    const text = readStdinIfPiped();
+    if (options.direct) {
+      await waitForJob(workspaceRoot, job, { owner: options.owner, afterQuestion: options.question,
+        timeoutSec: options["timeout-sec"], direct: true, quiet: options.quiet, answer: { questionId: options.question, text }, toolUseId });
+      return;
+    }
+    const answered = answerQuestion(workspaceRoot, job.id, options.question, text, options.owner);
+    if (reportMovedOwner(answered, options.owner, options.json)) return;
+    const renewed = renewLease(workspaceRoot, job.id, options.owner);
+    if (reportMovedOwner(renewed, options.owner, options.json)) return;
+    const payload = { jobId: job.id, ...(job.agentName ? { agentName: job.agentName } : {}), questionId: options.question, status: "answer_submitted" };
+    outputResult(options.json ? payload : `${JSON.stringify(payload)}\n`, options.json);
+  } catch (error) {
+    throw Object.assign(error, { resolvedJob: selected.job });
   }
-  options.owner ??= selected.job.ownerId;
-  if (options.direct && !options.owner) throw new Error("answer --direct requires --owner <id>.");
-  if (!options.direct && options["timeout-sec"] !== undefined) throw new Error("--timeout-sec requires --direct.");
-  const { workspaceRoot, job } = buildSingleJobSnapshot(selected.cwd, selected.reference);
-  const text = readStdinIfPiped();
-  if (options.direct) {
-    await waitForJob(workspaceRoot, job, { owner: options.owner, afterQuestion: options.question,
-      timeoutSec: options["timeout-sec"], direct: true, quiet: options.quiet, answer: { questionId: options.question, text }, toolUseId });
-    return;
-  }
-  const answered = answerQuestion(workspaceRoot, job.id, options.question, text, options.owner);
-  if (reportMovedOwner(answered, options.owner, options.json)) return;
-  const renewed = renewLease(workspaceRoot, job.id, options.owner);
-  if (reportMovedOwner(renewed, options.owner, options.json)) return;
-  const payload = { jobId: job.id, ...(job.agentName ? { agentName: job.agentName } : {}), questionId: options.question, status: "answer_submitted" };
-  outputResult(options.json ? payload : `${JSON.stringify(payload)}\n`, options.json);
 }
 
 // Ultra-codex mode: a per-session switch (like `/effort ultracode`) read by the
@@ -2415,10 +2540,11 @@ async function handleUltraCodex(argv) {
 }
 
 async function handleJournal(argv) {
-  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "run"], booleanOptions: ["json"], rejectUnknown: true });
+  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "run"], booleanOptions: ["json", "switch"], rejectUnknown: true });
   const [action, type] = positionals;
-  if (!["start", "add", "close", "show", "validate", "list"].includes(action) || positionals.length !== (action === "add" ? 2 : 1)) throw new Error("journal takes start, add <criteria|verdict|decision>, close, show, validate or list.");
+  if (!["start", "add", "close", "show", "validate", "list"].includes(action) || positionals.length !== (action === "add" ? 2 : 1)) throw new Error("journal takes start, add <criteria|withdraw|verdict|decision>, close, show, validate or list.");
   if (options.run !== undefined && ["start", "list"].includes(action)) throw new Error(`journal ${action} does not accept --run.`);
+  if (options.switch !== undefined && action !== "start") throw new Error(`journal ${action} does not accept --switch.`);
   const cwd = resolveCommandWorkspace(options), sessionId = getCurrentClaudeSessionId();
   if (action === "list") {
     const runs = listRuns(cwd);
@@ -2439,7 +2565,7 @@ async function handleJournal(argv) {
   let input;
   try { input = JSON.parse(readStdinIfPiped()); } catch { throw new Error("Journal stdin must contain valid JSON."); }
   try {
-    const result = action === "start" ? startRun(cwd, sessionId, input)
+    const result = action === "start" ? startRun(cwd, sessionId, input, process.env, { switchRun: Boolean(options.switch) })
       : action === "add" ? addEntry(cwd, sessionId, type, input, options.run) : closeRun(cwd, sessionId, input, options.run);
     outputCommandResult(result, `${JSON.stringify(result)}\n`, options.json);
   } catch (error) {
@@ -2459,7 +2585,12 @@ async function handleCleanup(argv) {
   const counts = dryRun ? `${plan.jobs.length} jobs, ${plan.runs.length} runs, ${plan.runSessions.length} run pointers, ${plan.markers.length} markers, ${plan.threads.length} threads eligible` : `${result.jobsDeleted} jobs, ${result.runsDeleted} runs, ${result.runSessionsDeleted} run pointers, ${result.markersDeleted} markers, ${result.threadsDeleted} threads deleted; ${result.threadsSkipped} threads skipped`;
   const summary = `${dryRun ? "Dry run" : "Cleanup"} (${plan.days} days): ${counts}; ${(bytes / 1_000_000).toFixed(2)} MB ${dryRun ? "eligible; nothing deleted" : "freed"}.`;
   const legacyRetained = result.retained.filter(job => job.reason === "legacy-paths").length;
-  outputCommandResult(result, `${[summary, ...(legacyRetained ? [`${legacyRetained} retained (legacy paths)`] : []), ...result.warnings, ...(result.errors.length ? [`${result.errors.length} errors/skips; use --json for details.`] : [])].join("\n")}\n`, options.json);
+  const quotePath = value => `'${value.replaceAll("'", "'\\''")}'`;
+  const directories = [
+    ...result.inertWorkspaces.map(item => `Inert workspace: ${item.workspace} — does not block inventory or retention; safe to delete manually while inactive: rm -r ${quotePath(item.workspace)}`),
+    ...result.workspacesRetained.map(item => `Kept workspace (may be live): ${item.workspace} (${item.reason})`)
+  ];
+  outputCommandResult(result, `${[summary, ...directories, ...(legacyRetained ? [`${legacyRetained} retained (legacy paths)`] : []), ...result.warnings, ...(result.errors.length ? [`${result.errors.length} errors/skips; use --json for details.`] : [])].join("\n")}\n`, options.json);
 }
 
 async function main() {
@@ -2535,7 +2666,21 @@ async function main() {
 main().catch((error) => {
   let message = error instanceof Error ? error.message : String(error);
   if (error.code === "UNKNOWN_OPTION" && usageFor(process.argv[2])) message += `\n\n${usageFor(process.argv[2])}`;
-  if (["task", "wait", "answer"].includes(process.argv[2]) && requestsDirect(process.argv.slice(3))) writeDirectLineSync(directReport({ status: "error", error: message }));
+  if (["task", "wait", "answer"].includes(process.argv[2]) && requestsDirect(process.argv.slice(3))) {
+    const job = error.resolvedJob;
+    // Keep the identity without projecting the completed turn's result over
+    // this command's error summary or attaching its checks and usage.
+    const report = directReport({ status: "error", error: message }, job ? {
+      id: job.id, agentName: job.agentName, workspaceRoot: job.workspaceRoot ?? job.request?.cwd
+    } : undefined);
+    // Reuse the quoted exact handle and cwd from details; observing a rejected
+    // answer must never submit a newer question or start a follow-up task.
+    if (job) {
+      report.next = report.details.replace(/ --details$/, "");
+      if (envelopeBytes(report) > 2000) report.next = null;
+    }
+    writeDirectLineSync(report);
+  }
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
 });

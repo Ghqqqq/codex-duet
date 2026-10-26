@@ -45,9 +45,8 @@ to 1800 s. Direct mode conflicts with `--follow`, `--detached`, `--background`,
   via a single-quoted `DUET_ANSWER` heredoc (`timeout: 600000`). It refuses a stale
   ID, submits once and waits on the same turn. A bare `duet answer <worker>`
   answers whatever question is pending now, which may be newer. Native
-  SendMessage already pins the displayed question and is unaffected. Never start
-  a second
-  wait. Answer from your context when the brief should have covered it; otherwise
+  SendMessage pins the displayed question. Never start a second wait.
+  Answer from your context when the brief should have covered it; otherwise
   collect the user's decision. A Computer Use approval has four fixed options;
   forward with `AskUserQuestion` unless the app was pre-authorised. Use
   `--details` if the compact question/options were shortened. Submit only the
@@ -92,8 +91,9 @@ its already-ended agent row is stopped; use `duet cancel <worker>` or the defaul
 
 The read-only `codex-live` pane shows prompts, messages, commands, file changes,
 tool calls, plans and pending questions. Resolved `ask_parent` calls show answers
-matched by call ID. Codex 0.146.0 does not pass a call ID to custom MCP servers on
-resumed threads, so those answers are not shown. New jobs request a pane;
+matched by Codex's `_meta.callId`, preserved by the MCP bridge on fresh and
+resumed threads. Missing/invalid call IDs remain unmatched, including older
+stored answers. New jobs request a pane;
 `/codex-live` opens it at any width. It never starts, answers or cancels jobs and
 costs no Claude tokens.
 
@@ -135,9 +135,30 @@ to proceed on conservative assumptions and report them. A question-only or
 unfinished response becomes `needs_input` with its question, exit code 2, and a
 saved result. A turn that hit a known runtime refusal (a Computer Use app the
 runtime has not approved, a browser tab left with `Debugger unattached`, a stale
-tab claim) or whose final answer declares itself blocked becomes `blocked`, also
-exit code 2, with `blockers` (`code`, `message` in v2; app/tab/session/cleanup details under
-`--details`). Detection is heuristic; the parent still checks task acceptance.
+tab claim, or a denied/unsupported server request) or whose final answer declares
+itself blocked becomes `blocked`, also exit code 2. Compact `blockers` carry
+`code`, `message`, bounded app/tab/session and safe approval identifiers, and
+`closed` when known; `--details` keeps the full stored fields. Tool/final-text
+detection is heuristic; typed server-request refusals are also retained. The
+parent still checks task acceptance.
+
+Failed turns also use Codex's typed `codexErrorInfo` to produce `blocked`,
+exit 2, with an actionable blocker:
+
+| Runtime error | Blocker | Next action |
+| --- | --- | --- |
+| `cyberPolicy` | `provider_refused` | Review the refusal, describe the legitimate defensive checks clearly and dispatch a fresh worker within the provider's policy |
+| `usageLimitExceeded` or `sessionBudgetExceeded` | `usage_limit` | Wait for reset or change model/plan, then continue |
+| `contextWindowExceeded` | `context_window_exceeded` | Start a fresh worker with a shorter brief |
+| `unauthorized` | `auth_required` | Run `duet setup` and log in to the isolated home |
+
+The only text fallback for this classification is “flagged for possible
+cybersecurity risk” (case-insensitive), used when typed information is absent.
+The runtime blocker comes first; other captured blockers can remain alongside
+it. The original error text stays in the detailed report's `error` field, with
+ANSI/control-character cleanup. Other failed turns remain `failed`, exit 1.
+A recorded error notification followed by a successful turn does not by itself
+trigger this classification; independently captured refusals still apply.
 
 Prerequisites must be handled before unattended execution: an installed runtime,
 isolated authentication (or an independently configured provider), and Claude
@@ -150,6 +171,12 @@ Codex server requests for approval/input are logged safely. Supported Computer U
 approvals reach the parent on owned jobs; the explicit origin policy and registered
 ask_parent contract also apply. Other requests receive an unsupported-request error;
 unsupported MCP elicitations receive nonpersistent cancel.
+Denied or unsupported non-Computer-Use requests add `approval_denied` or
+`approval_unsupported` and force a blocked final report (exit 2), even if Codex
+claims completion. Their short messages use only method, kind, server and origin;
+compact reports retain those identifiers. Details also retain the safe request
+ID (string IDs are hashed), never the request payload. Computer Use app refusals
+keep `computer_use_app_not_approved`.
 
 ## Browser assignments and origin approvals
 
@@ -255,9 +282,11 @@ It uses the same direct progress/report format. The companion's legacy
 `--follow --report` feed and `--detached`/`--background` modes remain available
 for compatibility; the launcher always adds `--direct` to task/wait/answer.
 
-`ask_parent` is registered on new threads through experimental `dynamicTools` and
-on resumed threads (`--to`, `--thread`, `--continue`) through a per-thread `duet_parent`
-MCP bridge (`scripts/parent-bridge-mcp.mjs`) that blocks on the same job file.
+`ask_parent` uses a per-thread `duet_parent` MCP bridge on fresh and resumed
+threads (`--to`, `--thread`, `--continue`). The bridge
+(`scripts/parent-bridge-mcp.mjs`) blocks on the same job file. Fresh threads use
+experimental `dynamicTools` only if the runtime rejects bridge registration as
+unsupported; unrelated runtime/configuration failures do not trigger fallback.
 In the fallback, on `needs_answer`, SendMessage ONLY the companion's
 `questionMessage` from `duet result <worker> --details` verbatim to `main` once per question ID. That one-line field includes ID, text and options.
 Never send progress, status, completion claims or placeholders; the final result
@@ -270,10 +299,18 @@ single-quoted `DUET_ANSWER` heredoc; it keeps waiting after submission.
 The callback stays pending, so the reply continues the same turn. Text/options are
 private job state, not progress logs. Resolved questions are retained in
 `questionHistory` (newest 20, answers capped at 2000 characters) with call IDs and
-resolution; approvals without call IDs cannot be matched into the pane. Default
-timeout is 900 seconds (`--question-timeout-sec`); on timeout Codex receives
-conservative-assumption guidance. Runtimes that reject both registrations keep
-final needs_input.
+resolution; approvals without call IDs cannot be matched into the pane. Only
+one question/approval can occupy the slot: concurrent admission preserves the
+winner and returns `busy` guidance to the other caller. Default timeout is 900
+seconds (`--question-timeout-sec`). A live callback returns conservative-assumption
+guidance on timeout; a dead bridge has no channel to deliver it. Unanswered expired
+questions disappear from answerable snapshots and no longer make `wait` return
+early; it keeps waiting under its normal rules. Late answers are rejected by the
+companion, including native submissions: the adapter does not check expiry
+locally or promise an expiry notice. Expired slots are archived as `expired`
+when a new question reclaims them. A predecessor's late
+cleanup cannot erase its successor. Answers accepted before expiry remain
+deliverable. Runtimes that reject both registrations keep final `needs_input`.
 
 Leases default to 1800 seconds in direct mode, 180 seconds otherwise
 (`--lease-sec`, or CODEX_COMPANION_LEASE_SEC).
@@ -281,9 +318,14 @@ Every task generates a unique job-based ownerId unless `task --owner` is explici
 ambient owner/session variables never choose it. Session ID is stored separately
 for SessionEnd. The launcher resolves the owner for `duet wait`/`answer`; explicit `--owner`
 handles remain supported. Only a matching owner renews an unexpired lease.
+Answer submission, including submit-only mode, rejects an explicit mismatched
+owner, expired question/lease or stopping job under the same state lock. Retired
+owners still receive `ownership_moved`; ownerless compatibility helpers remain
+supported.
 Observational `/codex:status`, `duet status` and `duet result` do not renew;
 ownerless compatibility companion waits also do not renew. Foreground tasks renew while their owning
-process runs; detached workers cannot renew themselves. Legacy records without
+process runs and stop with `parent_exit` once the process that launched them dies;
+detached workers cannot renew themselves. Legacy records without
 sessionId remain readable and SessionEnd falls back to their session-ID ownerId.
 
 An attached owner wait heartbeats once a second (`ownerAttached`, lease renewal)
@@ -468,9 +510,10 @@ preserves even disabled/incomplete CUA definitions; sync does not repair them.
 `toolSync.append` contains the exact added text, including separating newlines,
 without echoing the destination's existing contents. It creates a
 timestamped private backup of an existing destination config before the first
-change and writes atomically under an exclusive sync lock. Repeated runs are
-no-ops. A new config has no prior file to back up. If a process is killed during
-sync, inspect and remove its stale `config.toml.sync-lock` before retrying.
+change and writes atomically under the shared PID-aware `.duet-lock` for that
+config file. Repeated runs are no-ops. A new config has no prior file to back up.
+The lock waits for a bounded interval and reclaims dead owners; setup and sync
+recheck content before replacement. Manual stale sync-lock removal is unnecessary.
 
 Portable sections:
 
@@ -507,10 +550,14 @@ reader supports ordinary quoted/bare dotted keys, basic/literal strings,
 booleans, integers, arrays and inline tables for selected settings; unsupported
 selected syntax fails closed. Unrelated configuration text is preserved.
 
-`setup --json` reports tools.browser, tools.computerUse and tools.nodeRepl as
-available/missing/unknown **based on configuration only**. It does not verify
-installed assets, extension connectivity or tool execution. Restart the Claude
-session/shared Codex runtime after a sync to load the configuration.
+`setup --json` reports `tools.browser`, `tools.computerUse`, `tools.nodeRepl` and
+`tools.cuaRepl` as available/missing/unknown from configuration plus a local
+executable check for enabled `cua_repl`. A missing/non-executable command makes
+`tools.cuaRepl` missing and adds `tools.cuaReplReason`; other configured backends
+can still provide browser/computer availability. Other assets, extension
+connectivity and live tools are not probed. Core `setup.ready` can remain true
+without optional CUA tools. Restart the Claude session/shared Codex runtime
+after a sync to load the configuration.
 
 ### Codex App profile
 
@@ -524,6 +571,9 @@ the normal Codex home's `plugins/cache/openai-bundled/unified-computer-use`.
 `--cua-template /absolute/.mcp.json` overrides discovery. There is no fallback to
 the app's disabled placeholder template, and `--chatgpt-resources` is rejected:
 the cache entry must already contain resolved executable/launcher paths.
+Before writing, even for a dry-run or an identical definition, sync validates a
+regular executable node file and a regular readable launcher. Missing/stale assets
+fail with no config write or backup; repair the app or select a current template.
 
 The server is mirrored semantically, preserving launch paths, enabled state,
 tool order/visibility, nested `tools.js.output_token_limit`, empty `env_vars`,
@@ -547,8 +597,8 @@ Replacements share the existing exclusive lock, atomic write and private backup.
 `surfaces` and `backends` report the proposed/resulting configuration.
 
 The usual result is browser + computer, with chrome/iab/mcpapps and the Sky
-service. Desktop permissions belong to Codex Computer Use.app. Availability is
-configuration evidence only: setup does not grant Accessibility/Screen Recording
+service. Desktop permissions belong to Codex Computer Use.app. Availability uses
+configuration and the local executable check: setup does not grant Accessibility/Screen Recording
 or open a desktop/browser session. Combined with the full-access sandbox default
 and the unrestricted browser default, this permits full disk write, desktop
 control, and any website through the user's logged-in browser. Lower either
@@ -621,8 +671,8 @@ auth, token, identity, IPC, backend, instruction and session keys are excluded.
 `CUA_SETTING_KEYS`/`CUA_ENV_KEYS` in `cua-config.mjs` enumerate this boundary;
 legacy node_repl handling above is unchanged.
 
-`tools.cuaRepl` and browser/computer availability recognize direct CUA entries,
-still as configuration-only evidence. A closed TOML inline parent that would
+`tools.cuaRepl` and browser/computer availability recognize direct CUA entries
+after the local executable check, without running live tools. A closed TOML inline parent that would
 need extending is rejected, since appending a child table would be invalid TOML.
 
 The recorded 120-second pre-tool delay was primarily inference WebSocket retries,
@@ -646,11 +696,20 @@ The default direct/result view is report v2: `status`, `worker`, `jobId`,
 for this turn only and is omitted when unknown. The envelope excluding summary
 fits within 2000 bytes;
 text/lists may be shortened. `changedFilesOmitted` and `checks.omitted` count
-omitted entries; `question.optionsOmitted` counts omitted choices. `checks.ran`
+omitted entries; `question.optionsOmitted` and
+`blockers[].question.optionsOmitted` count omitted choices. `checks.ran`
 holds captured commands; `checks.claimed` holds
 Codex's verification claims. `question` has `id`, `kind`, `text`, `options`,
-`expiresInSec`. `next` suggests `duet wait`, `duet answer` or a follow-up, or is
-null; it never authorizes resuming user-stopped work. For `needs_answer`, use
+`expiresInSec`. `next` suggests `duet wait`, `duet answer`, a follow-up or
+observational recovery/status, or is null; it never authorizes resuming
+user-stopped work. A `thread_busy` report prefers the owner's pinned answer,
+then recovery/status, never a new task on the busy thread. Typed runtime blockers
+point at their recovery instead of the same thread: `context_window_exceeded` and
+`provider_refused` suggest `duet task --fresh` (with a shorter or reworded brief),
+`auth_required` suggests `duet setup`, and `usage_limit` keeps the follow-up.
+Native reports give the matching instruction. A rejected answer (stale question or
+ended job) keeps the job's `worker`/`jobId` and points `next`/`details` at that
+exact job, so it never answers a newer question. For `needs_answer`, use
 the pinned `next` command verbatim. `details` always uses the exact job ID
 (`duet result '<jobId>' --details`) so a saved command still selects the same
 turn after a follow-up. Long blocker commands may use exact IDs or be omitted
@@ -660,6 +719,8 @@ from the compact report; the full commands remain in `--details`.
 handles when available, settings, file-tracking basis, artifact paths,
 `verification`, `claimedVerification`, `touchedFiles`, `preExistingChanges`,
 `claudeMd` forwarding metadata and compatibility recovery commands.
+For reviews, details also include the complete stored review text/findings and
+raw/result artifact paths; compact review summaries retain the 8,000-character cap.
 `reportFormat: "structured"` marks parsed worker declarations; older/interrupted
 responses may instead be inferred from prose. Use the job ID for an older turn.
 The summary remains in `rawOutputFile`; `duet result <worker> --json` alone
@@ -688,6 +749,9 @@ latest 50 ended jobs are retained by count, along with active/unresolved jobs
 and the newest ended job that started a turn on each of the 200 most recent
 threads. Ended anchors
 remain subject to [age retention](state-and-retention.md#retention).
+Status filters the requested session scope before history/display limits and
+reports `historyOmitted` (nonzero in text). This counts retained jobs hidden in
+that scope, not records already pruned from storage.
 
 Releases before 1.0.6-isolated.15 wrote the same layout under
 `CLAUDE_PLUGIN_DATA/state` (`~/.claude/plugins/data/codex-codex-isolated-local`
@@ -737,6 +801,10 @@ a blocked job with a typed `thread_busy` blocker. A server-side pre-check also
 blocks external turns and turns in other workspaces before `turn/start`.
 `recoveryCommand` (observational status) and `cancelCommand` appear only when a
 tracked job owns the turn; external turns must be resolved by their owner.
+A tracked owner's pending question is nested in the blocker, and `next` uses
+that owner's exact question-pinned answer command; otherwise it uses recovery
+or null. Cancel stays in the blocker. `details` still targets the refused job,
+including on native/delivery reports.
 Refused or blocked attempts never become thread blockers. A running recovery
 report exits 0 and retains an available recovery command. A running direct turn
 is handled by its background `duet wait <worker>`, not polling. Unavailable
@@ -766,6 +834,6 @@ the following are possibilities, not confirmed causes:
    or a browser transport timeout. After resolving approval/session ownership,
    use the tool's documented timeout option if available; do not assume extending
    a REPL timeout fixes a missing connection.
-4. Confirm setup's config-only tool status, the saved node_repl startup errors,
+4. Confirm setup's configuration/executable tool status, the saved node_repl startup errors,
    and network/socket access outside Claude's Bash sandbox. Reload/restart the
    relevant runtime after configuration changes.

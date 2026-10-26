@@ -6,6 +6,29 @@
 const text = value => String(value ?? "");
 const compact = value => text(value).replace(/\s+/g, " ").trim();
 
+export function normalizeCodexErrorInfo(value) {
+  if (typeof value === "string") return value;
+  return value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value)[0] ?? null : null;
+}
+
+// Runtime classifications take precedence over the one legacy text fallback.
+export function classifyCodexError(info, message) {
+  const kind = normalizeCodexErrorInfo(info);
+  switch (kind ?? (/flagged for possible cybersecurity risk/i.test(text(message)) ? "cyberPolicy" : null)) {
+    case "cyberPolicy":
+      return { code: "provider_refused", message: "The model provider declined this request under its cyber-safety policy. Reword the brief in neutral, defensive terms (describe checks; avoid exploit-style payload text), then dispatch a fresh worker." };
+    case "usageLimitExceeded":
+    case "sessionBudgetExceeded":
+      return { code: "usage_limit", message: "The Codex usage limit or session budget was reached. Wait for it to reset, or change model/plan, then continue." };
+    case "contextWindowExceeded":
+      return { code: "context_window_exceeded", message: "The thread's context window is full. Start a fresh worker with a shorter brief." };
+    case "unauthorized":
+      return { code: "auth_required", message: "The Codex runtime is not authorized. Run `duet setup` and log in to the isolated home." };
+    default:
+      return null;
+  }
+}
+
 export function classifyBrowserBlocker(value) {
   const match = /\bTab (\d+) is already part of browser session ([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?![0-9a-z-])/i.exec(text(value));
   return match ? { kind: "stale_browser_tab_claim", tabId: match[1], sessionId: match[2] } : null;
@@ -68,7 +91,8 @@ export function dedupeBlockers(blockers) {
   const seen = new Set(), out = [];
   for (const blocker of blockers) {
     if (!blocker || typeof blocker.code !== "string") continue;
-    const key = JSON.stringify([blocker.code, blocker.app ?? null, blocker.tabId ?? null, blocker.sessionId ?? null]);
+    const key = JSON.stringify([blocker.code, blocker.app ?? null, blocker.tabId ?? null, blocker.sessionId ?? null,
+      blocker.method ?? null, blocker.kind ?? null, blocker.server ?? null, blocker.origin ?? null, blocker.requestId ?? null]);
     if (seen.has(key)) continue;
     seen.add(key); out.push(blocker);
   }

@@ -44,7 +44,13 @@ explicit cancellation, or the question expires after 900 seconds by default.
 When Codex reports token usage, the agent transcript ends with a `Codex usage`
 notice and the result carries `usage`; Codex tokens are not added to Claude's
 own usage or cost. A late answer is submitted only to the question the agent
-last returned; if the worker has moved on, the current question is returned.
+last returned; if another answerable question is pending, that current question
+is returned. If no unanswered pending slot remains or the job has ended, the
+adapter returns the old job with a notice, including after reload. It does not reinterpret the
+late answer as a task; a subsequent new brief can start work. The adapter does
+not check expiry locally: if the unanswered slot still exists past its deadline,
+the pinned answer goes to the companion and is refused there, as in 1.4.2.
+Expiry alone does not promise the resolved-question notice.
 
 Codex progress lines stream inside the agent while it runs and are kept in its
 transcript as notices; they also keep jobs longer than ten minutes alive under
@@ -59,8 +65,18 @@ is unconfirmed. See [troubleshooting](troubleshooting.md).
 ### Direct mode
 
 Use `duet task --help` for task flags; help starts no job. The installed plugin
-adds `bin/` to PATH, and SessionStart supplies the session ID and a short dispatch
-recipe. If `duet` is missing in an older session, reload/start a new session or
+adds `bin/` to PATH, and SessionStart supplies the session ID and the Bash
+recipe, framed as the fallback when native workers are announced. SessionStart
+cannot tell whether the native adapter registered, so it never names
+`codex:codex-native`. After a complete registration the adapter adds a
+`codex:native-dispatch` system-prompt section (`prompt.compose`, session scope)
+to every request that offers the Agent tool. That section asks for native dispatch first:
+browser work and Computer Use run natively, with unapproved apps arriving as
+approval questions. Background-Bash `duet task` is only for `native_adapter_unavailable`,
+per-call overrides the `DUET:` line rejects (`--run`, `--approve-browser-origin`,
+`--approve-computer-app`, `--lease-sec`, `--question-timeout-sec`) and follow-ups
+to Bash-launched workers. Because the system prompt is rebuilt for every request,
+compaction cannot remove that guidance, unlike the one-time readiness notice. If `duet` is missing in an older session, reload/start a new session or
 use the absolute `plugins/codex/bin/duet` launcher path.
 The SessionStart answer recipe pins the displayed `--question` ID. Its exports
 append to `CLAUDE_ENV_FILE` with a newline separator when a previous hook left
@@ -103,6 +119,16 @@ parse the output file, poll or sleep. `--quiet` suppresses progress. The wait
 renews its lease independently of output draining; pending progress is capped
 at 200 lines, with an omitted-line notice before the final JSON line.
 
+If a tracked job ends without an emitted report, the next typed prompt can
+give Claude a one-time recovery cue after 10 seconds, for up to five jobs in
+the session with no live attached owner wait. Lookup failures leave the prompt
+unchanged. See [unreported endings and limits](worker-lifecycle.md#unreported-endings).
+
+`--run <id|none>` chooses journal linkage for this dispatch only. Omit it to
+use the session's active run, use `none` to skip linking, or select an open run
+across workspaces in the same isolated home. Invalid or closed runs fail before
+a worker starts. Follow-ups do not inherit this choice. See [run journal](run-journal.md).
+
 Report v2 starts with `status`, `worker`, `jobId`, `summary`. The summary is capped
 at 8000 characters (`summaryTruncated` when cut); the rest fits within 2000 bytes.
 Nonempty fields include `blockers`, `question`, `changedFiles`, `checks.ran`
@@ -113,11 +139,18 @@ for this turn only (omitted when unknown). `next` suggests an action or is null.
 `details` gives `duet result '<jobId>' --details`, targeting the exact job even
 after a follow-up, for handles, settings, artifact paths and fuller evidence.
 Use it whenever compact evidence or question text was shortened.
+Compact blockers retain bounded app/tab/session and safe approval identifiers,
+plus cleanup status when captured. A refused follow-up with `thread_busy` points
+`next` to the owning job's pinned answer if it has a question, otherwise its
+recovery/status action, or null. The blocker carries the owner's question and
+cancel action when available; `details` continues to select the refused attempt.
 
 - Terminal: apply the [acceptance protocol](../plugins/codex/prompts/ultra-codex-protocol.md#accepting-a-result-every-worker-report-no-exceptions),
   even after a nonzero exit. Verify the diff and checks yourself; read
   `rawOutputFile` only if report fields are insufficient.
 - `running`: run `duet wait <worker>` in background Bash and wait for its notification.
+  An expired unanswered question does not make `wait` return early; it continues
+  waiting under the usual completion, question, stop and wait-budget rules.
 - `needs_answer`: run ONE background Bash call (`timeout: 600000`):
 
   ```bash
@@ -128,10 +161,12 @@ Use it whenever compact evidence or question text was shortened.
 
   Prefer the report's `next` command verbatim. If constructing the command above,
   replace Ada with its target and `<questionId>` with the displayed `question.id`.
-  The command resolves the owner, refuses a stale ID, submits once, then waits
+  The command resolves the owner, refuses a stale/expired question or an explicit
+  owner mismatch, and refuses a stopping job or expired lease. These checks also
+  apply to submit-only answers. It submits once, then waits
   on the same turn. A bare `duet answer <worker>` answers whatever question is
   pending now, which may be newer than the one you saw. Native SendMessage
-  already pins the displayed question and is unaffected. Do not start another
+  pins the displayed question. Do not start another
   wait. `question` supplies `id`, `kind`, `text`, `options` and `expiresInSec`;
   `optionsOmitted` counts choices removed to fit the report budget. A Computer
   Use approval has four fixed options; forward it
@@ -152,7 +187,10 @@ Never run two waits for one job. Exit codes are 0 for `completed`, 2 for
 `--follow`, `--detached`, `--background`, `--json`, `--feed-limit` and
 `--min-interval-sec`.
 
-Each worker gets a historical scientist or computing pioneer name. Adoption and
+Each worker gets one of 1,089 historical scientist or computing pioneer names,
+drawn from unused names in three tiers: 120 familiar names weighted 10 each,
+299 weighted 3 each, and 670 weighted 1 each. Numbered suffixes appear only after
+the pool is exhausted, with the base chosen by the same weights. Adoption and
 cross-session `--thread` follow-ups reserve a name in the destination session,
 renaming on collision. Follow up with
 `duet task --to <worker>` and a new stdin brief; it keeps the original cwd and
@@ -201,11 +239,14 @@ ask Claude Code to open the pane; Claude Code decides whether it is shown at the
 current width. `/codex-live` opens and focuses it at any width.
 It shows the session's jobs and the selected job's prompt, Codex messages, commands,
 file changes, tool calls, plan and pending question. Resolved `ask_parent` calls
-show their matched answer; on resumed threads Codex 0.146.0 does not pass a call ID
-to custom MCP servers, so answers cannot be matched and are not shown. Jobs on the same Codex
+show their matched answer on fresh and resumed threads using Codex's
+`_meta.callId`, preserved by the MCP bridge. Missing/invalid call IDs remain
+unmatched, including older stored answers. Jobs on the same Codex
 thread (`--to`, `--thread` and `--continue` follow-ups) form one row whose transcript
 shows retained turns in order. The row follows its active owner and question,
-even after a newer refused follow-up; unresolved turns are flagged for attention.
+even after a newer refused follow-up. Active questions say `Question for Claude`,
+`needs_input`/`blocked` say `Needs your attention` in warning/error colours, and
+unresolved turns say `Outcome unknown`. Non-question waits say `Waiting for Claude`.
 It is read-only: it never
 starts, answers or cancels a job, and costs no Claude tokens. The pane reads
 companion-written markers under
@@ -216,8 +257,17 @@ take priority. New workers preserve the selected conversation and its
 scroll position, showing `• new` until selected; returning to a viewed
 conversation restores its saved scroll position. **Clear finished** hides ended
 conversations only when they have no active or unresolved turn, without deleting
-records or changing the default 30-day retention. Pane bookkeeping is bounded
-with retained history; see the [pane reference](../plugins/codex-live/README.md).
+records or changing your Duet cleanup settings. Pane bookkeeping is bounded
+with retained history. In addition to the newest 20 sessions and active/unresolved/
+selected exceptions, the newest 40 uncleared terminal-attention sessions are
+protected (`ATTENTION_SESSION_LIMIT`), subject to the state budget. The status
+line counts questions, attention and unknown outcomes separately; attention
+includes omitted terminal-attention sessions, with the omission count shown.
+The feed uses retained activity (at most 500 stored events per job, with tighter
+pane limits); tool counts prefer cumulative `activityTotals.toolUses`. Narrow panes retain
+history navigation (`j`) alongside Clear (`c`). Discovery failures have their
+own warning; malformed pane caches are reset and rediscovered without changing
+job records. See the [pane reference](../plugins/codex-live/README.md).
 
 ### Haiku fallback
 

@@ -10,8 +10,8 @@ try {
   const raw = fs.readFileSync(0, "utf8").trim();
   const input = raw ? JSON.parse(raw) : {};
   const sessionId = input.session_id || process.env.CODEX_COMPANION_SESSION_ID;
-  if (sessionId && !isModeCommandPrompt(input.prompt)) {
+  if (sessionId) {
     const mode = readMode(resolveWorkspaceRoot(input.cwd || process.cwd()), sessionId);
-    if (mode) process.stdout.write(`${reminderText(mode)}\n`);
+    if (mode && !isModeCommandPrompt(input.prompt)) process.stdout.write(`${reminderText(mode)}\n`);
   }
 } catch { /* silent */ }

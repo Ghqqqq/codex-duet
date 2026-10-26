@@ -1,4 +1,7 @@
 import { isolatedCodexCommand } from "./codex-home.mjs";
+import fs from "node:fs";
+
+const REVIEW_OUTPUT_SCHEMA = JSON.parse(fs.readFileSync(new URL("../../schemas/review-output.schema.json", import.meta.url), "utf8"));
 function severityRank(severity) {
   switch (severity) {
     case "critical":
@@ -22,23 +25,42 @@ function formatLineRange(finding) {
   return `:${finding.line_start}-${finding.line_end}`;
 }
 
-function validateReviewResultShape(data) {
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
-    return "Expected a top-level JSON object.";
+// Enforce every constraint used by review-output.schema.json before declaring
+// a usable review. Rendering and job completion share this validation.
+export function validateReviewResultShape(data) {
+  function validate(value, schema, location) {
+    const validType = schema.type === "object" ? value && typeof value === "object" && !Array.isArray(value)
+      : schema.type === "array" ? Array.isArray(value)
+      : schema.type === "integer" ? Number.isInteger(value)
+      : schema.type === "number" ? typeof value === "number" && Number.isFinite(value)
+      : typeof value === schema.type;
+    if (!validType) return `${location}: expected ${schema.type}.`;
+    if (schema.enum && !schema.enum.includes(value)) return `${location}: unsupported value.`;
+    if (schema.minLength !== undefined && [...value].length < schema.minLength) return `${location}: string is too short.`;
+    if (schema.minimum !== undefined && value < schema.minimum) return `${location}: below minimum.`;
+    if (schema.maximum !== undefined && value > schema.maximum) return `${location}: above maximum.`;
+    if (schema.type === "object") {
+      for (const key of schema.required ?? []) {
+        if (!Object.hasOwn(value, key)) return `${location}.${key}: required field is missing.`;
+      }
+      for (const key of Object.keys(value)) {
+        if (!Object.hasOwn(schema.properties, key)) {
+          if (schema.additionalProperties === false) return `${location}.${key}: unexpected field.`;
+          continue;
+        }
+        const error = validate(value[key], schema.properties[key], `${location}.${key}`);
+        if (error) return error;
+      }
+    }
+    if (schema.type === "array") {
+      for (let index = 0; index < value.length; index += 1) {
+        const error = validate(value[index], schema.items, `${location}[${index}]`);
+        if (error) return error;
+      }
+    }
+    return null;
   }
-  if (typeof data.verdict !== "string" || !data.verdict.trim()) {
-    return "Missing string `verdict`.";
-  }
-  if (typeof data.summary !== "string" || !data.summary.trim()) {
-    return "Missing string `summary`.";
-  }
-  if (!Array.isArray(data.findings)) {
-    return "Missing array `findings`.";
-  }
-  if (!Array.isArray(data.next_steps)) {
-    return "Missing array `next_steps`.";
-  }
-  return null;
+  return validate(data, REVIEW_OUTPUT_SCHEMA, "review");
 }
 
 function normalizeReviewFinding(finding, index) {
@@ -353,6 +375,26 @@ export function renderNativeReviewResult(result, meta) {
   appendReasoningSection(lines, meta.reasoningSummary);
 
   return `${lines.join("\n").trimEnd()}\n`;
+}
+
+export function renderReviewDetails(report, job) {
+  const payload = job.result ?? {};
+  const review = payload.result;
+  const valid = !validateReviewResultShape(review);
+  const findings = valid ? review.findings : [];
+  return {
+    ...report,
+    status: job.status,
+    summary: valid ? review.summary : payload.rawOutput ?? payload.codex?.stdout ?? job.errorMessage ?? "",
+    summaryTruncated: false,
+    rawOutputFile: job.rawOutputFile ?? null,
+    resultFile: job.resultFile ?? null,
+    ...(payload.errorCode ? { errorCode: payload.errorCode } : {}),
+    keyFindings: findings.map(finding => `[${finding.severity}] ${finding.title} (${finding.file}${formatLineRange(finding)})\n${finding.body}\nRecommendation: ${finding.recommendation}`),
+    findings,
+    next_steps: valid ? review.next_steps : [],
+    reviewOutput: job.rendered ?? ""
+  };
 }
 
 export function renderTaskResult(parsedResult, meta) {

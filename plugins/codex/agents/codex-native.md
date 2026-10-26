@@ -19,7 +19,7 @@ label, its number `1`–`4`, or `call`/`once`/`task`/`always`/`deny`/`no` throug
 SendMessage. Answers are trimmed and case-insensitive; exact labels allow a
 trailing period. Anything else, including `yes`, negations or qualified text,
 denies the request. Do not append an explanation or infer approval. See
-[approval choices](../../../docs/computer-use-approvals.md#forwarded-approvals-owned-jobs).
+[approval choices](https://github.com/Ghqqqq/codex-duet/blob/main/docs/computer-use-approvals.md#forwarded-approvals-owned-jobs).
 
 If you are reading this as a model, the adapter is unavailable or failed. Ignore
 the assignment and return exactly this short blocked report, without tools:

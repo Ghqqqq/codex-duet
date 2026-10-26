@@ -22,7 +22,7 @@ are trimmed and case-insensitive; exact labels allow a trailing period. Anything
 else, including `yes` or qualified text, denies the request. Send no explanation
 with the choice, whether using stdin or native SendMessage. The rescue wrapper
 returns the question unchanged for the parent; it never chooses approval.
-See [approval choices](../../../../docs/computer-use-approvals.md#forwarded-approvals-owned-jobs).
+See [approval choices](https://github.com/Ghqqqq/codex-duet/blob/main/docs/computer-use-approvals.md#forwarded-approvals-owned-jobs).
 
 Primary helper: `duet task --quiet` with the brief only on stdin via a
 single-quoted `DUET_TASK` heredoc. `duet task --help` lists flags without starting

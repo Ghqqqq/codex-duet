@@ -117,6 +117,13 @@ No `_meta`, content, persistence hint or approval is added. Other unsupported
 methods retain their existing `-32601` behavior. Safe summaries log
 `unsupported-elicitation-nonpersistent`, method, hashed string request ID, kind,
 normalized origin when available, and fixed field names/types, never full payloads.
+For a worker turn, a denied/unsupported non-Computer-Use request also produces
+`approval_denied`/`approval_unsupported` and forces the final report to `blocked`
+(exit 2), even if the model reports completion. Compact blockers keep method,
+kind, server and origin when captured; their short message uses only those safe
+identifiers. Details additionally keep the safe request ID (string IDs hashed).
+Computer Use refusals retain their app-specific blocker code. Cancellation
+remains nonpersistent; the blocker does not grant approval.
 
 ## Per-invocation network requests
 

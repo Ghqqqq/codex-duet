@@ -1,10 +1,10 @@
 import { atom, read } from 'claude-code';
 import type { EngineInterface } from 'claude-code';
 import type { CodexLiveJob, CodexLiveMarker, CodexLiveState } from '../types';
-import { boundState, detailedTurns, fitState, groupedSessions, jobSummary, jobView, markerView, normalizeSessions, oldestJob,
+import { ATTENTION_SESSION_LIMIT, attention, boundState, clean, detailedTurns, expireQuestion, fitState, groupedSessions, jobSummary, jobView, markerView, normalizeSessions, oldestJob,
   retainedTurns, sessionForId, sessionId, statusLine, unavailableJob, visibleSessions } from './model';
 import { feedLines, paneLayout, normalizeFeed, recentEndedJobIds, selectedJob } from './layout';
-import { publishView, reportFailure, updateFailure, viewports } from './runtime';
+import { checkedView, publishView, reportFailure, updateFailure, viewports } from './runtime';
 
 const view = atom({ plugin: 'codex-live', key: 'view' } as const,
   { jobs: [], selectedId: null, nowMs: 0 } as CodexLiveState);
@@ -20,7 +20,7 @@ type Cached = {
   firstEnded?: number;
 };
 
-export function createPoller($: EngineInterface, diagnostics?: { onCompose(): void }): (force?: boolean) => Promise<void> {
+export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): void; onBound?(): void; onLayout?(): void }): (force?: boolean) => Promise<void> {
   let busy = false;
   let tick = 0;
   let session = '';
@@ -32,26 +32,33 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
   const evicted = new Map<string, Pick<Cached, 'job' | 'processedMtime' | 'marker' | 'firstEnded'>>();
   const markerNames = new Set<string>();
   const retryMarker = new Map<string, number>();
+  const markerErrors = new Map<string, string>();
+  let lastDiscovery = '';
   // Keep only identities after ownership moves, including across failed writes.
   const foreignJobs = new Set<string>();
   // Successful observations outside the retained view live only while present.
   const knownJobs = new Set<string>();
+  let bounded: { key: string; sources: (CodexLiveJob | undefined)[]; state: CodexLiveState } | undefined;
 
   return async (force = false) => {
     if (busy) return;
     busy = true;
     try {
       tick++;
-      let current = await read($, view);
-      const expected = JSON.stringify(current);
+      const stored = await read($, view);
+      let current = checkedView($, stored);
+      const repaired = current !== stored;
+      const expected = JSON.stringify(stored);
       const paneOpen = (await $.ui.panes()).some(pane => pane.id === 'codex-live');
-      if (!force && !groupedSessions(current.jobs).some(job => job.active) && !paneOpen && tick % 5 !== 1) return;
+      if (!force && !repaired && !groupedSessions(current.jobs).some(job => job.active) && !paneOpen && tick % 5 !== 1) return;
       const now = await $.clock.now();
       const currentSession = await $.session.id();
       const sessionChanged = !!current.sessionId && current.sessionId !== currentSession;
-      if (session !== currentSession) {
+      if (session !== currentSession || repaired) {
         session = currentSession;
         cache.clear(); evicted.clear(); markerNames.clear(); retryMarker.clear(); foreignJobs.clear(); knownJobs.clear();
+        markerErrors.clear(); lastDiscovery = '';
+        bounded = undefined;
       }
       if (sessionChanged) current = { jobs: [], selectedId: null, nowMs: 0 };
       const previouslySeen = new Set(current.seenJobIds ?? current.jobs.map(job => job.id));
@@ -73,12 +80,22 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
         canonical = true;
       }
       const folder = `${home.replace(/\/$/, '')}/duet/sessions/${session}`;
-      const entries = await $.fs.list(folder).catch(() => undefined);
+      let directoryError = '';
+      const diagnostic = (error: unknown) => clean(error instanceof Error ? error.message : String(error)).slice(0, 300);
+      const entries = await $.fs.list(folder).catch(error => {
+        // A fresh session has no marker directory yet. Other failures must not
+        // be mistaken for an empty inventory, even if cached jobs are readable.
+        const missing = error?.code === 'ENOENT' || /\bENOENT\b|no such file or directory/i.test(diagnostic(error));
+        if (missing && !previouslyKnown.size && current.hiddenFinishedBefore === undefined && !current.hiddenJobIds?.length) return [];
+        directoryError = diagnostic(error) || 'Directory unreadable';
+        return undefined;
+      });
       const presentMarkers = entries && new Set(entries.filter(entry => entry.kind === 'file' && entry.name.endsWith('.json'))
         .map(entry => entry.name));
       if (presentMarkers) for (const name of evicted.keys()) if (!presentMarkers.has(name)) evicted.delete(name);
       if (presentMarkers) {
         for (const name of retryMarker.keys()) if (!presentMarkers.has(name)) retryMarker.delete(name);
+        for (const name of markerErrors.keys()) if (!presentMarkers.has(name)) markerErrors.delete(name);
         // A failed publication leaves candidates in cache; pruned finished
         // candidates must not accumulate while the last good view is retained.
         const retainedIds = new Set(current.jobs.map(job => job.id));
@@ -103,7 +120,18 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
           evicted.delete(entry.name);
           markerNames.add(entry.name); // Only a successful parse marks the marker seen.
           retryMarker.delete(entry.name);
-        } catch { retryMarker.set(entry.name, now + 5000); }
+          markerErrors.delete(entry.name);
+        } catch (error) {
+          retryMarker.set(entry.name, now + 5000);
+          markerErrors.set(entry.name, diagnostic(error));
+        }
+      }
+      const discoveryWarning = directoryError ? 'Discovery warning: session directory unreadable; inventory may be incomplete'
+        : markerErrors.size ? `Discovery warning: ${markerErrors.size} unreadable session markers; inventory may be incomplete` : undefined;
+      const discovery = discoveryWarning ? JSON.stringify([directoryError, [...markerErrors].sort()]) : '';
+      if (discovery !== lastDiscovery) {
+        $.ui.log(`codex-live: ${discoveryWarning ?? 'Discovery recovered'}${directoryError ? ` · ${directoryError}` : ''}`, { to: 'debug' });
+        lastDiscovery = discovery;
       }
       const newlyActive: string[] = [];
       const belongsHere = (raw: { sessionId?: unknown } | null, entry: Cached): boolean => {
@@ -128,7 +156,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
           if (stat.mtimeMs !== entry.processedMtime) {
             const raw = JSON.parse(await $.fs.read(entry.marker.jobFile));
             if (!belongsHere(raw, entry)) continue;
-            const job = jobView(raw, entry.marker, false);
+            const job = jobView(raw, entry.marker, false, now);
             if ((entry.processedMtime !== undefined || current.jobs.some(previous => previous.id === job.id)) &&
                 sessionId(entry.job) !== sessionId(job)) joinedThreads.add(job.id);
             entry.raw = raw;
@@ -174,6 +202,11 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
         .map(([markerName, entry]) => ({ ...entry, markerName, nextCheck: now + 10000 }));
       let newest = [...cache.values(), ...restored, ...remembered].filter(entry => !foreignJobs.has(entry.job.id))
         .sort((a, b) => b.job.createdAt.localeCompare(a.job.createdAt) || b.job.id.localeCompare(a.job.id));
+      // Expiry is a clock transition, including when the file is unchanged or unreadable.
+      for (const entry of newest) {
+        entry.job = expireQuestion(entry.job, now);
+        if (entry.full) entry.full = expireQuestion(entry.full, now);
+      }
       const byId = new Map(newest.map(entry => [entry.job.id, entry]));
       for (const id of newlyActive) opened.add(id);
       // Selection and hydration use lightweight summaries, before any event
@@ -203,13 +236,17 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
         // allows a newly activated conversation to take focus.
         const selectedId = selectedSession?.id ?? activated[0]?.id
           ?? visible.find(session => session.active)?.id ?? visible[0]?.id ?? null;
-        const retained = visible.filter((session, i) => i < 20 || session.active || session.unresolved || session.id === selectedId);
+        const protectedAttention = new Set(visible.filter(session => attention(session) === 'blocked')
+          .sort((a, b) => oldestJob(b, a)).slice(0, ATTENTION_SESSION_LIMIT).map(session => session.id));
+        const retained = visible.filter((session, i) => i < 20 || session.active || session.unresolved ||
+          session.id === selectedId || protectedAttention.has(session.id));
         const retainedSessions = new Set(retained.map(session => session.id));
+        const attentionOmitted = visible.filter(session => attention(session) && !retainedSessions.has(session.id)).length;
         const retainedIds = new Set(retained.flatMap(session => retainedTurns(session).map(job => job.id)));
         const selected = sessionForId(retained, selectedId);
         const detailedIds = new Set(selected ? detailedTurns(selected).map(job => job.id) : []);
         for (const session of visible) turnCounts[session.id] = session.turnCount;
-        return { visibility, selectedId, retained, retainedSessions, retainedIds, detailedIds, turnCounts };
+        return { visibility, selectedId, retained, retainedSessions, retainedIds, detailedIds, turnCounts, attentionOmitted };
       };
       let planned = plan(current);
       let hydrated = false;
@@ -223,7 +260,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
           const stat = await $.fs.stat(entry.marker.jobFile);
           const raw = JSON.parse(await $.fs.read(entry.marker.jobFile));
           if (!belongsHere(raw, entry)) continue;
-          const summary = jobView(raw, entry.marker, false);
+          const summary = jobView(raw, entry.marker, false, now);
           entry.raw = raw;
           entry.job = { ...summary, lastUpdateMs: now };
           entry.processedMtime = stat.mtimeMs;
@@ -237,18 +274,23 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
         planned = plan(current);
       }
       const compose = (latest: CodexLiveState, selection?: ReturnType<typeof plan>): CodexLiveState => {
-        diagnostics?.onCompose();
+        diagnostics?.onCompose?.();
         if (sessionChanged && latest.sessionId !== currentSession) latest = current;
-        const { visibility, selectedId, retained, retainedSessions, retainedIds, detailedIds, turnCounts } = selection ?? plan(latest);
+        const { visibility, selectedId, retained, retainedSessions, retainedIds, detailedIds, turnCounts, attentionOmitted } = selection ?? plan(latest);
+        const sources: (CodexLiveJob | undefined)[] = [];
         const jobs = newest.filter(entry => retainedIds.has(entry.job.id)).map(entry => {
+          sources.push(entry.job);
           if (!detailedIds.has(entry.job.id)) return entry.job;
-          if (!entry.full && entry.raw) entry.full = jobView(entry.raw, entry.marker);
+          if (!entry.full && entry.raw) entry.full = jobView(entry.raw, entry.marker, true, now);
+          sources.push(entry.full);
           return entry.full ? { ...entry.full, detailsUnavailable: entry.job.detailsUnavailable, lastUpdateMs: entry.job.lastUpdateMs } : entry.job;
         });
         const active = retained.some(session => session.active);
         const stale = jobs.some(job => job.detailsUnavailable);
         const nowMs = active || stale ? Math.floor(now / 5000) * 5000 : latest.nowMs;
-        const candidate: CodexLiveState = boundState({ ...latest, jobs, selectedId, nowMs, sessionId: currentSession, turnCounts,
+        let candidate: CodexLiveState = { ...latest, jobs, selectedId, nowMs, sessionId: currentSession,
+          turnCounts: Object.fromEntries(Object.entries(turnCounts).filter(([id]) => retainedSessions.has(id))),
+          discoveryWarning, attentionOmitted,
           spinnerTick: active && (paneOpen || newlyActive.length) ? Math.floor(now / 1000) : latest.spinnerTick,
           feeds: visibility.feeds && Object.fromEntries(Object.entries(visibility.feeds).filter(([id]) => retainedSessions.has(id))),
           viewedSessionIds: visibility.viewedSessionIds,
@@ -256,22 +298,39 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
             ...retained.filter(session => session.turns.some(job => newlyActive.includes(job.id)) &&
               !visibility.viewedSessionIds?.includes(session.id)).map(session => session.id)])]
             .filter(id => retainedSessions.has(id) && id !== selectedId),
-          seenJobIds: [...seen], autoOpenedJobIds: [...opened], firstEndedAtMs,
+          // Omitted marker rediscovery must not invalidate an unchanged retained transcript.
+          seenJobIds: [...seen].filter(id => retainedIds.has(id)), autoOpenedJobIds: [...opened].filter(id => retainedIds.has(id)),
+          firstEndedAtMs: Object.fromEntries(Object.entries(firstEndedAtMs).filter(([id]) => retainedIds.has(id))),
           recentEndedIds: recentEndedJobIds(retained, now, job => {
             const end = Date.parse(job.completedAt);
             const latestId = sessionForId(retained, job.id)!.lifecycleJobId;
             return Number.isFinite(end) ? end : firstEndedAtMs[latestId] ?? NaN;
           }),
-        });
+        };
+        // Closed panes retain their last feed anchor. Reuse the bounded projection
+        // when only the clock/spinner changed; content identities and all other
+        // state (including selection and concurrent interactions) invalidate it.
+        const key = JSON.stringify({ ...candidate, jobs: undefined, nowMs: undefined, spinnerTick: undefined });
+        if (!paneOpen && bounded?.key === key && sources.length === bounded.sources.length &&
+            sources.every((source, i) => source === bounded!.sources[i])) {
+          candidate = { ...bounded.state, nowMs, spinnerTick: candidate.spinnerTick };
+        } else {
+          diagnostics?.onBound?.();
+          candidate = boundState(candidate);
+          bounded = { key, sources, state: { ...candidate } };
+        }
         // Only the selected transcript is laid out. Other stopped windows keep
         // their small content anchors/snapshots until selected again.
         const selected = selectedJob(candidate);
         const feed = selectedId ? candidate.feeds?.[selectedId] : undefined;
-        if (selected && feed) {
+        if (paneOpen && selected && feed) {
           const measured = viewports.get(feed.surface ?? 'terminal');
           const columns = measured?.columns ?? feed.columns;
           const rows = measured ? paneLayout(candidate, selected, measured.bodyRows).rows : feed.rows ?? 8;
-          if (columns) candidate.feeds = { ...candidate.feeds, [selected.id]: normalizeFeed(feedLines(selected, nowMs, columns, feed), rows, { ...feed, columns }) };
+          if (columns) {
+            diagnostics?.onLayout?.();
+            candidate.feeds = { ...candidate.feeds, [selected.id]: normalizeFeed(feedLines(selected, nowMs, columns, feed), rows, { ...feed, columns }) };
+          }
         }
         return fitState(candidate);
       };
@@ -299,7 +358,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose(): vo
         markerNames.delete(entry.markerName);
         retryMarker.set(entry.markerName, now + 10000); // Eviction is not a permanent "seen" tombstone.
       }
-      const status = statusLine(candidate.jobs);
+      const status = [candidate.discoveryWarning, statusLine(candidate.jobs, candidate.attentionOmitted)].filter(Boolean).join(' · ') || undefined;
       if (status !== lastStatus) { $.ui.status(status); lastStatus = status; }
       if (newlyActive.length) await $.ui.open({ id: 'codex-live', title: 'Codex' });
     } catch (error) { reportFailure($, error); }

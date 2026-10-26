@@ -8,12 +8,15 @@ import { listSessionJobs } from "./lib/state.mjs";
 import { ACTIVE, requestCancel } from "./lib/job-runtime.mjs";
 import { TRANSCRIPT_PATH_ENV } from "./lib/claude-session-transfer.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
-import { clearMode, pruneModes } from "./lib/ultra-codex-mode.mjs";
+import { clearMode, pruneModes, readMode } from "./lib/ultra-codex-mode.mjs";
 import { runAutomaticRetention } from "./lib/retention.mjs";
 import { activeRunContext } from "./lib/run-journal.mjs";
 import { deleteClaudeSnapshot } from "./lib/claude-memory.mjs";
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
+// This command hook cannot tell whether the native adapter registered, so it
+// never advertises native workers; the adapter adds that guidance itself.
 const SESSION_START_CONTEXT = [
+  "Bash recipe for Codex workers. When native Codex workers are announced as ready, dispatch natively and use this recipe only as the fallback.",
   "Dispatch Codex with duet task <<'DUET_TASK' (brief on following lines, then DUET_TASK alone); use Bash run_in_background: true.",
   "The background-task completion notification carries the complete Duet report.",
   "Follow up on the same worker with duet task --to <worker> and a brief on stdin.",
@@ -49,7 +52,13 @@ async function main() {
     // A mode is per session and never inherited: a stale file from a session
     // that ended without SessionEnd is removed here. A resumed or compacted
     // session keeps the mode it had.
-    try { pruneModes(cwd); if (input.session_id && !["resume", "compact"].includes(input.source)) clearMode(cwd, input.session_id); } catch { /* best effort */ }
+    try {
+      pruneModes(cwd);
+      if (input.session_id) {
+        if (["resume", "compact"].includes(input.source)) readMode(cwd, input.session_id); // discard legacy workspace records
+        else clearMode(cwd, input.session_id);
+      }
+    } catch { /* best effort */ }
     for (const key of ["CLAUDE_PLUGIN_DATA", "CODEX_COMPANION_HOME", "CODEX_COMPANION_BIN"]) appendEnvVar(key, process.env[key]);
     try {
       resolveIsolatedCodexHome(); resolveCodexBinary();

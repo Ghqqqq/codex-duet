@@ -32,13 +32,13 @@ Execution mode rules:
   - `Run in background`
 
 Argument handling:
-- Preserve the user's arguments exactly, passing them through the single-quoted heredoc below without shell expansion.
+- Pass the raw `$ARGUMENTS` unchanged through the single-quoted heredoc below, without shell expansion. Do not split, reorder, unquote or rewrite the arguments; the companion parses them deterministically.
 - If an argument line is exactly `DUET_ARGS`, choose a delimiter absent from the arguments and change both heredoc delimiters together.
 - Do not strip `--wait` or `--background` yourself.
 - Do not add extra review instructions or rewrite the user's intent.
 - The companion script parses `--wait` and `--background`, but Claude Code's `Bash(..., run_in_background: true)` is what actually detaches the run.
 - `/codex:review` is native-review only. It does not support staged-only review, unstaged-only review, or extra focus text.
-- If the user needs custom review instructions or more adversarial framing, they should use `/codex:adversarial-review`.
+- If the user needs custom review instructions or more adversarial framing, they should use `/codex:adversarial-review`; put `--` before focus that starts with something option-like.
 
 Foreground flow:
 - Run:

@@ -164,13 +164,18 @@ by `"decision":"approved","reason":"parent-task"` (or `parent-call`,
 A denied authorization is a blocker, not a success. Reports use
 `status: "blocked"` (exit code 2, like `needs_input`) with structured
 `blockers` entries. The default compact report v2 carries each retained
-blocker's `code` and short `message`. Its serialized UTF-8 envelope, excluding
+blocker's `code`, short `message`, bounded app/tab/session and safe approval
+identifiers, and `closed` when known. Its serialized UTF-8 envelope, excluding
 `summary`, is limited to 2,000 bytes; blocker lists and messages may be trimmed.
-It carries `next` (normally `duet task --to <worker>` for a blocked job) and
+It carries `next` (normally `duet task --to <worker>` for a blocked job; a fresh
+task for `context_window_exceeded`/`provider_refused`, `duet setup` for
+`auth_required`) and
 `details` (`duet result '<jobId>' --details`, always the exact job), not `blockersOmitted` or
-`continuationCommand`.
+`continuationCommand`. For `thread_busy`, `next` instead answers the owning
+job's pinned question, observes its recovery, or is null; it never suggests a
+new turn on the busy thread.
 
-Use `duet result <worker> --details` for the stored blocker's extra fields when
+Use `duet result <worker> --details` for the stored blocker's full fields when
 captured, and `continuationCommand` when job and thread handles are available.
 The detailed report can include these blocker codes:
 
@@ -181,13 +186,27 @@ The detailed report can include these blocker codes:
 | `computer_use_app_forbidden` | `app` | safety policy message |
 | `browser_tab_debugger_unattached` | `tabId`, `sessionId`, optional `closed` | `Debugger unattached` in a tool result or the final answer; `closed` is inferred from captured cleanup text and absent when unknown |
 | `stale_browser_tab_claim` | `tabId`, `sessionId` | `Tab <id> is already part of browser session <uuid>` |
+| `approval_denied` | `method`, `kind`, `requestId`, optional `server`, `origin` | denied non-Computer-Use server request |
+| `approval_unsupported` | `method`, `kind`, `requestId`, optional `server`, `origin` | unsupported non-Computer-Use request/elicitation |
+| `provider_refused` | — | failed turn with `cyberPolicy`; absent typed information, the text “flagged for possible cybersecurity risk” |
+| `usage_limit` | — | failed turn with `usageLimitExceeded` or `sessionBudgetExceeded` |
+| `context_window_exceeded` | — | failed turn with `contextWindowExceeded` |
+| `auth_required` | — | failed turn with `unauthorized` |
 | `reported_blocked` | — | the final answer starts with "Blocked"/"阻塞" or states `status: blocked` |
-| `needs_input` / `error` | — | question-only answers; non-zero exit |
+| `needs_input` / `error` | — | question-only answers; other failed turns |
 
 Tool-call blockers are captured from completed `mcpToolCall` items while the
 turn runs; only the matched identifiers are retained, never the tool arguments or
 payload. The detailed report preserves a stored `blockersOmitted` count when
 present; it does not restore blockers already omitted from the stored report.
+Typed server-request refusals force `blocked` even when the model claims
+completion. Approval messages use only method, kind, server and origin, which
+also survive compact projection; details retain the safe request ID (string IDs
+hashed). No raw request payload is included.
+The four typed failed-turn blockers above also exit 2, preserving the original
+error text with display cleanup in details; a recovered error notification on
+a successful turn does not alone trigger them. Other failures remain `failed`,
+exit 1. See [runtime blocker actions](worker-operations.md#direct-mode).
 
 ## Tab cleanup on `Debugger unattached`
 

@@ -78,7 +78,7 @@ export function parseArgs(argv, config = {}) {
       if (valueOptions.has(key)) {
         const nextValue = inlineValue ?? argv[index + 1];
         if (nextValue === undefined || (repeatableOptions.has(key) && nextValue.startsWith("-")) ||
-            (config.rejectUnknown && inlineValue === undefined && nextValue === "--")) {
+            ((config.rejectUnknown || config.rejectSeparatorValues) && inlineValue === undefined && nextValue === "--")) {
           throw new Error(`Missing value for --${rawKey}`);
         }
         if (repeatableOptions.has(key)) (options[key] ??= []).push(nextValue);
@@ -103,7 +103,7 @@ export function parseArgs(argv, config = {}) {
 
     if (valueOptions.has(key)) {
       const nextValue = argv[index + 1];
-      if (nextValue === undefined || (config.rejectUnknown && nextValue === "--")) {
+      if (nextValue === undefined || ((config.rejectUnknown || config.rejectSeparatorValues) && nextValue === "--")) {
         throw new Error(`Missing value for -${shortKey}`);
       }
       if (repeatableOptions.has(key)) (options[key] ??= []).push(nextValue);
@@ -118,13 +118,22 @@ export function parseArgs(argv, config = {}) {
   return { options, positionals };
 }
 
-export function splitRawArgumentString(raw) {
+export function splitRawArgumentString(raw, options = {}) {
   const tokens = [];
   let current = "";
   let quote = null;
   let escaping = false;
 
-  for (const character of raw) {
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (options.literalAfterSeparator && !quote && !escaping && !current &&
+        raw.slice(index, index + 2) === "--" && (index === 0 || /\s/.test(raw[index - 1])) &&
+        (index + 2 === raw.length || /\s/.test(raw[index + 2]))) {
+      tokens.push("--");
+      const focus = raw.slice(index + 2).trim();
+      if (focus) tokens.push(focus);
+      return tokens;
+    }
     if (escaping) {
       current += character;
       escaping = false;
@@ -169,6 +178,87 @@ export function splitRawArgumentString(raw) {
     tokens.push(current);
   }
 
+  return tokens;
+}
+
+// Read only an option or its value. Offsets let the first focus token and its
+// entire tail remain raw, including unmatched quotes and ordinary apostrophes.
+function readRawOptionToken(raw, offset) {
+  while (/\s/.test(raw[offset] ?? "") && offset < raw.length) offset += 1;
+  const start = offset;
+  let value = "", quote = null, escaping = false;
+  for (; offset < raw.length; offset += 1) {
+    const character = raw[offset];
+    if (escaping) { value += character; escaping = false; }
+    else if (character === "\\") escaping = true;
+    else if (quote) {
+      if (character === quote) quote = null;
+      else value += character;
+    } else if (character === "'" || character === '"') quote = character;
+    else if (/\s/.test(character)) break;
+    else value += character;
+  }
+  if (escaping) value += "\\";
+  return start < raw.length ? { start, end: offset, value } : null;
+}
+
+function rawSeparatorOffset(raw) {
+  let quote = null, escaping = false, tokenStart = true;
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (escaping) { escaping = false; continue; }
+    if (character === "\\") { escaping = true; tokenStart = false; continue; }
+    if (quote) { if (character === quote) quote = null; continue; }
+    if (character === "'" || character === '"') { quote = character; tokenStart = false; continue; }
+    if (/\s/.test(character)) { tokenStart = true; continue; }
+    if (tokenStart && raw.slice(index, index + 2) === "--" &&
+        (index + 2 === raw.length || /\s/.test(raw[index + 2]))) return index;
+    tokenStart = false;
+  }
+  return -1;
+}
+
+export function splitReviewArgumentString(raw, config = {}) {
+  const separator = rawSeparatorOffset(raw);
+  if (separator >= 0) {
+    // Explicit separators retain the existing literal-tail contract, including
+    // literal trailing --wait/--background/--json in the focus.
+    return [...splitRawArgumentString(raw.slice(0, separator)), "--", raw.slice(separator + 2).trim()];
+  }
+
+  const valueOptions = new Set(config.valueOptions ?? []);
+  const booleanOptions = new Set(config.booleanOptions ?? []);
+  const aliases = config.aliasMap ?? {};
+  const tokens = [];
+  let offset = 0;
+  while (offset < raw.length) {
+    const token = readRawOptionToken(raw, offset);
+    if (!token) break;
+    const isOption = token.value.startsWith("-") && token.value !== "-";
+    const rawKey = token.value.startsWith("--") ? token.value.slice(2).split("=", 1)[0] : token.value.slice(1);
+    const key = aliases[rawKey] ?? rawKey;
+    const takesValue = isOption && valueOptions.has(key);
+    if (!takesValue && !(isOption && booleanOptions.has(key)) && !["--help", "-h"].includes(token.value)) {
+      // Preserve the existing unknown-option/typo diagnostic, but only while
+      // still in option position. Nothing in the focus is parsed as an option.
+      if (isOption) parseArgs([token.value], config);
+      let focus = raw.slice(token.start).trim();
+      const trailing = [];
+      for (let match; (match = /(?:^|\s)(--wait|--background|--json)$/.exec(focus));) {
+        trailing.unshift(match[1]);
+        focus = focus.slice(0, match.index).trimEnd();
+      }
+      return [...tokens, ...trailing, "--", focus];
+    }
+    tokens.push(token.value);
+    offset = token.end;
+    if (takesValue && !(token.value.startsWith("--") && token.value.includes("="))) {
+      const value = readRawOptionToken(raw, offset);
+      if (!value) break; // parseArgs supplies the existing missing-value error.
+      tokens.push(value.value);
+      offset = value.end;
+    }
+  }
   return tokens;
 }
 

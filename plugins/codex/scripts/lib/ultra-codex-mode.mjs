@@ -2,14 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { resolveStateDir } from "./state.mjs";
+import { resolveStateRoot } from "./state.mjs";
 
 // Ultra-codex mode is a per-Claude-session switch, like `/effort ultracode`:
 // while it is on, a UserPromptSubmit hook adds a one-line reminder to every
 // prompt and Claude applies the orchestration protocol to each substantive
-// task. The switch is a small JSON file in the workspace's state directory,
-// keyed by the Claude session id, so two sessions in one repository do not
-// share it; SessionEnd and `ultra-codex off` remove it.
+// task. The switch is keyed only by the Claude session id, next to workspace
+// state, so one session shares it across repositories while separate sessions
+// do not share it; SessionEnd and `ultra-codex off` remove it.
 export const PROTOCOL_PATH = fileURLToPath(new URL("../../prompts/ultra-codex-protocol.md", import.meta.url));
 export const ULTRA_SCALES = ["auto", "quick", "thorough"];
 export const DEFAULT_MAX_WORKERS = 6;
@@ -17,15 +17,34 @@ const MODE_DIR = "ultra-codex";
 const SESSION_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 const COMMAND_PROMPT = /^\s*\/(?:codex:)?ultra-codex\b/;
 
-function modeDir(cwd, env) { return path.join(resolveStateDir(cwd, env), MODE_DIR); }
+function modeDir(env) { return path.join(path.dirname(resolveStateRoot(env)), MODE_DIR); }
+function realDirectory(directory) {
+  try { return fs.lstatSync(directory).isDirectory() && fs.realpathSync(directory) === directory; } catch { return false; }
+}
+function legacyModeDirs(env) {
+  const root = resolveStateRoot(env);
+  if (!realDirectory(root)) return [];
+  try {
+    return fs.readdirSync(root, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && /^.+-[a-f0-9]{16}$/.test(entry.name))
+      .map(entry => path.join(root, entry.name, MODE_DIR))
+      .filter(realDirectory);
+  } catch { return []; }
+}
+function clearLegacyModes(sessionId, env) {
+  for (const directory of legacyModeDirs(env)) {
+    const file = path.join(directory, `${sessionId}.json`);
+    try { if (fs.lstatSync(file).isFile()) fs.unlinkSync(file); } catch { /* best effort; never read legacy mode */ }
+  }
+}
 export function modeFile(cwd, sessionId, env = process.env) {
   if (typeof sessionId !== "string" || !SESSION_ID.test(sessionId)) throw new Error("Ultra-codex mode needs the Claude session id (CODEX_COMPANION_SESSION_ID, exported by the SessionStart hook); run this inside Claude Code.");
-  return path.join(modeDir(cwd, env), `${sessionId}.json`);
+  return path.join(modeDir(env), `${sessionId}.json`);
 }
 
 export function readMode(cwd, sessionId, env = process.env) {
   let file;
-  try { file = modeFile(cwd, sessionId, env); } catch { return null; }
+  try { file = modeFile(cwd, sessionId, env); clearLegacyModes(sessionId, env); } catch { return null; }
   try {
     const value = JSON.parse(fs.readFileSync(file, "utf8"));
     if (!value || typeof value !== "object" || !ULTRA_SCALES.includes(value.scale)) return null;
@@ -48,20 +67,27 @@ export function setMode(cwd, sessionId, { scale = "auto", maxWorkers = DEFAULT_M
 
 export function clearMode(cwd, sessionId, env = process.env) {
   let file;
-  try { file = modeFile(cwd, sessionId, env); } catch { return false; }
+  try { file = modeFile(cwd, sessionId, env); clearLegacyModes(sessionId, env); } catch { return false; }
   try { fs.rmSync(file); return true; } catch { return false; }
 }
 
 // Mode files outlive a session only when SessionEnd never ran (crash, kill);
 // SessionStart removes stale ones so a reused session id cannot inherit a mode.
 export function pruneModes(cwd, maxAgeMs = 30 * 24 * 60 * 60 * 1000, env = process.env) {
-  const dir = modeDir(cwd, env);
-  let names;
-  try { names = fs.readdirSync(dir); } catch { return 0; }
   let removed = 0;
-  for (const name of names) {
-    const file = path.join(dir, name);
-    try { if (Date.now() - fs.statSync(file).mtimeMs > maxAgeMs) { fs.rmSync(file); removed += 1; } } catch { /* already gone */ }
+  // Include untouched legacy sessions, even if their workspace is no longer
+  // used. This keeps the existing 30-day SessionStart policy for mode records.
+  for (const dir of [modeDir(env), ...legacyModeDirs(env)].filter(realDirectory)) {
+    let names;
+    try { names = fs.readdirSync(dir); } catch { continue; }
+    for (const name of names) {
+      if (!name.endsWith(".json") || !SESSION_ID.test(name.slice(0, -5))) continue;
+      const file = path.join(dir, name);
+      try {
+        const stat = fs.lstatSync(file);
+        if (stat.isFile() && Date.now() - stat.mtimeMs > maxAgeMs) { fs.unlinkSync(file); removed += 1; }
+      } catch { /* already gone */ }
+    }
   }
   return removed;
 }

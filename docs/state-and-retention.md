@@ -13,11 +13,15 @@ plugin's settings file:
 ~/.claude/codex-isolated/duet/state/<workspace>/state.json # per-workspace job index
 ~/.claude/codex-isolated/duet/state/<workspace>/jobs/      # <id>.json, .log, .output.txt, .result.json
 ~/.claude/codex-isolated/duet/state/<workspace>/broker.json
+~/.claude/codex-isolated/duet/ultra-codex/<session-id>.json       # session mode, shared across workspaces
 ```
 
-`<workspace>` is a slug plus hash of the workspace root. Directories are created
-`0700` and job/result JSON files `0600`; log files and `broker.json` follow the
-process umask. The location depends only on the isolated home
+`<workspace>` is a trimmed ASCII basename slug plus the first 16 lowercase
+SHA-256 hex digits of the canonical workspace root. The inert-workspace
+exemption below also requires a recognized artifact layout; placement beneath
+`duet/state` alone does not prove ownership. Directories are created `0700` and
+job/result JSON files `0600`; log files and `broker.json` follow the process
+umask. The location depends only on the isolated home
 (`CODEX_COMPANION_HOME` or `~/.claude/codex-isolated`), so a terminal, a Claude
 session and the SessionEnd hook read and write the same records;
 `CLAUDE_PLUGIN_DATA` is no longer involved.
@@ -44,7 +48,7 @@ once, under the new directory's state lock:
   ID that is unknown to the new directory look in the legacy directories and
   import the match, so a job an older session writes after the merge is found.
 
-Record format, owner/lease semantics and command output fields are unchanged.
+Migration preserves existing record fields and owner/lease semantics.
 Once no older release runs anymore, remove a legacy directory by hand only when
 the artifacts its migrated records reference are no longer needed.
 
@@ -55,6 +59,13 @@ records after checking file identity, timestamps and size. The newest-started
 thread anchors and unresolved-turn protections below still apply. Mapping an
 already recorded non-Git workspace root to its state directory needs no Git
 process, including when the root is a symlink with no Git boundary at its real path.
+
+Each job keeps its newest 500 activity events, independently of job-record age
+retention. `activityTotals.events` and `activityTotals.toolUses` count all appended
+activity; legacy jobs seed them once from retained events. Up to 100 hashed
+pending tool identities support start/completion pairing; eviction can overcount
+a later matching completion. The pane and `/codex:status` show retained events
+only. See [activity limits](worker-lifecycle.md#fallback-and-compatibility-feed-mode).
 
 ## Retention
 
@@ -74,7 +85,9 @@ and, for settings inheritance, the newest ended job that started a turn on each
 of the 200 most recent threads (a newer refused or never-started attempt does not
 replace it). Those 200 thread anchors are protected from count pruning only:
 otherwise eligible ended anchors still expire with the age window. Status
-listings show the 50 newest ended jobs plus active/unresolved jobs. Threads
+listings apply the 50-ended-job cap after session filtering, then the smaller
+default display limit; `--all` removes that smaller limit. `historyOmitted` counts
+retained jobs hidden in the selected scope, not deleted records. Threads
 use rollout last-activity time and are deleted through Codex's `thread/delete`
 API, keeping its indexes consistent; unavailable deletion is reported and skipped.
 Jobs with legacy artifact paths are kept and listed under `retained`, separately
@@ -86,7 +99,50 @@ overrides the period for that command. Nothing is removed immediately on job
 completion, so results, continuations and pane history remain available during
 the retention period (subject to the count cap).
 
+Retention and thread recovery share a read-only classifier for workspaces
+without `state.json`. Readable index-less directories with no private job files
+are exempt from blocking either inventory and are not listed as inert, even
+if they contain other files. Private job filenames are `jobs/<id>.json`, where
+`<id>` contains only letters, digits, `_` or `-`; `.result.json` files do not
+count. Unreadable or unsafe directories still prevent a complete inventory.
+
+For an index-less directory with private job files, the name must match Duet's
+workspace-key form and every entry must fit its artifact layout. Recognized
+entries include job `.json`, `.log`, `.output.txt` and `.result.json` files,
+migration metadata, journal streams/briefs/reports and lock owner markers.
+Identified jobs must be settled with status `completed`, `failed`, `cancelled`
+or `interrupted`; unparsable artifacts and parsed files without a job ID
+(including `{}`) are inert only within that proven layout. Live PIDs, a broker
+pointer, attached owners, unresolved or nonterminal/unknown jobs, pending
+migrations, open/unreadable journals and recent activity prevent the exemption.
+Unknown names/content, wrong entry types or symlinks yield `unknown-content`;
+recognized temporary writes or outstanding lock candidates yield `pending-write`,
+even when old. These job-bearing directories remain in place with a reason and
+continue blocking inventory completeness.
+
+All file/directory mtimes must be older than the relevant minimum age: retention
+uses its configured cutoff (including `--days`), while recovery inventory uses
+24 hours (`INERT_INDEXLESS_MIN_AGE_MS`). A two-day-old workspace can therefore
+stop blocking recovery while still blocking cleanup under a 30-day policy.
+The classifier rechecks observed file/directory identities and timestamps;
+changes during inspection prevent the exemption. Apply rechecks inert candidates,
+and thread deletion rechecks the reference inventory. Valid terminal records
+remain readable for turn attribution. Proven-inert leftovers no longer keep
+the inventory incomplete, so unrelated thread cleanup can proceed in the same
+plan when no other directory or error blocks it.
+
+Classification acquires no state lock and moves or deletes nothing. Both
+dry-run and apply JSON return `inertWorkspaces: [{ workspace, bytes }]` and
+`workspacesRetained` with reasons for non-inert job-bearing trees. Text output
+lists inert workspaces with a shell-quoted manual `rm -r` hint, valid only while
+the workspace remains inactive. Classification adds nothing to `jobsDeleted`
+or `bytesFreed`; the listed bytes do not contribute to deletion totals through
+this classification. Automatic cleanup uses the same classification.
+Independent [per-run retention](run-journal.md#recovery-retention-and-limits)
+is unchanged and can still prune an eligible run in an index-less workspace.
+
 Retention reuses parsed private records for one plan/apply cycle, including
 locked revalidation and thread-reference checks. Each reuse checks file identity,
 timestamps and size; changed records are reread, and the cache is released after
-apply. Cleanup still rechecks eligibility under the state lock before deletion.
+apply. Deleting jobs from indexed workspaces still rechecks eligibility under
+the state lock.
