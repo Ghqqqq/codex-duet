@@ -410,6 +410,16 @@ async function handleLine(line) {
         break;
 
       case "thread/read": {
+        if (BEHAVIOR.startsWith("inferred-final:") && state.finalOnlyEmitted && !state.allowInterrupt) {
+          const mode = state.confirmationMode || BEHAVIOR.slice("inferred-final:".length);
+          if (mode === "unreadable") throw new Error("Fixture turn unavailable");
+          if (mode === "hang") break;
+          if (["completed", "failed"].includes(mode)) {
+            const turn = ensureThread(state, message.params.threadId).turns.at(-1);
+            Object.assign(turn, { status: mode, completedAt: now(), error: mode === "failed" ? { message: "Fixture turn failed" } : null });
+            saveState(state);
+          }
+        }
         if (BEHAVIOR.startsWith("lost-turn:")) {
           state.turnReads = [...(state.turnReads || []), message.params];
           saveState(state);
@@ -635,6 +645,17 @@ async function handleLine(line) {
 
         if (BEHAVIOR === "large-jsonl") {
           emitTurnCompleted(thread.id, turnId, { completed: { type: "agentMessage", id: "large-message", text: prompt, phase: "final_answer" } });
+          break;
+        }
+
+        if (BEHAVIOR.startsWith("inferred-final:") && !state.finalOnlyEmitted) {
+          state.finalOnlyEmitted = true;
+          saveState(state);
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          send({ method: "item/completed", params: { threadId: thread.id, turnId,
+            item: { type: "agentMessage", id: "inferred-final", phase: "final_answer", text: JSON.stringify({
+              status: "completed", summary: "Captured fixture answer", key_findings: [], assumptions: [], verification: [], blockers: [], question: null
+            }) } } });
           break;
         }
 
@@ -875,6 +896,8 @@ async function handleLine(line) {
               item: { type: "agentMessage", id: "progress_" + i, text: "Fixture progress " + i, phase: "commentary" } } });
             // Keep the exact-turn state. Owner-stop stays attached until Duet
             // disconnects; other lost-turn modes lose delivery immediately.
+            const exitGate = process.env.CODEX_FIXTURE_RUNTIME_EXIT_GATE;
+            if (exitGate) while (!fs.existsSync(exitGate)) await new Promise(resolve => setTimeout(resolve, 25));
             const saved = loadState();
             const persisted = ensureThread(saved, thread.id).turns.find(turn => turn.id === turnId);
             const status = BEHAVIOR === "lost-turn:owner-stop" ? "inProgress" : BEHAVIOR.slice("lost-turn:".length);
@@ -920,6 +943,10 @@ async function handleLine(line) {
           break;
         }
 	      case "turn/interrupt": {
+          if (BEHAVIOR.startsWith("inferred-final:") && state.allowInterrupt) {
+            const turn = ensureThread(state, message.params.threadId).turns.find(turn => turn.id === message.params.turnId);
+            if (turn?.status === "inProgress") Object.assign(turn, { status: "interrupted", completedAt: now() });
+          }
           if (BEHAVIOR.startsWith("lost-turn:")) {
             if (!loadedThreads.has(message.params.threadId)) throw new Error("thread not loaded");
             const turn = ensureThread(state, message.params.threadId).turns.find(turn => turn.id === message.params.turnId);

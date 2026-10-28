@@ -313,6 +313,9 @@ export function unresolvedTask(current) {
     return Boolean(current.turnId) && current.result.turnEnded === false && current.result.interruptionConfirmed !== true;
   }
   const result = current.result;
+  if (current.status === "completed" && result.inferredCompletion === true) {
+    return Boolean(current.turnId) && result.turnEnded === false;
+  }
   if (current.status !== "failed" || result.turnEnded || result.structured) return false;
   if (result.failureSource === "transport") return true;
   // Older wrappers stored only the transport's literal diagnostic. Worker

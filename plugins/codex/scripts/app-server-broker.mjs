@@ -72,6 +72,9 @@ async function main() {
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
   const activeTurns = new Map();
+  const abandonedRequests = new Set();
+  const abandonedGraceMs = process.env.CODEX_COMPANION_TEST_MODE === "1" && Number(process.env.CODEX_COMPANION_TEST_ABANDONED_TURN_GRACE_MS) > 0
+    ? Number(process.env.CODEX_COMPANION_TEST_ABANDONED_TURN_GRACE_MS) : 30 * 60 * 1000;
   const forwardedRequests = new Set();
   const pendingStreamStarts = new Set();
   let appClient;
@@ -96,7 +99,9 @@ async function main() {
     for (const signal of signals) process.off(signal, stopStarting);
   }
   const sockets = new Set();
-  const requests = new ServerRequestRelay({ send, respond: message => appClient.sendMessage(message), log: summary => logServerRequest(summary) });
+  const requests = new ServerRequestRelay({ send, respond: message => {
+    if (!appClient.closed && !appClient.exitResolved) appClient.sendMessage(message);
+  }, log: summary => logServerRequest(summary) });
   appClient.serverRequestHandler = message => {
     // All callbacks during a stream reach its job log, including unsupported
     // requests from child threads. The task policy checks exact thread/turn IDs.
@@ -118,9 +123,9 @@ async function main() {
   function clearSocketOwnership(socket) {
     requests.disconnect(socket);
     for (const [threadId, turn] of activeTurns) if (turn.owner === socket) {
-      void appClient.request("turn/interrupt", { threadId, turnId: turn.id }).catch(() => {});
-      // Lost owners cannot leave a still-running server behind indefinitely.
-      setTimeout(() => { if (activeTurns.get(threadId) === turn) void shutdown(server); }, 4000).unref();
+      turn.owner = null;
+      turn.abandonedAt ??= Date.now();
+      interruptAbandonedTurn(threadId, turn);
     }
     // A pending RPC retains its owner even after disconnect: its callbacks
     // must fail closed, never be reassigned to a later client. It no longer
@@ -128,6 +133,35 @@ async function main() {
     if (activeStreamSocket === socket) {
       activeStreamSocket = null;
       activeStreamThreadIds = null;
+    }
+  }
+
+  function recordAbandonedTurn(threadId, turn, outcome) {
+    // The broker's stderr is its existing private log. Never claim that an
+    // interrupt acknowledgement proves completion; only a notification does.
+    process.stderr.write(`${JSON.stringify({ event: "abandoned_turn", threadId, turnId: turn.id, outcome })}\n`);
+  }
+
+  function interruptAbandonedTurn(threadId, turn) {
+    if (turn.interruptPending || closing) return;
+    recordAbandonedTurn(threadId, turn, "interrupt_requested");
+    let pending;
+    try { pending = appClient.request("turn/interrupt", { threadId, turnId: turn.id }, { timeoutMs: 1000 }); }
+    catch { recordAbandonedTurn(threadId, turn, "unconfirmed"); return; }
+    turn.interruptPending = pending;
+    abandonedRequests.add(pending);
+    pending.then(() => {
+      if (activeTurns.get(threadId) === turn) recordAbandonedTurn(threadId, turn, "acknowledged");
+    }, () => recordAbandonedTurn(threadId, turn, "unconfirmed"))
+      .finally(() => { abandonedRequests.delete(pending); turn.interruptPending = null; });
+  }
+
+  function expireAbandonedTurns(now) {
+    for (const [threadId, turn] of activeTurns) {
+      if (turn.owner || turn.abandonedAt == null || turn.expired || now - turn.abandonedAt < abandonedGraceMs) continue;
+      turn.expired = true;
+      recordAbandonedTurn(threadId, turn, "expired");
+      interruptAbandonedTurn(threadId, turn);
     }
   }
 
@@ -139,6 +173,7 @@ async function main() {
         for (const completed of pendingStreamStarts) completed.add(JSON.stringify([threadId, turnId]));
       }
       const active = activeTurns.get(threadId);
+      if (active?.abandonedAt != null && active.id === turnId) recordAbandonedTurn(threadId, active, "completed");
       if (!active || !turnId || active.id === turnId) activeTurns.delete(threadId);
     }
     if (target) send(target, message);
@@ -152,26 +187,34 @@ async function main() {
   }
 
   let closing = false;
+  let shutdownPromise;
   let lastBusy = Date.now();
-  async function shutdown(server) {
-    if (closing) return;
+  function shutdown(server) {
+    if (shutdownPromise) return shutdownPromise;
     closing = true;
     clearInterval(idleTimer);
-    // Stop admission synchronously. Awaiting appClient.close() first leaves a
-    // window where initialize succeeds against an already closed app-server.
-    const listenerClosed = server.listening ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
-    for (const [threadId, turn] of activeTurns) void appClient.request("turn/interrupt", { threadId, turnId: turn.id }).catch(() => {});
-    for (const socket of sockets) {
-      requests.disconnect(socket); socket.destroy();
-    }
-    await appClient.close().catch(() => {});
-    await listenerClosed;
-    if (listenTarget.kind === "unix" && fs.existsSync(listenTarget.path)) {
-      fs.unlinkSync(listenTarget.path);
-    }
-    if (pidFile && fs.existsSync(pidFile)) {
-      fs.unlinkSync(pidFile);
-    }
+    shutdownPromise = (async () => {
+      // Stop admission synchronously. Awaiting appClient.close() first leaves a
+      // window where initialize succeeds against an already closed app-server.
+      const listenerClosed = server.listening ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
+      for (const [threadId, turn] of activeTurns) {
+        // request() throws synchronously when exitPromise initiated shutdown.
+        try { void appClient.request("turn/interrupt", { threadId, turnId: turn.id }).catch(() => {}); }
+        catch { /* The runtime already exited; continue closing sockets/files. */ }
+      }
+      for (const socket of sockets) {
+        requests.disconnect(socket); socket.destroy();
+      }
+      await appClient.close().catch(() => {});
+      await listenerClosed;
+      if (listenTarget.kind === "unix" && fs.existsSync(listenTarget.path)) {
+        fs.unlinkSync(listenTarget.path);
+      }
+      if (pidFile && fs.existsSync(pidFile)) {
+        fs.unlinkSync(pidFile);
+      }
+    })();
+    return shutdownPromise;
   }
 
   // A response and terminal notification may arrive in the same stdout chunk.
@@ -282,7 +325,7 @@ async function main() {
           if (!alreadyCompleted) {
             activeStreamSocket = socket;
             activeStreamThreadIds = streamThreadIds;
-            if (result.turn?.id) activeTurns.set(message.params.threadId, { id: result.turn.id, owner: socket });
+            if (result.turn?.id) activeTurns.set(result.reviewThreadId ?? message.params.threadId, { id: result.turn.id, owner: socket });
             if (socket.destroyed) clearSocketOwnership(socket);
           }
         }
@@ -316,8 +359,18 @@ async function main() {
   const idleTimer = setInterval(() => {
     // Forwarded requests from disconnected clients are abandoned. Keep their
     // ownership until settlement, but let idle shutdown reap a hung server.
-    const internalRequests = appClient.pending.size > forwardedRequests.size;
-    if (sockets.size || activeTurns.size || (activeRequestSocket && !activeRequestSocket.destroyed) || internalRequests) lastBusy = Date.now();
+    expireAbandonedTurns(Date.now());
+    // Preserve the existing prompt retirement after an unconfirmed owner-loss
+    // interrupt, but never terminate a broker with a connected peer. Recheck
+    // each tick so a peer that leaves later cannot strand the abandoned turn.
+    if (!sockets.size && activeTurns.size && [...activeTurns.values()].every(turn =>
+      !turn.owner && turn.abandonedAt != null && Date.now() - turn.abandonedAt >= 4000)) {
+      void shutdown(server);
+      return;
+    }
+    const internalRequests = appClient.pending.size > forwardedRequests.size + abandonedRequests.size;
+    const ownedOrSettlingTurns = [...activeTurns.values()].some(turn => !turn.expired);
+    if (sockets.size || ownedOrSettlingTurns || (activeRequestSocket && !activeRequestSocket.destroyed) || internalRequests) lastBusy = Date.now();
     else if (Date.now() - lastBusy >= idleMs) void shutdown(server);
   }, 250);
   for (const signal of signals) process.on(signal, () => { void shutdown(server); });

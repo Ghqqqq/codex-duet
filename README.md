@@ -84,6 +84,9 @@ diagnostics when a pinned runtime is broken; each probe is capped at 20 seconds
 and the remaining budget. These are safeguards, not expected startup times.
 Shutdown may add overhead; a Codex probe timeout is reported as unreachable,
 without suggesting another login.
+Setup also warns with `desktop_managed_codex_runtime` when the selected CLI is
+managed by a desktop app, even if it is ready. Desktop updates can stop running
+turns; the warning leaves the pin unchanged. Use a [stable CLI pin](docs/configuration.md#runtime-selection).
 
 > Installing needs no GitHub credentials.
 > Upgrading from `codex@codex-isolated-local`? Uninstall it, remove that
@@ -115,12 +118,13 @@ For a substantial task, hand the whole orchestration over:
 | `/codex:transfer` | Continue the current Claude conversation directly in Codex |
 | `/codex:setup` | Check the runtime; opt into browser/desktop tools and other settings |
 
-Claude prefers `codex:codex-native` once the native adapter has registered: the
-first accepted non-command person prompt reports native workers ready, and every
-request that offers the Agent tool carries a `codex:native-dispatch` system-prompt
-section, which survives compaction. Background `duet task` is the fallback for an
-unavailable adapter, per-call overrides the `DUET:` line rejects, and Bash-launched
-workers; browser and Computer Use work run natively. Continue by sending the native agent a message,
+Claude uses `codex:codex-native` by default from the first dispatch, without waiting
+for a readiness notice. SessionStart supplies that guidance, and the registered
+adapter adds a `codex:native-dispatch` system-prompt section to every request that
+offers the Agent tool, surviving compaction. Background `duet task` is the fallback
+for `native_adapter_unavailable`, `native_capacity`, per-call overrides the `DUET:`
+line rejects, and follow-ups to Bash-launched workers; browser and Computer Use work
+run natively. Continue by sending the native agent a message,
 or use `duet task --to <worker>` with a new brief. A pending question uses
 SendMessage for native agents. For Bash workers, use the report's `next` command
 verbatim, or `duet answer <worker> --question '<questionId>'` with the ID you saw
@@ -138,12 +142,17 @@ Every command and flag: [docs/commands.md](docs/commands.md).
 
 ### Call Codex like a native subagent
 
-Claude calls `Agent(subagent_type: "codex:codex-native", name: "reviewer", prompt: "<brief>")`.
+Claude calls `Agent(subagent_type: "codex:codex-native", prompt: "<brief>")`.
 An optional first line such as `DUET: --sandbox read-only --effort xhigh` sets
 Codex flags. SendMessage to that agent continues its thread or answers a pending
 question; stop an active task from `/tasks`. This requires the supported function
-hooks. If unavailable, the agent returns a blocked report; check `duet status`
-before retrying through Bash. → [Native dispatch](docs/direct-mode.md#native-subagent-preferred-when-available)
+hooks. If the hook does not handle the turn, the agent returns a blocked report;
+run `/reload-plugins`, check `duet status` before retrying and use background
+`duet task` if it persists. Each fresh native call gets a scientist pool name,
+replacing a passed label unless it is a free pool name. When a name is assigned
+or replaced, the Agent result carries a `Codex worker named X` note for Claude (tool-result
+context, also on background launches); use that name for SendMessage. Reservation failure leaves the call unchanged; resumptions
+keep their name. → [Native dispatch](docs/direct-mode.md#native-subagent-default)
 
 ### Direct mode: background workers
 
@@ -162,8 +171,12 @@ The report separates captured `checks.ran` from `checks.claimed`, and supplies
 settings, handles and artifact paths, including complete review findings.
 Busy-thread reports point to the owner's question or recovery action, while
 compact blockers retain the relevant app/tab/session or safe approval identifiers.
-Each worker gets a name (Ada, Noether, Turing, …) from a weighted pool of 1,089,
-reused by `--to` follow-ups. → [Direct mode and worker lifecycle](docs/direct-mode.md)
+Workers without a requested name get one (Ada, Noether, Turing, …) from a weighted
+pool of 1,089; `duet task --name <label>` requests a name for a fresh thread.
+Follow-ups reuse the name, and collisions fall back to the pool. The prefixes
+`task-`, `review-` and `job-` are reserved for job IDs.
+`task --cwd <repo>/sub` starts and resumes in that subdirectory while state remains
+at the repository root. → [Direct mode and worker lifecycle](docs/direct-mode.md)
 
 If a tracked job ends without an emitted report or live owner wait, the next
 typed prompt can give Claude one recovery line for up to five jobs, after a
@@ -172,7 +185,9 @@ Lookup failures leave the prompt unchanged. → [Notice limits](docs/worker-life
 
 Typed provider refusals, usage/session-budget limits, full context windows and
 missing runtime authorization produce actionable `blocked` reports (exit 2);
-other failed turns remain `failed` (exit 1). → [Runtime blockers](docs/worker-operations.md#direct-mode)
+a turn confirmed interrupted after transport loss also reports `blocked` with
+`codex_runtime_restarted` and a continuation, unless a recorded stop takes
+precedence. Other failed turns remain `failed` (exit 1). → [Runtime blockers](docs/worker-operations.md#direct-mode)
 
 Claude's loaded CLAUDE.md/rules are forwarded automatically; opt out on a fresh
 task with `--no-claude-md` or `CODEX_COMPANION_CLAUDE_MD=0`. Without the loaded
@@ -210,7 +225,18 @@ name ending in `-N` has a hint explaining name reuse after the session exhausted
 the pool. Hidden finished jobs still follow your Duet cleanup settings. Narrow panes retain
 navigation, discovery failures show a warning, and damaged pane caches are
 rediscovered without rewriting job records.
-`/tasks` shows compact progress with outcomes first. Neither costs Claude tokens.
+Windows drive and UNC job paths are supported, with `USERPROFILE` used when `HOME`
+is absent. A missing job is removed after two ENOENT observations at least five
+seconds apart only when the session inventory and jobs folder are readable and
+the folder no longer lists the file; a marker absent from a readable inventory
+also removes its entry. Transient failures keep the last good view.
+`/tasks` shows compact progress such as `Bash(npm test) · Done (21.1s)` and
+`Update(src/index.ts) · +3 −1`. Native agents also show live entries under their main
+transcript row and a turn log under each prompt in the agent view, plus a readable
+markdown report. The spinner shows `<worker> · running · <elapsed>`; a `DUET:`
+header shows supplied settings as `Codex · model · effort · speed · sandbox · folder`
+(plus `fork` when requested). These are display changes; the recorded report and
+hand-back stay unchanged, and command starts are live only. Neither view costs Claude tokens.
 
 <p align="center">
   <img src="docs/assets/codex-live-demo.png" alt="codex-live pane showing three Codex workers on a demo repository: one reviewing, one finished implementing compound durations with file updates and test runs, one finished investigating" width="88%">
@@ -238,6 +264,14 @@ Use `journal add withdraw` with exact criterion text and a reason when the user
 drops a requirement. For an unrelated task the user starts mid-run, `journal
 start --switch` leaves the old run open and selects a new one. `duet task --run
 <id|none>` overrides linkage for one dispatch; follow-ups do not inherit it.
+`journal use <runId>` selects an existing open run for the session. Without an
+active run, add, close and task linking use the sole open workspace run; with
+several open runs, tasks stay unlinked and add/close require selection. Verdict
+criteria accept exact declared text, a unique shown prefix ending in `…`, or a
+unique declared `K<n>` ID; unknown criteria are rejected. `resolves` can reference
+jobs linked to the run from any session.
+Validation flags a linked terminal job without a recorded finish as
+`unrecorded_finish`; reading its result details retries finish recording.
 → [docs/run-journal.md](docs/run-journal.md)
 
 ### Browser and desktop work

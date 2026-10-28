@@ -8,8 +8,9 @@ user-invocable: false
 
 Use this skill only inside the `codex:codex-rescue` subagent. Its restrictions apply to that wrapper. The parent Claude agent owns planning, parallel task assignments, integration, verification, and user-facing summaries. The self-contained `codex:codex-worker` agent uses its own instructions for fallback delegation and worker-specific follow-ups; do not load this rescue-only skill there.
 
-The parent prefers `Agent(subagent_type: "codex:codex-native")` when available,
-otherwise `duet task` in background Bash. Its report arrives with the completion
+The parent uses `Agent(subagent_type: "codex:codex-native")` by default from the first dispatch.
+Use background `duet task` only when the native agent returns `native_adapter_unavailable` or `native_capacity`, a per-call option is rejected by the `DUET:` line (`--run`, `--approve-browser-origin`, `--approve-computer-app`, `--lease-sec`, `--question-timeout-sec`), or following up a worker launched through Bash.
+Its Bash report arrives with the completion
 notification; only if missing, use `duet result <worker>`. Follow-ups use
 `duet task --to <worker>`; pending questions use the report's `next` command verbatim, or
 `duet answer <worker> --question '<questionId>'` with the displayed ID. A bare

@@ -210,7 +210,7 @@ test("setup reports not ready when app-server config read fails", () => {
 
 });
 
-test("review commands preserve stdin arguments and native terminal results", () => {
+test("slash commands preserve stdin arguments and review native terminal results", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir);
@@ -233,6 +233,56 @@ test("review commands preserve stdin arguments and native terminal results", () 
   assert.equal(payload.codex.status, 0);
   assert.equal(payload.turnEnded, true);
   assert.ok(payload.threadId);
+
+  const sourcePath = path.join(env.HOME, ".claude", "projects", "My Projects", "session.jsonl");
+  fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+  fs.writeFileSync(sourcePath, `${JSON.stringify({ type: "user", cwd: repo,
+    message: { role: "user", content: "Quoted source fixture" } })}\n`);
+  const stdinCall = (command, input, ...args) => run("node", [SCRIPT, command, ...args, "--args-stdin"], {
+    cwd: repo, env: { ...env, CODEX_COMPANION_TRANSCRIPT_PATH: sourcePath }, input
+  });
+  const transferred = stdinCall("transfer", `--source "${sourcePath}" --json`);
+  assert.equal(transferred.status, 0, transferred.stderr);
+  assert.equal(JSON.parse(transferred.stdout).sourcePath, fs.realpathSync(sourcePath));
+
+  const reviewId = /Job handle: ([^;]+);/.exec(result.stderr)[1];
+  const cancelId = "args-cancel", logFile = path.join(resolveStateDir(repo), "jobs", `${cancelId}.log`);
+  fs.writeFileSync(logFile, "");
+  const cancelJob = { id: cancelId, status: "running", jobClass: "review", workspaceRoot: repo,
+    updatedAt: new Date().toISOString(), logFile };
+  upsertJob(repo, cancelJob);
+  writeJobFile(repo, cancelId, cancelJob);
+  const shellMarkers = ["args-dollar", "args-backtick", "args-semicolon"].map(name => path.join(binDir, name));
+  const sessionLiteral = `$(touch ${shellMarkers[0]}) \`touch ${shellMarkers[1]}\`;touch ${shellMarkers[2]};$HOME`;
+  for (const [command, raw, expectedExit, check] of [
+    ["transfer", `--source "${sourcePath}" --json`, 0, value => assert.equal(value.sourcePath, fs.realpathSync(sourcePath))],
+    ["status", `"${reviewId}" --json --wait --timeout-ms 1`, 0, value => assert.equal(value.job.id, reviewId)],
+    ["result", `"${reviewId}" --details`, 0, value => assert.equal(value.jobId, reviewId)],
+    ["cancel", `"${cancelId}" --json`, 2, value => {
+      assert.equal(value.jobId, cancelId);
+      assert.equal(value.confirmation, "unconfirmed");
+    }]
+  ]) {
+    const template = fs.readFileSync(path.join(PLUGIN_ROOT, "commands", `${command}.md`), "utf8")
+      .match(/```bash\n([\s\S]*?)\n```/)[1];
+    const shell = template.replaceAll("${CLAUDE_PLUGIN_ROOT}", PLUGIN_ROOT)
+      .replaceAll("$ARGUMENTS", `${raw} --cwd "${repo}" --session '${sessionLiteral}'`);
+    const response = run("bash", ["-c", shell], { cwd: repo, env });
+    assert.equal(response.status, expectedExit, response.stderr);
+    check(JSON.parse(response.stdout));
+    assert.deepEqual(shellMarkers.map(marker => fs.existsSync(marker)), [false, false, false]);
+    // Empty stdin contributes no tokens, including when CLI flags/targets remain.
+    const empty = stdinCall(command, "", ...(command === "transfer" ? ["--json"]
+      : command === "status" ? [reviewId, "--json"]
+      : command === "result" ? [reviewId, "--details"] : [cancelId, "--json"]));
+    assert.equal(empty.status, expectedExit, empty.stderr);
+    check(JSON.parse(empty.stdout));
+    const runtimeState = path.join(binDir, "fake-codex-state.json");
+    const beforeHelp = fs.readFileSync(runtimeState, "utf8");
+    const help = stdinCall(command, "--not-a-flag --help");
+    assert.equal(help.status, 0, help.stderr);
+    assert.equal(fs.readFileSync(runtimeState, "utf8"), beforeHelp);
+  }
 
   const marker = path.join(binDir, "focus-executed");
   const literal = `reject --focus-on-races but allow --focus-on-errors; $(touch ${marker}) \`touch ${marker}\` $HOME`;

@@ -107,8 +107,11 @@ smaller model. It supports `--background`, `--wait`, `--resume` and `--fresh`.
 
 If you do not pass `--model` or `--effort`, delegated tasks use `gpt-6-astra` and `xhigh`.
 If you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`. For planned,
-parallel work Claude prefers `codex:codex-native`, then background `duet task`,
-with `codex:codex-worker` as the Haiku fallback. See [direct mode](direct-mode.md).
+parallel work Claude uses `codex:codex-native` from the first dispatch, without
+waiting for readiness. Background `duet task` is for `native_adapter_unavailable`,
+`native_capacity`, per-call options the `DUET:` line rejects, or follow-ups to
+Bash-launched workers; `codex:codex-worker` is the Haiku fallback when neither
+path is available. See [direct mode](direct-mode.md).
 
 ### `/codex:ultra-codex`
 
@@ -185,11 +188,30 @@ without starting another turn.
 
 Interrupts an active job and reports whether termination was confirmed.
 
+Transfer, status, result and cancel pass raw `$ARGUMENTS` unchanged through
+`--args-stdin` and a single-quoted heredoc, just as the review recipes do. The
+companion tokenizes all arguments for these four commands; it does not use the
+reviews' literal-focus rules. Quoted paths with spaces work, and `$()`, backticks
+and dollar signs are not expanded by the shell. For example:
+
+```bash
+/codex:status --cwd '/work/my repo/sub' --all
+/codex:result Ada --cwd '/work/my repo/sub' --details
+```
+
+Direct companion calls can use `duet status --args-stdin <<'DUET_ARGS'` with the
+same raw arguments on stdin; choose another delimiter if a line equals `DUET_ARGS`.
+
 ### `/codex:setup`
 
 Checks whether Codex is installed, reachable and logged in. If Codex is missing
 and npm is available, it can offer to install Codex for you. It also runs the
 configuration actions described under [Configuration](configuration.md).
+For a desktop-managed CLI, setup includes `codex.warning` with code
+`desktop_managed_codex_runtime` and a message, also shown in human next steps.
+The warning can appear while `ready` is true and never changes the selected pin.
+See [runtime selection](configuration.md#runtime-selection) for the managed paths
+and how to pin a stable CLI.
 Setup uses a 45-second readiness deadline (`SETUP_READINESS_TIMEOUT_MS`).
 Node/npm version checks cap at 10 seconds each (`TOOL_VERSION_TIMEOUT_MS`);
 Codex version/help probes at 20 seconds each (`EXECUTABLE_PROBE_TIMEOUT_MS`),
@@ -232,6 +254,8 @@ SessionStart supplies the session ID; `--session <id>` overrides it.
 | Command | Use |
 | --- | --- |
 | `duet task` | Fresh assignment; brief only on stdin; implies `--direct` |
+| `duet task --name <label>` | Request a name on a fresh thread; collisions fall back to the pool; follow-ups retain their name |
+| `duet task --cwd <repo>/sub` | Start or resume the Codex thread in that subdirectory; broker/job state remains at the repository root |
 | `duet task --run <id\|none>` | Override journal linkage for this dispatch only; select an open run across workspaces or skip linking with `none`; follow-ups do not inherit it |
 | `duet task --to <worker>` | New turn on that worker's thread/cwd, inheriting recorded settings unless overridden |
 | `duet task --fork` | Import the current Claude transcript into a new thread, then run the stdin brief; fidelity not verified |
@@ -243,10 +267,24 @@ SessionStart supplies the session ID; `--session <id>` overrides it.
 | `duet cancel <worker>` | Cancel and report whether interruption was confirmed |
 | `duet setup` | Runtime readiness and configuration |
 | `duet cleanup --dry-run --json` / `duet cleanup --json` | Preview/apply retention with read-only inert workspace reporting; text output includes manual removal hints; `--days N` overrides the period |
-| `duet journal <start\|add\|validate\|close\|show\|list>` | Criteria (including `add withdraw`), verdicts and decisions; `start --switch` selects a new run while leaving the old one open |
+| `duet journal <start\|use\|add\|validate\|close\|show\|list>` | Criteria (including `add withdraw`), verdicts and decisions; `start --switch` selects a new run while leaving the old one open; `use <runId>` selects an existing open run for the session |
+
+Without an active run, journal add/close and task linking use the sole open run
+in the current workspace. Several open runs leave tasks unlinked and require
+`journal use <runId>` or `--run <id>` for add/close. See [run journal](run-journal.md)
+for verdict criterion matching and cross-session `resolves`.
 
 Worker names are reserved within a Claude session, including on adoption and
-cross-session `--thread` follow-ups; collisions receive a different name. For
+cross-session `--thread` follow-ups; collisions receive a different name. Every
+fresh native Agent call reserves a scientist pool name before spawn through the
+internal `reserve-name` handshake, replacing a passed label unless it is a free
+pool name. An assigned or replaced name adds a `Codex worker named X` note to the
+Agent result's context (also on background launches); a preserved free pool name adds no note. Reservation
+failure leaves the Agent call unchanged, and resumptions keep their name.
+Public `--name` accepts 1–64 ASCII
+letters, digits, `_`, `.` or `-`, starting with a letter or digit. Names beginning
+`task-`, `review-` or `job-` are refused case-insensitively because those prefixes
+identify jobs; internal native naming ignores such names and uses the pool. For
 1.3-era duplicates, command-state preference applies first, then the caller's
 workspace breaks the tie; unresolved ambiguity requires an exact ID. Worker
 commands also accept job IDs; use a job ID for an older turn. When a name matches several jobs, `answer`

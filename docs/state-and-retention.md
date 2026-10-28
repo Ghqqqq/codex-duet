@@ -76,9 +76,27 @@ hours. It follows `cleanupPeriodDays` in `${CLAUDE_CONFIG_DIR:-~/.claude}/settin
 are clamped to one day and reported. Age cleanup protects running/queued jobs,
 attached owners, live worker PIDs and unresolved turns (a lost or unconfirmed
 turn that may still run on the server). Dead orphan records whose outcome is
-still unresolved remain protected. Expired dead orphan files that are not
-unresolved can be cleaned even if their saved status is stale; stale running
+still unresolved remain protected until reconciliation proves the turn ended.
+Expired dead orphan files that are not unresolved can be cleaned even if their
+saved status is stale; stale running
 index entries without private records are removed when not unresolved.
+
+Every detached session-start prewarm also runs stale-job maintenance, independently
+of the 12-hour age-cleanup interval, under the same retention lock. A pass has a
+five-second budget and at most five exact-turn recovery attempts. Candidates must
+be nonactive unresolved tasks with recorded thread and turn IDs, no attached owner
+or live worker/launcher PID, and all recorded activity older than 30 minutes or
+the lease plus one minute, whichever is longer. A recorded lease must also have
+expired at least a minute earlier. Only terminal server evidence is reconciled;
+unavailable or still-running turns remain unchanged. Missing handles, locked or
+incomplete state and pending migrations are skipped. Recovery never starts a turn.
+
+The pass scans at most 100 session marker files, using a persisted cursor across
+all session folders so retained markers do not starve later folders. It removes
+an orphan only when the marker points to its expected owned job path, the state
+and jobs directories are readable, the job file is absent and no state lock is
+present. Ordinary retention also removes markers for jobs it deletes, even when
+those markers are newer than the age cutoff.
 
 Count pruning separately keeps active/unresolved jobs, the 50 newest ended jobs
 and, for settings inheritance, the newest ended job that started a turn on each
@@ -97,7 +115,8 @@ Preview with `duet cleanup --dry-run --json`; apply with
 `duet cleanup --json`. Both ignore the 12-hour limit; `--days N`
 overrides the period for that command. Nothing is removed immediately on job
 completion, so results, continuations and pane history remain available during
-the retention period (subject to the count cap).
+the retention period (subject to the count cap). The orphan-marker maintenance
+above is separate from this age-based preview/apply cycle.
 
 Retention and thread recovery share a read-only classifier for workspaces
 without `state.json`. Readable index-less directories with no private job files
@@ -146,3 +165,23 @@ locked revalidation and thread-reference checks. Each reuse checks file identity
 timestamps and size; changed records are reread, and the cache is released after
 apply. Deleting jobs from indexed workspaces still rechecks eligibility under
 the state lock.
+
+## Native adapter store
+
+Native agent bindings use the hook store separately from companion job history.
+Admission fits within 128 binding records and a conservative 2 MiB serialized-size
+budget. Finished history occupies spare slots and is evicted oldest-first when
+space is needed; it no longer blocks admission merely by reaching 128 records.
+Active turns and pending questions remain protected. Unconfirmed cancellations
+are protected from pressure eviction until the turn is proven ended (a closed
+turn or confirmed cancellation), or the existing seven-day age expiry is reached.
+
+Timestamped spawn guards protect bindings awaiting their start for ten minutes.
+Legacy never-started bindings get ten minutes from first observation, then yield
+under pressure after finished history. A brief over 65,536 characters is rejected
+as `native_message_too_large` before eviction. Every admission refusal clears its
+spawn guard. If protected records or the byte budget still prevent admission,
+`native_capacity` launches nothing; wait for active workers, stop them if intended,
+or use background `duet task`. A follow-up whose binding was evicted returns
+`native_binding_gone`; start a new native agent. These limits do not delete the
+companion's job results, which follow the retention rules above.

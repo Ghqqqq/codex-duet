@@ -9,6 +9,7 @@ import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mj
 import { spawnBrokerProcess, waitForBrokerEndpoint, sendBrokerShutdown } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { resolveCodexRuntimeIdentity, resolveIsolatedCodexHome } from "../plugins/codex/scripts/lib/codex-home.mjs";
 import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
+import { spawnOwned } from "../plugins/codex/scripts/lib/process.mjs";
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === "ESRCH") return false; throw error; } };
@@ -54,6 +55,7 @@ test("broker shutdown stops admitting clients before awaiting app-server cleanup
   assert.equal(Number(fs.readFileSync(path.join(f.dir, "broker.pid"), "utf8").trim()), child.pid);
   const shutdown = sendBrokerShutdown(f.endpoint);
   await until(() => fs.existsSync(marker));
+  process.kill(child.pid, "SIGTERM"); // A second shutdown shares the pending cleanup.
   const admitted = await new Promise(resolve => {
     const socket = net.createConnection(f.socketPath);
     socket.once("connect", () => { socket.destroy(); resolve(true); });
@@ -62,6 +64,80 @@ test("broker shutdown stops admitting clients before awaiting app-server cleanup
   await shutdown;
   await until(() => !alive(child.pid));
   assert.equal(admitted, false, "A stopping broker must not handshake against its closed app-server");
+
+  // The runtime exits after accepting a turn, without delivering completion.
+  // Shutdown must finish even though its interrupt request now throws at call time.
+  const lost = fixture("lost-turn:interrupted"), pidFile = path.join(lost.dir, "broker.pid");
+  const broker = spawnOwned(process.execPath, [new URL("../plugins/codex/scripts/app-server-broker.mjs", import.meta.url).pathname,
+    "serve", "--endpoint", lost.endpoint, "--pid-file", pidFile], { cwd: lost.dir, env: lost.env, stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  broker.stderr.on("data", data => { stderr += data; });
+  const exited = new Promise(resolve => broker.once("close", (code, signal) => resolve({ code, signal })));
+  t.after(() => { if (broker.exitCode === null && broker.signalCode === null) broker.kill("SIGTERM"); });
+  assert.equal(await waitForBrokerEndpoint(lost.endpoint, 10000), true);
+  const client = await CodexAppServerClient.connect(lost.dir, { env: lost.env, brokerEndpoint: lost.endpoint });
+  t.after(() => client.close());
+  const { thread } = await client.request("thread/start", { cwd: lost.dir });
+  await client.request("turn/start", { threadId: thread.id, input: [] });
+  await client.exitPromise;
+  assert.deepEqual(await exited, { code: 0, signal: null }, stderr);
+  assert.equal(fs.existsSync(pidFile), false);
+  assert.equal(fs.existsSync(lost.socketPath), false);
+  const state = JSON.parse(fs.readFileSync(path.join(lost.dir, "fake-codex-state.json")));
+  assert.equal(state.threads[0].turns[0].status, "interrupted");
+  assert.equal(state.lastInterrupt, null);
+});
+
+test("abandoned turns expire without interrupting connected owners or stopping live peers", { timeout: 30000 }, async t => {
+  if (!await requireLocalSockets(t)) return;
+  const start = async (hangInterrupt = false, review = false) => {
+    const f = fixture(review ? "review-ok" : "interruptible-slow-task");
+    f.env.CODEX_COMPANION_TEST_ABANDONED_TURN_GRACE_MS = "250";
+    f.env.CODEX_COMPANION_BROKER_IDLE_SEC = "1";
+    if (hangInterrupt) {
+      const executable = path.join(f.dir, "codex"), source = fs.readFileSync(executable, "utf8");
+      fs.writeFileSync(executable, source.replace('case "turn/interrupt": {', 'case "turn/interrupt": { state.lastInterrupt = message.params; saveState(state); return;'));
+    }
+    const logFile = path.join(f.dir, "broker.log");
+    const child = spawnBrokerProcess({ scriptPath: new URL("../plugins/codex/scripts/app-server-broker.mjs", import.meta.url).pathname,
+      cwd: f.dir, endpoint: f.endpoint, pidFile: path.join(f.dir, "broker.pid"), logFile, env: f.env });
+    t.after(() => { try { process.kill(child.pid, "SIGTERM"); } catch {} });
+    assert.equal(await waitForBrokerEndpoint(f.endpoint, 10000), true);
+    const owner = await CodexAppServerClient.connect(f.dir, { env: f.env, brokerEndpoint: f.endpoint });
+    t.after(() => owner.close());
+    const { thread } = await owner.request("thread/start", { cwd: f.dir });
+    const completed = new Promise(resolve => owner.setNotificationHandler(message => { if (message.method === "turn/completed") resolve(); }));
+    const { turn } = await owner.request(review ? "review/start" : "turn/start", { threadId: thread.id, input: [], ...(review ? { delivery: "detached", target: { type: "uncommittedChanges" } } : {}) });
+    if (review) await completed;
+    const state = () => JSON.parse(fs.readFileSync(path.join(f.dir, "fake-codex-state.json")));
+    const serverPid = state().launches.at(-1).pid;
+    const events = () => fs.readFileSync(logFile, "utf8").split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line));
+    return { ...f, owner, child, thread, turn, serverPid, state, events };
+  };
+  const connected = await start(), abandoned = await start(true), retiring = await start(true);
+  const peer = await CodexAppServerClient.connect(abandoned.dir, { env: abandoned.env, brokerEndpoint: abandoned.endpoint });
+  t.after(() => peer.close());
+  await abandoned.owner.close();
+  await retiring.owner.close();
+  await until(() => abandoned.events().some(event => event.event === "abandoned_turn" && event.outcome === "expired"));
+  await until(() => abandoned.state().lastInterrupt?.turnId === abandoned.turn.id);
+  await until(() => !alive(retiring.child.pid) && !alive(retiring.serverPid));
+  assert.equal((await peer.request("initialize", {})).codexCompanionHome, resolveIsolatedCodexHome(abandoned.env));
+  assert.equal(alive(abandoned.child.pid), true);
+  assert.equal(connected.state().lastInterrupt, null);
+  assert.deepEqual(connected.events(), []);
+  await peer.close();
+  await until(() => !alive(abandoned.child.pid) && !alive(abandoned.serverPid));
+  assert.equal(alive(connected.child.pid), true); assert.equal(alive(connected.serverPid), true);
+  assert.equal(connected.state().lastInterrupt, null);
+  await connected.owner.close();
+  await until(() => !alive(connected.child.pid) && !alive(connected.serverPid));
+  assert.equal(connected.state().lastInterrupt.turnId, connected.turn.id);
+  assert.ok(connected.events().some(event => event.outcome === "completed" && event.turnId === connected.turn.id));
+  const review = await start(false, true);
+  assert.equal((await review.owner.request("account/read", {})).account.type, "chatgpt");
+  await review.owner.close();
+  await until(() => !alive(review.child.pid) && !alive(review.serverPid));
 });
 
 test("detached broker returns its real PID, leaves the caller tree and keeps stdout/stderr in its log", { skip: process.platform === "win32" }, async () => {

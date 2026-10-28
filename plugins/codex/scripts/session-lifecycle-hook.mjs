@@ -13,10 +13,11 @@ import { runAutomaticRetention } from "./lib/retention.mjs";
 import { activeRunContext } from "./lib/run-journal.mjs";
 import { deleteClaudeSnapshot } from "./lib/claude-memory.mjs";
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
-// This command hook cannot tell whether the native adapter registered, so it
-// never advertises native workers; the adapter adds that guidance itself.
+// Name native dispatch up front so the first task needs no readiness notice.
+// An unavailable adapter returns a report that enables the Bash fallback.
 const SESSION_START_CONTEXT = [
-  "Bash recipe for Codex workers. When native Codex workers are announced as ready, dispatch natively and use this recipe only as the fallback.",
+  'Dispatch Codex natively by default from the first dispatch: Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (the plugin assigns a scientist name, replacing a passed label unless it is a free pool name; the assigned name appears in the Agent result); an optional first prompt line DUET: <flags> sets task flags. The agent result is the Duet report; use SendMessage to the named agent for follow-ups and answers.',
+  "Bash recipe (fallback only): use it only when the native agent returns native_adapter_unavailable or native_capacity, a per-call option is rejected by the DUET: line (--run, --approve-browser-origin, --approve-computer-app, --lease-sec, --question-timeout-sec), or following up a worker launched through Bash.",
   "Dispatch Codex with duet task <<'DUET_TASK' (brief on following lines, then DUET_TASK alone); use Bash run_in_background: true.",
   "The background-task completion notification carries the complete Duet report.",
   "Follow up on the same worker with duet task --to <worker> and a brief on stdin.",

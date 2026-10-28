@@ -98,7 +98,9 @@ export function buildWorkerReport(payload, meta = {}) {
   const text = `${payload.rawOutput ?? ""}\n${payload.error ?? ""}`;
   const browserBlocker = classifyBrowserBlocker(text);
   const structured = payload.structured && WORKER_REPORT_STATUSES.includes(payload.structured.status) ? payload.structured : null;
-  const runtimeBlocker = payload.status !== 0 ? classifyCodexError(payload.codexErrorInfo, payload.error) : null;
+  const runtimeBlocker = payload.interruptionReason === "codex_runtime_restarted"
+    ? { code: "codex_runtime_restarted", message: "The Codex runtime exited mid-turn (for example, during an app update). The thread and saved work persist; only the running turn was interrupted. Continue this worker when the runtime is available." }
+    : payload.status !== 0 ? classifyCodexError(payload.codexErrorInfo, payload.error) : null;
   // Classified turn failures also block a non-zero turn. Other captured refusals
   // and final-answer signatures retain their existing zero-exit precedence.
   const known = dedupeBlockers([...(runtimeBlocker ? [runtimeBlocker] : []), ...(payload.blockers ?? []), ...classifyKnownBlockers(text)]);

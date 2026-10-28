@@ -12,9 +12,10 @@ Have Codex investigate why the integration tests are flaky, and in parallel have
 another Codex worker review the retry logic in src/net/.
 ```
 
-### Native subagent (preferred when available)
+### Native subagent (default)
 
-Claude can call `Agent(subagent_type: "codex:codex-native", name: "reviewer", prompt: "<brief>")`.
+Claude uses `Agent(subagent_type: "codex:codex-native", prompt: "<brief>")`
+by default from the first dispatch, without waiting for a readiness notice.
 The function hook runs Codex and returns its report through the native agent
 completion. An optional first prompt line sets Codex options:
 
@@ -23,7 +24,9 @@ DUET: --model gpt-6-astra --effort xhigh --sandbox read-only --normal
 <brief: objective, context, owned paths, constraints, acceptance criteria>
 ```
 
-The header also accepts `--cwd` and `--fork`. Set the Codex model in the header:
+The header also accepts `--cwd` and `--fork`. A `--cwd <repo>/sub` starts or resumes
+the Codex thread in that subdirectory; broker and job state stay at the repository
+root. Set the Codex model in the header:
 the Agent tool's `model` only selects the Claude shell. Initial-task effort
 precedence is `DUET: --effort` > explicitly supplied Agent
 `effort` (including `max`) > companion default. The shell definition's
@@ -52,28 +55,56 @@ not check expiry locally: if the unanswered slot still exists past its deadline,
 the pinned answer goes to the companion and is refused there, as in 1.4.2.
 Expiry alone does not promise the resolved-question notice.
 
-Codex progress lines stream inside the agent while it runs and are kept in its
-transcript as notices; they also keep jobs longer than ten minutes alive under
-Claude Code's subagent stall watchdog.
+Every fresh native Agent call reserves a scientist pool name through the companion
+before spawn and claims it at dispatch. A passed label is replaced unless it is
+a free pool name; resumptions retain their name. When the assigned name differs
+from the input, the Agent result's context gains `Codex worker named X` and the
+SendMessage target, background launch acknowledgements included; the result itself is
+unchanged. A preserved free pool name adds no note, and denials stay as they are. Reservation uses cached host Node
+within a two-second budget; on failure the Agent call passes through unchanged.
+See [naming rules](commands.md#companion-subcommands).
+
+Live progress appears under the Agent row in the main transcript (three latest
+entries, name, model, effort, speed and elapsed time) and under each turn's prompt
+row in the agent view (up to 40 entries). Each log is bound to the row's appended
+`uuid`, keeping identical briefs separate; same-title starts and completions
+merge FIFO. Unobserved rows, including after reload, render without a log.
+The spinner shows `<worker> · running · <elapsed>`. The `DUET:` flag line draws as
+a compact `Codex · model · effort · speed · sandbox · folder` header, with only
+supplied settings and `fork` when requested. Completion lines use colours matching
+`codex-live`; the agent view renders the report as readable markdown. These bounded projections
+leave the recorded report and Claude's hand-back unchanged. Command-start lines
+are live only; other progress remains in durable notices, capped at 200 per turn
+with a final usage-notice exemption. See [progress format](worker-lifecycle.md#fallback-and-compatibility-feed-mode).
+Keepalives stream after 30 seconds without streamed progress, even when durable
+notices are suppressed or handle lookup fails. Only one keepalive publication
+can be pending, bounding the queue when a reader is slow.
+
+`agent.spawn` records the type and a small timestamped guard, then returns;
+`turn.start` performs admission, eviction and the durable binding. This lets the
+first turn run before the host lists the agent. Store pressure reclaims ordinary
+finished history oldest-first; active bindings and protected pending work remain.
+See [native capacity and retention](state-and-retention.md#native-adapter-store).
 
 After registration, the adapter announces native workers on the first accepted
 non-command person prompt of each session (`prompt.submit`, not SessionStart).
-If it is unavailable, the agent returns `blocked` with `native_adapter_unavailable`,
-not a substitute solution. Check `duet status` before retrying because dispatch
-is unconfirmed. See [troubleshooting](troubleshooting.md).
+That notice is informational. If the hook does not handle the turn, the agent
+returns `blocked` with `native_adapter_unavailable`, not a substitute solution.
+Run `/reload-plugins`, check `duet status` before retrying because dispatch is
+unconfirmed, and use background `duet task` if it persists. See [troubleshooting](troubleshooting.md).
 
 ### Direct mode
 
 Use `duet task --help` for task flags; help starts no job. The installed plugin
 adds `bin/` to PATH, and SessionStart supplies the session ID and the Bash
-recipe, framed as the fallback when native workers are announced. SessionStart
-cannot tell whether the native adapter registered, so it never names
-`codex:codex-native`. After a complete registration the adapter adds a
+recipe, framed as a fallback to native dispatch from the first assignment.
+SessionStart names `codex:codex-native` without waiting for registration evidence;
+an unavailable adapter reports its fallback condition. After registration the adapter adds a
 `codex:native-dispatch` system-prompt section (`prompt.compose`, session scope)
 to every request that offers the Agent tool. That section asks for native dispatch first:
 browser work and Computer Use run natively, with unapproved apps arriving as
-approval questions. Background-Bash `duet task` is only for `native_adapter_unavailable`,
-per-call overrides the `DUET:` line rejects (`--run`, `--approve-browser-origin`,
+approval questions. Background-Bash `duet task` is only for `native_adapter_unavailable`
+or `native_capacity`, per-call overrides the `DUET:` line rejects (`--run`, `--approve-browser-origin`,
 `--approve-computer-app`, `--lease-sec`, `--question-timeout-sec`) and follow-ups
 to Bash-launched workers. Because the system prompt is rebuilt for every request,
 compaction cannot remove that guidance, unlike the one-time readiness notice. If `duet` is missing in an older session, reload/start a new session or
@@ -125,8 +156,11 @@ the session with no live attached owner wait. Lookup failures leave the prompt
 unchanged. See [unreported endings and limits](worker-lifecycle.md#unreported-endings).
 
 `--run <id|none>` chooses journal linkage for this dispatch only. Omit it to
-use the session's active run, use `none` to skip linking, or select an open run
-across workspaces in the same isolated home. Invalid or closed runs fail before
+use the session's active run, falling back to the sole open workspace run when
+none is active; several open runs leave the task unlinked. Use `journal use
+<runId>` to select one for the session, `--run none` to skip linking, or
+`--run <id>` to select an open run across workspaces in the same isolated home.
+Invalid or closed runs fail before
 a worker starts. Follow-ups do not inherit this choice. See [run journal](run-journal.md).
 
 Report v2 starts with `status`, `worker`, `jobId`, `summary`. The summary is capped
@@ -187,10 +221,15 @@ Never run two waits for one job. Exit codes are 0 for `completed`, 2 for
 `--follow`, `--detached`, `--background`, `--json`, `--feed-limit` and
 `--min-interval-sec`.
 
-Each worker gets one of 1,089 historical scientist or computing pioneer names,
+Without a requested name, each worker gets one of 1,089 historical scientist or computing pioneer names,
 drawn from unused names in three tiers: 120 familiar names weighted 10 each,
 299 weighted 3 each, and 670 weighted 1 each. Numbered suffixes appear only after
-the pool is exhausted, with the base chosen by the same weights. Adoption and
+the pool is exhausted, with the base chosen by the same weights. Use
+`duet task --name <label>` to request a name on a fresh thread; reserved names
+fall back to the pool, and follow-ups keep their name. Names use 1–64 ASCII
+letters, digits, `_`, `.` or `-`, starting with a letter or digit. The prefixes
+`task-`, `review-` and `job-` are refused case-insensitively by `--name` and ignored
+by internal native naming. Adoption and
 cross-session `--thread` follow-ups reserve a name in the destination session,
 renaming on collision. Follow up with
 `duet task --to <worker>` and a new stdin brief; it keeps the original cwd and
@@ -267,7 +306,12 @@ The feed uses retained activity (at most 500 stored events per job, with tighter
 pane limits); tool counts prefer cumulative `activityTotals.toolUses`. Narrow panes retain
 history navigation (`j`) alongside Clear (`c`). Discovery failures have their
 own warning; malformed pane caches are reset and rediscovered without changing
-job records. See the [pane reference](../plugins/codex-live/README.md).
+job records. Windows drive and UNC job/workspace paths are accepted, and
+`USERPROFILE` supplies the home when `HOME` is absent. A missing job is removed
+after two ENOENT observations at least five seconds apart only if both the session
+inventory and jobs folder are readable and that folder no longer lists the file.
+A marker absent from a readable inventory also removes its entry and pane metadata;
+transient failures preserve the last good view. See the [pane reference](../plugins/codex-live/README.md).
 
 ### Haiku fallback
 

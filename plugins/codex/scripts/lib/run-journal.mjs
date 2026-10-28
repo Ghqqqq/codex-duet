@@ -150,6 +150,25 @@ export function startRun(cwd, sessionId, input, env = process.env, { switchRun =
     }, true);
   }, true);
 }
+export function useRun(cwd, sessionId, runId, env = process.env) {
+  session(sessionId);
+  id(runId, "runId");
+  return locked(sessionsDir(env), env, () => {
+    const selected = findRun(resolveStateDir(cwd, env), runId, env);
+    return locked(selected.stateDir, env, () => {
+      requireOpen(entries(selected.stateDir, runId, env), runId);
+      atomic(pointer(sessionId, env), `${JSON.stringify(selected)}\n`);
+      return { runId };
+    });
+  }, true);
+}
+function singleOpenRun(stateDir, env) {
+  const open = listAt(stateDir, env).filter(run => run.state === "open");
+  if (open.length > 1) throw Object.assign(new Error(`Multiple open Duet runs in this workspace: ${open.map(run => run.runId).join(", ")}. Select one with duet journal use <runId> or --run <id>.`), {
+    code: "RUN_SELECTION_AMBIGUOUS", runIds: open.map(run => run.runId)
+  });
+  return open.length ? { stateDir, runId: open[0].runId } : null;
+}
 function target(stateDir, sessionId, runId, env, latest = false) {
   if (runId !== undefined) return findRun(stateDir, runId, env);
   const active = activeRun(sessionId, env);
@@ -157,8 +176,11 @@ function target(stateDir, sessionId, runId, env, latest = false) {
   if (latest) {
     const recent = listAt(stateDir, env)[0];
     if (recent) return { stateDir, runId: recent.runId };
+  } else {
+    const open = singleOpenRun(stateDir, env);
+    if (open) return { ...open, fallback: true };
   }
-  throw new Error("No active Duet run; use journal start or --run <id>.");
+  throw new Error("No active Duet run; use journal start, journal use <runId> or --run <id>.");
 }
 function findRun(stateDir, runId, env) {
   id(runId, "runId");
@@ -190,6 +212,19 @@ export function validateTaskRun(cwd, runId, env = process.env) {
   requireOpen(entries(selected.stateDir, runId, env), runId, true);
   return selected;
 }
+const criterionId = criterion => /^(K\d+)(?=:|\s|$)/.exec(criterion)?.[1];
+function matchCriterion(criterion, known, runId) {
+  if (known.includes(criterion)) return criterion;
+  const stableId = /^(K\d+):?$/.exec(criterion)?.[1];
+  const prefix = criterion.endsWith("…") ? criterion.slice(0, -1) : "";
+  const matches = known.filter(text => stableId ? criterionId(text) === stableId
+    : prefix && (text.startsWith(prefix) || text.replace(/\s+/g, " ").startsWith(prefix)));
+  if (matches.length === 1) return matches[0];
+  const knownCriteriaIds = [...new Set(known.map(criterionId).filter(Boolean))];
+  throw Object.assign(new Error(`${matches.length ? "Ambiguous" : "Unknown"} criterion in run ${runId}: ${JSON.stringify(criterion)}. Known criteria IDs: ${knownCriteriaIds.join(", ") || "none (use exact criterion text)"}. Use exact text for ambiguous matches; add new criteria with journal add criteria.`), {
+    code: matches.length ? "AMBIGUOUS_CRITERION" : "UNKNOWN_CRITERION", knownCriteriaIds
+  });
+}
 export function addEntry(cwd, sessionId, type, input, runId, env = process.env) {
   if (type === "withdraw") type = "criteria_withdrawn";
   if (!["criteria", "criteria_withdrawn", "verdict", "decision"].includes(type)) throw new Error(`Unknown journal entry type: ${type}.`);
@@ -199,12 +234,19 @@ export function addEntry(cwd, sessionId, type, input, runId, env = process.env) 
   return locked(stateDir, env, () => {
     const rows = entries(stateDir, runId, env);
     requireOpen(rows, runId);
+    if (selected.fallback) singleOpenRun(stateDir, env);
     if (type === "criteria_withdrawn") {
       const known = new Set(rows.flatMap(row => row.type === "run_started" || row.type === "criteria" ? row.criteria
         : row.type === "verdict" ? row.criteria.map(item => item.criterion) : []));
       for (const criterion of data.criteria) {
         if (!known.has(criterion)) throw new Error(`Unknown criterion in run ${runId}: ${JSON.stringify(criterion)}.`);
       }
+    }
+    if (type === "verdict") {
+      // Canonicalize new writes only. Historical verdict-only criteria remain
+      // untouched and retain their existing validation/withdrawal behavior.
+      const criteria = [...new Set(rows.flatMap(row => row.type === "run_started" || row.type === "criteria" ? row.criteria : []))];
+      data.criteria = data.criteria.map(item => ({ ...item, criterion: matchCriterion(item.criterion, criteria, runId) }));
     }
     if (type === "verdict" && "resolves" in data && data.resolves?.length) {
       const known = new Set(rows.filter(row => row.type === "job_started").map(row => row.jobId));
@@ -335,11 +377,17 @@ function viewAt(stateDir, runId, rows, env) {
   const issues = [];
   for (const job of linked) {
     const jobId = job.jobId;
+    const unrecordedFinish = started.has(jobId) && !finished.has(jobId)
+      && ["completed", "failed", "cancelled", "interrupted", "blocked", "needs_input", "error"].includes(liveStatus.get(jobId));
     if (started.has(jobId) && !finished.has(jobId) && ["queued", "running"].includes(liveStatus.get(jobId))) issues.push({
       kind: "unfinished_job", jobId, detail: `Linked job is ${job.status} without a recorded finish.`,
       nextAction: "Check job status and its existing owner wait; wait for completion before judging it."
     });
-    if (finished.has(jobId) && !job.latestVerdict) issues.push({
+    if (unrecordedFinish) issues.push({
+      kind: "unrecorded_finish", jobId, detail: `Linked job is ${job.status} without a recorded finish.`,
+      nextAction: `Inspect duet result ${jobId} --details to retry finish recording, then verify the evidence and record a journal verdict.`
+    });
+    if ((finished.has(jobId) || unrecordedFinish) && !job.latestVerdict) issues.push({
       kind: "no_verdict", jobId, detail: "Finished job has no orchestrator verdict.",
       nextAction: "Inspect the saved report and verify its criteria, then record a journal verdict."
     });
@@ -403,25 +451,17 @@ export function activeRunContext(cwd, sessionId, env = process.env) {
   return run ? `Active Duet run ${run.runId}: ${short(run.goal, 80)}. Run node "$CODEX_COMPANION" journal show to recover criteria, verdicts and open work.` : null;
 }
 
-// Automatic linkage is best effort; an explicit selection must succeed before
-// dispatch. Callers persist runId on the ordinary record for terminal observers.
+// Automatic linkage is best effort (storage failures and an ambiguous choice
+// among several open runs leave the job unlinked); explicit linkage must
+// succeed before dispatch.
+// Callers persist runId on the ordinary record for terminal observers.
 export function linkJournalJob(job, brief, env = process.env) {
   const requested = job.request?.run;
   if (requested === "none") return null;
   const explicit = requested !== undefined;
   try {
-    // The pointer is atomic; defer reading the append-only stream until locked
-    // so a concurrent verdict append cannot make an active run look absent.
-    const active = explicit ? validateTaskRun(job.cwd ?? job.workspaceRoot, requested, env) : activePointer(job.sessionId, env);
-    if (!active) return null;
-    const stateDir = active.stateDir;
-    return locked(stateDir, env, () => {
-      if (!explicit) {
-        const current = activePointer(job.sessionId, env);
-        if (current?.stateDir !== stateDir || current.runId !== active.runId) return null;
-      }
-      const run = active, rows = entries(stateDir, run.runId, env), jobId = id(job.id, "jobId");
-      if (!explicit && rows.some(row => row.type === "run_closed")) return null;
+    const link = (run, rows) => {
+      const stateDir = run.stateDir, jobId = id(job.id, "jobId");
       requireOpen(rows, run.runId);
       if (!rows.some(row => row.type === "job_started" && row.jobId === jobId)) {
         const relative = `jobs/${jobId}.brief.md`;
@@ -434,7 +474,35 @@ export function linkJournalJob(job, brief, env = process.env) {
         } catch (error) { fs.unlinkSync(file); throw error; }
       }
       return { runId: run.runId, runStateDir: stateDir };
-    });
+    };
+    const cwd = job.cwd ?? job.workspaceRoot;
+    if (explicit) {
+      const run = validateTaskRun(cwd, requested, env);
+      return locked(run.stateDir, env, () => link(run, entries(run.stateDir, run.runId, env)));
+    }
+    const stateDir = resolveStateDir(cwd, env);
+    // Avoid creating journal state for tasks with no pointer or workspace runs.
+    if (!activePointer(job.sessionId, env)) directory(runsDir(stateDir), env);
+    // Match start/use/close lock ordering, and read streams only under their
+    // workspace lock. Selection cannot race another start or session switch.
+    return locked(sessionsDir(env), env, () => {
+      const active = activePointer(job.sessionId, env);
+      if (active) {
+        let linked, readActive = false;
+        try {
+          linked = locked(active.stateDir, env, () => {
+            const rows = entries(active.stateDir, active.runId, env);
+            readActive = true;
+            return rows.some(row => row.type === "run_closed") ? null : link(active, rows);
+          });
+        } catch (error) { if (error.code !== "ENOENT" || readActive) throw error; }
+        if (linked) return linked;
+      }
+      return locked(stateDir, env, () => {
+        const run = singleOpenRun(stateDir, env);
+        return run ? link(run, entries(stateDir, run.runId, env)) : null;
+      });
+    }, true);
   } catch (error) { if (explicit) throw error; return null; }
 }
 export function finishJournalJob(job, report, env = process.env) {

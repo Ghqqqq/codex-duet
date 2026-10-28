@@ -1,5 +1,6 @@
 // Native adapter for the early-access Claude Code 2.1.302 function-hook API.
 // No Node globals/imports in this sandbox; all host work goes through $.
+import { TIER_1_NAMES, TIER_2_NAMES, TIER_3_NAMES } from '../scripts/lib/agent-name-pool.mjs';
 export const AGENT_TYPE = 'codex:codex-native';
 const PREFIX = 'native:v2:';
 const ACTIVE = ['queued', 'running'];
@@ -8,7 +9,7 @@ const HEARTBEAT_MS = 30000;
 const EARLY_HANDLES_MS = 1500;
 const READY = 'Native Codex workers ready: Agent(subagent_type: "codex:codex-native", prompt) — optional first line "DUET: <flags>"; SendMessage to continue or answer; stop from /tasks; live progress shows inside the agent and in codex-live.';
 const GUIDE_ID = 'codex:native-dispatch';
-const NATIVE_GUIDE = 'Native Codex workers are ready. Dispatch Codex with Agent(subagent_type: "codex:codex-native", name: "<label>", prompt: "<brief>"); an optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast|--normal --fork --cwd <dir> sets task flags. The agent result is the Duet report; continue a worker or answer its question with SendMessage. Browser work and Computer Use run natively: an app not yet approved arrives as an approval question answered through SendMessage. Use background-Bash duet task only when the agent reports native_adapter_unavailable, a dispatch needs a per-call override the DUET line rejects (--run, --approve-browser-origin, --approve-computer-app, --lease-sec, --question-timeout-sec), or you follow up a worker that Bash launched.';
+const NATIVE_GUIDE = 'Native Codex workers are ready. Dispatch Codex with Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (the plugin assigns a scientist name, replacing a passed label unless it is a free pool name; the assigned name appears in the Agent result); an optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast|--normal --fork --cwd <dir> sets task flags. The agent result is the Duet report; continue a worker or answer its question with SendMessage. Browser work and Computer Use run natively: an app not yet approved arrives as an approval question answered through SendMessage. Use background-Bash duet task only when the agent reports native_adapter_unavailable or native_capacity, a dispatch needs a per-call override the DUET line rejects (--run, --approve-browser-origin, --approve-computer-app, --lease-sec, --question-timeout-sec), or you follow up a worker that Bash launched.';
 const PERSON_ORIGINS = ['composer', 'bridge', 'sdk'];
 // Final statuses whose Codex turn is known to have ended. Interrupted,
 // cancelled and failed jobs need a confirmed cancellation instead.
@@ -26,9 +27,195 @@ const ended = (job, state) => ENDED.includes(job.status)
   || (['interrupted', 'cancelled'].includes(job.status) && job.interruptionConfirmed === true)
   || (state.cancellation?.confirmation === 'confirmed' && state.cancellation.jobId === job.id);
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_RECORDS = 128, MAX_STORE_SIZE = 2 * 1024 * 1024;
+const stateSize = state => JSON.stringify(state ?? null).length * 4;
+const finished = state => state?.finishedAt && !state.incoming
+  && state.status !== 'needs_answer' && state.answer?.status !== 'needs_answer';
 const ALLOWED = '--model, --effort, --sandbox, --fast/--normal, --cwd, --fork';
 const startedTypes = new Map();
 const knownTypes = new Map();
+// Display only: an entry exists only while this module owns a live flight.
+const liveProgress = new Map();
+const toolAgents = new Map(), agentDisplays = new Map();
+const promptTurns = new Map(), turnPrompts = new Map(), turnLogs = new Map();
+const logKey = (agentId, turnId) => JSON.stringify([agentId, turnId]);
+const invalidateProgress = $ => {
+  try { $.ui.invalidate('ui.render'); } catch { /* Display must never affect a turn. */ }
+};
+function rememberDisplay(map, id, value) {
+  map.delete(id); map.set(id, value);
+  if (map.size > 256) {
+    // Short finished jobs must not evict the row of an older live agent.
+    const oldest = [...map.keys()].find(key => {
+      if (key === id) return false;
+      const value = map.get(key);
+      if (map === turnLogs) return liveProgress.get(value.agentId) !== value;
+      if (map === promptTurns || map === turnPrompts) return liveProgress.get(value.agentId)?.turnId !== value.turnId;
+      return !liveProgress.has(map === toolAgents ? value : key);
+    }) ?? map.keys().next().value;
+    map.delete(oldest);
+    if (map === agentDisplays) for (const [key, log] of turnLogs) {
+      if (log.agentId === oldest) turnLogs.delete(key);
+    }
+  }
+}
+function bindPrompt($, turn) {
+  if (turn.uuid) return;
+  // Append may precede or follow turn.start. Consume each row and turn once,
+  // in order within its own agent; identical later briefs keep separate logs.
+  // A SendMessage follow-up is stored with the host's framing around the
+  // text turn.start received ("The coordinator sent a message …"). Prefer an
+  // exact row; otherwise take the newest unbound row that frames this text.
+  let match = null;
+  for (const [uuid, row] of promptTurns) {
+    if (row.turnId || row.agentId !== turn.agentId || typeof row.text !== 'string') continue;
+    if (row.text === turn.text) { match = uuid; break; }
+    if (turn.text && row.text.includes(turn.text)) match = uuid;
+  }
+  if (match) {
+    const row = promptTurns.get(match);
+    row.turnId = turn.turnId; turn.uuid = match;
+    delete row.text; delete turn.text;
+    invalidateProgress($);
+  }
+}
+function rememberPrompt($, e) {
+  if (typeof e.text !== 'string' || e.text.length > 65536) return;
+  const key = logKey(e.agentId, e.turnId);
+  if (turnPrompts.has(key)) return;
+  const turn = { agentId: e.agentId, turnId: e.turnId, text: e.text.trim() };
+  rememberDisplay(turnPrompts, key, turn);
+  bindPrompt($, turn);
+}
+function updateDisplay($, state, job) {
+  const view = agentDisplays.get(state.agentId);
+  if (!view || !liveProgress.has(state.agentId) || view.turnId !== (state.incoming?.turnId ?? state.intent?.turnId)) return;
+  view.name = state.worker || state.name || view.name;
+  if (typeof state.effort === 'string') view.effort = state.effort;
+  if (job) {
+    const request = job.request;
+    if (typeof request?.model === 'string') view.model = request.model;
+    if (typeof request?.effort === 'string') view.effort = request.effort;
+    if (request && Object.hasOwn(request, 'serviceTier')) view.speed = request.serviceTier === 'priority' ? 'fast' : 'normal';
+    view.question = ACTIVE.includes(job.status) && job.pendingQuestion?.answer === undefined
+      && typeof job.pendingQuestion?.text === 'string' ? job.pendingQuestion.text.slice(0, 200) : undefined;
+  }
+  invalidateProgress($);
+}
+const elapsedDisplay = ms => {
+  const seconds = Math.max(0, Math.floor((ms || 0) / 1000));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+};
+const commandStart = text => /^▸/.test(text) || /^Bash\(.*\) · running\s*$/.test(text);
+const resultStyle = result => /^Done\b/.test(result) ? { color: 'success' }
+  : /^(?:Error|Failed|Blocked)\b/.test(result) ? { color: 'error' } : { dimColor: true };
+function logEntry(text) {
+  if (/^Codex worker .+ running · /.test(text)) return null;
+  if (text.startsWith('Codex:')) return { kind: 'message', title: text.slice(6).trim() };
+  if (/^Codex worker .+ started · /.test(text)) return { kind: 'info', title: text };
+  const event = (title, result) => ({ kind: 'event', title, result, running: result === 'running' });
+  let match;
+  if ((match = /^(Bash\(.*\)|(?:Update|Write|Delete)\(.*\)) · (.*)$/.exec(text))) return event(match[1], match[2]);
+  if ((match = /^Update Todos · (.*)$/.exec(text))) return event('Update Todos', match[1]);
+  if ((match = /^(.+) · (running|Done(?:\s.*)?|Error(?:\b.*)|Failed(?:\b.*)|Blocked(?:\b.*)|exit unknown|cancelled|declined|interrupted)$/.exec(text))) return event(match[1], match[2]);
+  if ((match = /^▸\s*(.*)$/.exec(text))) return event(`Bash(${match[1]})`, 'running');
+  if ((match = /^([✓✗]) exit (-?\d+)(?: · (\d+(?:\.\d+)?s))? · (.*)$/.exec(text))) {
+    return event(`Bash(${match[4]})`, (match[1] === '✓' ? 'Done' : `Error: exit ${match[2]}`) + (match[3] ? ` (${match[3]})` : ''));
+  }
+  if ((match = /^(?:■ (cancelled|declined|interrupted)|\? (exit unknown)) · (.*)$/.exec(text))) return event(`Bash(${match[3]})`, match[1] || match[2]);
+  if ((match = /^edit (.+) (\+[\d?]+ [−-][\d?]+)$/.exec(text))) return event(`Update(${match[1]})`, match[2]);
+  if ((match = /^plan (.*)$/.exec(text))) return event('Update Todos', match[1]);
+  if ((match = /^Tool (.+): (\w+)(?: \((.*)\))?$/.exec(text))) {
+    const status = ['started', 'inProgress', 'running', 'queued'].includes(match[2]) ? 'running'
+      : ['completed', 'success'].includes(match[2]) ? 'Done' : ['failed', 'error'].includes(match[2]) ? 'Error' : match[2];
+    return event(match[1], status + (status !== 'running' && match[3] ? ` (${match[3]})` : ''));
+  }
+  if ((match = /^([✓✗])\s*(.*)$/.exec(text))) return event(match[2], match[1] === '✓' ? 'Done' : 'Error');
+  return { kind: 'info', title: text };
+}
+function appendLog($, log, text) {
+  try {
+    const entry = logEntry(text);
+    if (!entry) return;
+    // Identical commands may overlap. Match their completions FIFO, as Codex
+    // reports same-title completions in order; never dedupe a running start or
+    // a completion that still has a running entry to consume.
+    const running = entry.kind === 'event' && !entry.running
+      ? log.entries.findIndex(item => item.running && item.title === entry.title) : -1;
+    if (!entry.running && running < 0 && log.last === text) return;
+    log.last = text;
+    if (running >= 0) log.entries[running] = entry;
+    else {
+      log.entries.push(entry);
+      if (log.entries.length > 40) { log.entries.shift(); log.omitted++; }
+    }
+    invalidateProgress($);
+  } catch { /* The display log must never affect progress delivery. */ }
+}
+const entryText = entry => entry.kind === 'event' ? `${entry.title} · ${entry.result}`
+  : entry.kind === 'message' ? `Codex: ${entry.title}` : entry.title;
+const entryStyle = entry => entry.kind === 'event' ? resultStyle(entry.result)
+  : entry.kind === 'message' ? { color: 'text' } : { dimColor: true };
+function lineStyle(text) {
+  if (/^Codex:/.test(text)) return { color: 'text' };
+  if (/^✗/.test(text)) return { color: 'error' };
+  if (/^✓/.test(text)) return { color: 'success' };
+  if (/^▸/.test(text)) return { dimColor: true };
+  // A command mentioning "Failed" still takes the color of its own outcome.
+  const status = text.startsWith('Bash(') && text.includes(') · ') ? text.slice(text.lastIndexOf(') · ') + 2) : text;
+  return /· Done\b/.test(status) ? { color: 'success' }
+    : /· Error\b|\b(?:Failed|Blocked)\b/.test(status) ? { color: 'error' } : { dimColor: true };
+}
+const displayWidth = e => Number.isFinite(e.viewport?.columns) ? Math.max(0, Math.floor(e.viewport.columns)) : 120;
+const displayRow = (e, children, props = {}) => ({ type: 'Box', props: {
+  width: displayWidth(e)
+}, children: [{ type: 'Text', props: { wrap: 'truncate-end', ...props }, children }] });
+const progressRow = (e, text, prefix = '') => displayRow(e, [prefix + text.replace(/\s+/g, ' ')], lineStyle(text));
+function logRows(e, entry) {
+  let rows;
+  if (entry.kind === 'message') {
+    const chars = Array.from(entry.title.replace(/\s+/g, ' ')), width = Math.max(1, displayWidth(e) - 2);
+    rows = [];
+    while (chars.length && rows.length < 3) {
+      let count = 0, cells = 0;
+      // Budget non-Latin glyphs conservatively; the host clips each row in
+      // terminal cells. Explicit rows keep commentary to three at any width.
+      while (count < chars.length) {
+        const size = chars[count].codePointAt(0) > 255 ? 2 : 1;
+        if (cells + size > width) break;
+        cells += size; count++;
+      }
+      count = Math.max(1, count);
+      const space = chars.slice(0, count).lastIndexOf(' ');
+      if (space > 0 && count < chars.length) count = space + 1;
+      const text = chars.splice(0, count).join('').trimEnd();
+      rows.push(displayRow(e, [(rows.length ? '  ' : '● ') + text + (rows.length === 2 && chars.length ? '…' : '')], { color: 'text' }));
+    }
+  } else if (entry.kind === 'event') rows = [
+    displayRow(e, [`● ${entry.title}`], { bold: true, color: 'text' }),
+    displayRow(e, [`  ⎿ ${entry.running ? 'Running…' : entry.result}`], entryStyle(entry))
+  ];
+  else rows = [displayRow(e, [entry.title], { dimColor: true })];
+  return { type: 'Box', props: { flexDirection: 'column' }, children: rows };
+}
+const displayStatus = status => ({ completed: 'Done', blocked: 'Blocked', failed: 'Failed',
+  needs_answer: 'Needs answer', needs_input: 'Needs answer', interrupted: 'Interrupted',
+  cancelled: 'Interrupted', owner_stopped: 'Interrupted', ownership_moved: 'Interrupted' })[status] || 'Failed';
+function promptDisplay(text) {
+  if (typeof text !== 'string' || !text.startsWith('DUET: ')) return null;
+  const { brief, flags, cwd } = parsePrompt(text);
+  const value = flag => {
+    const index = flags.indexOf(flag);
+    return index < 0 ? undefined : flags[index + 1];
+  };
+  // Show only supplied settings; defaults and inherited settings are not known
+  // from the prompt. Keep the brief byte-for-byte as parsePrompt received it.
+  const parts = ['Codex', value('--model'), value('--effort'),
+    flags.includes('--fast') ? 'fast' : flags.includes('--normal') ? 'normal' : undefined,
+    value('--sandbox'), flags.includes('--fork') ? 'fork' : undefined,
+    cwd?.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || cwd];
+  return { text: brief, header: parts.filter(Boolean).map(part => part.replace(/\s+/g, ' ')).join(' · ') };
+}
 const keyFor = (session, id) => `${PREFIX}${session}:${id}`;
 const closedKey = (session, id) => `${CLOSED}${session}:${id}`;
 const bindingFailedKey = (session, id) => `${BINDING_FAILED}${session}:${id}`;
@@ -56,6 +243,71 @@ function boundedText(value, budget) {
   }
   return text;
 }
+// Active companion statuses are consumed by drive; these can reach a native
+// answer. Detection below follows the native report's display-only contract.
+const REPORT_STATUSES = new Set(['completed', 'needs_input', 'needs_answer', 'blocked',
+  'failed', 'interrupted', 'cancelled', 'owner_stopped', 'ownership_moved']);
+const REPORT_FIELDS = new Set(['status', 'worker', 'jobId', 'summary', 'summaryTruncated', 'blockers',
+  'question', 'changedFiles', 'checks', 'assumptions', 'keyFindings', 'usage', 'next', 'details',
+  'changedFilesOmitted', 'keyFindingsOmitted', 'assumptionsOmitted', 'blockersOmitted',
+  'verificationOmitted', 'claimedVerificationOmitted', 'touchedFilesOmitted', 'preExistingChangesOmitted',
+  'approvedBrowserOriginsOmitted', 'approvedComputerAppsOmitted']);
+function reportMarkdown(props) {
+  if (Object.hasOwn(props, 'isSummary') || typeof props.text !== 'string') return null;
+  let report;
+  try { report = JSON.parse(props.text.trim()); } catch { return null; }
+  if (!report || typeof report !== 'object' || Array.isArray(report)
+    || Object.keys(report).some(key => !REPORT_FIELDS.has(key))
+    || !REPORT_STATUSES.has(report.status)
+    || !(report.worker === null || typeof report.worker === 'string')
+    || !(report.next === null || (typeof report.next === 'string' && report.next.startsWith('SendMessage to ')))
+    || !(report.details === null || (typeof report.details === 'string' && report.details.startsWith('duet result ')))
+    || !((typeof report.jobId === 'string' && /^(task|review|job)-/.test(report.jobId))
+      || (Array.isArray(report.blockers) && report.blockers.length > 0
+        && report.blockers.every(blocker => typeof blocker?.code === 'string' && blocker.code.startsWith('native_'))))) return null;
+  const clip = text => {
+    const value = boundedText(text, 600);
+    return value === text ? value : `${value}…`;
+  };
+  const plain = value => typeof value === 'string'
+    ? clip(value.replace(/\s+/g, ' ').trim()).replace(/[\\`*_{}\[\]<>#|]/g, '\\$&') : '';
+  const lines = [`**${plain(report.worker) || 'Codex'}** · ${report.status} · job ${plain(report.jobId) || '—'}`];
+  if (typeof report.summary === 'string' && report.summary.trim()) {
+    const summary = report.summary.trim().split(/\r\n?|\n|\u2028|\u2029/);
+    lines.push('', ...summary.slice(0, 12).map(clip));
+    if (summary.length > 12) lines[lines.length - 1] = '…';
+  }
+  const list = (title, values) => {
+    const items = Array.isArray(values) ? values.filter(value => typeof value === 'string' && value.trim()) : [];
+    if (!items.length) return;
+    lines.push('', `**${title}**`, ...items.slice(0, 10).map(value => `- ${plain(value)}`));
+    if (items.length > 10) lines.push('', `+${items.length - 10} more`);
+  };
+  list('Checks run', report.checks?.ran);
+  list('Key findings', report.keyFindings);
+  list('Blockers', Array.isArray(report.blockers) ? report.blockers
+    .filter(blocker => typeof blocker?.code === 'string')
+    .map(blocker => `${blocker.code}${typeof blocker.message === 'string' ? `: ${blocker.message}` : ''}`) : []);
+  // Reserve the question and next action before trimming less urgent sections.
+  const tail = [], question = typeof report.question === 'string' ? { text: report.question } : report.question;
+  if (question) {
+    const options = Array.isArray(question.options) ? question.options.filter(option => typeof option === 'string') : [];
+    tail.push('', '**Question**');
+    if (typeof question.text === 'string') tail.push(plain(question.text));
+    tail.push(...options.slice(0, 10).map(option => `- ${plain(option)}`));
+    const omitted = Math.max(0, options.length - 10)
+      + (Number.isSafeInteger(question.optionsOmitted) && question.optionsOmitted > 0 ? question.optionsOmitted : 0);
+    if (omitted) tail.push('', `+${omitted} more`);
+  }
+  const usage = [['inputTokens', 'input'], ['cachedInputTokens', 'cached'], ['outputTokens', 'output'],
+    ['reasoningOutputTokens', 'reasoning'], ['totalTokens', 'total']]
+    .filter(([key]) => Number.isSafeInteger(report.usage?.[key]) && report.usage[key] >= 0)
+    .map(([key, label]) => `${report.usage[key]} ${label}`);
+  if (usage.length) tail.push('', `Usage: ${usage.join(' · ')} tokens`);
+  if (report.next) tail.push('', plain(report.next));
+  // At most 60 lines, including all section/omission spacing and the next action.
+  return [...(lines.length + tail.length > 60 ? [...lines.slice(0, 59 - tail.length), '…'] : lines), ...tail].join('\n');
+}
 // Details name the exact job: a worker name moves to its newest job after a follow-up.
 const nativeDetails = state => state.jobId ? `duet result '${state.jobId}' --details` : state.worker ? `duet result ${state.worker} --details` : null;
 function blocked(message, state = {}, code = 'native_adapter_error') {
@@ -67,16 +319,19 @@ function blocked(message, state = {}, code = 'native_adapter_error') {
 
 async function ours($, id) {
   if (!id) return null;
-  const key = keyFor(await $.session.id(), id);
+  const session = await $.session.id(), key = keyFor(session, id);
   const startedType = startedTypes.get(key);
   if (startedType && startedType !== AGENT_TYPE) return null;
   let row;
   try { row = (await $.agent.list()).find(agent => agent.id === id); }
   catch { /* SubagentStart identifies even a first turn during list outages. */ }
   if (row) { knownTypes.set(id, row.type); return row.type === AGENT_TYPE ? row : null; }
-  if (startedType === AGENT_TYPE) return { id };
+  // agent.spawn records the type as soon as the host returns the id; turn.start
+  // can arrive before the list shows the agent, and it writes the store itself.
+  if (startedType === AGENT_TYPE || knownTypes.get(id) === AGENT_TYPE) return { id };
   const state = await $.store.get(key);
-  return state?.type === AGENT_TYPE ? { id, name: state.name } : null;
+  if (state?.type === AGENT_TYPE) return { id, name: state.name };
+  return await $.store.get(bindingFailedKey(session, id)) ? { id } : null;
 }
 
 // A small argv tokenizer, never a shell. Quotes/backslashes allow cwd with spaces;
@@ -117,29 +372,89 @@ function parsePrompt(text) {
   return { brief: newline < 0 ? '' : text.slice(newline + 1), flags, cwd };
 }
 
-async function prune($) {
-  const now = await $.clock.now(), keys = await $.store.keys(), kept = new Set(); let count = 0, size = 0;
+function admissionBlocked(code, state) {
+  const [message, next] = code === 'native_capacity'
+    ? ['Native adapter capacity is full; nothing was launched.', 'Wait for active workers to finish or stop them before starting a new native agent.']
+    : code === 'native_message_too_large'
+      ? ['Native message exceeds the adapter message limit; nothing was launched.', 'Start a new native agent with a shorter brief.']
+      : ['The native agent binding is no longer retained; nothing was launched.', 'Start a new native agent.'];
+  return { ...blocked(message, state, code), next };
+}
+
+const SPAWN_GRACE_MS = 10 * 60 * 1000;
+const unstartedSince = new Map();
+async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = () => false } = {}) {
+  const now = await $.clock.now(), keys = await $.store.keys(), kept = new Set(), records = [];
+  const unstarted = value => !value.v && !value.intent && !value.incoming && !value.finishedAt;
+  const seen = new Set(keys);
+  for (const key of unstartedSince.keys()) if (!seen.has(key)) unstartedSince.delete(key);
+  let count = 0, active = 0, size = 0;
   for (const key of keys) {
     if (!key.startsWith(PREFIX)) continue;
     const state = await $.store.get(key);
-    const marker = state?.agentId ? closedKey(state.session, state.agentId) : null;
-    const expired = value => value?.finishedAt && now - value.finishedAt > RETENTION_MS && !value.incoming;
-    // Decide again on a fresh read: turn.start may have admitted a message and
-    // a later turn may have finished since the first read.
-    if (expired(state) && expired(await $.store.get(key))) {
-      await $.store.delete(key);
-      if (marker) await $.store.delete(marker);
-      if (state?.agentId) await $.store.delete(bindingFailedKey(state.session, state.agentId));
-      continue;
+    if (!state) { unstartedSince.delete(key); continue; }
+    if (unstarted(state)) {
+      if (!unstartedSince.has(key)) unstartedSince.set(key, now);
+    } else unstartedSince.delete(key);
+    records.push({ key, state });
+    count++; size += stateSize(state);
+    if (!finished(state)) active++;
+  }
+  // History uses spare record slots, never admission slots. Reclaim oldest
+  // finished bindings first, including enough room for the incoming record.
+  records.sort((a, b) => (a.state.finishedAt || Infinity) - (b.state.finishedAt || Infinity));
+  for (const record of records) {
+    const { key } = record;
+    let { state } = record;
+    // finishedAt is certain except after an unconfirmed cancellation, whose
+    // timestamp is age-retention evidence only. Legacy unstarted
+    // bindings get a full observation window before yielding their slots.
+    const expired = value => finished(value) && now - value.finishedAt > RETENTION_MS;
+    const evictable = async value => {
+      if (key === keepKey || dispatching.has(key) || pending(key)) return false;
+      if (unstarted(value)) {
+        if (!unstartedSince.has(key)) unstartedSince.set(key, now);
+        if (now - unstartedSince.get(key) < SPAWN_GRACE_MS) return false;
+      } else {
+        unstartedSince.delete(key);
+        if (!finished(value)) return false;
+        if (!expired(value) && value.cancellation
+          && !(value.cancellation?.confirmation === 'confirmed' && value.cancellation.jobId === value.jobId)
+          && !await isClosed($, value)) return false;
+      }
+      const guard = await $.store.get(BINDING_FAILED + key.slice(PREFIX.length));
+      return !(typeof guard?.at === 'number' && now - guard.at < SPAWN_GRACE_MS)
+        && !pending(key) && !dispatching.has(key);
+    };
+    const needed = value => (!unstarted(value) && now - value.finishedAt > RETENTION_MS)
+      || count + reserveCount > MAX_RECORDS || size + reserveSize > MAX_STORE_SIZE;
+    if (needed(state) && await evictable(state)) {
+      // A turn may have admitted a message or parked a question since the
+      // inventory read. Recheck both eligibility and budgets before deleting.
+      const fresh = await $.store.get(key);
+      if (!fresh) { unstartedSince.delete(key); count--; size -= stateSize(state); continue; }
+      size += stateSize(fresh) - stateSize(state);
+      active += Number(!finished(fresh)) - Number(!finished(state));
+      state = fresh;
+      if (needed(state) && await evictable(state)) {
+        await $.store.delete(key);
+        unstartedSince.delete(key);
+        if (state.agentId) {
+          await $.store.delete(closedKey(state.session, state.agentId));
+          await $.store.delete(bindingFailedKey(state.session, state.agentId));
+        }
+        count--; size -= stateSize(state); active -= Number(!finished(state));
+        continue;
+      }
     }
+    const marker = state?.agentId ? closedKey(state.session, state.agentId) : null;
     if (marker) kept.add(marker);
-    count++; size += JSON.stringify(state ?? null).length * 4;
   }
   // A marker never expires before its state record; drop only old orphans.
   for (const key of keys) if (key.startsWith(CLOSED) && !kept.has(key)) {
     if (now - ((await $.store.get(key))?.at ?? 0) > RETENTION_MS) await $.store.delete(key);
   }
-  return { count, size };
+  return { count, active, size };
 }
 
 // Module-local promises serialize overlapping steps; persisted intents cover
@@ -249,6 +564,7 @@ async function handles($, state, jobId, recovery = false, persist = true, { wait
   if (state.jobId === job.id && state.ownerId && state.ownerId !== job.ownerId) throw new Error('Duet job ownership changed; refusing to adopt another owner implicitly.');
   Object.assign(state, { jobId: job.id, ownerId: job.ownerId, threadId: job.threadId, worker: job.agentName,
     status: job.status });
+  updateDisplay($, state, job);
   if (persist) await save($, state);
   return job;
 }
@@ -348,7 +664,7 @@ async function drive($, e, state, progress) {
         state.cwd = directory.realPath;
       }
       state.intent = { session: state.session, agentId: e.agentId, turnId: e.turnId, kind: 'task', nonce: nonceFor(state.session, e.agentId, e.turnId) };
-      args = ['task', ...(state.threadId ? ['--thread', state.threadId] : ['--fresh']), ...parsed.flags,
+      args = ['task', ...(state.threadId ? ['--thread', state.threadId] : ['--fresh', ...(state.name && state.name !== state.agentId ? ['--agent-name', state.name] : [])]), ...parsed.flags,
         '--dispatch-nonce', state.intent.nonce, '--timeout-sec', WAIT_TIMEOUT_SEC];
       delete state.jobId; delete state.ownerId; delete state.questionId; delete state.status;
     }
@@ -507,23 +823,45 @@ function observer() {
   };
 }
 function progressFor($, e, state, publish) {
-  let starting, busy = false, lastAt, startedAt;
+  let starting, busy = false, keepaliveInFlight = false, stopped = false, lastAt, lastStreamedAt, startedAt;
+  let noticing = Promise.resolve();
+  const feed = liveProgress.get(e.agentId);
   const notices = state.notices?.turnId === e.turnId ? state.notices : { turnId: e.turnId, count: 0 };
   state.notices = notices;
-  const notice = async (text, final = false) => {
-    if ((!final && notices.count >= 200) || notices.last === text) return;
-    const result = await $.session.append({ agentId: state.agentId,
-      message: { type: 'system', content: [{ type: 'text', text }] } });
-    if (result?.deny) throw new Error(`Native progress notice refused: ${result.deny}`);
-    notices.count++; notices.last = text;
-    await save($, state);
+  const stream = async text => {
+    if (stopped) return;
+    await publish(`${text}\n`);
+    lastStreamedAt = await $.clock.now();
+  };
+  const notice = (value, final = false, alreadyStreamed = false) => {
+    const text = value.slice(0, 200);
+    const pending = noticing.then(async () => {
+      if (stopped) return;
+      // The display log has its own short dedupe window. Command starts never
+      // consume durable admission or change its last-line/count bookkeeping.
+      if (feed && liveProgress.get(e.agentId) === feed) appendLog($, feed, text);
+      if (!final && commandStart(text)) return;
+      if ((!final && notices.count >= 200) || notices.last === text) return;
+      const result = await $.session.append({ agentId: state.agentId,
+        message: { type: 'system', content: [{ type: 'text', text }] } });
+      if (result?.deny) throw new Error(`Native progress notice refused: ${result.deny}`);
+      notices.count++; notices.last = text;
+      // Hook-generated thinking is visible live but is not recorded by the host;
+      // the system notice above remains the durable, model-invisible copy. Keep
+      // usage's existing final notice exemption without exceeding the live cap.
+      if (!alreadyStreamed && notices.count <= 200) await stream(text);
+      await save($, state);
+    });
+    noticing = pending.catch(() => {});
+    return pending;
   };
   const start = async () => {
-    if (notices.started || !state.intent) return;
+    if (stopped || notices.started || !state.intent) return;
     if (!starting) starting = (async () => {
       // The CLI does not print a launch receipt. Resolve the durable nonce at
       // the first activity/heartbeat; never invent a handle or redispatch.
       const job = state.jobId ? await handles($, state, state.jobId) : await reconcile($, state);
+      if (stopped) return;
       await notice(`Codex worker ${job.agentName || state.name} started · job ${job.id} · ${job.request?.model} / ${job.request?.effort} / ${job.request?.sandbox}`);
       notices.started = true;
       await save($, state);
@@ -532,6 +870,7 @@ function progressFor($, e, state, publish) {
   };
   return {
     start,
+    stop() { stopped = true; },
     async usage(value) {
       if (!value || notices.usage || !['inputTokens', 'cachedInputTokens', 'outputTokens'].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0)) return;
       const count = number => String(number).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -542,22 +881,37 @@ function progressFor($, e, state, publish) {
     async line(text) {
       lastAt = await $.clock.now();
       await start();
-      await publish(text);
       await notice(text);
     },
-    async begin() { startedAt = lastAt = await $.clock.now(); },
+    async begin() {
+      startedAt = lastAt = lastStreamedAt = await $.clock.now();
+      updateDisplay($, state);
+    },
     async heartbeat() {
-      if (busy) return;
+      if (stopped || keepaliveInFlight) return;
+      const now = await $.clock.now();
+      if (stopped || keepaliveInFlight) return;
+      const seconds = Math.floor((now - startedAt) / 1000);
+      const elapsed = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+      const text = () => `Codex worker ${state.worker || state.name || state.agentId} running · ${elapsed}`.slice(0, 200);
+      // Keep the watchdog alive before any ancillary work, even while an older
+      // lookup or notice is pending. Only keepalives bypass durable admission.
+      const due = now - lastStreamedAt >= HEARTBEAT_MS;
+      if (due) {
+        // A full observer queue backpressures publish. Later timer ticks must
+        // not accumulate more blocked publications while this one waits.
+        keepaliveInFlight = true;
+        try { await stream(text()); } finally { keepaliveInFlight = false; }
+      }
+      if (stopped || busy || now - lastAt < HEARTBEAT_MS) return;
       busy = true;
-      try {
-        const now = await $.clock.now();
-        if (now - lastAt < HEARTBEAT_MS) return;
-        lastAt = now;
-        const seconds = Math.floor((now - startedAt) / 1000);
-        const elapsed = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-        await publish(`Codex worker ${state.worker || state.name || state.agentId} running · ${elapsed}`);
+      void (async () => {
         await start();
-      } finally { busy = false; }
+        if (!stopped && now - lastAt >= HEARTBEAT_MS) {
+          lastAt = now;
+          await notice(text(), false, due);
+        }
+      })().catch(() => {}).finally(() => { busy = false; });
     }
   };
 }
@@ -565,7 +919,7 @@ function progressFor($, e, state, publish) {
 export function register(on) {
   let registered = false;
   const announcing = new Map(), announced = new Set();
-  const efforts = new Map(), spawning = new Map(), observedBindings = new Map();
+  const efforts = new Map(), spawning = new Map(), observedBindings = new Map(), refusals = new Map(), resumedSpawns = new Set();
   const restoreBinding = (key, state) => {
     const binding = observedBindings.get(key);
     if (binding) delete state.bindingPending;
@@ -576,20 +930,116 @@ export function register(on) {
     }
     if (binding?.effort !== undefined) state.effort = binding.effort;
   };
-  nodes.clear(); flights.clear(); startedTypes.clear(); knownTypes.clear(); dispatching.clear();
+  nodes.clear(); flights.clear(); startedTypes.clear(); knownTypes.clear(); dispatching.clear(); liveProgress.clear(); unstartedSince.clear();
+  toolAgents.clear(); agentDisplays.clear(); promptTurns.clear(); turnPrompts.clear(); turnLogs.clear();
+  on('session.append', async ($, e, next) => {
+    const result = await next(e);
+    try {
+      // d.ts: render requestId is the message id; append uuid is that row's
+      // pinned id on every later read. Main rows have no agentId. No text-only
+      // fallback: an unobserved row (including after reload) draws alone.
+      if (result?.deny || !e.agentId || e.message.type !== 'user'
+        || !['prompt', 'delivery'].includes(e.door) || promptTurns.has(e.uuid)) return result;
+      // A row can arrive before native identification. Retain the bounded
+      // candidate now; only a native turn.start can bind it to a visible log.
+      const text = result.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
+      if (text.length > 65536) return result;
+      rememberDisplay(promptTurns, e.uuid, { agentId: e.agentId, text: text.trim() });
+      for (const turn of turnPrompts.values()) if (turn.agentId === e.agentId) bindPrompt($, turn);
+    } catch { /* Observing a kept row must never interfere with the append. */ }
+    return result;
+  }).catch(passthrough);
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    const turn = promptTurns.get(e.requestId);
+    if (!turn?.turnId) return next(e);
+    const prompt = promptDisplay(e.props.text);
+    const engine = await next(prompt ? { ...e, props: { ...e.props, text: prompt.text } } : e);
+    const log = turnLogs.get(logKey(turn.agentId, turn.turnId));
+    if (!prompt && !log?.entries.length) return engine;
+    return { type: 'Box', props: { flexDirection: 'column' }, children: [
+      ...(prompt ? [displayRow(e, [prompt.header], { dimColor: true })] : []),
+      engine,
+      ...(log?.omitted ? [displayRow(e, [`… ${log.omitted} earlier lines (ctrl+o for the full record)`], { dimColor: true })] : []),
+      ...(log?.entries.map(entry => logRows(e, entry)) ?? [])
+    ] };
+  }).catch(passthrough);
+  on('ui.render', { component: 'Spinner' }, ($, e, next) => {
+    const view = agentDisplays.get(e.requestId);
+    if (!view) return next(e);
+    return displayRow(e, [
+      { type: 'Text', props: { bold: true }, children: [view.name.replace(/\s+/g, ' ')] },
+      { type: 'Text', props: { dimColor: true }, children: [
+        ` · ${view.status === 'running' ? 'running' : displayStatus(view.status)} · ${elapsedDisplay(view.elapsedMs)}`
+      ] }
+    ]);
+  }).catch(passthrough);
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (e.props.tool !== 'Agent' || e.props.input?.subagent_type !== AGENT_TYPE) return next(e);
+    const id = toolAgents.get(e.props.tool_use_id);
+    if (!id) return next(e);
+    const engine = await next(e), view = agentDisplays.get(id);
+    if (!view) return engine;
+    const feed = liveProgress.get(id), rows = [];
+    if (feed) {
+      const rest = [view.model, view.effort, view.speed, elapsedDisplay(view.elapsedMs)]
+        .filter(Boolean).map(part => part.replace(/\s+/g, ' '));
+      rows.push(displayRow(e, [
+        { type: 'Text', props: { bold: true }, children: [view.name.replace(/\s+/g, ' ')] },
+        { type: 'Text', props: { dimColor: true }, children: [` · ${rest.join(' · ')}`] }
+      ]), ...feed.entries.slice(-3).map(entry => displayRow(e, ['⎿ ' + entryText(entry).replace(/\s+/g, ' ')], entryStyle(entry))));
+    } else rows.push(progressRow(e, `${view.name} · ${displayStatus(view.status)} · ${elapsedDisplay(view.elapsedMs)}`));
+    if (view.question) rows.push(progressRow(e, `Question: ${view.question}`, '⎿ '));
+    return { type: 'Box', props: { flexDirection: 'column' }, children: [engine, ...rows] };
+  }).catch(passthrough);
+  on('ui.render', { component: 'AssistantMessage' }, ($, e, next) => {
+    const text = reportMarkdown(e.props);
+    return text === null ? next(e) : next({ ...e, props: { ...e.props, text } });
+  }).catch(passthrough);
   // 2.1.302 d.ts 13296-13304, 16715-16716: tool.call carries the flat Agent
   // arguments, including explicit effort; turn.step's effective effort also
   // includes the shell definition's low and cannot distinguish that default.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     if (e.tool === 'Agent' && e.subagent_type === AGENT_TYPE) {
-      const key = keyFor(await $.session.id(), e.tool_use_id);
+      const session = await $.session.id(), key = keyFor(session, e.tool_use_id);
       efforts.delete(key);
       if (['low', 'medium', 'high', 'xhigh', 'max'].includes(e.effort)) efforts.set(key, e.effort);
       // Denied calls have no spawn to consume their entry.
       if (efforts.size > 128) efforts.delete(efforts.keys().next().value);
+      // AgentSpawnInput.name is pinned. Reserve through the shared companion
+      // before the Agent tool creates that address; never rename a resumption.
+      if (!e.resume && session) {
+        const deadline = await $.clock.now() + 2000;
+        const cwd = await $.session.root();
+        const base = typeof e.name === 'string' ? e.name.replace(/-(?:[2-9]|[1-9]\d+)$/, '').toLowerCase() : '';
+        const preferred = [TIER_1_NAMES, TIER_2_NAMES, TIER_3_NAMES]
+          .some(names => names.some(name => name.toLowerCase() === base));
+        const timeoutMs = await processBudget($, { deadline, timeoutMs: 2000 });
+        let timer;
+        // A shared discovery may have started with another call's longer
+        // timeout. Bound our wait too, without cancelling that caller's probe.
+        const executable = await Promise.race([node($, timeoutMs), new Promise((resolve, reject) => {
+          timer = $.clock.after(timeoutMs, () => reject(new Error('Native name reservation timed out.')));
+        })]).finally(() => timer?.cancel());
+        const result = await $.process.run([executable, `${$.plugin.root}/scripts/codex-companion.mjs`,
+          'reserve-name', '--session-cwd', cwd, '--session', session,
+          ...(preferred ? ['--preferred', e.name] : [])], { cwd, timeoutMs: await processBudget($, { deadline, timeoutMs: 2000 }) });
+        if (result.exitCode === 0 && !result.isStdoutTruncated) {
+          const { name } = JSON.parse(result.stdout);
+          if (typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(name)) {
+            const response = await next({ ...e, name });
+            // Background launch acknowledgements carry no content array, so tell
+            // the model through context (read after the result, never shown)
+            // and leave the result itself untouched. A deny stays as it is.
+            if (name === e.name || !response || response.deny !== undefined) return response;
+            const requested = e.name === undefined ? '' : ` (requested ${JSON.stringify(e.name)})`;
+            return { ...response, context: [...(Array.isArray(response.context) ? response.context : []),
+              `Codex worker named ${name}${requested}; use SendMessage to ${name} for follow-ups.`] };
+          }
+        }
+      }
     }
     return next(e);
-  });
+  }).catch(passthrough);
   on('agent.spawn', { subagentType: AGENT_TYPE }, async ($, e, next) => {
     if (e.subagentType !== AGENT_TYPE) return next(e);
     const session = await $.session.id(), callKey = keyFor(session, e.tool_use_id);
@@ -605,6 +1055,8 @@ export function register(on) {
       // A first turn waits below until settings are observed for its id.
       const result = await next(e);
       if (result.agentId) {
+        rememberDisplay(toolAgents, e.tool_use_id, result.agentId);
+        invalidateProgress($);
         spawnBinding.agentId = result.agentId;
         knownTypes.set(result.agentId, AGENT_TYPE);
         const key = keyFor(session, result.agentId);
@@ -612,33 +1064,17 @@ export function register(on) {
         // step run in separate dispatches, but share this module's bindings.
         observedBindings.set(key, { ...observedBindings.get(key),
           ...(e.permissionMode !== undefined ? { permissionMode: e.permissionMode } : {}),
-          ...(!e.resume && effort ? { effort } : {}) });
-        let state;
-        try {
-          state = await $.store.get(key);
-          if (!state && (await prune($)).count >= 128) return result;
-          state ||= { type: AGENT_TYPE, session, agentId: result.agentId, name: e.name || result.agentId };
-          // Resumed SendMessage runs expose the current parent's mode here.
-          // If it is absent, retain the previously observed mode conservatively.
-          try {
-            // Do not let a reload adopt stale writable settings if the following
-            // binding write fails. Memory can recover this guard in this module.
-            await save($, { ...state, bindingPending: true });
-            restoreBinding(key, state);
-            await save($, state);
-            await $.store.delete(bindingFailedKey(session, result.agentId));
-          } catch (error) {
-            // Also record a failed guard write when the store recovers. If both
-            // writes fail, the observed binding still protects this module.
-            await save($, { ...state, bindingPending: true }).catch(() => {});
-            throw error;
-          }
-        } catch {
-          // A separate small guard survives a failed native-state write without
-          // discarding a resumed agent's job/owner handles. If no state exists,
-          // turn.start also detects the lost binding after a module reload.
-          await $.store.set(bindingFailedKey(session, result.agentId), { bindingPending: true }).catch(() => {});
-        }
+          ...(!e.resume && effort ? { effort } : {}),
+          // The explicit Agent name survives agent-list discovery failures.
+          ...(e.name ? { name: e.name } : {}) });
+        // Return without store work: the host delivers this agent's turn.start
+        // to us only after this hook returns (or its bound passes), and a slow
+        // admission scan here made it skip turn.start entirely. turn.start
+        // performs admission, eviction and the durable binding write.
+        if (e.resume) resumedSpawns.add(key); else resumedSpawns.delete(key);
+        // One small durable guard (not the admission scan) until turn.start
+        // persists the binding, so a reload in between still fails closed.
+        await $.store.set(bindingFailedKey(session, result.agentId), { bindingPending: true, at: await $.clock.now() }).catch(() => {});
       }
       return result;
     } finally { bindings.delete(spawnBinding); if (!bindings.size) spawning.delete(session); release(); }
@@ -662,38 +1098,77 @@ export function register(on) {
     dispatching.set(key, lock);
     try {
       let state = await $.store.get(key);
-      // Established agents must not wait for unrelated session spawns: waiting
-      // on their promises spends this dispatch's hook budget.
-      if (!state && !observedBindings.has(key)) {
-        await Promise.all([...(spawning.get(session) || [])].filter(binding => binding.agentId === e.agentId).map(binding => binding.pending));
+      // Wait only for this agent's own spawn (its guard write may still be in
+      // flight); unrelated session spawns would spend this hook's budget.
+      const own = [...(spawning.get(session) || [])].filter(binding => binding.agentId === e.agentId);
+      if (own.length || (!state && !observedBindings.has(key))) {
+        await Promise.all(own.map(binding => binding.pending));
         state = await $.store.get(key);
       }
+      const refuse = async code => {
+        refusals.set(key, { turnId: e.turnId, report: admissionBlocked(code, state || { agentId: e.agentId, name: agent.name }) });
+        agentDisplays.delete(e.agentId);
+        invalidateProgress($);
+        resumedSpawns.delete(key); observedBindings.delete(key);
+        // Nothing launched: even a retained, versioned binding must lose this
+        // spawn's guard so a later reload cannot mistake it for pending work.
+        if (state && !state.v && !state.intent && !state.incoming) await $.store.delete(key);
+        await $.store.delete(bindingFailedKey(session, e.agentId));
+        return next(e);
+      };
+      // Reject oversized input before recheck, pruning or any binding write.
+      if (e.text.length > 65536) return await refuse('native_message_too_large');
+      rememberPrompt($, e);
       if (state) restoreBinding(key, state);
-      if (state?.answeredTurn === e.turnId || state?.intent?.turnId === e.turnId || state?.incoming?.turnId === e.turnId) return next(e);
+      if (state?.answeredTurn === e.turnId || state?.intent?.turnId === e.turnId || state?.incoming?.turnId === e.turnId) {
+        // A redelivered start: this turn already persisted its binding, so the
+        // spawn-time guard is stale.
+        if (observedBindings.has(key) && !state.bindingPending) {
+          await save($, state);
+          await $.store.delete(bindingFailedKey(session, e.agentId));
+          observedBindings.delete(key); resumedSpawns.delete(key);
+        }
+        return next(e);
+      }
       if (state?.intent && state.intent.turnId !== state.answeredTurn && !await isClosed($, state)
         && !await recheck($, state).catch(() => false)) return next(e);
-      const budget = await prune($);
-      if ((!state && budget.count >= 128) || budget.size + e.text.length * 4 > 2 * 1024 * 1024 || e.text.length > 65536) return next(e);
-      state ||= { type: AGENT_TYPE, session, agentId: e.agentId, name: agent.name || e.agentId,
-        bindingPending: !observedBindings.has(key) };
-      if (await $.store.get(bindingFailedKey(session, e.agentId))) state.bindingPending = true;
-      restoreBinding(key, state);
-      if (!state.v) {
+      if (refusals.get(key)?.report.blockers[0].code === 'native_binding_gone') return await refuse('native_binding_gone');
+      refusals.delete(key);
+      const candidate = { ...(state || { type: AGENT_TYPE, session, agentId: e.agentId, name: (agent.name !== e.agentId && agent.name) || observedBindings.get(key)?.name,
+        bindingPending: !observedBindings.has(key) }), incoming: { turnId: e.turnId, text: e.text } };
+      const bindingFailed = await $.store.get(bindingFailedKey(session, e.agentId));
+      if (bindingFailed) candidate.bindingPending = true;
+      restoreBinding(key, candidate);
+      if (!candidate.v) {
         const directory = await $.fs.stat(await $.session.cwd(), { resolve: true });
         if (directory.kind !== 'dir' || !directory.realPath) throw new Error('Native workspace must resolve to an existing directory.');
-        state.v = 2; state.cwd = directory.realPath;
+        candidate.v = 2; candidate.cwd = directory.realPath;
       }
-      state.incoming = { turnId: e.turnId, text: e.text };
-      delete state.finishedAt;
-      await save($, state);
+      delete candidate.finishedAt;
+      const reserveSize = stateSize(candidate) - (state ? stateSize(state) : 0);
+      const budget = await prune($, { reserveCount: state ? 0 : 1, reserveSize, keepKey: key,
+        pending: key => observedBindings.has(key) || resumedSpawns.has(key) });
+      const code = budget.count + Number(!state) > MAX_RECORDS || budget.size + reserveSize > MAX_STORE_SIZE
+        ? 'native_capacity' : !state && (resumedSpawns.has(key) || (!observedBindings.has(key) && !bindingFailed)) ? 'native_binding_gone' : null;
+      if (code) return await refuse(code);
+      resumedSpawns.delete(key);
+      state = candidate;
+      // One retry: the spawn-time guard still protects the binding meanwhile.
+      try { await save($, state); } catch { await save($, state); }
       if (!state.bindingPending) await $.store.delete(bindingFailedKey(session, e.agentId));
+      observedBindings.delete(key);
       return next(e);
     } finally { if (dispatching.get(key) === lock) dispatching.delete(key); }
   }).catch(passthrough);
   on('turn.step', async function* ($, e, next) {
+    const session = await $.session.id(), key = keyFor(session, e.agentId);
+    const refusal = refusals.get(key);
+    if (refusal && (!refusal.turnId || refusal.turnId === e.turnId)) return yield* finish(e, refusal.report);
     const agent = await ours($, e.agentId);
     if (!agent) return yield* next(e);
-    const session = await $.session.id(), key = keyFor(session, e.agentId);
+    if (!await $.store.get(key) && !await $.store.get(bindingFailedKey(session, e.agentId))) {
+      return yield* finish(e, admissionBlocked('native_binding_gone', { agentId: e.agentId, name: agent.name }));
+    }
     const flight = `${key}:${e.turnId}`;
     const listener = observer();
     let running = flights.get(flight);
@@ -701,12 +1176,30 @@ export function register(on) {
       // Do not wait on another turn's stream (which spends this hook's budget).
       // One agent owns the dispatch lock; a concurrent turn is refused.
       if (dispatching.has(key)) return yield* finish(e, blocked('Another turn is active for this native agent; retry after it finishes.', { agentId: e.agentId }));
-      running = { listeners: new Set(), done: false };
+      running = { listeners: new Set(), done: false,
+        feed: { agentId: e.agentId, turnId: e.turnId, entries: [], omitted: 0 },
+        display: { turnId: e.turnId, name: agent.name || e.agentId, elapsedMs: 0, status: 'running' } };
       dispatching.set(key, running);
       flights.set(flight, running);
+      liveProgress.set(e.agentId, running.feed);
+      rememberDisplay(agentDisplays, e.agentId, running.display);
+      rememberDisplay(turnLogs, logKey(e.agentId, e.turnId), running.feed);
+      invalidateProgress($);
       running.listeners.add(listener);
       running.result = (async () => {
+        try {
+          running.display.startedAt = await $.clock.now();
+          running.tick = $.clock.every(1000, async () => {
+            try {
+              const now = await $.clock.now();
+              if (liveProgress.get(e.agentId) !== running.feed) return;
+              running.display.elapsedMs = Math.max(0, now - running.display.startedAt);
+              invalidateProgress($);
+            } catch { /* A display tick cannot affect the flight. */ }
+          });
+        } catch { /* Rendering still updates on progress if timers are unavailable. */ }
         const state = await $.store.get(key) || { session, agentId: e.agentId, name: agent.name };
+        if (state.incoming?.turnId === e.turnId) rememberPrompt($, { ...e, text: state.incoming.text });
         if (await $.store.get(bindingFailedKey(session, e.agentId))) state.bindingPending = true;
         restoreBinding(key, state);
         const progress = progressFor($, e, state, text => Promise.all([...running.listeners].map(item => item.push(text))));
@@ -735,7 +1228,7 @@ export function register(on) {
           }
           report ||= blocked(error?.message || 'Native adapter failed.', state);
           uncertain = state.intent?.turnId === e.turnId && (!state.jobId || ACTIVE.includes(state.status));
-        } finally { timer.cancel(); early.cancel(); }
+        } finally { progress.stop(); timer.cancel(); early.cancel(); }
         // A stopped turn closes only through closeTurn's evidence, and no turn
         // closes while its job still reads active.
         if (state.intent?.turnId === e.turnId && (ACTIVE.includes(state.status) || stopping)) {
@@ -764,12 +1257,27 @@ export function register(on) {
             await save($, state).catch(() => {});
           }
         }
+        running.display.status = report.status;
+        running.display.name = report.worker || state.worker || state.name || running.display.name;
+        running.display.question = ['needs_answer', 'needs_input'].includes(report.status)
+          ? (typeof report.question === 'string' ? report.question : report.question?.text)?.slice(0, 200) : undefined;
         return report;
-      })().finally(() => {
+      })().finally(async () => {
         running.done = true;
+        try { running.tick?.cancel(); } catch { /* Best-effort display teardown. */ }
+        // An unsettled adapter error is handed back as blocked by turn.step's catch.
+        if (running.display.status === 'running') running.display.status = 'blocked';
+        try {
+          if (Number.isFinite(running.display.startedAt)) running.display.elapsedMs = Math.max(0, await $.clock.now() - running.display.startedAt);
+        } catch { /* Keep the last tick. */ }
         for (const item of running.listeners) item.close();
         flights.delete(flight);
         if (dispatching.get(key) === running) dispatching.delete(key);
+        if (liveProgress.get(e.agentId) === running.feed) {
+          liveProgress.delete(e.agentId);
+          rememberDisplay(agentDisplays, e.agentId, running.display);
+          invalidateProgress($);
+        }
       });
       // A failing host/store call is rethrown after draining, not unhandled.
       running.result.catch(() => {});

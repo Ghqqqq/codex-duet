@@ -3,9 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
-import { resolveStateRoot, removeJobsFromState, unresolvedTask } from "./state.mjs";
+import { resolveStateRoot, resolveStateDirForRoot, removeJobsFromState, unresolvedTask } from "./state.mjs";
+import { spawnOwned } from "./process.mjs";
 import { inertIndexlessWorkspace } from "./indexless-state.mjs";
-import { planSessionMarkers, pruneSessionMarkers } from "./session-markers.mjs";
+import { resolveSessionMarkersRoot, planSessionMarkers, pruneSessionMarkers } from "./session-markers.mjs";
 import { planRuns, pruneRuns, RUN_SESSIONS_DIR } from "./run-journal.mjs";
 import { CodexAppServerClient } from "./app-server.mjs";
 import { ensureBrokerSession } from "./broker-lifecycle.mjs";
@@ -14,6 +15,10 @@ import { planClaudeImports, sweepClaudeImports } from "./claude-session-transfer
 
 const DAY = 86400000;
 const INTERVAL = 12 * 60 * 60 * 1000;
+const RECONCILE_LIMIT = 5;
+const MAINTENANCE_BUDGET_MS = 5000;
+const LOST_TURN_GRACE_MS = 30 * 60 * 1000;
+const LEASE_MARGIN_MS = 60 * 1000;
 const CONTEXT = Symbol("retentionContext");
 const active = job => ["queued", "running"].includes(job.status);
 const safeId = id => typeof id === "string" && /^[A-Za-z0-9_-]+$/.test(id);
@@ -76,6 +81,168 @@ function readJson(file, cache = null) {
   if (!after || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs || before.size !== after.size) throw new Error(`Record changed while reading: ${file}`);
   cache?.set(file, { stat: after, value });
   return value;
+}
+
+// Check every recorded activity time, not just completedAt: a renewed lease or
+// a later owner must win over an old wrapper outcome. Missing/invalid history
+// is not evidence that it is safe to reconcile automatically.
+function staleTask(job, now, requireUnresolved = true) {
+  if (!job || job.jobClass !== "task" || active(job) || job.ownerAttached || alive(job.pid) || alive(job.launcherPid) || (requireUnresolved && !unresolvedTask(job))) return false;
+  if (!job.threadId || !job.turnId || typeof job.workspaceRoot !== "string" || !path.isAbsolute(job.workspaceRoot)) return false;
+  const times = [job.createdAt, job.startedAt, job.updatedAt, job.completedAt].filter(value => value != null).map(value => Date.parse(value));
+  if (job.leaseRenewedAt != null) times.push(Number(job.leaseRenewedAt));
+  const lease = Number(job.leaseSec ?? 1800) * 1000;
+  if (!times.length || times.some(value => !Number.isFinite(value)) || !Number.isFinite(lease) || lease < 0) return false;
+  if (now - Math.max(...times) < Math.max(LOST_TURN_GRACE_MS, lease + LEASE_MARGIN_MS)) return false;
+  return job.leaseExpiresAt == null || (Number.isFinite(Number(job.leaseExpiresAt)) && now >= Number(job.leaseExpiresAt) + LEASE_MARGIN_MS);
+}
+
+// Run in a short-lived child with the requested isolated environment. This
+// avoids changing the caller's process.env for the exact recovery machinery.
+export async function reconcileAutomaticTask(file, now, deadline) {
+  const workspace = path.dirname(path.dirname(file)), env = process.env;
+  const read = () => {
+    realDirectory(resolveStateRoot(env)); realDirectory(workspace); realDirectory(path.dirname(file));
+    if (path.dirname(workspace) !== resolveStateRoot(env) || fs.existsSync(path.join(workspace, ".state-lock"))) return null;
+    const job = readJson(file);
+    if (!staleTask(job, now) || resolveStateDirForRoot(job.workspaceRoot, env) !== workspace || path.basename(file) !== `${job.id}.json`) return null;
+    const index = readJson(path.join(workspace, "state.json"))?.jobs?.find(item => item.id === job.id);
+    if (!index || !staleTask({ ...job, ...index, result: job.result }, now)) return null;
+    artifactFiles(workspace, job); // Recovery writes artifacts; reject foreign paths.
+    return job;
+  };
+  const job = read();
+  if (!job || Date.now() >= deadline) return false;
+  const { readAppServerTurn } = await import("./codex.mjs");
+  const result = await readAppServerTurn(job.workspaceRoot, job, { env, deadline });
+  // Unavailable/in-progress turns remain byte-for-byte unchanged. Do not let
+  // failed observations repeatedly reset the age of an unresolved record.
+  if (!result?.turnEnded || Date.now() >= deadline) return false;
+  const latest = read();
+  if (!latest || latest.threadId !== job.threadId || latest.turnId !== job.turnId) return false;
+  const { reconcileLostTurn } = await import("../codex-companion.mjs");
+  const recovered = await reconcileLostTurn(latest.workspaceRoot, latest, { turnResult: result });
+  return recovered.recovery?.status === "recovered";
+}
+
+async function recoverInEnvironment(file, now, deadline, env) {
+  const source = `import { reconcileAutomaticTask } from ${JSON.stringify(import.meta.url)};
+    try { console.log(JSON.stringify(await reconcileAutomaticTask(...JSON.parse(process.argv[1])))); }
+    catch { process.exitCode = 1; }`;
+  const child = spawnOwned(process.execPath, ["--input-type=module", "-e", source, JSON.stringify([file, now, deadline - 1000])],
+    { env, stdio: ["ignore", "pipe", "ignore"] });
+  let output = "";
+  child.stdout.on("data", chunk => { if (output.length < 100) output += chunk; });
+  // The reader closes its owned client first. This final ceiling also bounds
+  // synchronous state-lock contention after the RPC has finished.
+  const timeout = setTimeout(() => child.kill("SIGKILL"), Math.max(1, deadline - Date.now()));
+  try {
+    return await new Promise(resolve => {
+      child.once("error", () => resolve(false));
+      child.once("close", code => resolve(code === 0 && output.trim() === "true"));
+    });
+  } finally { clearTimeout(timeout); }
+}
+
+function pruneMissingJobMarkers({ env, jobFiles = null, deadline = Infinity, limit = 100, after = "" }) {
+  const report = { markersDeleted: 0, bytesFreed: 0, errors: [], cursor: after };
+  const root = resolveSessionMarkersRoot(env);
+  function* candidates() {
+    try {
+      realDirectory(root);
+      // Include the separator so session order agrees with full-path cursors.
+      const sessions = fs.readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name)
+        .sort((a, b) => a + path.sep < b + path.sep ? -1 : a + path.sep > b + path.sep ? 1 : 0);
+      // Resume after the previous scan, wrapping once. Examine at most limit
+      // marker files, including retained ones, so old live markers cannot starve
+      // later sessions and the pass never parses the entire marker history.
+      for (const wrap of [false, true]) for (const session of sessions) {
+        if (Date.now() >= deadline) return;
+        const directory = path.join(root, session);
+        try {
+          realDirectory(directory);
+          for (const name of fs.readdirSync(directory).sort()) {
+            if (!name.endsWith(".json")) continue;
+            const file = path.join(directory, name);
+            if ((file <= after) !== wrap) continue;
+            yield file;
+          }
+        } catch (error) { report.errors.push(errorEntry({ path: directory }, error)); }
+      }
+    } catch (error) { if (error.code !== "ENOENT") report.errors.push(errorEntry({ path: root }, error)); }
+  }
+  let scanned = 0;
+  for (const candidate of candidates()) {
+    if (Date.now() >= deadline || scanned++ >= limit) break;
+    report.cursor = candidate;
+    try {
+      if (!fs.lstatSync(candidate).isFile()) continue;
+      const marker = readJson(candidate), file = marker?.jobFile;
+      if (!safeId(marker?.jobId) || typeof file !== "string" || !path.isAbsolute(file) || path.basename(candidate) !== `${marker.jobId}.json`) continue;
+      if (jobFiles && !jobFiles.has(file)) continue;
+      const jobs = path.dirname(file), workspace = path.dirname(jobs), root = resolveStateRoot(env);
+      if (path.dirname(workspace) !== root || path.basename(jobs) !== "jobs" || path.basename(file) !== `${marker.jobId}.json`) continue;
+      realDirectory(root); realDirectory(workspace); realDirectory(jobs);
+      // A missing/unreadable state directory may be an unavailable mount, not
+      // a pruned job. Listing also checks directory readability before unlink.
+      fs.readdirSync(workspace); fs.readdirSync(jobs);
+      if (fs.existsSync(path.join(workspace, ".state-lock")) || fs.lstatSync(file, { throwIfNoEntry: false })) continue;
+      const stat = regularStat(candidate);
+      if (!stat) continue;
+      fs.unlinkSync(candidate);
+      report.markersDeleted += 1; report.bytesFreed += stat.size;
+    } catch (error) {
+      if (error.code !== "ENOENT") report.errors.push(errorEntry({ path: candidate }, error));
+    }
+  }
+  return report;
+}
+
+async function maintainStaleJobs({ env, now, directory, broker }) {
+  const deadline = Date.now() + MAINTENANCE_BUDGET_MS;
+  const file = path.join(directory, "maintenance.json"), previous = readJson(file) ?? {};
+  const markers = pruneMissingJobMarkers({ env, deadline, after: previous.markerCursor });
+  const report = { jobsReconciled: 0, reconciliationAttempts: 0, markersDeleted: markers.markersDeleted, bytesFreed: markers.bytesFreed, errors: markers.errors };
+  const candidates = [];
+  const root = resolveStateRoot(env);
+  try {
+    realDirectory(root);
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (Date.now() >= deadline) break;
+      if (!entry.isDirectory()) continue;
+      const workspace = path.join(root, entry.name);
+      try {
+        realDirectory(workspace);
+        if (fs.existsSync(path.join(workspace, ".state-lock")) || readJson(path.join(workspace, ".legacy-migration.json"))?.pending?.length) continue;
+        const state = readJson(path.join(workspace, "state.json"));
+        if (!Array.isArray(state?.jobs)) continue;
+        realDirectory(path.join(workspace, "jobs"));
+        for (const index of state.jobs) {
+          if (Date.now() >= deadline) break;
+          if (!safeId(index.id) || !staleTask(index, now, false)) continue;
+          const file = path.join(workspace, "jobs", `${index.id}.json`), record = readJson(file);
+          if (staleTask(record, now) && staleTask({ ...record, ...index, result: record.result }, now)) candidates.push(file);
+        }
+      } catch { /* Locked, malformed or incomplete workspaces are not candidates. */ }
+    }
+  } catch (error) { if (error.code !== "ENOENT") report.errors.push(errorEntry({ scope: "reconciliation" }, error)); }
+  candidates.sort();
+  const cursor = previous.jobCursor ?? "";
+  const ordered = [...candidates.filter(item => item > cursor), ...candidates.filter(item => item <= cursor)];
+  let jobCursor = cursor;
+  for (const candidate of ordered) {
+    if (report.reconciliationAttempts >= RECONCILE_LIMIT || deadline - Date.now() < 1500) break;
+    jobCursor = candidate;
+    report.reconciliationAttempts += 1;
+    const recoveryEnv = broker?.endpoint ? { ...env, CODEX_COMPANION_APP_SERVER_ENDPOINT: broker.endpoint } : env;
+    if (await recoverInEnvironment(candidate, now, deadline, recoveryEnv)) report.jobsReconciled += 1;
+  }
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify({ jobCursor, markerCursor: markers.cursor }), { mode: 0o600, flag: "wx" });
+    fs.renameSync(temporary, file);
+  } finally { try { fs.unlinkSync(temporary); } catch { /* renamed */ } }
+  return report;
 }
 function validateJob(job) {
   if (!job || !safeId(job.id) || typeof job.status !== "string" || !job.status) throw new Error("Invalid job record.");
@@ -263,6 +430,20 @@ export function planRetention({ now = Date.now(), days, env = process.env } = {}
   const cache = new Map();
   const state = inspectWorkspaces(env, cutoffMs, { cache });
   const markers = planSessionMarkers(cutoffMs, { env });
+  if (state.jobs.length) {
+    const jobFiles = new Set(state.jobs.map(job => path.join(job.workspace, "jobs", `${job.jobId}.json`)));
+    const selected = new Set(markers.markers.map(marker => marker.path));
+    const linked = planSessionMarkers(Infinity, { env });
+    markers.errors.push(...linked.errors);
+    for (const marker of linked.markers) {
+      if (selected.has(marker.path)) continue;
+      try {
+        const record = readJson(marker.path);
+        if (safeId(record?.jobId) && path.basename(marker.path) === `${record.jobId}.json` &&
+            jobFiles.has(record.jobFile) && path.basename(record.jobFile) === `${record.jobId}.json`) markers.markers.push(marker);
+      } catch { /* An unreadable marker is never selected through its payload. */ }
+    }
+  }
   const runs = planRuns(cutoffMs, { env });
   const snapshots = planClaudeSnapshots(cutoffMs, { env });
   const imports = planClaudeImports({ now, env });
@@ -292,7 +473,7 @@ export async function applyRetention(plan, { deleteThread } = {}) {
         report.errors.push(errorEntry({ workspace }, error));
       }
     }
-    const workspaces = new Map();
+    const workspaces = new Map(), removedJobFiles = new Set();
     for (const candidate of plan.jobs) {
       const selected = workspaces.get(candidate.workspace) ?? new Set();
       selected.add(candidate.jobId); workspaces.set(candidate.workspace, selected);
@@ -345,7 +526,10 @@ export async function applyRetention(plan, { deleteThread } = {}) {
         } catch { /* original failure is already reported */ }
       }
       // Also account for partial artifact removal if commitState hit an I/O error.
-      for (const file of files) if (!fs.existsSync(file.path)) report.bytesFreed += file.bytes;
+      for (const file of files) if (!fs.existsSync(file.path)) {
+        report.bytesFreed += file.bytes;
+        removedJobFiles.add(file.path);
+      }
     }
     const runs = pruneRuns(plan.runs ?? [], cutoff, { env, runSessions: plan.runSessions ?? [] });
     report.runsDeleted = runs.runsDeleted;
@@ -356,6 +540,12 @@ export async function applyRetention(plan, { deleteThread } = {}) {
     report.markersDeleted = markers.markersDeleted;
     report.bytesFreed += markers.bytesFreed;
     report.errors.push(...markers.errors);
+    if (removedJobFiles.size) {
+      const linked = pruneMissingJobMarkers({ env, jobFiles: removedJobFiles, limit: Infinity });
+      report.markersDeleted += linked.markersDeleted;
+      report.bytesFreed += linked.bytesFreed;
+      report.errors.push(...linked.errors);
+    }
     const snapshots = pruneClaudeSnapshots(plan.snapshots ?? [], cutoff, { env });
     report.snapshotsDeleted = snapshots.snapshotsDeleted;
     report.bytesFreed += snapshots.bytesFreed;
@@ -461,7 +651,10 @@ export async function runAutomaticRetention({ cwd = process.cwd(), now = Date.no
     const token = randomUUID();
     const file = path.join(directory, "retention.json"), previous = readJson(file);
     const at = Number(new Date(now)), lastRun = Date.parse(previous?.lastRunAt);
-    if (Number.isFinite(lastRun) && at - lastRun < INTERVAL) return { skipped: true, reason: "interval", lastRunAt: previous.lastRunAt };
+    // Every detached prewarm gets a bounded maintenance pass, independently of
+    // the 12-hour age-deletion throttle. The same lock serializes both paths.
+    const maintenance = await maintainStaleJobs({ env, now: at, directory, broker });
+    if (Number.isFinite(lastRun) && at - lastRun < INTERVAL) return { skipped: true, reason: "interval", lastRunAt: previous.lastRunAt, ...maintenance };
     const plan = planRetention({ now: at, env });
     function save(lastReport) {
       const temporary = path.join(directory, `.retention-${token}.tmp`);
@@ -472,6 +665,11 @@ export async function runAutomaticRetention({ cwd = process.cwd(), now = Date.no
     }
     save(null); // Reserve this interval even if the detached process is interrupted.
     const report = deleteThread ? await applyRetention(plan, { deleteThread }) : await applyRetentionWithBroker(plan, { cwd, env, broker });
+    report.jobsReconciled = maintenance.jobsReconciled;
+    report.reconciliationAttempts = maintenance.reconciliationAttempts;
+    report.markersDeleted += maintenance.markersDeleted;
+    report.bytesFreed += maintenance.bytesFreed;
+    report.errors.push(...maintenance.errors);
     save(report);
     return report;
   } catch (error) { return failed(error); }

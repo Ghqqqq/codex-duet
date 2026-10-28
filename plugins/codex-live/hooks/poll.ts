@@ -18,6 +18,8 @@ type Cached = {
   processedMtime?: number;
   nextCheck: number;
   firstEnded?: number;
+  missingSince?: number;
+  removed?: boolean;
 };
 
 export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): void; onBound?(): void; onLayout?(): void }): (force?: boolean) => Promise<void> {
@@ -29,7 +31,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
   let lastStatus: string | undefined;
   const cache = new Map<string, Cached>();
   // Evicted entries keep only a header summary and file identity, never raw/details.
-  const evicted = new Map<string, Pick<Cached, 'job' | 'processedMtime' | 'marker' | 'firstEnded'>>();
+  const evicted = new Map<string, Pick<Cached, 'job' | 'processedMtime' | 'marker' | 'firstEnded' | 'missingSince' | 'removed'>>();
   const markerNames = new Set<string>();
   const retryMarker = new Map<string, number>();
   const markerErrors = new Map<string, string>();
@@ -71,7 +73,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
       const firstEndedAtMs = { ...current.firstEndedAtMs };
       if (!home) {
         const override = await $.env.get('CODEX_COMPANION_HOME');
-        const userHome = await $.env.get('HOME');
+        const userHome = await $.env.get('HOME') || await $.env.get('USERPROFILE');
         home = override || (userHome ? `${userHome}/.claude/codex-isolated` : '');
         if (!home) return;
       }
@@ -82,11 +84,12 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
       const folder = `${home.replace(/\/$/, '')}/duet/sessions/${session}`;
       let directoryError = '';
       const diagnostic = (error: unknown) => clean(error instanceof Error ? error.message : String(error)).slice(0, 300);
+      const missing = (error: unknown) => (error as { code?: string })?.code === 'ENOENT' ||
+        /\bENOENT\b|no such file or directory/i.test(diagnostic(error));
       const entries = await $.fs.list(folder).catch(error => {
         // A fresh session has no marker directory yet. Other failures must not
         // be mistaken for an empty inventory, even if cached jobs are readable.
-        const missing = error?.code === 'ENOENT' || /\bENOENT\b|no such file or directory/i.test(diagnostic(error));
-        if (missing && !previouslyKnown.size && current.hiddenFinishedBefore === undefined && !current.hiddenJobIds?.length) return [];
+        if (missing(error) && !previouslyKnown.size && current.hiddenFinishedBefore === undefined && !current.hiddenJobIds?.length) return [];
         directoryError = diagnostic(error) || 'Directory unreadable';
         return undefined;
       });
@@ -115,6 +118,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
             marker, markerName: entry.name, job: memo?.job ?? (previous ? jobSummary(previous) : unavailableJob(marker)),
             processedMtime: memo?.processedMtime,
             firstEnded: memo?.firstEnded,
+            missingSince: memo?.missingSince, removed: memo?.removed,
             full: previous?.detailsLoaded !== false ? previous : undefined, nextCheck: 0,
           });
           evicted.delete(entry.name);
@@ -134,6 +138,23 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
         lastDiscovery = discovery;
       }
       const newlyActive: string[] = [];
+      const removedJobs = new Set<string>();
+      const unreadable = async (entry: Cached, error: unknown) => {
+        entry.job = { ...entry.job, detailsUnavailable: true };
+        // Two ENOENT observations at least five seconds apart prove removal
+        // only while both the session inventory and the jobs parent are readable
+        // and that listing no longer names the job file.
+        const parent = entry.marker.jobFile.replace(/[/\\][^/\\]+$/, '') || '/';
+        const base = entry.marker.jobFile.slice(parent.length + 1);
+        const gone = !directoryError && missing(error) &&
+          await $.fs.list(parent).then(entries => !entries.some(item => item.name === base), () => false);
+        if (gone) {
+          if (entry.missingSince !== undefined && now - entry.missingSince >= 5000) entry.removed = true;
+          entry.missingSince ??= now;
+        } else entry.missingSince = undefined;
+        if (entry.removed) removedJobs.add(entry.job.id);
+        entry.nextCheck = now + 5000;
+      };
       const belongsHere = (raw: { sessionId?: unknown } | null, entry: Cached): boolean => {
         const id = entry.marker.jobId;
         // Missing session IDs are legacy records scoped by their marker.
@@ -164,14 +185,13 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
             entry.job = { ...job, lastUpdateMs: now };
             entry.processedMtime = stat.mtimeMs; // Commit only after read + parse + projection succeeded.
           } else if (entry.job.detailsUnavailable) entry.job = { ...entry.job, detailsUnavailable: false };
+          entry.missingSince = undefined; entry.removed = false;
           entry.nextCheck = entry.job.finished ? now + 10000 : 0;
-        } catch {
-          entry.job = { ...entry.job, detailsUnavailable: true };
-          entry.nextCheck = now + 5000;
-        }
+        } catch (error) { await unreadable(entry, error); }
       }
+      for (const entry of [...cache.values(), ...evicted.values()]) if (entry.removed) removedJobs.add(entry.job.id);
       for (const entry of cache.values()) {
-        if (foreignJobs.has(entry.job.id)) continue;
+        if (foreignJobs.has(entry.job.id) || removedJobs.has(entry.job.id)) continue;
         // Also retry bookkeeping after a rejected state write with unchanged mtime.
         if (entry.processedMtime !== undefined) {
           if (!previouslyKnown.has(entry.job.id) && entry.job.active && !opened.has(entry.job.id)) newlyActive.push(entry.job.id);
@@ -188,9 +208,16 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
           firstEndedAtMs[entry.job.id] = entry.firstEnded;
         } else if (entry.job.active || entry.job.unresolved) { delete firstEndedAtMs[entry.job.id]; entry.firstEnded = undefined; }
       }
-      // A reload may coincide with an unreadable marker/directory. Keep the
-      // persisted last good view until its marker can be rediscovered.
-      const restored: Cached[] = current.jobs.filter(job => !cache.has(job.id) && !foreignJobs.has(job.id)).map(job => ({
+      // A reload may coincide with an unreadable marker/directory. Preserve
+      // that last good view, but a readable inventory can prove a marker gone.
+      const restored: Cached[] = current.jobs.filter(job => {
+        if (cache.has(job.id) || foreignJobs.has(job.id)) return false;
+        if (presentMarkers && !presentMarkers.has(`${job.id}.json`)) {
+          removedJobs.add(job.id);
+          return false;
+        }
+        return true;
+      }).map(job => ({
         marker: { jobId: job.id, jobFile: '', summary: job.label, title: '', createdAt: job.createdAt },
         markerName: '', job: { ...jobSummary(job), detailsUnavailable: true },
         full: job.detailsLoaded !== false ? job : undefined, nextCheck: Infinity,
@@ -200,7 +227,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
       const knownIds = new Set([...cache.keys(), ...restored.map(entry => entry.job.id)]);
       const remembered: Cached[] = [...evicted.entries()].filter(([, entry]) => !knownIds.has(entry.job.id))
         .map(([markerName, entry]) => ({ ...entry, markerName, nextCheck: now + 10000 }));
-      let newest = [...cache.values(), ...restored, ...remembered].filter(entry => !foreignJobs.has(entry.job.id))
+      let newest = [...cache.values(), ...restored, ...remembered].filter(entry => !foreignJobs.has(entry.job.id) && !removedJobs.has(entry.job.id))
         .sort((a, b) => b.job.createdAt.localeCompare(a.job.createdAt) || b.job.id.localeCompare(a.job.id));
       // Expiry is a clock transition, including when the file is unchanged or unreadable.
       for (const entry of newest) {
@@ -223,9 +250,9 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
           }
         }
         // Include this tick's first end observations before deciding visibility.
-        const removedSessions = new Set(latest.jobs.filter(job => foreignJobs.has(job.id)).map(sessionId));
+        const removedSessions = new Set(latest.jobs.filter(job => foreignJobs.has(job.id) || removedJobs.has(job.id)).map(sessionId));
         const feeds = removedSessions.size && latest.feeds
-          ? Object.fromEntries(Object.entries(latest.feeds).filter(([id]) => !foreignJobs.has(id) && !removedSessions.has(id)))
+          ? Object.fromEntries(Object.entries(latest.feeds).filter(([id]) => !foreignJobs.has(id) && !removedJobs.has(id) && !removedSessions.has(id)))
           : latest.feeds;
         const visibility = normalizeSessions({ ...latest, jobs: newest.map(entry => entry.job), feeds, firstEndedAtMs, turnCounts });
         const visible = visibleSessions(visibility);
@@ -264,13 +291,14 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
           entry.raw = raw;
           entry.job = { ...summary, lastUpdateMs: now };
           entry.processedMtime = stat.mtimeMs;
+          entry.missingSince = undefined; entry.removed = false;
           entry.nextCheck = entry.job.finished ? now + 10000 : 0;
           if (entry.job.finished) firstEndedAtMs[id] = entry.firstEnded ??= firstEndedAtMs[id] ?? now;
           else if (entry.job.active || entry.job.unresolved) { delete firstEndedAtMs[id]; entry.firstEnded = undefined; }
-        } catch { entry.job = { ...entry.job, detailsUnavailable: true }; entry.nextCheck = now + 5000; }
+        } catch (error) { await unreadable(entry, error); }
       }
       if (hydrated) {
-        newest = newest.filter(entry => !foreignJobs.has(entry.job.id));
+        newest = newest.filter(entry => !foreignJobs.has(entry.job.id) && !removedJobs.has(entry.job.id));
         planned = plan(current);
       }
       const compose = (latest: CodexLiveState, selection?: ReturnType<typeof plan>): CodexLiveState => {
@@ -300,6 +328,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
             .filter(id => retainedSessions.has(id) && id !== selectedId),
           // Omitted marker rediscovery must not invalidate an unchanged retained transcript.
           seenJobIds: [...seen].filter(id => retainedIds.has(id)), autoOpenedJobIds: [...opened].filter(id => retainedIds.has(id)),
+          hiddenJobIds: latest.hiddenJobIds?.filter(id => !removedJobs.has(id)),
           firstEndedAtMs: Object.fromEntries(Object.entries(firstEndedAtMs).filter(([id]) => retainedIds.has(id))),
           recentEndedIds: recentEndedJobIds(retained, now, job => {
             const end = Date.parse(job.completedAt);
@@ -342,7 +371,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
       }
       const retainedIds = new Set(candidate.jobs.map(job => job.id));
       knownJobs.clear();
-      for (const entry of [...cache.values(), ...remembered]) if (entry.processedMtime !== undefined &&
+      for (const entry of [...cache.values(), ...remembered]) if (!entry.removed && entry.processedMtime !== undefined &&
         (retainedIds.has(entry.job.id) || !presentMarkers || presentMarkers.has(entry.markerName))) knownJobs.add(entry.job.id);
       for (const entry of remembered) if (retainedIds.has(entry.job.id)) {
         cache.set(entry.job.id, entry);
@@ -353,6 +382,7 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
       for (const [id, entry] of cache) if (!retainedIds.has(id)) {
         if (!foreignJobs.has(id) && (!presentMarkers || presentMarkers.has(entry.markerName))) evicted.set(entry.markerName, {
           job: jobSummary(entry.job), processedMtime: entry.processedMtime, marker: entry.marker, firstEnded: entry.firstEnded,
+          missingSince: entry.missingSince, removed: entry.removed,
         });
         cache.delete(id);
         markerNames.delete(entry.markerName);

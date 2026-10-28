@@ -74,8 +74,9 @@ function callAsync(f, ...args) {
   return { child, done: new Promise(resolve => child.once("close", status => resolve({ status, stdout, stderr }))) };
 }
 
-test("stored transport failures recover the exact terminal outcome and provenance without replay", () => {
+test("stored transport failures recover the exact terminal outcome and provenance without replay", async () => {
   for (const outcome of ["completed", "blocked", "needs_input", "failed", "interrupted"]) {
+    const expected = outcome === "interrupted" ? "blocked" : outcome;
     const turnStatus = ["failed", "interrupted"].includes(outcome) ? outcome : "completed";
     const f = fixture(`lost-turn:${turnStatus}`), original = loseTurn(f);
     const state = f.state(), turn = state.threads[0].turns[0];
@@ -92,19 +93,19 @@ test("stored transport failures recover the exact terminal outcome and provenanc
       result: { status: 1, error: "Codex broker connection closed during startup.", threadId: original.threadId, turnId: original.turnId } });
     if (["completed", "interrupted"].includes(outcome)) {
       const status = directJson(f.call("status", original.id, "--json"));
-      assert.equal(status.job.status, outcome);
+      assert.equal(status.job.status, expected);
       assert.equal(status.job.turnResolution, turnStatus);
     }
 
     const waited = f.call("wait", original.id, "--owner", original.ownerId, "--direct");
-    const exitCode = outcome === "completed" ? 0 : ["failed", "interrupted"].includes(outcome) ? 1 : 2;
+    const exitCode = expected === "completed" ? 0 : expected === "failed" ? 1 : 2;
     assert.equal(waited.status, exitCode, waited.stderr + waited.stdout);
     const compact = directJson(waited), report = directJson(f.call("result", original.id, "--details")), saved = storedFixtureJob(f, original.id);
-    assert.equal(compact.status, outcome);
-    assert.equal(report.status, outcome);
-    assert.equal(saved.status, outcome);
+    assert.equal(compact.status, expected);
+    assert.equal(report.status, expected);
+    assert.equal(saved.status, expected);
     if (!["failed", "interrupted"].includes(outcome)) assert.equal(saved.result.structured.status, outcome);
-    assert.equal(saved.result.workerStatus, outcome);
+    assert.equal(saved.result.workerStatus, expected);
     assert.equal(report.recovered, true);
     assert.equal(saved.recovered, true);
     assert.equal(report.recoveredAt, saved.recoveredAt);
@@ -127,7 +128,7 @@ test("stored transport failures recover the exact terminal outcome and provenanc
     const result = f.call("result", original.id, "--details");
     assert.equal(result.status, exitCode, result.stderr + result.stdout);
     const reread = directJson(result);
-    assert.equal(reread.status, outcome);
+    assert.equal(reread.status, expected);
     assert.equal(reread.recoveredAt, report.recoveredAt);
     assert.equal(reread.completedAt, report.completedAt);
     assert.deepEqual(reread.recovery, report.recovery);
@@ -135,7 +136,58 @@ test("stored transport failures recover the exact terminal outcome and provenanc
     if (question) assert.equal(reread.question, question);
     assert.deepEqual(f.state().turnReads, [{ threadId: original.threadId, includeTurns: true }]);
     assert.equal(f.state().nextTurnId, 2, "recovery never replays the turn");
+    if (outcome === "interrupted") {
+      assert.equal(report.blockers[0].code, "codex_runtime_restarted");
+      assert.equal(report.exitCode, 2);
+      assert.equal(report.interruptionReason, "codex_runtime_restarted");
+      assert.equal(report.interruptionConfirmed, true);
+      assert.deepEqual(splitRawArgumentString(compact.next), ["duet", "task", "--to", compact.worker]);
+      const continued = directJson(f.call(...splitRawArgumentString(compact.next).slice(1), "--direct", "Continue fixture work."));
+      assert.equal(continued.status, "completed");
+      assert.equal(storedFixtureJob(f, continued.jobId).threadId, original.threadId);
+      assert.equal(f.state().nextTurnId, 3, "only the explicit continuation submits another turn");
+    }
   }
+
+  // Stop intent may reach the job before recovery but after its runtime dies.
+  for (const stop of ["cancel", "recorded-cancel", "owner-stop", "unknown-cause"]) {
+    const f = fixture("lost-turn:interrupted"), original = loseTurn(f);
+    if (stop === "cancel") assert.equal(f.call("cancel", original.id, "--json").status, 0);
+    else storedFixtureJob(f, original.id, stop === "recorded-cancel"
+      ? { cancelRequested: { reason: "cancelled_by_user", at: new Date().toISOString() } }
+      : stop === "owner-stop" ? { ownerDetachReason: "signal" }
+      : { result: null, errorMessage: "Unknown wrapper failure" });
+    const response = f.call("result", original.id), report = directJson(response);
+    assert.equal(response.status, 1);
+    assert.equal(report.status, stop.includes("cancel") ? "cancelled" : "interrupted");
+    assert.equal(report.blockers?.some(blocker => blocker.code === "codex_runtime_restarted") ?? false, false);
+    assert.equal(f.state().nextTurnId, 2);
+  }
+
+  const direct = fixture("lost-turn:interrupted");
+  const directResponse = direct.call("task", "--direct", "Recover the runtime exit.");
+  const directResult = directJson(directResponse);
+  assert.equal(directResponse.status, 2);
+  assert.equal(directResult.status, "blocked");
+  assert.equal(directResult.blockers[0].code, "codex_runtime_restarted");
+  assert.deepEqual(splitRawArgumentString(directResult.next), ["duet", "task", "--to", directResult.worker]);
+  assert.equal(direct.state().nextTurnId, 2);
+
+  // Also cancel through the real CLI while the fake runtime is poised to exit.
+  const f = fixture("lost-turn:interrupted"), gate = path.join(f.dir, "runtime-exit");
+  f.env.CODEX_FIXTURE_RUNTIME_EXIT_GATE = gate;
+  const launched = directJson(f.call("task", "--detached", "--report", "--json", "Wait for cancellation."));
+  await waitForCondition(() => fs.existsSync(path.join(f.dir, "fake-codex-state.json")) && f.state().threads[0]?.turns?.[0]?.status === "inProgress");
+  const cancellation = callAsync(f, "cancel", launched.jobId, "--json");
+  try {
+    await waitForCondition(() => storedFixtureJob(f, launched.jobId).cancelRequested);
+  } finally { fs.writeFileSync(gate, "exit"); }
+  const cancelled = directJson(await cancellation.done);
+  assert.equal(cancelled.reason, "cancelled_by_user");
+  const report = directJson(f.call("result", launched.jobId));
+  assert.equal(report.status, "cancelled");
+  assert.equal(report.blockers?.some(blocker => blocker.code === "codex_runtime_restarted") ?? false, false);
+  assert.equal(f.state().nextTurnId, 2);
 });
 
 test("an unresolved transport failure stays blocked until explicit exact-turn cancel is confirmed", () => {
@@ -171,7 +223,7 @@ test("an unresolved transport failure stays blocked until explicit exact-turn ca
   assert.equal(stopped.status, 0, stopped.stderr + stopped.stdout);
   assert.equal(directJson(stopped).confirmation, "confirmed");
   const saved = storedFixtureJob(f, original.id);
-  assert.equal(saved.status, "interrupted");
+  assert.equal(saved.status, "cancelled");
   assert.equal(saved.turnResolution, "interrupted");
   assert.equal(saved.recovery.originalError, original.errorMessage);
   assert.equal(saved.recovery.interruptRequested, true);

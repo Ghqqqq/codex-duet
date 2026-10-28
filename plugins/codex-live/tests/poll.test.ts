@@ -13,6 +13,7 @@ function fixture(on: On, failure: () => string | undefined = () => undefined) {
   const clock = mock.clock(on, { now: epoch });
   mock.env(on, { HOME: '/user', CODEX_COMPANION_HOME: '/alias' });
   const files = new Map<string, { text: string; mtime: number }>();
+  const errors = new Map<string, string>();
   const reads: string[] = [];
   const lists: string[] = [];
   const opens: PaneOpenArgs[] = [];
@@ -29,21 +30,24 @@ function fixture(on: On, failure: () => string | undefined = () => undefined) {
   on('ui.status', ($, e) => { statuses.push(e.text); return { value: undefined }; });
   on('fs.exists', () => ({ value: true }));
   on('fs.stat', ($, e) => {
+    if (errors.has(e.path)) return { deny: errors.get(e.path)! };
     if (e.path === '/alias') return { value: {
       kind: 'dir', size: 0, mtimeMs: 0, isLink: true, realPath: '/canonical',
     } };
     const file = files.get(e.path);
     return file ? { value: { kind: 'file', size: file.text.length, mtimeMs: file.mtime, isLink: false } }
-      : { deny: 'File removed' };
+      : { deny: 'ENOENT: no such file or directory' };
   });
   on('fs.list', ($, e) => {
     lists.push(e.path);
+    if (errors.has(e.path)) return { deny: errors.get(e.path)! };
     return { value: [...files.keys()].filter(path => path.startsWith(`${e.path}/`)).map(path => ({
       name: path.slice(e.path.length + 1), kind: 'file' as const, size: 1, mtimeMs: 1, isLink: false,
     })) };
   });
   on('fs.read', ($, e) => {
     reads.push(e.path);
+    if (errors.has(e.path)) return { deny: errors.get(e.path)! };
     const file = files.get(e.path);
     return file ? { value: file.text } : { deny: 'File unreadable' };
   });
@@ -64,7 +68,7 @@ function fixture(on: On, failure: () => string | undefined = () => undefined) {
       id, status, createdAt, startedAt: createdAt, activity: [{ seq: 1, type: 'agentMessage', text: 'Working' }],
     }) });
   }
-  return { clock, files, reads, lists, opens, statuses, writes, add,
+  return { clock, files, errors, reads, lists, opens, statuses, writes, add,
     close: () => { open = false; }, switchSession: () => { session = 'session-b'; },
     latest: () => writes[writes.length - 1],
   };
@@ -73,7 +77,7 @@ function fixture(on: On, failure: () => string | undefined = () => undefined) {
 // The kit validates trees but does not paint a scrollable window. These unit
 // tests use an entirely in-memory engine and assert no engine scrolls occur;
 // Mounted session/timer integration tests use the real kit.
-function scrollFixture(diagnostics?: Parameters<typeof createPoller>[1]) {
+function scrollFixture(diagnostics?: Parameters<typeof createPoller>[1], environment: Record<string, string | undefined> = { CODEX_COMPANION_HOME: '/home' }) {
   const files = new Map<string, { text: string; mtime: number }>();
   const markers: string[] = [];
   const scrolls: UiScrollArgs[] = [];
@@ -99,11 +103,14 @@ function scrollFixture(diagnostics?: Parameters<typeof createPoller>[1]) {
       scroll: async (args: UiScrollArgs) => { scrolls.push(args); return {}; },
     },
     session: { id: async () => 'session-a' },
-    env: { get: async () => '/home' },
+    env: { get: async (name: string) => environment[name] },
     clock: { now: async () => now },
     fs: {
       exists: async () => true,
-      list: async () => markers.map(name => ({ name, kind: 'file' })),
+      // The jobs folder lists job files; every other folder is the marker inventory.
+      list: async (path: string) => path === '/jobs'
+        ? [...files.keys()].filter(file => file.startsWith('/jobs/')).map(file => ({ name: file.slice(6), kind: 'file' }))
+        : markers.map(name => ({ name, kind: 'file' })),
       read: async (path: string) => {
         reads.push(path);
         if (unreadable.has(path)) throw new Error('Simulated unreadable job');
@@ -235,6 +242,47 @@ test('discovery caches unchanged files, respects closed panes and opens new acti
   f.files.set('/canonical/duet/sessions/session-b/a.json', f.files.get('/canonical/duet/sessions/session-a/a.json')!);
   await f.clock.advance(1000);
   expect(f.latest()?.jobs.some(job => job.id === 'a')).toBe(true);
+
+  const pathCases = [
+    { name: 'drive-backslash', environment: { CODEX_COMPANION_HOME: 'C:\\Duet', HOME: '/ignored', USERPROFILE: 'C:\\Users\\ignored' },
+      home: 'C:\\Duet', jobRoot: 'C:\\Users\\x\\jobs', workspaceRoot: 'C:\\Users\\x\\repo', separator: '\\' },
+    { name: 'drive-forward-slash', environment: { CODEX_COMPANION_HOME: 'C:/Duet' },
+      home: 'C:/Duet', jobRoot: 'C:/Users/x/jobs', workspaceRoot: 'C:/Users/x/repo', separator: '/' },
+    { name: 'unc', environment: { CODEX_COMPANION_HOME: '\\\\server\\share\\Duet' },
+      home: '\\\\server\\share\\Duet', jobRoot: '\\\\server\\share\\jobs', workspaceRoot: '\\\\server\\share\\repo', separator: '\\' },
+    { name: 'home-before-userprofile', environment: { HOME: '/user', USERPROFILE: 'C:\\Users\\ignored' },
+      home: '/user/.claude/codex-isolated', jobRoot: '/jobs', workspaceRoot: '/workspace', separator: '/' },
+    { name: 'userprofile-only', environment: { USERPROFILE: 'C:\\Users\\x' },
+      home: 'C:\\Users\\x/.claude/codex-isolated', jobRoot: 'C:\\Users\\x\\jobs', workspaceRoot: 'C:\\Users\\x\\repo', separator: '\\' },
+  ];
+  const discovered = [];
+  for (const sample of pathCases) {
+    const g = scrollFixture(undefined, sample.environment);
+    const folders: string[] = [];
+    const list = g.engine.fs.list;
+    g.engine.fs.list = async (path: string) => { folders.push(path); return list(path); };
+    for (const id of ['local', 'foreign']) {
+      g.add(id);
+      const jobFile = `${sample.jobRoot}${sample.separator}${id}.json`;
+      const markerPath = `/home/duet/sessions/session-a/${id}.json`;
+      const original = g.files.get(markerPath)!;
+      g.files.delete(markerPath);
+      g.files.set(`${sample.home}/duet/sessions/session-a/${id}.json`, { ...original, text: JSON.stringify({
+        ...JSON.parse(original.text), jobFile, workspaceRoot: sample.workspaceRoot,
+      }) });
+      const raw = g.files.get(`/jobs/${id}.json`)!;
+      g.files.delete(`/jobs/${id}.json`);
+      g.files.set(jobFile, { ...raw, text: JSON.stringify({ ...JSON.parse(raw.text), sessionId: id === 'local' ? 'session-a' : 'session-b' }) });
+    }
+    await g.poll(true);
+    discovered.push({ name: sample.name, folders, jobs: g.latest().jobs.map(job => ({
+      id: job.id, workspaceRoot: job.workspaceRoot, active: job.active, detailsUnavailable: job.detailsUnavailable,
+    })), readJob: g.reads.includes(`${sample.jobRoot}${sample.separator}local.json`) });
+  }
+  expect(discovered).toEqual(pathCases.map(sample => ({ name: sample.name,
+    folders: [`${sample.home}/duet/sessions/session-a`],
+    jobs: [{ id: 'local', workspaceRoot: sample.workspaceRoot, active: true, detailsUnavailable: false }], readJob: true,
+  })));
 });
 
 test('an unrelated worker preserves the following conversation and stays new across reload until viewed', async () => {
@@ -313,7 +361,8 @@ test('open command focuses the pane', async ($, on) => {
 });
 
 test('malformed markers and missing jobs recover while preserving the last transcript', async ($, on) => {
-  const f = fixture(on);
+  let reject = false;
+  const f = fixture(on, () => reject ? 'Simulated removal publication failure' : undefined);
   f.add('a');
   const path = '/canonical/duet/sessions/session-a/a.json';
   const marker = f.files.get(path)!;
@@ -342,6 +391,90 @@ test('malformed markers and missing jobs recover while preserving the last trans
   await f.clock.advance(10000);
   expect(f.latest()?.jobs[0]?.status).toBe('completed');
   await ui.unmount();
+
+  // A retained marker must not keep a pruned job alive, including after
+  // eviction/rediscovery. Failed publication must retry the same removal.
+  f.add('orphan');
+  f.files.delete('/jobs/orphan.json');
+  await f.clock.advance(1000);
+  expect(f.latest()?.jobs.find(job => job.id === 'orphan')).toMatchObject({ status: 'unknown', detailsUnavailable: true });
+  reject = true;
+  await f.clock.advance(5000);
+  expect(f.latest()?.jobs.some(job => job.id === 'orphan')).toBe(true);
+  reject = false;
+  await f.clock.advance(1000);
+  expect(f.latest()?.jobs.some(job => job.id === 'orphan')).toBe(false);
+  await f.clock.advance(30000);
+  expect(f.latest()?.jobs.some(job => job.id === 'orphan')).toBe(false);
+
+  // Recovering from one ENOENT, EACCES, an absent parent, or ENOENT for a file
+  // its parent still lists keeps the same active transcript. A missing home
+  // also retains its discovery warning.
+  f.add('active');
+  await f.clock.advance(1000);
+  const recovering = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
+  await recovering.press({ key: 'active' });
+  await f.clock.advance(1000);
+  const activeFile = f.files.get('/jobs/active.json')!;
+  const activeEvents = f.latest()?.jobs.find(job => job.id === 'active')?.events;
+  for (const fault of ['missing', 'access', 'parent', 'home', 'listed']) {
+    if (fault !== 'listed') f.files.delete('/jobs/active.json');
+    if (fault === 'access') f.errors.set('/jobs/active.json', 'EACCES: permission denied');
+    if (fault === 'listed') f.errors.set('/jobs/active.json', 'ENOENT: no such file or directory');
+    if (fault === 'parent' || fault === 'home') f.errors.set('/jobs', 'ENOENT: no such file or directory');
+    if (fault === 'home') f.errors.set('/canonical/duet/sessions/session-a', 'ENOENT: no such file or directory');
+    await f.clock.advance(1000);
+    if (fault !== 'missing') await f.clock.advance(15000);
+    expect(f.latest()?.jobs.find(job => job.id === 'active')).toMatchObject({ active: true, detailsUnavailable: true });
+    expect(f.latest()?.jobs.find(job => job.id === 'active')?.events).toEqual(activeEvents);
+    if (fault === 'home') expect(!!f.latest()?.discoveryWarning).toBe(true);
+    f.errors.clear();
+    f.files.set('/jobs/active.json', activeFile);
+    await f.clock.advance(5000);
+    expect(f.latest()?.jobs.find(job => job.id === 'active')).toMatchObject({ active: true, detailsUnavailable: false });
+    expect(f.latest()?.jobs.find(job => job.id === 'active')?.events).toEqual(activeEvents);
+    expect(f.latest()?.discoveryWarning).toBe(undefined);
+  }
+  await recovering.unmount();
+
+  // Confirmed removal drops per-job metadata and anchors even when a sibling
+  // turn keeps the conversation alive.
+  const pruning = scrollFixture();
+  const stat = pruning.engine.fs.stat;
+  pruning.engine.fs.stat = async path => {
+    if (path.startsWith('/jobs/') && !pruning.files.has(path)) throw Object.assign(new Error('Missing job'), { code: 'ENOENT' });
+    return stat(path);
+  };
+  for (const id of ['active', 'sibling']) { pruning.add(id); patchJob(pruning.files, id, { threadId: 'shared' }); }
+  await pruning.poll(true);
+  Object.assign(pruning.latest(), { hiddenJobIds: ['active'], firstEndedAtMs: { active: epoch },
+    feeds: { 'thread:shared': { feedOffset: 0, following: false, seenLines: 1,
+      anchor: { source: 'job:active:event-1-body', offset: 0 },
+      seenItems: { 'job:active:event-1-body': { length: 1, hash: 1 } } } } });
+  pruning.files.delete('/jobs/active.json');
+  await pruning.poll(true);
+  expect(pruning.latest().jobs.some(job => job.id === 'active')).toBe(true);
+  pruning.advance(5000); await pruning.poll(true);
+  expect(pruning.latest().jobs.some(job => job.id === 'active')).toBe(false);
+  expect(pruning.latest().jobs.some(job => job.id === 'sibling')).toBe(true);
+  expect(pruning.latest().seenJobIds).not.toContain('active');
+  expect(pruning.latest().autoOpenedJobIds).not.toContain('active');
+  expect(pruning.latest().hiddenJobIds).not.toContain('active');
+  expect(pruning.latest().firstEndedAtMs?.active).toBe(undefined);
+  expect(pruning.latest().feeds?.['thread:shared']).toBe(undefined);
+  const opens = pruning.opens.length;
+  pruning.advance(10000); await pruning.poll(true);
+  expect(pruning.latest().jobs.some(job => job.id === 'active')).toBe(false);
+  expect(pruning.opens.length).toBe(opens);
+
+  // Reload preserves unreadable markers, but not a marker proven absent from
+  // a readable inventory. It must not leave an Infinity-retry ghost behind.
+  pruning.remove('active');
+  pruning.remove('sibling');
+  await pruning.reload()(true);
+  expect(pruning.latest().jobs).toEqual([]);
+  expect(pruning.latest().seenJobIds).toEqual([]);
+  expect(pruning.latest().turnCounts).toEqual({});
 
   // Inventory health survives cold starts, retry backoff, cache reload and
   // unreadable new markers without confusing a healthy individual job.

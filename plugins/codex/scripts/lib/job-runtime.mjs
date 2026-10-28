@@ -463,7 +463,7 @@ export function questionMessage(question) {
   return `Question ${question.id}: ${snippet(question.text, 1000)} | Options: ${question.options?.length ? question.options.map(option => JSON.stringify(snippet(option, 160))).join("; ") : "(none)"}`;
 }
 export function requestCancel(cwd, id, reason = "cancelled_by_user", options = {}) {
-  return updateJob(cwd, id, job => ACTIVE.has(job.status) ? { cancelRequested: { reason, at: new Date().toISOString() } } : null, options);
+  return updateJob(cwd, id, job => ACTIVE.has(job.status) || unresolvedTask(job) ? { cancelRequested: { reason, at: new Date().toISOString() } } : null, options);
 }
 export function answerQuestion(cwd, id, questionId, answer, owner) {
   if (typeof answer !== "string" || !answer.trim() || answer.length > 8000) throw new Error("Answer stdin must contain 1–8000 characters.");
@@ -627,6 +627,8 @@ export class JobRuntime {
   stop(reason) {
     if (this.reason) return;
     this.reason = reason;
+    try { requestCancel(this.cwd, this.id, reason); }
+    catch { /* Still interrupt if the job store is unavailable. */ }
     this.onProgress?.({ message: `Interrupt requested: ${reason}.`, phase: "interrupting" });
     this.abort.abort(reason);
   }

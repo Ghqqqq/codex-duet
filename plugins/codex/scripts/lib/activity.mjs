@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 export const ACTIVITY_RETAINED_MAX = 500;
 export const ACTIVITY_PENDING_MAX = 100;
@@ -104,7 +105,7 @@ export function itemActivity(item, lifecycle, starts, key, now = Date.now()) {
     case "agentMessage":
       return lifecycle === "completed" && item.text ? [{ ...base, text: snippet(reportText(item.text), 300), body: redactActivity(reportText(item.text, true)).slice(0, 4000) }] : [];
     case "commandExecution":
-      return [{ ...base, command: snippet(redactActivity(item.command).split(/\r?\n/)[0], 160), exitCode: Number.isInteger(item.exitCode) ? item.exitCode : null, durationMs }];
+      return [{ ...base, command: snippet(commandExcerpt(redactActivity(item.command).split(/\r?\n/)[0], true), 160), exitCode: Number.isInteger(item.exitCode) ? item.exitCode : null, durationMs }];
     case "fileChange":
       return lifecycle === "completed" ? (item.changes ?? []).map(change => ({ ...base, path: snippet(change.path, 180), kind: ["add", "delete", "update"].includes(change.kind?.type ?? change.kind) ? (change.kind?.type ?? change.kind) : "unknown", ...changeLineCounts(change) })) : [];
     case "mcpToolCall":
@@ -116,46 +117,103 @@ export function itemActivity(item, lifecycle, starts, key, now = Date.now()) {
 export function planActivity(plan = []) {
   return [{ type: "plan", steps: plan.map(step => snippet(step.step, 80)), statuses: plan.map(step => ["pending", "inProgress", "completed"].includes(step.status) ? step.status : "pending") }];
 }
-// Match the pane's unwrapCommand: remove only a recognized shell wrapper,
-// including its outer quotes, even when the stored excerpt was truncated.
-function commandExcerpt(command) {
-  let result = snippet(command, Infinity);
-  const wrapper = /^(?:\/bin\/)?(?:zsh|bash|sh)\s+-(?:lc|c)\s+/;
-  if (!wrapper.test(result)) return result;
-  result = result.replace(wrapper, "");
-  const quote = result[0];
-  if (quote === "'" || quote === '"') {
-    result = result.slice(1);
-    if (result.endsWith(quote)) result = result.slice(0, -1);
+// Display-only parsing: never evaluate shell text. Leave unsupported or
+// incomplete prefixes intact, including assignments with no command after them.
+function stripEnvironment(command) {
+  const word = /^(?:[^\s'"\\;&|<>()`]|'[^']*'|"(?:\\.|[^"\\])*"|\\.)+(?=\s|[;&|<>()]|$)/;
+  let rest = command, env = false, options = false;
+  for (;;) {
+    const token = word.exec(rest)?.[0];
+    if (!token || token.startsWith("#")) return command;
+    if (token === "env" && !env) { env = true; options = true; }
+    else if (options && token === "-i") { /* ignore inherited environment */ }
+    else if (options && token === "-u") {
+      const next = rest.slice(token.length).trimStart();
+      const name = word.exec(next)?.[0];
+      if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return command;
+      rest = next.slice(name.length).trimStart();
+      continue;
+    } else if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) options = false;
+    else {
+      return env && token.startsWith("-") ? command : rest;
+    }
+    rest = rest.slice(token.length).trimStart();
   }
-  return result.replace(/'"'"'/g, "'");
 }
-export function formatActivity(event) {
-  const duration = event.durationMs == null ? "duration unknown" : `${event.durationMs}ms`;
+// Match codex-live's shell unwrapping. Capture-time cleanup retains the wrapper
+// and quotes; only the leading environment prefix is removed before the cap.
+function commandExcerpt(command, keepWrapper = false) {
+  const source = snippet(command, Infinity);
+  const wrapper = /^(?:\/bin\/)?(?:zsh|bash|sh)\s+-(?:lc|c)\s+/.exec(source)?.[0] ?? "";
+  let start = wrapper.length, end = source.length;
+  if (wrapper && (source[start] === "'" || source[start] === '"')) {
+    if (source.length > start + 1 && source.endsWith(source[start])) end -= 1;
+    start += 1;
+  }
+  const body = source.slice(start, end);
+  // Double-quoted wrappers still contain shell escapes: do not tokenize them
+  // as decoded command text and accidentally discard part of an assignment.
+  const result = wrapper && source[wrapper.length] === '"' && body.includes("\\") ? body : stripEnvironment(body);
+  return keepWrapper ? source.slice(0, start) + result + source.slice(end) : wrapper ? result.replace(/'"'"'/g, "'") : result;
+}
+function activityPath(file, root) {
+  if (!root || !file) return file;
+  const windows = value => /^[a-z]:[\\/]|^\\\\[^\\]/i.test(value);
+  if (windows(root) !== windows(file)) return file;
+  const paths = windows(root) ? path.win32 : path.posix;
+  if (!paths.isAbsolute(root) || !paths.isAbsolute(file)) return file;
+  const relative = paths.relative(root, file);
+  if (relative === ".." || relative.startsWith(`..${paths.sep}`) || paths.isAbsolute(relative)) return file;
+  return (relative || ".").split(paths.sep).join("/");
+}
+function activityResult(event) {
+  if (["cancelled", "declined", "interrupted"].includes(event.status)) return event.status;
+  if (event.lifecycle === "started" || ["started", "inProgress", "running", "queued"].includes(event.status)) return "running";
+  const command = event.type === "commandExecution";
+  if (command && !Number.isInteger(event.exitCode)) return "exit unknown";
+  let elapsed = "";
+  if (Number.isFinite(event.durationMs) && event.durationMs >= 1000) {
+    const seconds = Math.round(event.durationMs / 1000);
+    const duration = event.durationMs < 60000 ? `${(event.durationMs / 1000).toFixed(1)}s`
+      : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+    elapsed = ` (${duration})`;
+  }
+  const failed = ["failed", "error"].includes(event.status) || command && event.exitCode !== 0;
+  return (failed ? command ? `Error: exit ${event.exitCode}` : "Error" : "Done") + elapsed;
+}
+/** @param {{ root?: string }} [options] */
+export function formatActivity(event, options = {}) {
+  const { root } = options;
   let detail;
   switch (event.type) {
     case "agentMessage": detail = `Codex: ${event.text}`; break;
     case "commandExecution": {
+      const result = activityResult(event);
+      // Reserve space for the result before the emitter's 200-character cap:
+      // a long command must never hide a failure's exit code.
+      const limit = Math.max(0, Math.min(160, 200 - `[${event.seq}] Bash() · ${result}`.length));
       const command = commandExcerpt(event.command);
-      if (["cancelled", "declined", "interrupted"].includes(event.status)) detail = `■ ${event.status} · ${command}`;
-      else if (event.lifecycle === "started" || ["started", "inProgress", "running", "queued"].includes(event.status)) detail = `▸ ${command}`;
-      else if (!Number.isInteger(event.exitCode)) detail = `? exit unknown · ${command}`;
-      else {
-        const result = event.exitCode !== 0 || ["failed", "error"].includes(event.status) ? "✗" : "✓";
-        const elapsed = Number.isFinite(event.durationMs) && event.durationMs >= 0 ? ` · ${(event.durationMs / 1000).toFixed(1)}s` : "";
-        detail = `${result} exit ${event.exitCode}${elapsed} · ${command}`;
-      }
+      const excerpt = command.length > limit ? `${command.slice(0, Math.max(0, limit - 1))}…` : command;
+      detail = `Bash(${excerpt}) · ${result}`;
       break;
     }
-    case "fileChange": detail = `edit ${event.path} +${event.added ?? (event.kind === "delete" ? 0 : "?")} −${event.removed ?? (event.kind === "add" ? 0 : "?")}`; break;
+    case "fileChange": {
+      const action = event.kind === "add" ? "Write" : event.kind === "delete" ? "Delete" : "Update";
+      detail = `${action}(${activityPath(event.path, root)}) · +${event.added ?? (event.kind === "delete" ? 0 : "?")} −${event.removed ?? (event.kind === "add" ? 0 : "?")}`;
+      break;
+    }
     case "mcpToolCall":
-    case "dynamicToolCall": detail = `Tool ${event.server}/${event.tool}: ${event.status} (${duration})`; break;
+    case "dynamicToolCall": {
+      const name = event.type === "mcpToolCall" ? `${event.server} - ${event.tool} (MCP)` : event.tool;
+      detail = `${name} · ${activityResult(event)}`;
+      break;
+    }
     case "plan": {
       const steps = event.steps ?? [], statuses = event.statuses ?? [];
       const done = steps.filter((_, i) => statuses[i] === "completed").length;
       const active = steps.findIndex((_, i) => statuses[i] === "inProgress");
       const current = active < 0 ? steps.findIndex((_, i) => statuses[i] !== "completed") : active;
-      detail = `plan ${done}/${steps.length}${current < 0 ? "" : ` · ${steps[current]}`}`;
+      detail = `Update Todos · ${done}/${steps.length}${current < 0 ? "" : ` · ${steps[current]}`}`;
       break;
     }
     default: detail = "Activity";

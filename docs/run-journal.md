@@ -38,23 +38,40 @@ before reading stdin, creating files or starting a runtime. Start prints
 run, even when the second start uses another workspace. For an unrelated task
 the user starts mid-run, `journal start --switch` leaves the previous run open,
 points the session at the new run and also returns `previousRunId`. It does not
-cancel or relink existing workers. Add, close, show and validate
+cancel or relink existing workers. `duet journal use <runId>` selects an existing
+open run for the current session, searching across workspaces in the same isolated
+home, and prints `{"runId":"run-..."}`. Start and use require
+`CODEX_COMPANION_SESSION_ID`; use reads no stdin and does not accept `--run`.
+Add, close, show and validate
 default to the session's active run regardless of the current cwd. `--run <id>`
 selects an existing run, searching across workspaces in the same isolated home.
-Without an active run, show and validate fall back to the newest run in the
-current workspace. List returns that workspace's runs newest first. Invalid
+Without an active run, add and close use the sole open run in the current
+workspace. With several open runs they require `journal use <runId>` or
+`--run <id>`; the fallback never changes the session's active pointer.
+Show and validate still fall back to the newest workspace run when none is
+active. List returns that workspace's runs newest first. Invalid
 JSON, missing fields, invalid enum
 values and unknown entry types fail before journal writes.
 
 | Input | Fields |
 | --- | --- |
 | `start [--switch]` | Non-empty `goal` string, `criteria` array of non-empty strings |
+| `use <runId>` | Existing open run ID as a positional argument; no stdin JSON |
 | `add criteria` | `criteria` array of non-empty strings, appended to existing criteria; reactivates withdrawn criteria with the same exact text |
 | `add withdraw` | `criteria` array of known criterion strings, non-empty `reason` |
 | `add verdict` | `jobId`, `verdict` (`ACCEPT`, `ACCEPT_WITH_GLUE`, `REWORK`, `REASSIGN`), `criteria` array of `{criterion, evidence, result}`, non-empty `reason`; optional `resolves` array of job IDs linked to this run |
 | Criterion result | `met`, `not_met` or `cannot_verify`; criterion and evidence are non-empty strings |
 | `add decision` | Non-empty `summary` and `basis`; optional non-empty `risk` string |
 | `close` | `judgment` (`passed`, `blocked`, `abandoned`), non-empty `summary`; optional `openRisks` array of strings |
+
+Verdict criteria must already be declared by `start` or `add criteria`. Each
+`criterion` accepts exact text (including case and whitespace), a unique shown
+prefix ending in `…`, or a unique `K<n>` ID such as `K7` or `K7:` when a declared
+criterion starts with that ID followed by a colon, whitespace or end of text.
+IDs are not assigned automatically. A shown prefix can match whitespace folded
+for display; accepted shortcuts are saved as the full declared text. Unknown or
+ambiguous matches are rejected before writing. Use exact text to disambiguate,
+and `journal add criteria` to introduce new criteria.
 
 Empty criteria arrays are allowed when no criterion applies. Verdicts can name
 jobs whose ordinary records have expired. The latest verdict supersedes earlier
@@ -65,7 +82,8 @@ reassignment when it lists the rejected job in `resolves`, or is a descendant
 through explicit `followUpOf`/`continuationOf` links. Sharing a thread alone does
 not resolve it. The accepting job's latest verdict must still be acceptance and
 must follow the rejected job's latest verdict in journal order; a later rejection
-reopens it. Unknown job IDs in `resolves` are rejected before writing.
+reopens it. `resolves` accepts job IDs linked to this run regardless of their
+Claude session; unknown job IDs are rejected before writing.
 
 When the user drops a criterion, record its exact text and the reason:
 
@@ -75,8 +93,8 @@ duet journal add withdraw <<'JSON'
 JSON
 ```
 
-Only criteria already introduced by the run, `add criteria` or a verdict are
-accepted. Withdrawn criteria show as `withdrawn` with their reason and no longer
+Withdrawal requires exact text introduced by the run, `add criteria` or a
+historical verdict. Withdrawn criteria show as `withdrawn` with their reason and no longer
 produce `unchecked_criterion` or `unmet_criterion` issues. Other job issues still
 apply. A later `add criteria` with the same exact text reactivates the criterion;
 its previous verdict evidence remains available. Withdrawal rows need 1.4.4 or
@@ -111,7 +129,11 @@ later write failed, the run records that job as failed, so validation asks for
 a verdict instead of showing it as queued.
 The override does not change the session's active run and follow-ups do not
 inherit it: repeat `--run` when needed. Without it, a dispatch links to the
-session's current active run, even when its predecessor used another run.
+session's current active run, even when its predecessor used another run. When
+none is active, the sole open run in the dispatch workspace is used; several
+open runs leave the task unlinked. Use `journal use <runId>` to select one for
+the session, or repeat an explicit `--run <id>` per task. Automatic fallback
+does not set the session pointer.
 
 ## Validate before closing
 
@@ -128,17 +150,20 @@ or unreadable journal. Text lists every issue and its next safe action. JSON is:
 | Issue kind | What remains open | Next step |
 | --- | --- | --- |
 | `unfinished_job` | Linked job has no `job_finished` and its readable record is queued/running | Check status and the existing owner wait; wait for completion |
+| `unrecorded_finish` | Linked job has a readable terminal record but no `job_finished` | Read `duet result <jobId> --details` to retry finish recording, then verify evidence and record a verdict |
 | `no_verdict` | Finished job has no verdict | Inspect its report, verify criteria and record a verdict |
 | `open_rework` | Latest rejection has no later acceptance on that job, linked descendant or job naming it in `resolves` | Verify a correction before accepting; record `resolves` for a fresh replacement; continuing a stopped job requires consent |
 | `unmet_criterion` | Latest result for a non-withdrawn criterion is `not_met` or `cannot_verify` | Resolve and recheck it, then record observed evidence with `met` |
 | `unchecked_criterion` | Non-withdrawn task-level criterion appears in no verdict | Check and record that exact criterion text |
 | `missing_artifact` | Latest finish's report path or file is missing/empty, unreadable or unsafe | Recover available report evidence, or explain its absence in a blocked/abandoned close |
 
-Criteria match by **exact text**, including case and whitespace. The latest
-result for that text across all jobs wins; a newer verdict that omits the text
-does not erase its previous result. Additional criteria introduced in verdicts
-also produce `unmet_criterion` when their latest result is negative, unless
-withdrawn. Duplicate task criteria produce one unchecked issue. A verdict labeled `ACCEPT` with a
+Validation matches the full stored criterion text; new verdict shortcuts are
+canonicalized when written. The latest result for that text across all jobs wins;
+a newer verdict that omits the text does not erase its previous result.
+Historical verdict-only criteria are not migrated and still produce
+`unmet_criterion` when their latest result is negative, unless withdrawn.
+New verdicts cannot introduce undeclared criteria. Duplicate task criteria
+produce one unchecked issue. A verdict labeled `ACCEPT` with a
 negative result for a non-withdrawn criterion still blocks a passed close.
 
 `journal close` rechecks completeness under the run lock. With `passed`, any
@@ -150,9 +175,14 @@ override that snapshot. Existing `openRisks` remain the orchestrator's explanati
 The snapshot is fixed at the close row; `validate` and `show` reflect current
 observations, including any later worker finish or missing artifact.
 
-If an unfinished job's record has expired, is unreadable or no longer says
-queued/running, validation cannot establish that it is live and does not emit
-`unfinished_job`. Unknown job references are not a separate issue kind. Empty
+If a linked job has no recorded finish but its readable record says `completed`,
+`failed`, `cancelled`, `interrupted`, `blocked`, `needs_input` or `error`, validation
+emits `unrecorded_finish` and, without a verdict, `no_verdict`. A verdict alone
+does not resolve the missing finish. Reading result details lets the terminal
+observer retry finish recording; validation itself remains read-only. If the
+job's record has expired or is unreadable, validation cannot establish its state
+and emits neither `unfinished_job` nor `unrecorded_finish` on that basis.
+Unknown job references are not a separate issue kind. Empty
 criteria and no linked jobs can pass. These checks do not establish that all
 intended workers were linked, judge the substance of evidence, resume workers,
 or replace the orchestrator's acceptance checks.
@@ -236,12 +266,14 @@ default (minimum one day). Reads do not count as activity. Cleanup rechecks
 activity and active linked jobs under the journal lock before deletion. Job
 retention and the latest-50 job cap never delete run copies.
 
-Automatic linking applies to tasks dispatched by the same Claude session,
-including tasks using other workspaces or worktrees as `--cwd`. Other sessions
-do not inherit that run; an explicit `task --run <id>` can select any open run
-in the same isolated home. A new continuation defaults to the currently active
-run, not its predecessor's run or per-dispatch override. Without an active run
-or explicit selection, there are no journal writes. `--run none` also skips them.
+Automatic linking first uses the Claude session's active run, including tasks
+using other workspaces or worktrees as `--cwd`. Another session can select that
+open run with `journal use <runId>`, or use `task --run <id>` for one dispatch.
+Without an active run, automatic linking uses the sole open run in the dispatch
+workspace even if another session started it; several open runs leave tasks
+unlinked. A new continuation uses the same selection rules, not its predecessor's
+run or per-dispatch override. Without an active run, explicit selection or a
+sole open workspace run, tasks make no journal writes. `--run none` also skips them.
 Automatic journal failures are swallowed and never change a worker's report or
 exit code; explicit selection/linkage errors stop dispatch. Missing artifacts/events
 can therefore indicate a storage failure. Later terminal observers retry a missing finish.

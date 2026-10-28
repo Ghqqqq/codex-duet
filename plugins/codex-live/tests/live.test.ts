@@ -2,9 +2,9 @@ import { test, expect } from 'claude-code/testing';
 import type { On } from 'claude-code';
 import type { CodexLiveMarker, CodexLiveState } from '../types';
 import { attention, attentionCounts, boundState, clearFinished, groupedSessions, isHiddenJob, normalizeSessions, visibleJobs, visibleSessions,
-  collapseActivity, jobSummary, jobView, markerView, reusedAgentName, statusLine, validView } from '../hooks/model';
+  collapseActivity, isAbsolutePath, jobSummary, jobView, markerView, reusedAgentName, statusLine, validView } from '../hooks/model';
 import { activityItems, eventItem, feedItems, feedLines, feedWindow, footerLayout, headerLayout, jobRow, jobRowColor, recentEndedJobIds,
-  normalizeFeed, paneLayout, reconcileFeed, scrollFeed, selectedJob, width } from '../hooks/layout';
+  normalizeFeed, paneLayout, reconcileFeed, relativePath, scrollFeed, selectedJob, width } from '../hooks/layout';
 
 const createdAt = '2026-10-18T00:00:00.000Z';
 const epoch = Date.parse(createdAt);
@@ -265,6 +265,7 @@ test('live and unresolved members control lifecycle, pending questions, status c
   expect(visibleJobs(clearFinished(ended, epoch + 10000))).toEqual([]);
 
   const results = [
+    { status: 'completed', result: { inferredCompletion: true, turnEnded: false } },
     { status: 'failed', result: { failureSource: 'transport', turnEnded: false } },
     { status: 'failed', result: { errorCode: 'BROKER_CONNECTION_CLOSED' } },
     { status: 'failed', result: { error: 'Connection to Codex closed while the turn was running.' } },
@@ -286,6 +287,8 @@ test('live and unresolved members control lifecycle, pending questions, status c
     expect(jobView({ ...raw, status: 'running', completedAt: undefined }, marker('lost')).active).toBe(true);
   }
   for (const fields of [
+    { status: 'completed', result: { turnEnded: false } },
+    { status: 'completed', result: { inferredCompletion: true, turnEnded: false }, turnId: undefined },
     { status: 'failed', result: { failureSource: 'transport', structured: { status: 'blocked' } } },
     { status: 'failed', result: { workerStatus: 'failed', errorCode: 'BROKER_CONNECTION_CLOSED' } },
     { status: 'interrupted', result: { turnEnded: false, interruptionConfirmed: true } },
@@ -384,6 +387,34 @@ test('transcript projection rejects bad identities, bounds events and preserves 
   expect(job.events.at(-1)?.body).toBe('x'.repeat(3999));
   expect(() => jobView({ id: 'other' }, marker())).toThrow();
   expect(() => markerView({ v: 1, jobId: 'a', jobFile: 'relative.json' })).toThrow();
+  const absolutePaths = ['/jobs/a.json', 'C:\\Users\\x\\jobs\\a.json', 'C:/Users/x/jobs/a.json', '\\\\server\\share\\jobs\\a.json'];
+  expect(absolutePaths.map(jobFile => {
+    try {
+      const parsed = markerView({ v: 1, jobId: 'a', jobFile, workspaceRoot: jobFile });
+      return [parsed.jobFile, parsed.workspaceRoot];
+    } catch { return null; }
+  })).toEqual(absolutePaths.map(path => [path, path]));
+  for (const path of [...absolutePaths, '/', 'C:\\', 'C:/', '\\\\server\\share']) expect(isAbsolutePath(path)).toBe(true);
+  for (const path of ['', 'jobs/a.json', 'C:jobs\\a.json', '\\jobs\\a.json', '\\\\server', '\\\\server\\',
+    '\\\\\\server\\share\\a.json', '/jobs/a\0.json', 'C:\\jobs\\a\0.json', '\\\\server\\share\\a\0.json']) {
+    expect(isAbsolutePath(path)).toBe(false);
+    expect(() => markerView({ v: 1, jobId: 'a', jobFile: path })).toThrow();
+    expect(markerView({ v: 1, jobId: 'a', jobFile: '/jobs/a.json', workspaceRoot: path }).workspaceRoot).toBe(undefined);
+  }
+  for (const [path, root, relative] of [
+    ['/workspace/src/../a.ts', '/workspace', 'a.ts'],
+    ['/Workspace/a.ts', '/workspace', '/Workspace/a.ts'],
+    ['/workspace/a\\b.ts', '/workspace', 'a\\b.ts'],
+    ['C:\\Repo\\src\\File.ts', 'c:/repo', 'src/File.ts'],
+    ['C:/REPO/src/../File.ts', 'C:\\Repo', 'File.ts'],
+    ['C:/src/File.ts', 'c:\\', 'src/File.ts'],
+    ['C:/Repo-other/File.ts', 'C:/Repo', 'C:/Repo-other/File.ts'],
+    ['D:/Repo/File.ts', 'C:/Repo', 'D:/Repo/File.ts'],
+    ['C:/Repo/../File.ts', 'C:/Repo', 'C:/Repo/../File.ts'],
+    ['\\\\SERVER\\share\\repo\\src\\File.ts', '\\\\server\\SHARE\\repo', 'src/File.ts'],
+    ['\\\\server\\other\\repo\\File.ts', '\\\\server\\share\\repo', '\\\\server\\other\\repo\\File.ts'],
+    ['\\\\server\\share\\..\\repo\\File.ts', '\\\\server\\share\\repo', 'File.ts'],
+  ]) expect(relativePath(path!, root)).toBe(relative);
   const clean = jobView({ id: 'job-a', status: 'running', activity: [{ seq: 1, type: 'agentMessage',
     body: '\u001b[31m# 修复 👩‍💻\r\n- é\u0000\u202e' }] }, marker());
   expect(clean.events[0]?.body).toBe('# 修复 👩‍💻\n- é  ');

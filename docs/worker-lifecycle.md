@@ -1,7 +1,9 @@
 # Native worker lifecycle and protocol evidence
 
-Prefer `Agent(subagent_type: "codex:codex-native")` when available; otherwise
-run `duet task` in background Bash. Reports arrive with completion notifications;
+Use `Agent(subagent_type: "codex:codex-native")` by default from the first dispatch,
+without waiting for a readiness notice. Background `duet task` is for
+`native_adapter_unavailable`, `native_capacity`, per-call options the `DUET:` line
+rejects, or follow-ups to Bash-launched workers. Reports arrive with completion notifications;
 only if missing, use `duet result <worker>`. The Haiku `codex:codex-worker` is a
 fallback when neither native dispatch nor background Bash is available, or for
 a user-requested forwarding-agent transcript. Native agents receive follow-ups
@@ -164,11 +166,28 @@ Activity is captured at item start/completion (completed assistant messages),
 not token-by-token: assistant snippets ≤300 characters, command first lines
 ≤160 with exit/duration, file path/kind, MCP/dynamic server/tool/status/duration,
 and plan step titles ≤80. Durations use protocol milliseconds or observed
-start/completion time; missing duration/exit is explicit, never invented.
+start/completion time; unknown durations are omitted and unknown command exits
+say `exit unknown`, never an invented success. Progress lines use the pane's names:
+
+```text
+Bash(npm test) · running
+Bash(npm test) · Done (21.1s)
+Bash(npm test) · Error: exit 1 (21.1s)
+Update(src/index.ts) · +3 −1
+server - tool (MCP) · Done
+Update Todos · 1/3 · Verify the change
+```
+
+Recognized leading environment prefixes and shell wrappers are omitted from
+command display; captured verification retains the complete command. Durations
+below one second are omitted. Files inside the job's cwd are shown relative to it;
+outside paths stay absolute. Adds and deletes use `Write` and `Delete`. Native
+command-start lines are live only, without consuming durable-notice slots; the
+recorded report and hand-back are unchanged by the native display projections.
 Tool arguments, command outputs, diffs, reasoning and page-content payloads are
-never selected. Text is shown as Codex wrote it; only ANSI escapes and
-control/bidi characters are stripped so snippets stay single-line and
-terminal-safe. Credential redaction heuristics were removed in 1.0.6-isolated.12
+never selected. Apart from command/path presentation, text is shown as Codex
+wrote it; ANSI escapes and control/bidi characters are stripped so snippets stay
+single-line and terminal-safe. Credential redaction heuristics were removed in 1.0.6-isolated.12
 because they blanked ordinary `NAME=value` text (for example `ANSWER=Yes`); the
 prompt still forbids copying payloads into progress. Raw result artifacts keep
 their existing private behavior.
@@ -367,8 +386,11 @@ Each progress event rewrites the job record. Long, message-heavy jobs therefore
 write far more data than they add (known limitation; a split activity log is
 planned).
 
-For an interrupted or failed job, `duet result <worker> --details` exposes the
-compatibility `continuationCommand`. Use `duet task --continue <jobId> --cwd
+For an interrupted or failed job, or a blocked `codex_runtime_restarted` result,
+`duet result <worker> --details` exposes the compatibility `continuationCommand`.
+A confirmed runtime-exit interruption also supplies the continuation in the
+report; the thread and saved work persist, and continuation waits for an explicit
+request once the runtime is available. Use `duet task --continue <jobId> --cwd
 '<cwd>'` for one new turn with that job's recorded settings, only with consent.
 Native-agent stop and continuation behavior is described in [direct mode](direct-mode.md#if-a-worker-is-stopped).
 `--continue` refuses active jobs and conflicting flags (`--thread`, `--fresh`,
@@ -416,11 +438,21 @@ detach its replacement. See [stop actions and recovery](direct-mode.md#if-a-work
 
 This is lifecycle coordination, not an authentication boundary for local users.
 Lease expiry, cancel, signals and SessionEnd trigger the worker's AbortSignal,
-resolve questions and request turn/interrupt. A four-second turn deadline closes
+resolve questions and request turn/interrupt. `duet cancel` records stop intent
+before handle discovery or interruption, and worker-runtime stops record their
+reason before aborting (best effort if the job store is unavailable). Recovery
+therefore preserves recorded cancellation as `cancelled` and owner stops as
+`interrupted`. A four-second turn deadline closes
 the owned client/server; startup interruption also has a bounded client cleanup.
 Confirmed cancellation requires terminal turn evidence, not the interrupt RPC ack.
 Cancel returns unconfirmed (exit 2) if evidence is unavailable, including legacy
 records without a control-aware worker. It does not kill a historical PID.
+Broker shutdown is idempotent and completes socket/file cleanup even if the
+app-server has already exited and a request against its client throws
+synchronously. Transport-loss recovery reports `blocked` with
+`codex_runtime_restarted` only after finding a persisted `interrupted` turn
+without a recorded Duet stop. Unreadable or in-progress turns stay unresolved;
+a runtime exit alone does not prove an ending or authorize a rerun.
 A dead worker with no thread handle is resolved as failed on refresh. If a
 thread exists but the turn handle is missing, read-only `thread/read` can recover
 a turn only when exactly one candidate started at or after the job's start, no
@@ -436,6 +468,20 @@ no matching candidate establishes that the turn never started. A missing-handle
 cancel interrupts only such a uniquely
 attributed live turn; otherwise it reports `interrupt_unconfirmed` (exit 2).
 
+When completion was inferred from a final answer rather than a terminal turn
+notification, Duet confirms the exact server turn with a `thread/read` capped at
+five seconds. If it cannot confirm an ending, the saved answer may still say
+`completed`, but `inferredCompletion: true` and `turnEnded: false` keep the task
+unresolved for pruning, recovery and cancellation; the pane shows `Outcome unknown`.
+Later reconciliation preserves the captured answer. When the broker interrupts
+the leftover turn after that answer, the job stays `completed` unless a recorded
+stop intent or an owner detach other than `returned` exists; an owner still
+attached while the worker reconciles does not imply a stop. A confirmed failed
+turn stays `failed`, and requested cancellation remains `cancelled`.
+The server's actual turn status remains in recovery provenance.
+Session-start prewarm can reconcile sufficiently stale unresolved tasks
+automatically, without rerunning them; see [maintenance limits](state-and-retention.md#retention).
+
 Before starting a follow-up, Duet also checks the server for in-progress turns,
 including external turns and jobs in other workspaces. Any such turn yields
 `thread_busy` without a new turn. A per-thread admission reservation under the
@@ -450,8 +496,11 @@ wrapper that crashed within that window before recording a turn also keeps the
 thread busy. Known limit: if a worker is killed while its start request is still
 pending in a broker and Codex accepts that request more than 30 seconds later, a
 concurrent follow-up from another workspace can run alongside the late turn. The
-broker shuts down about 4 seconds after accepting a turn whose client is gone,
-which ends that orphaned turn. Recovery/cancel commands are supplied only
+broker requests interruption when it finds the owner gone and retires after a
+four-second grace once no connected peer remains. It preserves connected peers;
+after 30 minutes it retries interruption of abandoned turns and stops counting
+them as busy for idle retirement. An interrupt acknowledgement alone is not proof
+of completion. Recovery/cancel commands are supplied only
 when a tracked job owns the turn; an external turn must be resolved by its owner.
 Refused or blocked attempts never become thread blockers.
 

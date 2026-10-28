@@ -26,6 +26,7 @@ import { itemActivity, planActivity } from "./activity.mjs";
  *   finalTurn: Turn | null,
  *   completed: boolean,
  *   turnEndedObserved: boolean,
+ *   inferredCompletion?: boolean,
  *   finalAnswerSeen: boolean,
  *   pendingCollaborations: Set<string>,
  *   activeSubagentTurns: Set<string>,
@@ -499,6 +500,7 @@ function completeTurn(state, turn = null, options = {}) {
   }
 
   if (options.inferred) {
+    state.inferredCompletion = true;
     emitProgress(state.onProgress, "Turn completion inferred after the main thread finished and subagent work drained.", "finalizing");
   }
 
@@ -526,6 +528,27 @@ function scheduleInferredCompletion(state) {
     completeTurn(state, null, { inferred: true });
   }, 250);
   state.completionTimer.unref?.();
+}
+
+async function confirmInferredCompletion(client, state) {
+  if (!state.inferredCompletion) return {};
+  try {
+    // The final answer is useful even if the notification was lost. Read the
+    // exact turn while still connected, but never wait indefinitely for the RPC.
+    const response = await client.request("thread/read", { threadId: state.threadId, includeTurns: true }, { timeoutMs: 5000 });
+    const turn = response?.thread?.id === state.threadId
+      ? response.thread.turns?.find(turn => turn.id === state.turnId) : null;
+    if (["completed", "failed", "interrupted"].includes(turn?.status)) {
+      state.finalTurn = turn;
+      state.turnEndedObserved = true;
+      if (turn.error) state.error = turn.error;
+    }
+    return { inferredCompletion: true, turnStatus: turn?.status ?? null };
+  } catch {
+    // Unreadable history is not proof of completion. The marker keeps this
+    // captured answer eligible for exact-turn recovery and cancellation.
+    return { inferredCompletion: true, turnStatus: null };
+  }
 }
 
 function belongsToTurn(state, message) {
@@ -1433,7 +1456,9 @@ export async function runAppServerReview(cwd, options = {}) {
       }
     );
 
+    const inferredCompletion = await confirmInferredCompletion(client, turnState);
     return {
+      ...inferredCompletion,
       status: buildResultStatus(turnState),
       threadId: turnState.threadId,
       sourceThreadId,
@@ -1495,6 +1520,8 @@ export async function importExternalAgentSession(cwd, options = {}) {
 }
 
 export async function runAppServerTurn(cwd, options = {}) {
+  // Broker and job state use the workspace root; tasks may execute below it.
+  const executionCwd = options.executionCwd ?? cwd;
   const began = Date.now(), startupTimings = { mcpReady: null };
   let startupWarning = null;
   const onTiming = (phase, durationMs) => {
@@ -1560,7 +1587,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     const threadBegan = Date.now();
     if (options.resumeThreadId) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
-      const response = await resumeThread(client, options.resumeThreadId, cwd, {
+      const response = await resumeThread(client, options.resumeThreadId, executionCwd, {
         developerInstructions: options.developerInstructions,
         model: options.model,
         sandbox: options.sandbox,
@@ -1574,7 +1601,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       threadSettings = response;
     } else {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
-      const response = await startThread(client, cwd, {
+      const response = await startThread(client, executionCwd, {
         developerInstructions: options.developerInstructions,
         model: options.model,
         sandbox: options.sandbox,
@@ -1687,8 +1714,10 @@ export async function runAppServerTurn(cwd, options = {}) {
       releaseComputerApps();
     }
 
+    const inferredCompletion = await confirmInferredCompletion(client, turnState);
     const codexErrorInfo = normalizeCodexErrorInfo(turnState.error?.codexErrorInfo);
     return {
+      ...inferredCompletion,
       status: buildResultStatus(turnState),
       sandbox,
       sandboxPolicy: options.explicitSandbox ? turnPolicy : threadPolicy,
@@ -1725,13 +1754,20 @@ export async function runAppServerTurn(cwd, options = {}) {
 }
 
 // Recovery is read-only: never resume a thread or submit another turn.
-export async function readAppServerTurn(cwd, job, { admittingJobId = null } = {}) {
+export async function readAppServerTurn(cwd, job, { admittingJobId = null, env = process.env, deadline = null } = {}) {
   let { threadId, turnId } = job;
   const abort = new AbortController();
-  const timeout = setTimeout(() => abort.abort(), 10000);
   let client;
+  const timeout = setTimeout(() => {
+    abort.abort();
+    // Automatic maintenance has a whole-pass deadline, not a task's interrupt
+    // grace. Close even a client still waiting for initialize at that deadline.
+    if (deadline !== null) void client?.close().catch(() => {});
+  }, deadline === null ? 10000 : Math.max(1, deadline - Date.now()));
   try {
-    client = await CodexAppServerClient.connect(cwd, { reuseExistingBroker: true, signal: abort.signal });
+    if (deadline !== null && Date.now() >= deadline) throw new Error("Turn recovery budget expired.");
+    client = await CodexAppServerClient.connect(cwd, { env, reuseExistingBroker: true, signal: abort.signal,
+      ...(deadline === null ? {} : { onClient: candidate => { client = candidate; } }) });
     const response = await client.request("thread/read", { threadId, includeTurns: true });
     if (!turnId) {
       // A dead wrapper may have stopped before turn/start, or after sending it

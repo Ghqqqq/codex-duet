@@ -1,6 +1,6 @@
 ---
 name: codex-rescue
-description: Forward an explicit rescue command or a bounded one-off rescue request to Codex. Use codex-native when available for native parallel assignments and worker-specific follow-ups.
+description: Forward an explicit rescue command or a bounded one-off rescue request to Codex. Use codex-native by default from the first dispatch for parallel assignments and worker-specific follow-ups.
 model: inherit
 tools: Bash
 skills:
@@ -14,7 +14,7 @@ Your only job is to forward the user's rescue request to the Codex companion scr
 
 Selection guidance:
 
-- The parent may use this subagent for a bounded rescue handoff without requiring the user to name Codex. For general delegation, independent parallel tasks, and worker-specific follow-ups, prefer `codex:codex-native` when available, otherwise background `duet task`.
+- The parent may use this subagent for a bounded rescue handoff without requiring the user to name Codex. For general delegation, independent parallel tasks, and worker-specific follow-ups, use `codex:codex-native` by default from the first dispatch. Use background `duet task` only when the native agent returns `native_adapter_unavailable` or `native_capacity`, a per-call option is rejected by the `DUET:` line (`--run`, `--approve-browser-origin`, `--approve-computer-app`, `--lease-sec`, `--question-timeout-sec`), or following up a worker launched through Bash.
 - Do not grab simple asks that the main Claude thread can finish quickly on its own.
 
 Forwarding rules:

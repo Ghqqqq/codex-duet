@@ -12,12 +12,22 @@ SessionStart supplies the session ID and dispatch guidance; do not construct a
 second runtime or submit a replacement for a job that may already exist.
 
 **Native agent unavailable.** `Agent(subagent_type: "codex:codex-native")` needs
-the supported function-hook module. After registration, the adapter advertises
-it on the first accepted non-command person prompt (`prompt.submit`), not
-SessionStart. If the model fallback runs, it returns a blocked
-`native_adapter_unavailable` report and does not solve the assignment. Check
-`duet status` before retrying, then enable the supported hooks/reload or use
-background `duet task`. Do not treat the fallback as zero Claude usage.
+the supported function-hook module. Native dispatch is the default from the first
+assignment; the readiness notice is informational. If the model fallback runs,
+it returns `native_adapter_unavailable` and does not solve the assignment. This
+can mean an older plugin build is still in memory, hooks were not loaded, or the
+native hook failed. Run `/reload-plugins`, check `duet status` before retrying
+because dispatch is unconfirmed, and use background `duet task` if it persists.
+Do not treat the fallback as zero Claude usage.
+
+**`native_capacity` or `native_binding_gone`.** Ordinary finished bindings are
+evicted oldest-first to admit work within the 128-record and 2 MiB budgets;
+active or protected bindings can still exhaust capacity. `native_capacity`
+launches nothing: wait for workers to end, stop them if intended, or use background
+`duet task`. `native_binding_gone` means a retained native binding is unavailable;
+start a new native agent. Briefs over 65,536 characters are refused as
+`native_message_too_large` before eviction; shorten the brief. See
+[native store protections](state-and-retention.md#native-adapter-store).
 
 **Completion notification has no report.** The function hook normally attaches
 report v2. If it cannot, run `duet result <worker>`; use `--details` for full
@@ -27,7 +37,7 @@ evidence, handles and settings. Do not parse the task output file.
 Claude one recovery line for up to five jobs in this session that ended at least
 10 seconds ago without an emitted report, previous notice or live attached
 owner wait. Follow its `duet result '<id>' --cwd '<root>' --details` command.
-Only tasks created with 1.4.4 tracking qualify. Lookup errors, oversized state
+Only tasks with tracking introduced in 1.4.4 qualify. Lookup errors, oversized state
 or the 2-second timeout leave the prompt unchanged; the scan caps at 256
 state-root entries and 8 MiB of indexes (2 MiB each). Each notice is claimed
 before it is attached and confirmed after the prompt is accepted; an unconfirmed
@@ -118,13 +128,35 @@ case-insensitive, when typed information is absent. Other failures remain
 `failed`, exit 1. An error notification on a turn that later succeeds does not
 alone make it blocked. See [runtime blocker details](worker-operations.md#direct-mode).
 
+**`codex_runtime_restarted` or a desktop-managed runtime warning.** After
+transport loss, recovery reports `blocked` (exit 2) with `codex_runtime_restarted`
+only when the exact persisted turn is `interrupted` and no recorded Duet stop
+takes precedence. The thread and saved work persist. Once the runtime is
+available, use the report's continuation to continue that worker when requested;
+Duet never reruns it automatically. Unreadable or still-running turns remain
+unresolved. One observed cause was a ChatGPT desktop auto-update stopping
+app-servers launched from its managed CLI; other runtime exits can have the
+same result. Setup warns with `desktop_managed_codex_runtime` for managed paths,
+including symlink targets. Pin a stable CLI using `CODEX_COMPANION_BIN` or
+`runtime.json`'s `codexBinary`; setup does not change the pin or make `ready`
+false because of this warning. See [runtime selection](configuration.md#runtime-selection).
+
 **Interrupted worker or lost connection.** Inspect `duet status <worker>` and
 `duet result <worker> --details` in the original workspace: an eligible lost turn
 is reconciled against its exact server record without resubmission, preserving
 its real outcome and recovery provenance. A missing turn handle can also be
 recovered from a unique unclaimed turn with a suitable start timestamp;
 ambiguous or unreadable history stays unresolved. A dead worker with no thread
-handle is resolved as failed.
+handle is resolved as failed. Inferred completion is checked against the exact
+server turn; an unconfirmed captured answer stays recoverable and cancellable,
+even if its wrapper reported `completed`. If the broker interrupts the leftover
+turn after that answer, reconciliation keeps `completed` when there is no
+recorded stop intent or owner detach other than `returned`, including while the
+owner is still attached. Explicit cancellation and owner stops retain their
+stop outcome. The pane marks an unconfirmed turn `Outcome unknown`.
+Session-start prewarm also attempts bounded reconciliation of
+eligible stale unresolved jobs, without rerunning them; see
+[maintenance limits](state-and-retention.md#retention).
 
 A follow-up on a busy or unresolved thread is blocked with `thread_busy`. The
 server pre-check also catches external turns and turns in other workspaces.

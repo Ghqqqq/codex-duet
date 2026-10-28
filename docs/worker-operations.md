@@ -1,7 +1,9 @@
 # Isolated workers in unattended workflows
 
-Prefer `Agent(subagent_type: "codex:codex-native")` when available; otherwise
-use `duet task` in background Bash. Supply objective, owned paths, constraints
+Use `Agent(subagent_type: "codex:codex-native")` by default from the first dispatch,
+without waiting for readiness. Background `duet task` is for
+`native_adapter_unavailable`, `native_capacity`, per-call options the `DUET:` line
+rejects, or follow-ups to Bash-launched workers. Supply objective, owned paths, constraints
 and acceptance criteria with the [brief template](../plugins/codex/prompts/ultra-codex-protocol.md#writing-a-brief-every-codex-assignment).
 The completion notification carries the report. Only if it is missing, run
 `duet result <worker>`; do not parse output files or poll.
@@ -25,7 +27,9 @@ Use stdin only, single-quoted arguments and `DUET_TASK`/`DUET_ANSWER` heredocs
 whose delimiters do not occur as complete lines in the text. The permission hook
 recognizes a narrow grammar; double quotes, pipes, compound commands, sandbox
 bypass and unsupported flags fall back to normal permissions. Investigators add
-`--sandbox read-only`; other checkouts use `--cwd '<dir>'`. Parallel writers need
+`--sandbox read-only`; other checkouts use `--cwd '<dir>'`. A task's requested
+subdirectory is used for both thread start and resume, while broker/job state stays
+at the repository root. Parallel writers need
 disjoint OWNED PATHS or separate worktrees.
 
 `duet task`/`wait`/`answer` imply `--direct`. The owner wait prints progress in
@@ -86,8 +90,16 @@ Stop active native tasks from `/tasks`: the adapter waits briefly for
 `interrupted` / `owner_stopped` confirmation and falls back to cancel if needed.
 A parked question may not cancel when
 its already-ended agent row is stopped; use `duet cancel <worker>` or the default
-900 s question timeout applies. Missing hooks yield a blocked report; check
-`duet status` before retrying. See [direct mode](direct-mode.md).
+900 s question timeout applies. An older in-memory build, unloaded hooks or a hook
+failure can yield `native_adapter_unavailable`; run `/reload-plugins`, check
+`duet status` before retrying and use background `duet task` if it persists.
+Every fresh native call reserves a scientist pool name, replacing a passed label
+unless it is a free pool name. When a name is assigned or replaced, an Agent
+result with content adds a `Codex worker named X` note for SendMessage; a preserved free pool
+name adds no note. Reservation failure leaves the call unchanged; resumptions
+keep their name. `duet task --name <label>` requests a fresh worker name;
+collisions fall back to the pool. See [direct mode](direct-mode.md) for naming,
+live progress and native capacity rules.
 
 The read-only `codex-live` pane shows prompts, messages, commands, file changes,
 tool calls, plans and pending questions. Resolved `ask_parent` calls show answers
@@ -142,8 +154,8 @@ itself blocked becomes `blocked`, also exit code 2. Compact `blockers` carry
 detection is heuristic; typed server-request refusals are also retained. The
 parent still checks task acceptance.
 
-Failed turns also use Codex's typed `codexErrorInfo` to produce `blocked`,
-exit 2, with an actionable blocker:
+Failed turns also use Codex's typed `codexErrorInfo` or confirmed runtime-exit
+recovery evidence to produce `blocked`, exit 2, with an actionable blocker:
 
 | Runtime error | Blocker | Next action |
 | --- | --- | --- |
@@ -151,14 +163,20 @@ exit 2, with an actionable blocker:
 | `usageLimitExceeded` or `sessionBudgetExceeded` | `usage_limit` | Wait for reset or change model/plan, then continue |
 | `contextWindowExceeded` | `context_window_exceeded` | Start a fresh worker with a shorter brief |
 | `unauthorized` | `auth_required` | Run `duet setup` and log in to the isolated home |
+| Transport loss followed by a persisted `interrupted` turn, with no recorded Duet stop | `codex_runtime_restarted` | When the runtime is available, use the report's continuation to continue the existing worker; the thread and saved work persist, and no turn is rerun automatically |
 
-The only text fallback for this classification is “flagged for possible
+For typed Codex errors, the only text fallback is “flagged for possible
 cybersecurity risk” (case-insensitive), used when typed information is absent.
 The runtime blocker comes first; other captured blockers can remain alongside
 it. The original error text stays in the detailed report's `error` field, with
 ANSI/control-character cleanup. Other failed turns remain `failed`, exit 1.
 A recorded error notification followed by a successful turn does not by itself
 trigger this classification; independently captured refusals still apply.
+`codex_runtime_restarted` requires confirmed terminal evidence; a dead wrapper
+or unreadable/in-progress turn alone is insufficient. Recorded cancellation or
+owner-stop intent takes precedence. A desktop-app update stopping its managed
+CLI is one possible cause; see [runtime selection](configuration.md#runtime-selection)
+for the setup warning and stable CLI pins.
 
 Prerequisites must be handled before unattended execution: an installed runtime,
 isolated authentication (or an independently configured provider), and Claude
@@ -773,7 +791,8 @@ miss in the new directory search the legacy directories and import the match.
 The background-task completion notification carries report v2. Only if missing,
 run `duet result <worker>`; never parse the output file or poll. Direct stdout
 still ends with a JSON line after progress (`--quiet` suppresses progress).
-Compatibility companion non-direct/feed output retains its existing format.
+Compatibility companion non-direct/feed output keeps its JSON structure and
+uses the same [pane-style progress lines](worker-lifecycle.md#fallback-and-compatibility-feed-mode).
 
 After interruption, retrieve in the original workspace or by session worker name:
 
@@ -793,7 +812,17 @@ identify a single unclaimed live turn or a unique unclaimed completed turn
 started at or after the job's start. Missing timestamps, multiple candidates
 or unreadable history leave it unresolved. Only a readable history with no
 matching candidate establishes that it never started. A dead worker with no
-thread handle is resolved as failed. Recovered terminal outcomes are saved once with
+thread handle is resolved as failed. Inferred completion is also confirmed against
+the exact server turn. An unconfirmed inferred answer remains available, but its
+task stays unresolved and recoverable/cancellable even if the wrapper said
+`completed`. Reconciliation preserves the answer and keeps `completed` when the
+broker interrupts the leftover turn without recorded stop intent or an owner
+detach other than `returned`, including while the owner is still attached.
+`duet cancel` and worker-runtime stops persist intent before interrupting;
+explicit cancellation stays `cancelled`, owner stops stay `interrupted`, and
+failed turns stay `failed`. Session-start prewarm automatically reconciles eligible stale
+unresolved tasks within [bounded maintenance limits](state-and-retention.md#retention),
+without submitting new work. Recovered terminal outcomes are saved once with
 `recovered`, `recoveredAt`, `completedAt` and `recovery` (including `originalError`
 and `turnStatus`); structured `blocked`/`needs_input` outcomes still exit 2 in
 direct/report mode. A follow-up on a still-running or unresolved thread becomes

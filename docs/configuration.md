@@ -206,6 +206,17 @@ The isolated home may contain `runtime.json` with an absolute `codexBinary` path
 `CODEX_COMPANION_BIN` overrides it; otherwise `codex` on PATH is used. A binary
 change affects newly started runtimes; an existing workspace broker keeps its
 executable until it exits (after 60 s idle by default) or is restarted.
+Setup reports `codex.warning.code: "desktop_managed_codex_runtime"` when the
+selected executable or its resolved symlink target is under
+`~/.codex/plugins/.plugin-appserver/` or
+`ChatGPT.app/Contents/Resources/codex-cli/`. Desktop-app updates can stop the
+app-servers launched from these managed CLIs; a ChatGPT desktop auto-update was
+one observed cause of interrupted turns. Pin a stable CLI, such as an installed
+npm `@openai/codex` binary, with `CODEX_COMPANION_BIN` or `runtime.json`'s
+`codexBinary`. Setup includes the warning even when the CLI is available; it
+does not change the pin or make `ready` false. Finish or cancel active work
+before restarting an existing broker to use a changed pin.
+
 If a pinned runtime is missing or unusable, setup may probe PATH's `codex` to
 enrich its repair guidance, but it still reports the broken pin. These optional
 version/help probes share setup's 45-second deadline, with a 20-second cap per

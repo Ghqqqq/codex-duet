@@ -1,6 +1,6 @@
 import type { ThemeKey } from 'claude-code';
 import type { CodexLiveEvent, CodexLiveFeedView, CodexLiveJob, CodexLiveSession, CodexLiveState } from '../types';
-import { attention, attentionOrder, clean, cleanBody, detailedTurns, elapsed, jobLifecycle, questionExcerpt, reusedAgentName, sessionForId, taskText, turnKey, unwrapCommand, visibleSessions } from './model';
+import { attention, attentionOrder, clean, cleanBody, detailedTurns, elapsed, isAbsolutePath, jobLifecycle, questionExcerpt, reusedAgentName, sessionForId, taskText, turnKey, unwrapCommand, visibleSessions } from './model';
 
 import { cells, clusters, fit, width } from './text';
 export { fit, width } from './text';
@@ -121,19 +121,25 @@ export function toolResult(event: CodexLiveEvent, now: number, job?: CodexLiveJo
 
 // Display-only path handling. No filesystem reads or resolution are needed.
 export function relativePath(path: string, workspaceRoot?: string): string {
-  if (!workspaceRoot?.startsWith('/') || !path.startsWith('/')) return path;
+  if (!workspaceRoot || !isAbsolutePath(workspaceRoot) || !isAbsolutePath(path)) return path;
+  if ((workspaceRoot[0] === '/') !== (path[0] === '/')) return path;
+  const windows = path[0] !== '/';
   const normalize = (value: string) => {
+    const source = windows ? value.replace(/\\/g, '/') : value;
+    // Keep the drive or UNC share outside the components that '..' can remove.
+    const volume = windows ? source.match(/^(?:[a-z]:|\/\/[^/]+\/[^/]+)/i)![0] : '';
     const parts: string[] = [];
-    for (const part of value.split('/')) {
+    for (const part of source.slice(volume.length).split('/')) {
       if (part === '..') parts.pop();
       else if (part && part !== '.') parts.push(part);
     }
-    return `/${parts.join('/')}`;
+    return `${volume}/${parts.join('/')}`;
   };
   const root = normalize(workspaceRoot);
   const normalized = normalize(path);
-  const prefix = root === '/' ? '/' : `${root}/`;
-  return normalized.startsWith(prefix) ? normalized.slice(prefix.length) : path;
+  const prefix = root.endsWith('/') ? root : `${root}/`;
+  const compare = (value: string) => windows ? value.toLowerCase() : value;
+  return compare(normalized).startsWith(compare(prefix)) ? normalized.slice(prefix.length) : path;
 }
 
 export function fileResult(event: CodexLiveEvent): string {

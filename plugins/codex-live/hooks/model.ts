@@ -71,9 +71,15 @@ export function taskText(value: unknown): string {
   return text.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? text;
 }
 
+// The hook can read markers from any supported host, independent of its own OS.
+export function isAbsolutePath(text: string): boolean {
+  return !text.includes('\0') && (text.startsWith('/') || /^[a-z]:[\\/]/i.test(text) ||
+    /^\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$)/.test(text));
+}
+
 export function markerView(value: unknown): CodexLiveMarker {
   const m = object(value);
-  if (m.v !== 1 || !string(m.jobId) || !string(m.jobFile).startsWith('/')) {
+  if (m.v !== 1 || !string(m.jobId) || !isAbsolutePath(string(m.jobFile))) {
     throw new Error('Invalid session marker');
   }
   return {
@@ -81,7 +87,7 @@ export function markerView(value: unknown): CodexLiveMarker {
     summary: limitChars(clean(m.summary), 1000), title: limitChars(clean(m.title), 200),
     name: limitChars(clean(m.name), 100) || undefined,
     createdAt: string(m.createdAt),
-    workspaceRoot: string(m.workspaceRoot).startsWith('/') ? clean(m.workspaceRoot) : undefined,
+    workspaceRoot: isAbsolutePath(string(m.workspaceRoot)) ? clean(m.workspaceRoot) : undefined,
   };
 }
 
@@ -152,6 +158,9 @@ function unresolvedTask(job: Record<string, unknown>): boolean {
   const result = object(job.result);
   if (['interrupted', 'cancelled'].includes(string(job.status))) {
     return Boolean(job.turnId) && result.turnEnded === false && result.interruptionConfirmed !== true;
+  }
+  if (job.status === 'completed' && result.inferredCompletion === true) {
+    return Boolean(job.turnId) && result.turnEnded === false;
   }
   if (job.status !== 'failed' || result.turnEnded || result.structured) return false;
   if (result.failureSource === 'transport') return true;

@@ -5,7 +5,15 @@ disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
 
-!`node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status "$ARGUMENTS"`
+Pass the raw `$ARGUMENTS` unchanged through the single-quoted heredoc below, without shell expansion. Do not split, reorder, unquote or rewrite the arguments; the companion parses them.
+If an argument line is exactly `DUET_ARGS`, choose a delimiter absent from the arguments and change both heredoc delimiters together.
+
+Run:
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" status --args-stdin <<'DUET_ARGS'
+$ARGUMENTS
+DUET_ARGS
+```
 
 If the user did not pass a job ID:
 - Render the command output as a single Markdown table for the current and past runs in this session (or all sessions with `--all`).

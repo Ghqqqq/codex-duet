@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { makeTempDir, run, requireLocalSockets } from "./helpers.mjs";
+import { makeTempDir, run, requireLocalSockets, readyBroker } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 import { resolveCodexRuntimeIdentity } from "../plugins/codex/scripts/lib/codex-home.mjs";
@@ -390,7 +390,7 @@ test("artifact removal errors are reported with actual partial counts and do not
   assert.equal(fs.existsSync(job.file), false); assert.ok(fs.existsSync(job.logFile));
 });
 
-test("automatic cleanup persists its report, serializes overlapping runs and waits 12 hours", async () => {
+test("automatic cleanup persists its report, serializes overlapping runs and waits 12 hours", async t => {
   const f = fixture(), id = randomUUID(); rollout(f, id);
   let release; const pending = new Promise(resolve => { release = resolve; });
   const first = runAutomaticRetention({ env: f.env, now: f.now, deleteThread: async () => { await pending; return {}; } });
@@ -403,6 +403,119 @@ test("automatic cleanup persists its report, serializes overlapping runs and wai
   assert.equal(before.reason, "interval");
   const after = await runAutomaticRetention({ env: f.env, now: f.now + 12 * 3600000, deleteThread: async () => ({}) });
   assert.equal(after.threadsDeleted, 1);
+
+  // Reconciliation runs even while age deletion is throttled, across all
+  // workspaces, and reads exact terminal turns without submitting new work.
+  const g = fixture(), other = path.join(g.root, "other"); fs.mkdirSync(other);
+  const stopped = { jobClass: "task", status: "interrupted", createdAt: g.recent, updatedAt: g.recent, completedAt: g.recent,
+    leaseSec: 1800, leaseRenewedAt: Date.parse(g.recent), leaseExpiresAt: Date.parse(g.recent) + 1800000,
+    turnId: "old-turn", result: { status: 1, turnEnded: false, interruptionConfirmed: false } };
+  const put = (id, patch = {}, cwd = g.cwd) => seedJob(g, id, { ...stopped, workspaceRoot: cwd, request: { cwd }, ...patch }, cwd);
+  const stale = Array.from({ length: 6 }, (_, i) => put(`stale-${i}`, {}, i === 5 ? other : g.cwd));
+  fs.rmdirSync(other); // Its isolated job record outlives the deleted workspace.
+  const protectedJobs = [put("young", { updatedAt: new Date(g.now - 5 * 60000).toISOString() }), put("alive", { pid: process.pid }),
+    put("active", { status: "running" }), put("long-lease", { leaseSec: 2 * 86400 }),
+    put("renewed", { leaseExpiresAt: g.now + 1800000 }), put("invalid-age", { updatedAt: "invalid" }), put("unreadable")];
+  const originals = protectedJobs.map(job => fs.readFileSync(job.file, "utf8"));
+  json(path.join(g.root, "fake-codex-state.json"), { nextThreadId: 1, nextTurnId: 1, threads: stale.map(job => ({ id: job.threadId, cwd: job.workspaceRoot,
+    turns: [{ id: job.turnId, status: "interrupted", items: [], completedAt: Date.parse(g.recent) / 1000 }] })) });
+  if (!await requireLocalSockets(t)) return;
+  const broker = await readyBroker(g.cwd, g.env); t.after(broker.close);
+  json(path.join(g.home, "duet", "retention.json"), { lastRunAt: new Date(g.now).toISOString(), lastReport: {} });
+  const pass = await runAutomaticRetention({ cwd: g.cwd, env: g.env, now: g.now, broker });
+  assert.equal(pass.reason, "interval"); assert.equal(pass.reconciliationAttempts, 5); assert.equal(pass.jobsReconciled, 5);
+  const next = await runAutomaticRetention({ cwd: g.cwd, env: g.env, now: g.now, broker });
+  assert.equal(next.jobsReconciled, 1);
+  for (const job of stale) {
+    const recovered = JSON.parse(fs.readFileSync(job.file));
+    assert.equal(recovered.recovered, true); assert.equal(recovered.result.interruptionConfirmed, true);
+    assert.equal(recovered.recovery.turnId, job.turnId);
+  }
+  assert.deepEqual(protectedJobs.map(job => fs.readFileSync(job.file, "utf8")), originals);
+  const methods = fs.readFileSync(path.join(g.root, "fake-codex-state.json.requests.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line).method);
+  assert.equal(methods.filter(method => method === "thread/read").length, 7);
+  assert.equal(methods.includes("turn/start"), false);
+
+  const h = fixture(), hung = seedJob(h, "hung", { ...stopped, workspaceRoot: h.cwd, request: { cwd: h.cwd } });
+  const executable = path.join(h.root, "codex");
+  fs.writeFileSync(executable, fs.readFileSync(executable, "utf8").replace('case "thread/read": {', 'case "thread/read": { return;'));
+  const original = fs.readFileSync(hung.file, "utf8");
+  const bounded = await runAutomaticRetention({ cwd: h.cwd, env: h.env, now: h.now });
+  assert.equal(bounded.reconciliationAttempts, 1); assert.equal(bounded.jobsReconciled, 0);
+  assert.equal(fs.readFileSync(hung.file, "utf8"), original);
+  // Under load the bounded pass can end before the fake runtime records its
+  // launch; when it did launch, the hung app-server must not outlive the pass.
+  const stateFile = path.join(h.root, "fake-codex-state.json");
+  const launch = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile)).launches?.at(-1) : null;
+  if (launch) assert.throws(() => process.kill(launch.pid, 0), error => error.code === "ESRCH");
+});
+
+test("retention removes deleted-job markers and bounded maintenance removes only safe orphan markers", async () => {
+  const f = fixture(), expired = seedJob(f, "expired"), retained = seedJob(f, "retained", { completedAt: f.recent });
+  const mark = (session, id, file) => {
+    const target = path.join(resolveSessionMarkersRoot(f.env), session, `${id}.json`);
+    json(target, { v: 1, jobId: id, jobFile: file }); return target;
+  };
+  const expiredMarkers = [mark("first", expired.id, expired.file), mark("second", expired.id, expired.file)];
+  const existing = mark("first", retained.id, retained.file);
+  const preview = plan(f);
+  assert.deepEqual(preview.markers.map(marker => marker.path).sort(), expiredMarkers.sort());
+  const applied = await applyRetention(preview);
+  assert.equal(applied.jobsDeleted, 1); assert.equal(applied.markersDeleted, 2);
+  for (const file of expiredMarkers) assert.equal(fs.existsSync(file), false);
+  assert.ok(fs.existsSync(existing));
+  const orphan = mark("first", "pruned", path.join(retained.workspace, "jobs", "pruned.json"));
+  const missing = mark("first", "unavailable", path.join(path.dirname(retained.workspace), "missing", "jobs", "unavailable.json"));
+  const linked = path.join(path.dirname(retained.workspace), "linked"); fs.symlinkSync(retained.workspace, linked);
+  const unsafe = mark("first", "unsafe", path.join(linked, "jobs", "unsafe.json"));
+  const foreign = mark("first", "foreign", path.join(f.root, "jobs", "foreign.json"));
+  const unreadable = seedJob(f, "unreadable", { completedAt: f.recent }, path.join(f.root, "unreadable"));
+  fs.unlinkSync(unreadable.file);
+  const unavailable = mark("first", unreadable.id, unreadable.file);
+  const dangling = path.join(retained.workspace, "jobs", "dangling.json"); fs.symlinkSync(path.join(f.root, "absent"), dangling);
+  const danglingMarker = mark("first", "dangling", dangling);
+  json(path.join(f.home, "duet", "retention.json"), { lastRunAt: new Date(f.now).toISOString(), lastReport: {} });
+  const readdir = fs.readdirSync;
+  fs.readdirSync = function(directory, ...args) {
+    if (directory === path.dirname(unreadable.file)) throw Object.assign(new Error("Fixture unreadable directory"), { code: "EACCES" });
+    return readdir.call(this, directory, ...args);
+  };
+  try {
+    const result = await runAutomaticRetention({ env: f.env, now: f.now });
+    assert.equal(result.reason, "interval"); assert.equal(result.markersDeleted, 1);
+    assert.equal(fs.existsSync(orphan), false);
+    for (const file of [existing, missing, unsafe, foreign, unavailable, danglingMarker]) assert.ok(fs.existsSync(file));
+  } finally { fs.readdirSync = readdir; }
+
+  const g = fixture(), anchor = seedJob(g, "anchor", { completedAt: g.recent });
+  for (let i = 0; i < 101; i++) json(path.join(resolveSessionMarkersRoot(g.env), "many", `pruned-${i}.json`),
+    { v: 1, jobId: `pruned-${i}`, jobFile: path.join(anchor.workspace, "jobs", `pruned-${i}.json`) });
+  json(path.join(g.home, "duet", "retention.json"), { lastRunAt: new Date(g.now).toISOString(), lastReport: {} });
+  assert.equal((await runAutomaticRetention({ env: g.env, now: g.now })).markersDeleted, 100);
+  assert.equal((await runAutomaticRetention({ env: g.env, now: g.now })).markersDeleted, 1);
+
+  const h = fixture(), root = resolveSessionMarkersRoot(h.env), held = [];
+  for (let i = 0; i < 101; i++) {
+    const live = seedJob(h, `retained-${String(i).padStart(3, "0")}`, { completedAt: h.recent });
+    const file = path.join(root, "a", `${live.id}.json`);
+    json(file, { v: 1, jobId: live.id, jobFile: live.file }); held.push(file);
+  }
+  const starved = path.join(root, "a-old", "orphan.json");
+  json(starved, { v: 1, jobId: "orphan", jobFile: path.join(resolveStateDir(h.cwd, h.env), "jobs", "orphan.json") });
+  json(path.join(h.home, "duet", "retention.json"), { lastRunAt: new Date(h.now).toISOString(), lastReport: {} });
+  const maintenance = path.join(h.home, "duet", "maintenance.json");
+  // Resume after the first live marker: the next 100 must fill this pass
+  // before wrapping to a-old, which sorts before a/ in full-path order.
+  json(maintenance, { markerCursor: held[0] });
+  const first = await runAutomaticRetention({ env: h.env, now: h.now });
+  assert.equal(first.markersDeleted, 0); assert.deepEqual(first.errors, []);
+  assert.ok(fs.existsSync(starved));
+  assert.equal(JSON.parse(fs.readFileSync(maintenance)).markerCursor, held.at(-1));
+  const second = await runAutomaticRetention({ env: h.env, now: h.now });
+  assert.equal(second.markersDeleted, 1); assert.deepEqual(second.errors, []);
+  assert.equal(fs.existsSync(starved), false);
+  assert.equal(JSON.parse(fs.readFileSync(maintenance)).markerCursor, held[98]);
+  assert.ok(held.every(file => fs.existsSync(file)));
 });
 
 test("cleanup dry-run is read-only, apply uses its candidates and ignores automatic throttling", async () => {

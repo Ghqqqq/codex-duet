@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { makeTempDir, initGitRepo, run } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
+import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 function fixture() {
   const dir = makeTempDir(); installFakeCodex(dir);
@@ -109,6 +110,60 @@ test("sandbox defaults apply to fresh tasks; named and thread follow-ups inherit
   assert.equal(stored(local.jobId).threadId, narrowJob.threadId, "legacy duplicate names prefer the caller's workspace");
   assert.deepEqual(JSON.parse(run(process.execPath, [f.script, "result", duplicate.jobId, "--json"], { cwd: other, env: f.env }).stdout).storedJob, foreignBefore);
   assert.equal(f.state().nextTurnId, before + 2, "the local follow-up starts exactly one additional turn");
+});
+
+test("task cwd and follow-ups stay in the requested directory while state, snapshots and reviews use the repository root", () => {
+  const f = fixture();
+  const sub = path.join(f.repo, "packages", "web");
+  fs.mkdirSync(sub, { recursive: true });
+  fs.writeFileSync(path.join(f.repo, "pre-existing.txt"), "baseline\n");
+  const binary = path.join(f.dir, "codex");
+  fs.writeFileSync(binary, fs.readFileSync(binary, "utf8").replace('case "turn/start": {', `case "turn/start": {
+    fs.appendFileSync(${JSON.stringify(path.join(f.repo, "root-edited.txt"))}, "edit\\n");
+    fs.appendFileSync(path.join(ensureThread(state, message.params.threadId).cwd, "cwd-edited.txt"), "edit\\n");`));
+  f.env.CODEX_COMPANION_SESSION_ID = "subdirectory-session";
+  const duet = new URL("../plugins/codex/bin/duet", import.meta.url).pathname;
+  const json = result => {
+    assert.equal(result.status, 0, result.stderr);
+    try { return JSON.parse(result.stdout); }
+    catch { return JSON.parse(result.stdout.trim().split("\n").at(-1)); }
+  };
+  const task = (...args) => json(run(duet, ["task", ...args], { cwd: f.repo, env: f.env, input: "Inspect the fixture." }));
+  const stored = report => json(f.call("result", report.jobId, "--json")).storedJob;
+  const stateDir = resolveStateDir(f.repo, f.env);
+  const assertJob = (report, cwd) => {
+    const job = stored(report);
+    assert.equal(report.status, "completed");
+    assert.equal(job.request.cwd, cwd);
+    assert.equal(job.workspaceRoot, f.repo);
+    assert.equal(path.dirname(job.resultFile), path.join(stateDir, "jobs"));
+    assert.ok(JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"))).jobs.some(entry => entry.id === job.id));
+    return job;
+  };
+  const first = task("--cwd", sub);
+  const firstJob = assertJob(first, sub);
+  assert.equal(f.state().lastThreadStart.cwd, sub);
+  const details = JSON.parse(fs.readFileSync(firstJob.resultFile));
+  assert.ok(details.touchedFiles.includes("packages/web/cwd-edited.txt"));
+  assert.ok(details.touchedFiles.includes("root-edited.txt"));
+  assert.ok(details.preExistingChanges.includes("pre-existing.txt"));
+  assert.equal(details.fileTracking.status, "complete");
+  for (const args of [["--to", first.worker], ["--thread", firstJob.threadId]]) {
+    const followup = assertJob(task(...args), sub);
+    assert.equal(followup.threadId, firstJob.threadId);
+    assert.equal(f.state().lastThreadResume.cwd, sub);
+  }
+  // Codex receives the physical directory even when the CLI uses a symlink.
+  const alias = path.join(f.dir, "web-alias");
+  fs.symlinkSync(sub, alias, process.platform === "win32" ? "junction" : "dir");
+  assertJob(task("--cwd", alias), alias);
+  assert.equal(f.state().lastThreadStart.cwd, fs.realpathSync(sub));
+  assertJob(task("--cwd", f.repo), f.repo);
+  assert.equal(f.state().lastThreadStart.cwd, f.repo);
+  for (const review of ["review", "adversarial-review"]) {
+    json(f.call(review, "--cwd", sub, "--scope", "working-tree", "--json"));
+    assert.equal(f.state().lastThreadStart.cwd, f.repo);
+  }
 });
 
 test("task rejects unknown, missing and conflicting sandbox flags before starting a turn", () => {

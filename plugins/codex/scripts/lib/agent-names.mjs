@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { listSessionJobs, resolveStateRoot } from "./state.mjs";
@@ -33,16 +33,19 @@ export function pickAgentName(usedNames, random = Math.random) {
 // Keep session reservations outside the pruned workspace indexes. Exclusive
 // creation reserves a name before its job is published, even across workspaces.
 // Reservations have no age limit; a rejected, unlaunched dispatch can release its own.
-// onReserved reports only a new selection, not backfills for earlier jobs.
-export function reserveAgentName(usedNames, { cwd, sessionId, preferredName = null, threadId = null, onReserved = undefined }, random = Math.random) {
+// onReserved reports a new selection or native claim, never earlier jobs.
+// A claim supplies its own rollback: keep the pre-spawn reservation pinned.
+export function reserveAgentName(usedNames, { cwd, sessionId, preferredName = null, threadId = null,
+  reserveForSpawn = false, claimOwner = null, onReserved = undefined }, random = Math.random) {
   const used = new Set([...usedNames].map(name => name.toLowerCase()));
   if (!sessionId) return preferredName && !used.has(preferredName.toLowerCase()) ? preferredName : pickAgentName(used, random);
   const hash = value => createHash("sha256").update(value).digest("hex");
   const directory = path.join(path.dirname(resolveStateRoot()), "agent-names", hash(sessionId));
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const reserve = name => {
+  const reservationFile = name => path.join(directory, hash(name.toLowerCase()));
+  const reserve = (name, forSpawn = false) => {
     try {
-      fs.writeFileSync(path.join(directory, hash(name.toLowerCase())), "", { flag: "wx", mode: 0o600 });
+      fs.writeFileSync(reservationFile(name), forSpawn ? "native-spawn\n" : "", { flag: "wx", mode: 0o600 });
       return true;
     } catch (error) {
       if (error.code === "EEXIST") return false;
@@ -58,14 +61,40 @@ export function reserveAgentName(usedNames, { cwd, sessionId, preferredName = nu
   if (preferredName) {
     const owners = jobs.filter(job => job.agentName?.toLowerCase() === preferredName.toLowerCase());
     if (threadId && owners.length && owners.every(job => job.threadId === threadId)) return preferredName;
-    if (!used.has(preferredName.toLowerCase()) && reserve(preferredName)) {
-      onReserved?.(preferredName);
-      return preferredName;
+    if (!used.has(preferredName.toLowerCase())) {
+      // Only a native dispatch may consume a pre-spawn reservation. A second
+      // exclusive file makes the handoff atomic across workspace locks, and
+      // the dispatch nonce makes a retry by the same owner idempotent.
+      if (claimOwner) {
+        const file = reservationFile(preferredName), claim = `${file}.claim`;
+        let pending = false;
+        try { pending = fs.readFileSync(file, "utf8") === "native-spawn\n"; }
+        catch (error) { if (error.code !== "ENOENT") throw error; }
+        if (pending) {
+          let claimed = false;
+          // Publish complete ownership atomically; a crash during the write
+          // must not leave an empty claim that rejects the same nonce's retry.
+          const temporary = `${claim}.${randomUUID()}.tmp`;
+          fs.writeFileSync(temporary, claimOwner, { flag: "wx", mode: 0o600 });
+          try { fs.linkSync(temporary, claim); claimed = true; }
+          catch (error) { if (error.code !== "EEXIST") throw error; }
+          finally { fs.unlinkSync(temporary); }
+          if (claimed) {
+            onReserved?.(preferredName, () => fs.unlinkSync(claim));
+            return preferredName;
+          }
+          if (fs.readFileSync(claim, "utf8") === claimOwner) return preferredName;
+        }
+      }
+      if (reserve(preferredName, reserveForSpawn)) {
+        onReserved?.(preferredName);
+        return preferredName;
+      }
     }
   }
   for (;;) {
     const name = pickAgentName(used, random);
-    if (reserve(name)) {
+    if (reserve(name, reserveForSpawn)) {
       onReserved?.(name);
       return name;
     }
@@ -75,6 +104,7 @@ export function reserveAgentName(usedNames, { cwd, sessionId, preferredName = nu
 
 // Only release a name reported by onReserved for a dispatch that never launched.
 // Reused names and reservations backfilled for earlier jobs belong to them.
+// A native claim uses its supplied rollback instead, retaining the spawn's name.
 export function releaseAgentName(sessionId, name) {
   if (!sessionId || !name) return false;
   const hash = value => createHash("sha256").update(value).digest("hex");

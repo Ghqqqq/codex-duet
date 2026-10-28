@@ -69,7 +69,7 @@ test("PreToolUse permits only the single-command duet grammar with trusted sessi
     ["duet task --tool-use-id tool-a", false], ["duet task --tool-use-id foreign", false],
     ["duet answer Ada --tool-use-id foreign", false], ["duet wait Ada --tool-use-id foreign", false]
   ];
-  assert.deepEqual(COMMAND_OPTIONS.task.internalValueOptions, ["session-cwd", "dispatch-nonce", "tool-use-id"]);
+  assert.deepEqual(COMMAND_OPTIONS.task.internalValueOptions, ["session-cwd", "dispatch-nonce", "tool-use-id", "agent-name"]);
   for (const [verb, schema] of Object.entries(COMMAND_OPTIONS)) {
     for (const name of schema.internalValueOptions ?? []) {
       assert.ok(!schema.valueOptions.includes(name), `${verb} --${name} is internal`);

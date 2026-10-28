@@ -3,9 +3,11 @@
 `/codex:ultra-codex <task>` makes the Claude Code main agent run a substantive
 task the way Claude Code's own Ultracode mode does, with Codex workers in place
 of Claude subagents. Claude scouts, assigns, judges and integrates; Codex
-investigates, implements and reviews. Claude prefers the native
-`codex:codex-native` agent when available; otherwise it runs `duet task` in
-background Bash. The report arrives with the completion notification. Only if
+investigates, implements and reviews. Claude uses the native
+`codex:codex-native` agent from the first dispatch, without waiting for readiness.
+Background `duet task` is for `native_adapter_unavailable`, `native_capacity`,
+per-call options the `DUET:` line rejects, or follow-ups to Bash-launched workers.
+The report arrives with the completion notification. Only if
 missing, Claude runs `duet result <worker>`; full evidence and handles are in
 `duet result <worker> --details`. No output-file parsing is needed.
 `/codex:ultra-codex on` makes that the session's default (see "Mode" below);
@@ -22,9 +24,9 @@ workspaces and keyed by the Claude session id that the SessionStart hook exports
 one-line versioned reminder to every prompt (shown with the repository-relative
 protocol path):
 
-> Ultra-codex mode on (thorough, max 4 workers). Apply protocol v554ef268 to
+> Ultra-codex mode on (thorough, max 4 workers). Apply protocol v86bfc6b2 to
 > substantive tasks; re-read plugins/codex/prompts/ultra-codex-protocol.md only if
-> v554ef268 is not in your context.
+> v86bfc6b2 is not in your context.
 
 Control-only invocations (`on`, `off`, `status` or no arguments) do not load the
 protocol; task invocations, including `on` with task text, use Read on its path.
@@ -101,11 +103,17 @@ or background Bash and direct Codex jobs, so it works at any effort level withou
 Use the [dispatch recipe](direct-mode.md): a named native agent with an optional
 first prompt line `DUET: <flags>`, or `duet task` with a single-quoted `DUET_TASK`
 heredoc in background Bash. Investigators and reviewers use `--sandbox read-only`.
-SessionStart supplies invocation guidance. After registration, the native
-adapter advertises readiness on the first accepted non-command person prompt
-(`prompt.submit`). If `duet` is not on PATH, reload/start a new session
-or use the absolute `bin/duet` launcher. Native-hook failure returns a blocked
-report; check `duet status` before retrying.
+SessionStart supplies native-first guidance. The registered adapter's readiness
+notice is informational; dispatch does not wait for it. Each fresh native call
+reserves a scientist pool name before spawn, replacing a passed label unless it
+is a free pool name. The Agent result's context carries a `Codex worker named X`
+note for an assigned or replaced name; use that name for SendMessage. Reservation
+failure leaves the call unchanged; resumptions keep their name. Bash dispatch
+can request a fresh name with `--name <label>`; collisions
+fall back to the pool and job-ID prefixes are reserved. If `duet` is not on PATH,
+reload/start a new session or use the absolute `bin/duet` launcher. Native-hook
+failure returns a blocked report; run `/reload-plugins`, check `duet status` before
+retrying and use background `duet task` if it persists.
 
 Native follow-ups and answers use SendMessage to the agent's name. Bash
 follow-ups use `duet task --to <worker>` and a new stdin brief; `running` uses
@@ -195,6 +203,9 @@ worker brief and final compact report. `task --run <id|none>` overrides linkage
 for one dispatch; follow-ups do not inherit it. An explicit run must be open in
 the same isolated home, including across workspaces; invalid/closed runs fail
 before a worker starts, and `none` skips linkage.
+Without an active run, add, close and task linking use the sole open workspace
+run. With several open runs, tasks stay unlinked and add/close require
+`journal use <runId>` or `--run <id>`.
 Claude records each acceptance with `journal add verdict`,
 consequential decisions and accepted assumptions with `journal add decision`,
 then runs `journal validate` before `journal close` (`passed`, `blocked` or
@@ -202,7 +213,11 @@ then runs `journal validate` before `journal close` (`passed`, `blocked` or
 the journal and active pointer unchanged; blocked/abandoned closes record them.
 When a fresh worker resolves REWORK or REASSIGN, its verified `ACCEPT` or
 `ACCEPT_WITH_GLUE` verdict includes `resolves: ["<rejectedJobId>", ...]`.
-Unknown IDs are rejected. Accepted `followUpOf`/`continuationOf` descendants also
+Jobs linked to that run can be resolved regardless of session; unknown IDs are
+rejected. Verdict criteria match declared exact text, a unique shown prefix
+ending in `…`, or a unique `K<n>` ID already present in a declared criterion.
+Unknown or ambiguous criteria are rejected; introduce new ones with
+`journal add criteria`. Accepted `followUpOf`/`continuationOf` descendants also
 resolve earlier rejections; same-thread follow-ups can discover that predecessor
 across worktrees. A later rejection reopens the work.
 
@@ -213,7 +228,9 @@ takes `{"criteria":["..."],"reason":"..."}` with known exact criterion text.
 Withdrawn criteria show their reason and no longer cause unchecked/unmet
 issues; `add criteria` with the same text reactivates them.
 
-After compaction or a resumed session, `journal show` recovers the goal,
+In a new session, `journal use <runId>` selects the existing open run, including
+across workspaces, so later dispatches link to it. After compaction or a resumed
+session, `journal show` recovers the goal,
 criteria, latest worker verdicts, decisions and open items. SessionStart adds a
 one-line reminder when a run is active. Journals live only in Duet's isolated
 home, survive job-record pruning, and follow the retention window; they neither

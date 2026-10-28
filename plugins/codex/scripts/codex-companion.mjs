@@ -12,7 +12,7 @@ import { JobRuntime, ACTIVE, OWNER_GRACE_MS, seconds, ownerId, renewLease, reque
 import { reserveAgentName, releaseAgentName } from "./lib/agent-names.mjs";
 import { latestThreadJob, startedThreadSettings, recordedThreadSettings, requestGrantsInSession, resolveThreadInheritance, resolveWorkerTarget } from "./lib/worker-resolve.mjs";
 import { writeSessionMarker } from "./lib/session-markers.mjs";
-import { startRun, addEntry, closeRun, showRun, listRuns, renderRun, validateRun, renderValidation, linkJournalJob, finishJournalJob, validateTaskRun } from "./lib/run-journal.mjs";
+import { startRun, useRun, addEntry, closeRun, showRun, listRuns, renderRun, validateRun, renderValidation, linkJournalJob, finishJournalJob, validateTaskRun } from "./lib/run-journal.mjs";
 import { recordFinishedJob, recordedThreadJobs, uniqueTurnAttribution } from "./lib/job-runtime.mjs";
 import { listSessionJobs, updateJob, unresolvedTask, withoutPrivateActivity } from "./lib/state.mjs";
 import { markReportEmitted } from "./lib/report-delivery.mjs";
@@ -130,10 +130,11 @@ function writeDirectLineSync(payload) {
 }
 
 const COMMAND_USAGE = {
-  journal: `Usage: duet journal <start|add|close|show|validate|list> [options]
+  journal: `Usage: duet journal <start|use|add|close|show|validate|list> [options]
 Durable run criteria, verdicts and decisions in the isolated home.
   start [--switch]  Stdin JSON: {"goal":"...","criteria":["..."]}; prints {runId}.
     --switch leaves the previous run open, selects the new run and also prints previousRunId.
+  use <runId>  Select an existing open run for this session, including across workspaces; prints {runId}.
   add <criteria|withdraw|verdict|decision> [--run <id>]  Stdin JSON:
     criteria: {"criteria":["..."]}
       Re-adding the same text reactivates a withdrawn criterion.
@@ -141,21 +142,29 @@ Durable run criteria, verdicts and decisions in the isolated home.
       Known criteria only; show as withdrawn with their reason and no unchecked/unmet issue.
     verdict: {"jobId":"...","verdict":"ACCEPT|ACCEPT_WITH_GLUE|REWORK|REASSIGN",
               "criteria":[{"criterion":"...","evidence":"...","result":"met|not_met|cannot_verify"}],"reason":"..."}
+      Criterion: declared exact text, a unique trailing-… prefix from show, or a unique K7/K7: id.
+      Unknown/ambiguous criteria are rejected; introduce new ones with add criteria.
+      Historical verdict-only criteria keep their existing validation behavior; no migration is performed.
       Optional resolves: ["<jobId>", ...] names linked jobs in this run whose REWORK/REASSIGN
-      a later ACCEPT/ACCEPT_WITH_GLUE resolves. Unknown job IDs are rejected.
+      a later ACCEPT/ACCEPT_WITH_GLUE resolves, regardless of session. Unknown resolves IDs are rejected.
     decision: {"summary":"...","basis":"...","risk":"optional"}
   close [--run <id>]  Stdin: {"judgment":"passed|blocked|abandoned","summary":"...","openRisks":[]}.
     passed refuses open issues (exit 2); blocked/abandoned record them as openIssues.
   show [--run <id>]  Recover criteria evidence and next actions; paths refer to saved brief/report copies.
   validate [--run <id>]  Read-only completeness check with next actions; exit 0 if clean, 2 if issues.
   list  Workspace runs, newest first.
-  --cwd, -C <dir>  Workspace for start/list; --run resolves across workspaces in the isolated home.
+  --cwd, -C <dir>  Workspace for start/list/fallback; use/--run resolve across workspaces in the isolated home.
   --json  Full JSON view; --help, -h  Side-effect-free help.
-Start needs CODEX_COMPANION_SESSION_ID. Add/close/show/validate use the session's active run across workspaces.
+Start/use need CODEX_COMPANION_SESSION_ID. Add/close/show/validate use the session's active run across workspaces.
+Without an active run, add/close and task linking use the sole open workspace run; with several open
+runs add/close require journal use <runId> or --run, and tasks stay unlinked. Only use/start change the active pointer.
 Show/validate fall back to the newest workspace run when none is active.`,
   task: `Usage: duet task [options] <<'DUET_TASK'
 Read the brief only from stdin; implies --direct. Fresh unless --to/--thread/--continue/--resume/--resume-last.
   --help, -h  Show help without starting anything; unknown task flags are errors.
+  --name <label>  Prefer this worker name on a fresh thread; follow-ups keep their name.
+    Use 1-64 ASCII letters, digits, _, . or -, starting with a letter or digit.
+    A reserved name falls back to the name pool; the report carries the actual name.
   --to <worker|jobId>  Follow up in that worker's cwd on the same thread.
   --thread <threadId>  Follow up on an exact thread; --fresh  Start a new thread (default).
   --to/--thread inherit model, effort, sandbox and speed from started attempts; explicit flags override.
@@ -242,18 +251,21 @@ other unknown flags remain focus text. Use -- for literal typo-like focus text.
   --  Treat remaining tokens, including help flags, as literal focus text.`,
   transfer: `Usage: duet transfer [--source <claude-jsonl>] [--cwd <dir>] [--json]
 Import a Claude transcript; source defaults to the current session transcript.
+  --args-stdin  Read raw arguments from stdin without shell expansion (use a single-quoted heredoc).
   --cwd, -C  Workspace; --json  JSON output; --help, -h  Show help.`,
   status: `Usage: duet status [worker|jobId|--thread <id>] [options]
 Show session jobs or a selected worker/job/thread; --all includes other sessions.
 Example: duet status
   --wait  Wait for completion; --timeout-ms <ms>  Budget; --poll-interval-ms <ms>  Poll interval.
   --owner <id>  Renew that owner; omit for observation.
+  --args-stdin  Read raw arguments from stdin without shell expansion (use a single-quoted heredoc).
   --cwd, -C <dir>  Workspace; --json  JSON output; --help, -h  Help.`,
   result: `Usage: duet result <worker|jobId> [--details] [--cwd <dir>]
 Read report v2 without starting a turn. Use when a completion notification lacks its report.
   --details  Full report: handles, settings, evidence, paths and recovery commands.
   --report  Report v2 (also the default); --json alone  Stored payload.
   --thread <id>  Latest tracked turn on that thread; jobId selects an older turn.
+  --args-stdin  Read raw arguments from stdin without shell expansion (use a single-quoted heredoc).
   --cwd, -C <dir>  Workspace; --help, -h  Help.
 Example: duet result Ada --details`,
   wait: `Usage: duet wait <worker|jobId> [options]
@@ -296,6 +308,7 @@ The compatibility companion supports --json receipts without --direct.`,
 Cancel the selected active job and report whether interruption was confirmed.
 Example: duet cancel Ada
 Omit the target only when the session has one active job.
+  --args-stdin  Read raw arguments from stdin without shell expansion (use a single-quoted heredoc).
   --cwd, -C <dir>  Workspace; --json  JSON confirmation; --help, -h  Help without cancelling.`,
   cleanup: `Usage: duet cleanup [--dry-run] [--days <N>] [--json]
 Remove eligible ended jobs, inactive runs, markers and unreferenced threads.
@@ -374,13 +387,22 @@ function normalizeArgv(argv, argsStdin = false, config = {}) {
   const index = argsStdin ? argv.indexOf("--args-stdin") : -1;
   const separator = argv.indexOf("--");
   if (index >= 0 && (separator < 0 || index < separator)) {
-    return [...argv.slice(0, index), ...splitReviewArgumentString(readStdinIfPiped(), config), ...argv.slice(index + 1)];
+    // Review preserves literal focus text; job commands parse every token.
+    const split = argsStdin === "raw" ? splitRawArgumentString : splitReviewArgumentString;
+    return [...argv.slice(0, index), ...split(readStdinIfPiped(), config), ...argv.slice(index + 1)];
   }
   return argv;
 }
 
 function parseCommandInput(argv, config = {}) {
-  return parseSessionArgs(normalizeArgv(argv), {
+  const rawArgsStdin = ["transfer", "status", "result", "cancel"].includes(process.argv[2]);
+  const tokens = normalizeArgv(argv, rawArgsStdin ? "raw" : false);
+  const separator = tokens.indexOf("--");
+  if (rawArgsStdin && (separator < 0 ? tokens : tokens.slice(0, separator)).some(token => token === "--help" || token === "-h")) {
+    printUsage(process.argv[2]);
+    process.exit(0);
+  }
+  return parseSessionArgs(tokens, {
     rejectUnknown: true,
     ...config,
     valueOptions: [...(config.valueOptions ?? []), ...(config.internalValueOptions ?? [])],
@@ -449,6 +471,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   if (!codexStatus.available) {
     nextSteps.push(codexStatus.guidance);
   }
+  if (codexStatus.warning) nextSteps.push(codexStatus.warning.message);
   const quote = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
   nextSteps.push(`Invocation: duet ${invocation.duet.available ? `works at ${duetPath}` : "is unavailable"}; CODEX_COMPANION ${companionAvailable ? "works" : companionPath ? "points to an unreadable file" : "is unset"}.`);
   if (invocation.duet.available) nextSteps.push(`Use: ${duetPath === pathDuet ? "duet" : quote(duetPath)} task --cwd ${quote(workspaceRoot)} <<'BRIEF'\n<brief>\nBRIEF`);
@@ -918,6 +941,7 @@ async function executeTaskRun(request) {
   try {
     if (!request.detached) runtime.abort.signal.throwIfAborted();
     result = await runAppServerTurn(workspaceRoot, {
+    executionCwd: fs.realpathSync(request.cwd),
     jobId: request.jobId,
     onThreadBusy: (threadId, turnIds) => {
       const owner = recordedThreadJobs(threadId).jobs.find(job => job.id !== request.jobId && (turnIds.includes(job.turnId) || (!turnIds.length && ACTIVE.has(job.status))));
@@ -1001,6 +1025,7 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
     reasoningSummary: result.reasoningSummary,
     startupTimings: result.startupTimings ?? {}, startupWarning: result.startupWarning ?? null,
     turnEnded: Boolean(result.turnEnded),
+    ...(result.inferredCompletion === true ? { inferredCompletion: true, turnStatus: result.turnStatus ?? null } : {}),
     interruptionReason: result.interruptionReason ?? null, interruptionConfirmed: result.interruptionConfirmed ?? null
   };
   const trackedJob = readStoredJob(resolveWorkspaceRoot(request.cwd), request.jobId);
@@ -1011,7 +1036,9 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
   const report = buildWorkerReport(payload, { jobId: request.jobId, ...artifacts });
   Object.assign(report, { ...(trackedJob?.agentName ? { agentName: trackedJob.agentName } : {}), ownerId: payload.ownerId, sessionId: payload.sessionId }, leaseExpiryReport({ ...trackedJob, threadId: payload.threadId, result: payload }));
   if (payload.interruptionReason) {
-    report.status = payload.interruptionReason === "cancelled_by_user" ? "cancelled" : "interrupted";
+    if (payload.interruptionReason !== "codex_runtime_restarted") {
+      report.status = payload.interruptionReason === "cancelled_by_user" ? "cancelled" : "interrupted";
+    }
     // Any interruption leaves a resumable thread; publish the continuation so a
     // replacement worker can pick the task up without reconstructing flags.
     Object.assign(report, continuationReport({ ...trackedJob, id: request.jobId, threadId: payload.threadId, workspaceRoot: resolveWorkspaceRoot(request.cwd) }));
@@ -1019,7 +1046,7 @@ function buildTaskExecution(result, request, taskMetadata = { title: "Codex Task
   if (result.recovered) {
     Object.assign(report, provenance);
     // A completed server turn still uses the normal worker-report outcome.
-    if (["failed", "interrupted"].includes(result.turnStatus)) report.status = result.turnStatus;
+    if (!payload.interruptionReason && ["failed", "interrupted"].includes(result.turnStatus)) report.status = result.turnStatus;
   }
   Object.assign(payload, artifacts, { workerStatus: report.status });
 
@@ -1125,7 +1152,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
   // Concurrent dispatches see this queued reservation before either launches.
   const stored = listJobs(workspaceRoot);
   const inheritedPrevious = !identity.continued && identity.threadId ? resolveThreadInheritance(workspaceRoot, identity.threadId).job : null;
-  let duplicateDispatch, reservedName;
+  let duplicateDispatch, releaseReservation;
   updateState(workspaceRoot, state => {
     const currentIds = new Set(state.jobs.map(candidate => candidate.id));
     const candidates = [...state.jobs, ...stored.filter(candidate => !currentIds.has(candidate.id))];
@@ -1145,7 +1172,9 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
     record.agentName = previous?.agentName && (!record.sessionId || previousSession === record.sessionId) && !liveElsewhere(previous.agentName) ? previous.agentName : reserveAgentName(candidates
       .filter(candidate => !record.sessionId || ((candidate.sessionId === undefined ? candidate.ownerId : candidate.sessionId) || null) === record.sessionId)
       .filter(candidate => ACTIVE.has(candidate.status) || Date.parse(candidate.createdAt) >= recent)
-      .map(candidate => candidate.agentName).filter(Boolean), { cwd: workspaceRoot, sessionId: record.sessionId, preferredName: previous?.agentName, threadId: identity.threadId, onReserved: name => { reservedName = name; } });
+      .map(candidate => candidate.agentName).filter(Boolean), { cwd: workspaceRoot, sessionId: record.sessionId, preferredName: previous?.agentName ?? identity.agentName, threadId: identity.threadId,
+        claimOwner: identity.nativeAgentName ? identity.dispatchNonce || record.id : null,
+        onReserved: (name, release) => { releaseReservation = release ?? (() => releaseAgentName(record.sessionId, name)); } });
     if (identity.threadId) record.threadId = identity.threadId;
     if (previous) record.followUpOf = previous.id;
     if (identity.continued) record.continuationOf = identity.continued.id;
@@ -1179,13 +1208,13 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
       updateState(workspaceRoot, state => {
         state.jobs = state.jobs.filter(candidate => candidate.id !== record.id);
       });
-      if (reservedName) {
-        try { releaseAgentName(record.sessionId, reservedName); }
+      if (releaseReservation) {
+        try { releaseReservation(); }
         catch (releaseError) { error.message += `\nAgent name reservation could not be released: ${releaseError.message}`; }
       }
       throw error;
     }
-    // Default automatic journal linkage remains best effort.
+    // Automatic journal storage failures remain best effort; ambiguity does not.
   }
   return record;
 }
@@ -1430,8 +1459,33 @@ function deliveryBinding(job, toolUseId) {
     { toolUseId, sessionId }].slice(-20) };
 }
 
+// Internal pre-spawn handshake: no runtime setup or model work, just the same
+// session-wide atomic reservation used by task dispatch (including Bash).
+function handleReserveName(argv) {
+  const { options, positionals } = parseCommandInput(argv, COMMAND_OPTIONS["reserve-name"]);
+  const sessionId = getCurrentClaudeSessionId();
+  if (!sessionId || !options["session-cwd"] || positionals.length) {
+    throw new Error("reserve-name requires a session id and --session-cwd, with no positional arguments.");
+  }
+  const cwd = resolveCommandWorkspace({ cwd: options["session-cwd"] });
+  const name = reserveAgentName([], { cwd, sessionId, preferredName: options.preferred, reserveForSpawn: true });
+  process.stdout.write(`${JSON.stringify({ name })}\n`);
+}
+
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, COMMAND_OPTIONS.task);
+  for (const flag of ["name", "agent-name"]) {
+    if (/^(task|review|job)-/i.test(options[flag] ?? "")) {
+      if (flag === "name") throw new Error("--name cannot start with task-, review- or job-; these prefixes are reserved for job IDs.");
+      delete options[flag];
+    }
+    if (options[flag] !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(options[flag])) {
+      throw new Error(`--${flag} requires 1-64 ASCII letters, digits, _, . or -, starting with a letter or digit.`);
+    }
+  }
+  if (options.name !== undefined && options["agent-name"] !== undefined) throw new Error("Choose --name or --agent-name, not both.");
+  const agentName = options["agent-name"] ?? options.name;
+  const nativeAgentName = options["agent-name"] !== undefined;
   const dispatchToolUseId = deliveryToolUseId(options);
   const dispatchNonce = options["dispatch-nonce"];
   if (dispatchNonce !== undefined && (!options.direct || !getCurrentClaudeSessionId() || !/^[\w.:%-]{1,1024}$/.test(dispatchNonce))) {
@@ -1595,7 +1649,7 @@ async function handleTask(argv) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast, threadId);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, true, { cwd, continued, threadId, resumeLast, prompt, model, effort, run: options.run, dispatchNonce, dispatchToolUseId, report: Boolean(options.report || options.detached || options.follow || options.direct) });
+    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, true, { cwd, continued, threadId, resumeLast, prompt, model, effort, agentName, nativeAgentName, run: options.run, dispatchNonce, dispatchToolUseId, report: Boolean(options.report || options.detached || options.follow || options.direct) });
     if (job.dispatchReused) {
       await waitForJob(workspaceRoot, job, { owner: job.ownerId, timeoutSec: options["timeout-sec"], direct: true, quiet: options.quiet, toolUseId: dispatchToolUseId });
       return;
@@ -1643,7 +1697,7 @@ async function handleTask(argv) {
     return;
   }
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, false, { cwd, continued, threadId, resumeLast, prompt, model, effort, run: options.run, dispatchToolUseId, report: Boolean(options.report) });
+  const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, false, { cwd, continued, threadId, resumeLast, prompt, model, effort, agentName, nativeAgentName, run: options.run, dispatchToolUseId, report: Boolean(options.report) });
   job.request = buildTaskRequest({ ...claudeInstructions, cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins, approvedComputerApps, resumeLast, threadId, jobId: job.id, report: Boolean(options.report) });
   if (options.run !== undefined) job.request.run = options.run;
   if (inheritance?.details) job.request.settingsInheritance = inheritance.details;
@@ -1796,7 +1850,7 @@ function recordTurnResolution(workspaceRoot, stored, outcome, recovery) {
   return { outcome, recovery };
 }
 
-async function reconcileLostTurn(workspaceRoot, job, { turnResult = null, interruptRequested = false, admittingJobId = null } = {}) {
+export async function reconcileLostTurn(workspaceRoot, job, { turnResult = null, interruptRequested = false, admittingJobId = null } = {}) {
   let stored = restoreMissingTaskRecord(workspaceRoot, job);
   if (!unresolvedTask(stored)) {
     return { outcome: stored?.recovered ? stored.recovery?.turnStatus ?? stored.status : "unknown", result: stored?.result };
@@ -1864,6 +1918,40 @@ async function reconcileLostTurn(workspaceRoot, job, { turnResult = null, interr
             ? !stored.threadId ? "The worker exited before recording a thread handle; no turn was submitted."
               : "Read the thread with turns; no unclaimed turn started during this job."
             : "Fetched the exact persisted turn without rerunning it." } };
+      const stopReason = interruptRequested ? "cancelled_by_user"
+          : latest.cancelRequested ? latest.cancelRequested.reason || "cancelled_by_user"
+          : latest.result?.interruptionReason || latest.report?.interruptionReason || latest.interruptionReason
+            || (latest.ownerDetachReason != null && latest.ownerDetachReason !== "returned" ? "owner_stopped" : null);
+      if (latest.status === "completed" && latest.result?.inferredCompletion === true) {
+        // Resolving the leftover turn must not replace the already captured
+        // answer with missing or partial items from persisted server history.
+        // Stops persist their intent before interrupting (cancel, runtime stop),
+        // and an owner stop leaves a non-returned detach. Without either, the
+        // worker reconciling its own leftover turn (owner still attached) or a
+        // returned owner means the broker ended the turn after the answer.
+        const ownerStopped = latest.ownerDetachReason != null && latest.ownerDetachReason !== "returned";
+        const completedAfterAnswer = result.turnStatus === "interrupted"
+          && typeof latest.result.rawOutput === "string" && latest.result.rawOutput.trim()
+          && !stopReason && !ownerStopped;
+        const status = result.turnStatus === "failed" ? "failed"
+          : stopReason ? stopReason === "cancelled_by_user" ? "cancelled" : "interrupted"
+          : result.turnStatus === "completed" || completedAfterAnswer ? latest.status : result.turnStatus;
+        const exitStatus = status === "completed" ? 0 : result.status || 1;
+        if (completedAfterAnswer) provenance.recovery.detail = "The leftover turn was interrupted after the final answer was captured; no stop was requested.";
+        if (stopReason) provenance.recovery.interruptRequested = true;
+        const interruption = stopReason
+          ? { interruptionReason: stopReason, interruptionConfirmed: true } : {};
+        const payload = { ...latest.result, ...provenance, ...interruption, status: exitStatus,
+          workerStatus: status, turnStatus: result.turnStatus, turnEnded: true,
+          ...(result.error?.message ? { error: result.error.message } : {}) };
+        const report = { ...(latest.report ?? buildWorkerReport(latest.result, { jobId: stored.id,
+          rawOutputFile: latest.rawOutputFile, resultFile: latest.resultFile })), ...provenance, ...interruption,
+          status, exitCode: exitStatus };
+        persistTaskArtifacts(workspaceRoot, stored.id, payload);
+        recovered = true;
+        return { ...provenance, ...interruption, status, phase: status === "completed" ? "done" : status,
+          turnResolution: result.turnStatus, pid: null, errorMessage: result.error?.message ?? null, result: payload, report };
+      }
       if (["interrupted", "cancelled"].includes(latest.status) && latest.result) {
         // The owner's stopped outcome remains authoritative. A later server
         // result only establishes that this exact turn no longer blocks reuse.
@@ -1877,7 +1965,14 @@ async function reconcileLostTurn(workspaceRoot, job, { turnResult = null, interr
         return { ...provenance, turnResolution: result.turnStatus, interruptionConfirmed: true, pid: null, result: payload, report };
       }
       Object.assign(result, provenance);
-      if (interruptRequested && result.turnStatus === "interrupted") Object.assign(result, { interruptionReason: "cancelled_by_user", interruptionConfirmed: true });
+      if (result.turnStatus === "interrupted") {
+        // For a failed job with a result, unresolvedTask above established a
+        // transport loss (including legacy diagnostics). A dead wrapper alone
+        // is insufficient evidence. Recorded Duet stops always take precedence.
+        const reason = stopReason ?? (latest.status === "failed" && latest.result ? "codex_runtime_restarted" : null);
+        if (reason) Object.assign(result, { interruptionReason: reason, interruptionConfirmed: true });
+        if (stopReason) provenance.recovery.interruptRequested = true;
+      }
       const execution = buildTaskExecution(result, { ...latest.request, cwd: workspaceRoot, jobId: stored.id, write: latest.write,
         report: latest.request?.report ?? Boolean(parseStructuredReport(result.finalMessage)) });
       recovered = true;
@@ -2080,6 +2175,19 @@ async function handleCancel(argv) {
       const predecessorId = stored.result?.blockers?.find(blocker => blocker.code === "thread_busy")?.predecessorJobId;
       const predecessor = predecessorId && readStoredJob(snapshot.workspaceRoot, predecessorId);
       if (predecessor?.threadId === stored.threadId && unresolvedTask(predecessor)) stored = predecessor;
+    }
+    // Save intent before handle discovery or an interrupt can race recovery.
+    // Keep a protected launch reservation index-only until its launcher writes.
+    if (unresolvedTask(stored)) {
+      if (readStoredJob(snapshot.workspaceRoot, stored.id)) stored = requestCancel(snapshot.workspaceRoot, stored.id);
+      else {
+        const cancelRequested = { reason: "cancelled_by_user", at: nowIso() };
+        updateState(snapshot.workspaceRoot, state => {
+          const current = state.jobs.find(job => job.id === stored.id);
+          if (current) current.cancelRequested = cancelRequested;
+        });
+        stored = { ...stored, cancelRequested };
+      }
     }
     if (stored && !stored.turnId) {
       if (unresolvedTask(stored)) {
@@ -2396,14 +2504,14 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
       if (next[0]?.seq > cursor + 1) activityEvicted += next[0].seq - cursor - 1;
       for (const event of next) {
         if (direct && !quiet) {
-          const text = redactActivity(formatActivity(event)).replace(/\s+/g, " ").trim();
+          const text = redactActivity(formatActivity(event, { root: current.request?.cwd ?? workspaceRoot })).replace(/\s+/g, " ").trim();
           // Progress never marks directOutputStarted: a later signal must still
           // emit its owner_stopped JSON. The formatter prefixes every event.
           const line = text.length > 200 ? `${text.slice(0, 199)}…` : text;
           progress.push(line);
         } else if (!json && (feedMax === 0 || streamed < feedMax)) {
           streamed += 1;
-          const line = streamed === feedMax ? `${formatActivity(event)}\n… feed paused after ${feedMax} lines; later events are counted in the final JSON (activityCount) and shown by /codex:status` : formatActivity(event);
+          const line = streamed === feedMax ? `${formatActivity(event, { root: current.request?.cwd ?? workspaceRoot })}\n… feed paused after ${feedMax} lines; later events are counted in the final JSON (activityCount) and shown by /codex:status` : formatActivity(event, { root: current.request?.cwd ?? workspaceRoot });
           try { await writeLine(line); }
           catch (error) { if (error.code !== "EPIPE") throw error; detach("stdout_closed"); process.exitCode = 130; return; }
         }
@@ -2542,10 +2650,15 @@ async function handleUltraCodex(argv) {
 async function handleJournal(argv) {
   const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "run"], booleanOptions: ["json", "switch"], rejectUnknown: true });
   const [action, type] = positionals;
-  if (!["start", "add", "close", "show", "validate", "list"].includes(action) || positionals.length !== (action === "add" ? 2 : 1)) throw new Error("journal takes start, add <criteria|withdraw|verdict|decision>, close, show, validate or list.");
-  if (options.run !== undefined && ["start", "list"].includes(action)) throw new Error(`journal ${action} does not accept --run.`);
+  if (!["start", "use", "add", "close", "show", "validate", "list"].includes(action) || positionals.length !== (["add", "use"].includes(action) ? 2 : 1)) throw new Error("journal takes start, use <runId>, add <criteria|withdraw|verdict|decision>, close, show, validate or list.");
+  if (options.run !== undefined && ["start", "use", "list"].includes(action)) throw new Error(`journal ${action} does not accept --run.`);
   if (options.switch !== undefined && action !== "start") throw new Error(`journal ${action} does not accept --switch.`);
   const cwd = resolveCommandWorkspace(options), sessionId = getCurrentClaudeSessionId();
+  if (action === "use") {
+    const result = useRun(cwd, sessionId, type);
+    outputCommandResult(result, `${JSON.stringify(result)}\n`, options.json);
+    return;
+  }
   if (action === "list") {
     const runs = listRuns(cwd);
     outputCommandResult(runs, `${runs.map(run => `${run.runId} ${run.state}${run.judgment ? ` (${run.judgment})` : ""}: ${snippet(run.goal, 100)}`).join("\n") || "No Duet runs."}\n`, options.json);
@@ -2625,6 +2738,9 @@ async function main() {
         reviewName: "Adversarial Review"
       });
       break;
+    case "reserve-name":
+      handleReserveName(argv);
+      break;
     case "task":
       await handleTask(argv);
       break;
@@ -2663,7 +2779,7 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+if (DUET_INVOCATION || (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url))) main().catch((error) => {
   let message = error instanceof Error ? error.message : String(error);
   if (error.code === "UNKNOWN_OPTION" && usageFor(process.argv[2])) message += `\n\n${usageFor(process.argv[2])}`;
   if (["task", "wait", "answer"].includes(process.argv[2]) && requestsDirect(process.argv.slice(3))) {

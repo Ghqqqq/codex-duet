@@ -93,6 +93,12 @@ export function codexRuntimeDiagnostic(cwd, availability, env = process.env, { d
   const { binary, source, runtimeFile } = resolveCodexSelection(env);
   const executable = path.isAbsolute(binary) ? binary : executableOnPath(binary, env) ?? binary;
   const result = { executable, source, pathCodex: null, guidance: null };
+  const locations = [executable];
+  try { locations.push(canonicalPath(executable)); } catch { /* Still diagnose a missing or inaccessible pin. */ }
+  if (locations.some(location => /\/(?:\.codex\/plugins\/\.plugin-appserver\/|ChatGPT\.app\/Contents\/Resources\/codex-cli\/)/.test(location.replaceAll("\\", "/")))) {
+    Object.assign(result, { warning: { code: "desktop_managed_codex_runtime",
+      message: `Warning: the selected Codex CLI is managed by a desktop app. Desktop-app updates can stop running Duet turns. Consider pinning a stable Codex CLI (for example npm @openai/codex) with CODEX_COMPANION_BIN or codexBinary in ${runtimeFile}. The pin was not changed.` } });
+  }
   if (availability.available) return result;
   if (source === "PATH") {
     const repair = executable === "codex"
