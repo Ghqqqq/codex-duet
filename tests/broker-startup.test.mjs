@@ -48,7 +48,9 @@ test("broker shutdown stops admitting clients before awaiting app-server cleanup
   const original = fs.readFileSync(executable, "utf8");
   // Hold this owned fixture alive during graceful shutdown so the listener race
   // is deterministic. The broker's normal SIGKILL cleanup remains in force.
-  fs.writeFileSync(executable, original.replace('const fs = require("node:fs");', `const fs = require("node:fs");\nprocess.on("SIGTERM", () => { fs.writeFileSync(${JSON.stringify(marker)}, "stopping"); setTimeout(() => {}, 5000); });`));
+  // Keep it alive after stdin closes too, so the broker's SIGTERM (not an
+  // early natural exit on EOF) always ends it and writes the marker.
+  fs.writeFileSync(executable, original.replace('const fs = require("node:fs");', `const fs = require("node:fs");\nsetInterval(() => {}, 1000);\nprocess.on("SIGTERM", () => { fs.writeFileSync(${JSON.stringify(marker)}, "stopping"); setTimeout(() => {}, 5000); });`));
   const child = spawnBrokerProcess({ scriptPath: new URL("../plugins/codex/scripts/app-server-broker.mjs", import.meta.url).pathname,
     cwd: f.dir, endpoint: f.endpoint, pidFile: path.join(f.dir, "broker.pid"), logFile: path.join(f.dir, "broker.log"), env: f.env });
   assert.equal(await waitForBrokerEndpoint(f.endpoint, 10000), true);
