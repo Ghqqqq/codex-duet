@@ -2438,11 +2438,13 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
   };
   const signalHandlers = new Map();
   if (owner) {
-    attached = attachOwnerWait(workspaceRoot, job.id, owner, waitToken, answer, toolUseId).ownerWaitToken === waitToken;
+    // Install the handlers before publishing the attachment: a stop that
+    // follows the visible attach must always record its signal detach.
     for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
       const handler = () => { void stopOwner("signal"); };
       signalHandlers.set(signal, handler); process.on(signal, handler);
     }
+    attached = attachOwnerWait(workspaceRoot, job.id, owner, waitToken, answer, toolUseId).ownerWaitToken === waitToken;
   }
   // Feed and final writes retain their delivery callbacks. Direct progress is
   // drained separately so neither polling nor owner renewal waits for stdout.
