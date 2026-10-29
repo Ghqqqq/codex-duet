@@ -158,10 +158,10 @@ function fixture(behavior, name = 'native-worker') {
       },
     },
   };
-  function reload(record = true) {
+  function reload(record = true, install = register) {
     if (record) capture.events.push({ event: 'reload', store: readStore() });
     hooks = new Map();
-    register((event, matcher, fn) => {
+    install((event, matcher, fn) => {
       if (typeof matcher === 'function') fn = matcher;
       const entry = { fn }; hooks.set(event, entry);
       return { catch(handler) { entry.catch = handler; } };
@@ -1219,7 +1219,174 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   }
 });
 
+// Deterministic host interleavings: no wall-clock timing or model/runtime turns.
+// Keep these beside the retention contract so its before/after evidence covers
+// both late binding writers and the shared admission inventory.
+async function nativeStability() {
+  const key = 'native:v2:native-session:native-agent';
+  const guard = id => `native:binding-failed:v1:native-session:${id}`;
+  const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+  const start = (f, id, text = 'Retain the binding.', turnId = `turn-${id}`) => f.invoke('turn.start',
+    { agentId: id, turnId, text }, async e => ({ turnId: e.turnId }));
+  const step = (f, id, turnId) => f.invoke('turn.step', { agentId: id, turnId, index: 0 }, async function* () {
+    assert.fail('Native stability probe reached the model');
+  }).then(value => JSON.parse(value.answer));
+  const spawnAgent = (f, id) => f.invoke('agent.spawn', { subagentType: AGENT_TYPE,
+    tool_use_id: `spawn-${id}`, permissionMode: 'default', name: id }, async () => ({ agentId: id }));
+  const host = () => {
+    const f = fixture('slow-task'), owner = deferred();
+    let job, launches = 0, consumed = 0, closed = 0;
+    f.$.agent.list = async () => [{ id: 'native-agent', type: AGENT_TYPE }];
+    f.$.ui = { invalidate() {}, log() {} };
+    f.setStore({ [key]: { v: 2, type: AGENT_TYPE, session: 'native-session', agentId: 'native-agent',
+      cwd: `${f.root}/repo`, incoming: { turnId: 'turn-1', text: 'First brief.' },
+      notices: { turnId: 'turn-1', count: 0, started: true } } });
+    f.$.process.run = async argv => argv[0] === 'node' ? { exitCode: 0, stdout: process.execPath }
+      : { exitCode: 0, stdout: JSON.stringify({ job }) };
+    f.$.process.spawn = request => {
+      const command = request.argv[2];
+      const stream = (async function* () {
+        if (command === 'task') {
+          launches++;
+          job = { id: `task-${launches}`, sessionId: 'native-session', status: 'running', ownerId: 'owner',
+            threadId: 'thread', dispatchNonce: request.argv[request.argv.indexOf('--dispatch-nonce') + 1] };
+          let ended = false;
+          try {
+            if (f.progressLine) yield { stream: 'stdout', text: '[0] Fixture progress\n' };
+            if (launches === 1) await owner.promise;
+            job.status = 'completed';
+            yield { stream: 'stdout', text: JSON.stringify({ status: 'completed', jobId: job.id }) + '\n' };
+            consumed++; ended = true;
+          } finally { if (!ended) closed++; }
+        } else yield { stream: 'stdout', text: JSON.stringify(request.argv[3] === '--all'
+          ? { running: [], recent: [], latestFinished: job } : { job }) + '\n' };
+      })();
+      return Object.assign(stream, { result: Promise.resolve({ code: 0 }) });
+    };
+    return { f, owner, evidence: () => ({ launches, consumed, closed }) };
+  };
+  const races = [];
+  for (const mode of ['append', 'append-reload', 'cancel', 'cancel-reload', 'cancel-admitted']) {
+    const { f, owner, evidence } = host(), held = deferred(), entered = deferred();
+    let pending;
+    if (!mode.startsWith('cancel')) {
+      f.$.session.append = async () => { entered.resolve(); await held.promise; return {}; };
+      pending = step(f, 'native-agent', 'turn-1');
+      await until(() => evidence().launches === 1);
+      f.$.clock.now = async () => 1800000030000;
+      await [...f.timers].find(timer => timer.ms === 30000).fn();
+      await entered.promise;
+    } else pending = step(f, 'native-agent', 'turn-1');
+    owner.resolve();
+    const first = await pending;
+    let cancellation;
+    if (mode === 'cancel-admitted') await start(f, 'native-agent', 'Follow-up survives.', 'turn-2');
+    if (mode.startsWith('cancel')) {
+      const run = f.$.process.run;
+      f.$.process.run = async argv => {
+        const result = await run(argv);
+        if (argv.includes('--wait')) { entered.resolve(); await held.promise; }
+        return result;
+      };
+      cancellation = f.invoke('turn.complete', { agentId: 'native-agent', turnId: 'turn-1', isAborted: true }, async () => ({}));
+      await entered.promise;
+    }
+    // A fresh module has independent queues; durable turn identity must still
+    // reject an old module's callback after the new admission has committed.
+    if (mode.endsWith('-reload')) f.reload(true, (await import(`../hooks/native-agent.mjs?stability=${mode}`)).register);
+    if (mode !== 'cancel-admitted') await start(f, 'native-agent', 'Follow-up survives.', 'turn-2');
+    const admitted = f.readStore()[key]?.incoming?.text === 'Follow-up survives.';
+    const launched = mode === 'cancel-admitted' ? await step(f, 'native-agent', 'turn-2') : null;
+    held.resolve();
+    if (cancellation) await cancellation;
+    await delay(0);
+    const incoming = mode === 'cancel-admitted' ? admitted : f.readStore()[key]?.incoming?.text === 'Follow-up survives.';
+    const second = launched || await step(f, 'native-agent', 'turn-2');
+    races.push({ mode, first: first.status, second: second.status, incoming, launches: evidence().launches,
+      currentJob: f.readStore()[key].jobId === second.jobId });
+  }
+  const failures = [];
+  for (const mode of ['deny', 'throw', 'save']) {
+    const { f, owner, evidence } = host();
+    f.progressLine = true;
+    let injected = false, logs = 0;
+    f.$.ui.log = () => { logs++; };
+    if (mode === 'save') {
+      const set = f.$.store.set;
+      f.$.store.set = async (key, value) => {
+        if (!injected && value.notices?.count === 1) { injected = true; throw new Error('Fixture progress save failure'); }
+        return set(key, value);
+      };
+    } else f.$.session.append = async () => {
+      if (injected) return {};
+      injected = true;
+      if (mode === 'throw') throw new Error('Fixture append failure');
+      return { deny: 'Fixture append refusal' };
+    };
+    owner.resolve();
+    const report = await step(f, 'native-agent', 'turn-1');
+    failures.push({ mode, status: report.status, injected, logged: logs > 0, ...evidence() });
+  }
+  const parallel = fixture('slow-task');
+  parallel.setStore(Object.fromEntries(Array.from({ length: 127 }, (_, i) => [
+    `native:v2:active:${i}`, { v: 2, type: AGENT_TYPE, status: 'running' } ])));
+  await Promise.all(['a', 'b'].map(id => spawnAgent(parallel, id)));
+  await Promise.all(['a', 'b'].map(id => start(parallel, id)));
+  const count = Object.keys(parallel.readStore()).filter(key => key.startsWith('native:v2:')).length;
+  const refusedId = ['a', 'b'].find(id => !parallel.readStore()[`native:v2:native-session:${id}`]);
+  const refusal = refusedId ? (await step(parallel, refusedId, `turn-${refusedId}`)).blockers[0].code : null;
+  const sized = fixture('slow-task'), set = sized.$.store.set;
+  let failedWrites = 0;
+  sized.$.store.set = async (key, value) => {
+    if (Buffer.byteLength(JSON.stringify({ ...sized.readStore(), [key]: value })) > 4 * 1024 * 1024) {
+      failedWrites++; throw new Error('Fixture host store capacity');
+    }
+    return set(key, value);
+  };
+  const ids = Array.from({ length: 65 }, (_, i) => `large-${i}`);
+  await Promise.all(ids.map(id => spawnAgent(sized, id)));
+  await Promise.all(ids.map(id => start(sized, id, 'x'.repeat(65536))));
+  const size = Object.entries(sized.readStore()).filter(([key]) => key.startsWith('native:'))
+    .reduce((sum, [, value]) => sum + JSON.stringify(value).length * 4, 0);
+  const admitted = ids.filter(id => sized.readStore()[`native:v2:native-session:${id}`]);
+  const capacityRefusals = (await Promise.all(ids.filter(id => !admitted.includes(id))
+    .map(id => step(sized, id, `turn-${id}`)))).filter(report => report.blockers?.[0]?.code === 'native_capacity').length;
+  const orphans = fixture('slow-task'), now = await orphans.$.clock.now();
+  orphans.setStore({ ...Object.fromEntries(Array.from({ length: 512 }, (_, i) => [guard(`old-${i}`), { at: now - 8 * 86400000 }])),
+    [guard('fresh')]: { at: now }, [guard('bound')]: { at: 1 },
+    'native:v2:native-session:bound': { v: 2, status: 'running' } });
+  await spawnAgent(orphans, 'pending');
+  const data = orphans.readStore(); data[guard('pending')].at = 1; orphans.setStore(data);
+  await spawnAgent(orphans, 'new'); await start(orphans, 'new');
+  const orphanEvidence = { old: Object.keys(orphans.readStore()).filter(key => key.startsWith(guard('old-'))).length,
+    fresh: !!orphans.readStore()[guard('fresh')], bound: !!orphans.readStore()[guard('bound')], pending: !!orphans.readStore()[guard('pending')] };
+  const live = host();
+  const liveStep = step(live.f, 'native-agent', 'turn-1');
+  await until(() => live.evidence().launches === 1);
+  live.f.setStore({ [guard('native-agent')]: { at: 1 } });
+  await spawnAgent(live.f, 'new'); await start(live.f, 'new');
+  orphanEvidence.live = !!live.f.readStore()[guard('native-agent')];
+  live.owner.resolve(); await liveStep;
+  const guardSize = fixture('slow-task');
+  guardSize.setStore({ [guard('fresh')]: { at: now, padding: 'x'.repeat(524288) } });
+  await spawnAgent(guardSize, 'new'); await start(guardSize, 'new');
+  const guardBudget = !guardSize.readStore()['native:v2:native-session:new']
+    && (await step(guardSize, 'new', 'turn-new')).blockers[0].code === 'native_capacity';
+  return { races, failures, admission: { count, refusal }, size: { withinBudget: size <= 2 * 1024 * 1024, bytes: size,
+    records: admitted.length, capacityRefusals, failedWrites },
+    orphans: orphanEvidence, guardBudget };
+}
+
 test('store retention removes old finished handles, preserves parked questions, and refuses excess records', async t => {
+  const stability = await nativeStability();
+  t.diagnostic('native-stability ' + JSON.stringify(stability));
+  assert.deepEqual({ ...stability, size: { ...stability.size, bytes: undefined } }, {
+    races: ['append', 'append-reload', 'cancel', 'cancel-reload', 'cancel-admitted'].map(mode => ({ mode, first: 'completed', second: 'completed', incoming: true, launches: 2, currentJob: true })),
+    failures: ['deny', 'throw', 'save'].map(mode => ({ mode, status: 'completed', injected: true, logged: true, launches: 1, consumed: 1, closed: 0 })),
+    admission: { count: 128, refusal: 'native_capacity' },
+    size: { withinBudget: true, bytes: undefined, records: 7, capacityRefusals: 58, failedWrites: 0 },
+    orphans: { old: 0, fresh: true, bound: true, pending: true, live: true }, guardBudget: true,
+  });
   const f = fixture('slow-task');
   f.setStore({
     'native:v2:old:finished': { v: 2, type: AGENT_TYPE, session: 'old', agentId: 'finished', finishedAt: 1 },

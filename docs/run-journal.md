@@ -66,8 +66,10 @@ values and unknown entry types fail before journal writes.
 
 Verdict criteria must already be declared by `start` or `add criteria`. Each
 `criterion` accepts exact text (including case and whitespace), a unique shown
-prefix ending in `…`, or a unique `K<n>` ID such as `K7` or `K7:` when a declared
-criterion starts with that ID followed by a colon, whitespace or end of text.
+prefix ending in `…`, or a unique ID such as `K7`, `K7:` or `F3` when a declared
+criterion starts with that ID. `K<n>` IDs may be followed by a colon, whitespace or
+end of text; other IDs of one to four uppercase letters followed by digits (`F3`, `S1`,
+`AC2`) must be followed by a colon.
 IDs are not assigned automatically. A shown prefix can match whitespace folded
 for display; accepted shortcuts are saved as the full declared text. Unknown or
 ambiguous matches are rejected before writing. Use exact text to disambiguate,

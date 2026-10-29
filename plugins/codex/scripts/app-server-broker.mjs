@@ -7,7 +7,7 @@ import process from "node:process";
 
 import { resolveIsolatedCodexHome, resolveCodexRuntimeIdentity } from "./lib/codex-home.mjs";
 import { parseArgs } from "./lib/args.mjs";
-import { BROKER_BUSY_RPC_CODE, CodexAppServerClient, createJsonLineReader } from "./lib/app-server.mjs";
+import { BROKER_BUSY_RPC_CODE, CodexAppServerClient, createJsonLineReader, createOutboundQueue } from "./lib/app-server.mjs";
 import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
 import { ServerRequestRelay, logServerRequest } from "./lib/server-requests.mjs";
 
@@ -28,11 +28,12 @@ function buildJsonRpcError(code, message, data) {
   return data === undefined ? { code, message } : { code, message, data };
 }
 
+const outbound = new WeakMap();
 function send(socket, message) {
   if (socket.destroyed) {
     return;
   }
-  socket.write(`${JSON.stringify(message)}\n`);
+  outbound.get(socket)?.send(message);
 }
 
 function isInterruptRequest(message) {
@@ -224,6 +225,10 @@ async function main() {
   const server = net.createServer((socket) => {
     // An accept already queued when shutdown started must not handshake.
     if (closing) { socket.destroy(); return; }
+    outbound.set(socket, createOutboundQueue(socket, error => {
+      process.stderr.write(`${JSON.stringify({ event: "transport_error", code: error.code, bufferedBytes: error.bufferedBytes, maxBytes: error.maxBytes })}\n`);
+      socket.destroy(error);
+    }));
     sockets.add(socket);
     lastBusy = Date.now();
     socket.setEncoding("utf8");
@@ -303,7 +308,7 @@ async function main() {
         } catch (error) {
           send(socket, {
             id: message.id,
-            error: buildJsonRpcError(error.rpcCode ?? -32000, error.message)
+            error: buildJsonRpcError(error.rpcCode ?? -32000, error.message, error.code ? { transportCode: error.code } : undefined)
           });
         }
         return;
@@ -332,7 +337,7 @@ async function main() {
       } catch (error) {
         send(socket, {
           id: message.id,
-          error: buildJsonRpcError(error.rpcCode ?? -32000, error.message)
+          error: buildJsonRpcError(error.rpcCode ?? -32000, error.message, error.code ? { transportCode: error.code } : undefined)
         });
         // Stream ownership is installed only after a successful streaming
         // response. A failed request cannot end an already acknowledged turn.

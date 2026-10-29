@@ -3,11 +3,11 @@ import path from "node:path";
 import net from "node:net";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { makeTempDir, run, requireLocalSockets, readyBroker } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
+import { resolveStateDir, resolveStateRoot } from "../plugins/codex/scripts/lib/state.mjs";
 import { resolveCodexRuntimeIdentity } from "../plugins/codex/scripts/lib/codex-home.mjs";
 import { resolveSessionMarkersRoot } from "../plugins/codex/scripts/lib/session-markers.mjs";
 import { resolveRetentionDays, planRetention, applyRetention, applyRetentionWithBroker, runAutomaticRetention } from "../plugins/codex/scripts/lib/retention.mjs";
@@ -190,8 +190,9 @@ test("all workspaces protect live or unresolved orphans and expire dead orphan a
     seedJob(f, "orphan-recent", { completedAt: f.recent }),
     seedJob(f, "orphan-published", { status: "running" })
   ];
-  const missing = seedJob(f, "missing", { status: "running", pid: process.pid });
-  fs.unlinkSync(missing.file);
+  const missing = seedJob(f, "missing", { status: "running", pid: process.pid, ownerAttached: true, updatedAt: f.recent });
+  const missingEnded = seedJob(f, "missing-ended");
+  for (const record of [missing, missingEnded]) fs.unlinkSync(record.file);
   const orphanIds = new Set([orphan.id, ...protectedOrphans.map(job => job.id)]);
   const index = JSON.parse(fs.readFileSync(orphan.indexFile)); index.jobs = index.jobs.filter(job => !orphanIds.has(job.id)); json(orphan.indexFile, index);
   protectedOrphans.forEach(job => rollout(f, job.threadId));
@@ -208,10 +209,85 @@ test("all workspaces protect live or unresolved orphans and expire dead orphan a
   assert.deepEqual(result.errors, []);
   assert.deepEqual(calls.sort(), [expired.threadId, orphan.threadId, unreferenced].sort());
   assert.ok(orphan.files.every(file => !fs.existsSync(file)));
-  assert.ok(missing.files.every(file => !fs.existsSync(file)));
-  assert.ok(!JSON.parse(fs.readFileSync(missing.indexFile)).jobs.some(job => job.id === missing.id));
+  assert.ok(missingEnded.files.every(file => !fs.existsSync(file)));
+  assert.ok(!JSON.parse(fs.readFileSync(missing.indexFile)).jobs.some(job => job.id === missingEnded.id));
+  assert.ok(missing.files.slice(1).every(file => fs.existsSync(file)));
+  assert.ok(JSON.parse(fs.readFileSync(missing.indexFile)).jobs.some(job => job.id === missing.id));
   for (const job of protectedOrphans) assert.ok(job.files.every(file => fs.existsSync(file)));
   for (const file of [oldRollout, kept, activeRollout, orphanRollout, unreferencedFile, recentFile]) assert.ok(fs.existsSync(file), "retention itself never unlinks rollouts");
+
+  const lost = fixture();
+  const protectedMissing = [
+    { status: "queued" }, { ownerAttached: true }, { pid: process.pid }, { launcherPid: process.pid },
+    { jobClass: "task", status: "failed", result: { failureSource: "transport", turnEnded: false } },
+    { status: "unknown" }, { updatedAt: lost.recent }
+  ].map((patch, i) => seedJob(lost, `missing-${i}`, patch));
+  const reactivated = seedJob(lost, "reactivated");
+  for (const job of [...protectedMissing, reactivated]) fs.unlinkSync(job.file);
+  const preview = plan(lost);
+  assert.deepEqual(preview.jobs.map(job => job.jobId), [reactivated.id]);
+  const latest = JSON.parse(fs.readFileSync(reactivated.indexFile));
+  latest.jobs.find(job => job.id === reactivated.id).status = "running";
+  json(reactivated.indexFile, latest);
+  assert.equal((await applyRetention(preview)).jobsDeleted, 0);
+  assert.equal(JSON.parse(fs.readFileSync(reactivated.indexFile)).jobs.length, protectedMissing.length + 1);
+  for (const job of [...protectedMissing, reactivated]) assert.ok(job.files.slice(1).every(file => fs.existsSync(file)));
+
+  // Retire only an entirely expired namespace, including claims, after its
+  // last job is gone. Live, unresolved and retained follow-up addresses pin it.
+  const names = fixture(), hash = value => createHash("sha256").update(value).digest("hex");
+  const namesModule = new URL("../plugins/codex/scripts/lib/agent-names.mjs", import.meta.url).href;
+  const root = path.join(path.dirname(resolveStateRoot(names.env)), "agent-names");
+  const sessions = ["expired", "live", "unresolved", "resumable", "renewed", "published", "writer"];
+  const reserve = (sessionId, extra = {}) => {
+    const probe = run(process.execPath, ["--input-type=module", "-e", `
+      import { reserveAgentName } from ${JSON.stringify(namesModule)};
+      const options = { cwd: process.cwd(), sessionId: ${JSON.stringify(sessionId)}, preferredName: "Ada", ...${JSON.stringify(extra)} };
+      console.log(JSON.stringify(reserveAgentName([], options)));
+    `], { cwd: names.cwd, env: names.env });
+    assert.equal(probe.status, 0, probe.stderr); return JSON.parse(probe.stdout);
+  };
+  for (const session of sessions) {
+    assert.equal(reserve(session, { reserveForSpawn: true }), "Ada");
+    assert.equal(reserve(session, { claimOwner: "fixture-owner" }), "Ada");
+  }
+  seedJob(names, "expired-session", { sessionId: "expired" });
+  const missingLive = seedJob(names, "live-session", { sessionId: "live", status: "running" }); fs.unlinkSync(missingLive.file);
+  seedJob(names, "unresolved-session", { sessionId: "unresolved", jobClass: "task", status: "failed", result: { failureSource: "transport", turnEnded: false } });
+  seedJob(names, "resumable-session", { sessionId: "resumable", agentName: "Ada", workspaceRoot: names.cwd, threadId: "retained-thread", completedAt: names.recent });
+  const staleTemp = path.join(root, hash("live"), `${hash("ada")}.claim.${randomUUID()}.tmp`);
+  const liveTemp = path.join(root, hash("writer"), `${hash("ada")}.claim.${process.pid}.${randomUUID()}.tmp`);
+  for (const file of [staleTemp, liveTemp]) fs.writeFileSync(file, "fixture-owner");
+  const ageNames = session => {
+    const dir = path.join(root, hash(session));
+    for (const file of fs.readdirSync(dir)) fs.utimesSync(path.join(dir, file), new Date(names.old), new Date(names.old));
+    fs.utimesSync(dir, new Date(names.old), new Date(names.old));
+  };
+  sessions.forEach(ageNames);
+  const retirement = plan(names);
+  assert.deepEqual(retirement.agentNameSessions.map(item => path.basename(item.path)).sort(), ["expired", "renewed", "published"].map(hash).sort());
+  assert.deepEqual(retirement.agentNameTemporaries.map(item => item.path), [staleTemp]);
+  assert.ok(fs.existsSync(path.join(root, hash("expired"))), "preview preserves reservations");
+  assert.equal(reserve("renewed", { claimOwner: "fixture-owner" }), "Ada");
+  seedJob(names, "new-publication", { sessionId: "published", completedAt: names.recent });
+  const retired = await applyRetention(retirement);
+  assert.equal(retired.agentNameSessionsDeleted, 1); assert.equal(retired.agentNameTemporariesDeleted, 1);
+  assert.deepEqual(retired.errors, []);
+  assert.equal(fs.existsSync(path.join(root, hash("expired"))), false);
+  assert.equal(fs.existsSync(staleTemp), false); assert.ok(fs.existsSync(liveTemp));
+  for (const session of sessions.slice(1)) assert.ok(fs.existsSync(path.join(root, hash(session))));
+  assert.equal(reserve("resumable", { threadId: "retained-thread" }), "Ada");
+  assert.notEqual(reserve("resumable"), "Ada", "fresh dispatch cannot take a retained follow-up name");
+
+  ageNames("renewed");
+  const pendingRetirement = plan(names), workspace = resolveStateDir(names.cwd, names.env);
+  const stateLock = path.join(workspace, ".state-lock"); fs.mkdirSync(stateLock);
+  assert.equal((await applyRetention(pendingRetirement)).agentNameSessionsDeleted, 0);
+  fs.rmdirSync(stateLock);
+  const unreadable = path.join(workspace, "jobs", "corrupt.json"); fs.writeFileSync(unreadable, "{");
+  assert.equal((await applyRetention(pendingRetirement)).agentNameSessionsDeleted, 0);
+  assert.ok(fs.existsSync(path.join(root, hash("renewed")))); fs.unlinkSync(unreadable);
+  assert.equal((await applyRetention(pendingRetirement)).agentNameSessionsDeleted, 1);
 
   const alias = fixture(), old = seedJob(alias, "old", { threadId: null });
   const survivors = Array.from({ length: 50 }, (_, i) => seedJob(alias, `survivor-${i}`, { threadId: null, completedAt: alias.recent, updatedAt: alias.recent }));
@@ -566,7 +642,8 @@ test("cleanup dry-run is read-only, apply uses its candidates and ignores automa
     { type: "run_closed", recordedAt: g.recent }
   ].map(row => JSON.stringify(row)).join("\n") + "\n"); age(safe);
   json(path.join(brokerTree, "broker.json"), {}); age(brokerTree);
-  json(path.join(journalTree, "runs", "run-open", "journal.jsonl"), { type: "run_started", runId: "run-open", recordedAt: g.recent }); age(journalTree);
+  const openJournal = path.join(journalTree, "runs", "run-open", "journal.jsonl");
+  json(openJournal, { type: "run_started", runId: "run-open", recordedAt: g.recent }); fs.appendFileSync(openJournal, "\n"); age(journalTree);
   fs.mkdirSync(path.join(deadLock, ".state-lock")); fs.writeFileSync(path.join(deadLock, ".state-lock", "owner-2147483647-00000000-0000-0000-0000-000000000000"), ""); age(deadLock);
   fs.symlinkSync(path.join(safe, "jobs", "old.json"), path.join(linked, "outside")); age(linked);
   fs.utimesSync(path.join(recentTree, "jobs", "old.json"), new Date(g.recent), new Date(g.recent));

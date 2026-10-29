@@ -382,13 +382,50 @@ function admissionBlocked(code, state) {
 }
 
 const SPAWN_GRACE_MS = 10 * 60 * 1000;
+// A reloaded module cannot tell a delayed first turn.start from an orphan, so
+// orphan guards (tiny, still budgeted) are reclaimed only after a day.
+const ORPHAN_GUARD_MS = 24 * 60 * 60 * 1000;
 const unstartedSince = new Map();
+// Keep the queues outside register(): re-registration must not forget writes
+// that have already entered the host. A fresh module has its own queues.
+let admission = Promise.resolve();
+const bindingWrites = new Map();
+const serializeAdmission = action => {
+  const pending = admission.then(action);
+  admission = pending.catch(() => {});
+  return pending;
+};
+function writeBinding(key, action) {
+  const pending = (bindingWrites.get(key) || Promise.resolve()).then(action);
+  const settled = pending.catch(() => {}).finally(() => {
+    if (bindingWrites.get(key) === settled) bindingWrites.delete(key);
+  });
+  bindingWrites.set(key, settled);
+  return pending;
+}
 async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = () => false } = {}) {
   const now = await $.clock.now(), keys = await $.store.keys(), kept = new Set(), records = [];
   const unstarted = value => !value.v && !value.intent && !value.incoming && !value.finishedAt;
-  const seen = new Set(keys);
+  const seen = new Set(keys), guards = new Map();
   for (const key of unstartedSince.keys()) if (!seen.has(key)) unstartedSince.delete(key);
   let count = 0, active = 0, size = 0;
+  // Spawn may publish only its guard before a host/store failure. Such orphans
+  // still consume store space; reclaim them after ORPHAN_GUARD_MS.
+  for (const key of keys) if (key.startsWith(BINDING_FAILED)) {
+    const value = await $.store.get(key);
+    if (!value) continue;
+    const primary = PREFIX + key.slice(BINDING_FAILED.length);
+    if (primary !== keepKey && !dispatching.has(primary) && !pending(primary)
+      && typeof value.at === 'number' && now - value.at >= ORPHAN_GUARD_MS
+      && !await $.store.get(primary)) {
+      const fresh = await $.store.get(key);
+      if (fresh?.at === value.at && !dispatching.has(primary) && !pending(primary)) {
+        await $.store.delete(key);
+        continue;
+      }
+    }
+    guards.set(key, stateSize(value)); size += stateSize(value);
+  }
   for (const key of keys) {
     if (!key.startsWith(PREFIX)) continue;
     const state = await $.store.get(key);
@@ -441,7 +478,9 @@ async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = 
         unstartedSince.delete(key);
         if (state.agentId) {
           await $.store.delete(closedKey(state.session, state.agentId));
-          await $.store.delete(bindingFailedKey(state.session, state.agentId));
+          const guard = bindingFailedKey(state.session, state.agentId);
+          await $.store.delete(guard);
+          size -= guards.get(guard) || 0; guards.delete(guard);
         }
         count--; size -= stateSize(state); active -= Number(!finished(state));
         continue;
@@ -511,7 +550,8 @@ async function companion($, state, args, input = '', progress) {
         if (end) {
           const text = line.trimEnd();
           if (!overflow && (/^\[\d+\] /.test(text) || /^… \d+ progress lines omitted$/.test(text))) {
-            await progress.line(text.replace(/^\[\d+\] /, '').slice(0, 200));
+            try { await progress.line(text.replace(/^\[\d+\] /, '').slice(0, 200)); }
+            catch (error) { progressError($, error); }
           }
           line = ''; overflow = false;
         }
@@ -555,7 +595,38 @@ async function snapshot($, state, args, { requireSuccess = false, ...timing } = 
   if (requireSuccess && result.exitCode !== 0) throw new Error('Duet recovery lookup did not exit successfully; inspect duet status before retrying.');
   return report;
 }
-const save = ($, state) => $.store.set(keyFor(state.session, state.agentId), state);
+// Admission's generation remains even if a rejected turn never creates an
+// intent of its own. Older records derive it from their retained context.
+const bindingTurn = state => state?.turnId ?? state?.incoming?.turnId ?? state?.intent?.turnId ?? state?.answeredTurn;
+const progressError = ($, error) => {
+  try { $.ui.log(`Native progress unavailable: ${String(error?.message || error).slice(0, 200)}`, { to: 'debug' }); }
+  catch { /* Diagnostics are optional too. */ }
+};
+// Ancillary work commits a patch of the latest binding, never its old snapshot.
+// The turn check also fences callbacks from an older module after a reload.
+const save = ($, state, { admit = false, fields, valid = () => true, close = false,
+  turnId = close ? state.intent?.turnId : bindingTurn(state) } = {}) => {
+  const key = keyFor(state.session, state.agentId);
+  return writeBinding(key, async () => {
+    const current = await $.store.get(key);
+    if (!valid()) return false;
+    if (!admit && current && bindingTurn(current) !== turnId) {
+      if (!fields && !close) throw new Error('Native binding changed before persistence; refusing stale ownership.');
+      return false;
+    }
+    if (fields && !current) return false;
+    const value = fields ? { ...current } : { ...state };
+    if (fields) for (const field of fields) {
+      if (state[field] !== undefined) value[field] = state[field];
+    }
+    // A main-path save must not roll back progress committed during its I/O.
+    if (current?.notices && value.notices && current.notices.turnId === value.notices.turnId
+      && current.notices.count > value.notices.count) value.notices = current.notices;
+    if (close) await $.store.set(closedKey(state.session, state.agentId), { turnId: state.intent.turnId, at: await $.clock.now() });
+    else await $.store.set(key, value);
+    return true;
+  });
+};
 async function handles($, state, jobId, recovery = false, persist = true, { waitMs = 0, ...timing } = {}) {
   const args = ['status', jobId, '--json', ...(waitMs ? ['--wait', '--timeout-ms', String(waitMs), '--poll-interval-ms', '250'] : [])];
   const { job } = recovery ? await snapshot($, state, args, timing) : await companion($, state, args);
@@ -568,7 +639,7 @@ async function handles($, state, jobId, recovery = false, persist = true, { wait
   if (persist) await save($, state);
   return job;
 }
-async function reconcile($, state, recovery = false, allowAbsent = false, timing = {}) {
+async function reconcile($, state, recovery = false, allowAbsent = false, { persist = true, ...timing } = {}) {
   const args = ['status', '--all', '--json'];
   const lookup = flags => recovery ? snapshot($, state, flags, { ...timing, requireSuccess: allowAbsent }) : companion($, state, flags);
   let status;
@@ -582,7 +653,7 @@ async function reconcile($, state, recovery = false, allowAbsent = false, timing
   const matches = jobs.filter(job => job.sessionId === state.session && job.dispatchNonce === state.intent.nonce);
   if (allowAbsent && matches.length === 0) return null;
   if (matches.length !== 1) throw new Error('Native launch intent has no unique recorded job. Refusing to redispatch; inspect duet status before retrying.');
-  return handles($, state, matches[0].id, recovery, true, timing);
+  return handles($, state, matches[0].id, recovery, persist, timing);
 }
 async function drive($, e, state, progress) {
   // Block only a binding known to have failed: permissionMode is optional in
@@ -710,7 +781,7 @@ async function cancel($, state, deadline) {
   delete state.cancellation;
   const lookup = { deadline, timeoutMs: 500, reserveMs: 2000 };
   try {
-    if (state.intent?.kind === 'task' && !state.jobId) await reconcile($, state, true, false, lookup);
+    if (state.intent?.kind === 'task' && !state.jobId) await reconcile($, state, true, false, { ...lookup, persist: false });
     if (!state.jobId) return;
     // Both callers are stopping a native owner. Give its worker one bounded,
     // read-only chance to confirm owner_stopped before the cancel safety net.
@@ -746,12 +817,13 @@ async function cancel($, state, deadline) {
     state.cancellation = { status: 'unconfirmed', message: 'Cancellation unconfirmed; inspect duet status. Owner-loss and question timeout remain the fallback.',
       error: String(error?.message || error).slice(0, 200) };
   }
-  await save($, state);
+  await save($, state, { turnId: state.intent?.turnId,
+    fields: ['jobId', 'ownerId', 'threadId', 'worker', 'status', 'finishedAt', 'cancellation'] });
   return job;
 }
 // Closure is its own key: a stale snapshot saved by an overlapping handler can
 // rewrite the state record but never reopen a turn proven to have ended.
-const closeTurn = async ($, state) => $.store.set(closedKey(state.session, state.agentId), { turnId: state.intent.turnId, at: await $.clock.now() });
+const closeTurn = ($, state) => save($, state, { close: true });
 const isClosed = async ($, state) => !!state.intent && (await $.store.get(closedKey(state.session, state.agentId)))?.turnId === state.intent.turnId;
 // Cancel the recorded job; close its turn only with evidence that it ended.
 async function stopJob($, state, deadline) {
@@ -764,7 +836,7 @@ async function stopJob($, state, deadline) {
   state.status = confirmed && ACTIVE.includes(job.status) ? state.cancellation.status : job.status;
   if (!ended(job, state)) return null;
   await closeTurn($, state);
-  await save($, state);
+  await save($, state, { turnId: state.intent?.turnId, fields: ['status', 'cancellation', 'finishedAt'] });
   return job;
 }
 // An open turn whose stop could not be confirmed may have ended since (for
@@ -822,21 +894,26 @@ function observer() {
     }
   };
 }
-function progressFor($, e, state, publish) {
+function progressFor($, e, state, publish, currentFlight) {
   let starting, busy = false, keepaliveInFlight = false, stopped = false, lastAt, lastStreamedAt, startedAt;
   let noticing = Promise.resolve();
   const feed = liveProgress.get(e.agentId);
   const notices = state.notices?.turnId === e.turnId ? state.notices : { turnId: e.turnId, count: 0 };
   state.notices = notices;
+  const active = () => !stopped && currentFlight() && bindingTurn(state) === e.turnId;
+  const persist = (fields = ['notices']) => save($, state, { fields, valid: active });
+  const optional = async action => {
+    try { await action(); } catch (error) { progressError($, error); }
+  };
   const stream = async text => {
-    if (stopped) return;
+    if (!active()) return;
     await publish(`${text}\n`);
     lastStreamedAt = await $.clock.now();
   };
   const notice = (value, final = false, alreadyStreamed = false) => {
     const text = value.slice(0, 200);
     const pending = noticing.then(async () => {
-      if (stopped) return;
+      if (!active()) return;
       // The display log has its own short dedupe window. Command starts never
       // consume durable admission or change its last-line/count bookkeeping.
       if (feed && liveProgress.get(e.agentId) === feed) appendLog($, feed, text);
@@ -844,53 +921,64 @@ function progressFor($, e, state, publish) {
       if ((!final && notices.count >= 200) || notices.last === text) return;
       const result = await $.session.append({ agentId: state.agentId,
         message: { type: 'system', content: [{ type: 'text', text }] } });
+      if (!active()) return;
       if (result?.deny) throw new Error(`Native progress notice refused: ${result.deny}`);
       notices.count++; notices.last = text;
       // Hook-generated thinking is visible live but is not recorded by the host;
       // the system notice above remains the durable, model-invisible copy. Keep
       // usage's existing final notice exemption without exceeding the live cap.
       if (!alreadyStreamed && notices.count <= 200) await stream(text);
-      await save($, state);
+      await persist();
     });
-    noticing = pending.catch(() => {});
-    return pending;
+    noticing = pending.catch(error => { progressError($, error); });
+    return noticing;
   };
   const start = async () => {
-    if (stopped || notices.started || !state.intent) return;
+    if (!active() || notices.started || !state.intent) return;
     if (!starting) starting = (async () => {
       // The CLI does not print a launch receipt. Resolve the durable nonce at
       // the first activity/heartbeat; never invent a handle or redispatch.
-      const job = state.jobId ? await handles($, state, state.jobId) : await reconcile($, state);
-      if (stopped) return;
+      const observed = { ...state };
+      const job = observed.jobId ? await handles($, observed, observed.jobId, false, false)
+        : await reconcile($, observed, false, false, { persist: false });
+      if (!active()) return;
+      const fields = ['jobId', 'ownerId', 'threadId', 'worker'];
+      for (const field of fields) state[field] = observed[field];
+      if (!state.status || ACTIVE.includes(state.status)) state.status = observed.status;
+      await persist(fields);
       await notice(`Codex worker ${job.agentName || state.name} started · job ${job.id} · ${job.request?.model} / ${job.request?.effort} / ${job.request?.sandbox}`);
+      if (!active()) return;
       notices.started = true;
-      await save($, state);
+      await persist();
     })().finally(() => { starting = null; });
-    await starting;
+    await optional(() => starting);
   };
   return {
     start,
     stop() { stopped = true; },
     async usage(value) {
-      if (!value || notices.usage || !['inputTokens', 'cachedInputTokens', 'outputTokens'].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0)) return;
+      if (!active() || !value || notices.usage || !['inputTokens', 'cachedInputTokens', 'outputTokens'].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0)) return;
       const count = number => String(number).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
       await notice(`Codex usage · ${count(value.inputTokens)} input (${count(value.cachedInputTokens)} cached) · ${count(value.outputTokens)} output tokens`, true);
+      if (!active()) return;
       notices.usage = true;
-      await save($, state);
+      await optional(() => persist());
     },
     async line(text) {
-      lastAt = await $.clock.now();
-      await start();
-      await notice(text);
+      await optional(async () => {
+        lastAt = await $.clock.now();
+        await start();
+        await notice(text);
+      });
     },
     async begin() {
       startedAt = lastAt = lastStreamedAt = await $.clock.now();
       updateDisplay($, state);
     },
     async heartbeat() {
-      if (stopped || keepaliveInFlight) return;
+      if (!active() || keepaliveInFlight) return;
       const now = await $.clock.now();
-      if (stopped || keepaliveInFlight) return;
+      if (!active() || keepaliveInFlight) return;
       const seconds = Math.floor((now - startedAt) / 1000);
       const elapsed = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
       const text = () => `Codex worker ${state.worker || state.name || state.agentId} running · ${elapsed}`.slice(0, 200);
@@ -903,15 +991,15 @@ function progressFor($, e, state, publish) {
         keepaliveInFlight = true;
         try { await stream(text()); } finally { keepaliveInFlight = false; }
       }
-      if (stopped || busy || now - lastAt < HEARTBEAT_MS) return;
+      if (!active() || busy || now - lastAt < HEARTBEAT_MS) return;
       busy = true;
       void (async () => {
         await start();
-        if (!stopped && now - lastAt >= HEARTBEAT_MS) {
+        if (active() && now - lastAt >= HEARTBEAT_MS) {
           lastAt = now;
           await notice(text(), false, due);
         }
-      })().catch(() => {}).finally(() => { busy = false; });
+      })().catch(error => { progressError($, error); }).finally(() => { busy = false; });
     }
   };
 }
@@ -1097,14 +1185,9 @@ export function register(on) {
     const lock = {};
     dispatching.set(key, lock);
     try {
-      let state = await $.store.get(key);
-      // Wait only for this agent's own spawn (its guard write may still be in
-      // flight); unrelated session spawns would spend this hook's budget.
-      const own = [...(spawning.get(session) || [])].filter(binding => binding.agentId === e.agentId);
-      if (own.length || (!state && !observedBindings.has(key))) {
-        await Promise.all(own.map(binding => binding.pending));
-        state = await $.store.get(key);
-      }
+      // Per-agent waits and recovery lookups stay outside the shared queue:
+      // another agent's turn.start budget runs while it waits there.
+      let state, candidate, bindingFailed, base;
       const refuse = async code => {
         refusals.set(key, { turnId: e.turnId, report: admissionBlocked(code, state || { agentId: e.agentId, name: agent.name }) });
         agentDisplays.delete(e.agentId);
@@ -1114,49 +1197,76 @@ export function register(on) {
         // spawn's guard so a later reload cannot mistake it for pending work.
         if (state && !state.v && !state.intent && !state.incoming) await $.store.delete(key);
         await $.store.delete(bindingFailedKey(session, e.agentId));
-        return next(e);
       };
-      // Reject oversized input before recheck, pruning or any binding write.
-      if (e.text.length > 65536) return await refuse('native_message_too_large');
-      rememberPrompt($, e);
-      if (state) restoreBinding(key, state);
-      if (state?.answeredTurn === e.turnId || state?.intent?.turnId === e.turnId || state?.incoming?.turnId === e.turnId) {
-        // A redelivered start: this turn already persisted its binding, so the
-        // spawn-time guard is stale.
-        if (observedBindings.has(key) && !state.bindingPending) {
-          await save($, state);
-          await $.store.delete(bindingFailedKey(session, e.agentId));
-          observedBindings.delete(key); resumedSpawns.delete(key);
+      const prepared = await (async () => {
+        state = await $.store.get(key);
+        // Wait only for this agent's own spawn (its guard write may still be in
+        // flight); unrelated session spawns would spend this hook's budget.
+        const own = [...(spawning.get(session) || [])].filter(binding => binding.agentId === e.agentId);
+        if (own.length || (!state && !observedBindings.has(key))) {
+          await Promise.all(own.map(binding => binding.pending));
+          state = await $.store.get(key);
         }
-        return next(e);
-      }
-      if (state?.intent && state.intent.turnId !== state.answeredTurn && !await isClosed($, state)
-        && !await recheck($, state).catch(() => false)) return next(e);
-      if (refusals.get(key)?.report.blockers[0].code === 'native_binding_gone') return await refuse('native_binding_gone');
-      refusals.delete(key);
-      const candidate = { ...(state || { type: AGENT_TYPE, session, agentId: e.agentId, name: (agent.name !== e.agentId && agent.name) || observedBindings.get(key)?.name,
-        bindingPending: !observedBindings.has(key) }), incoming: { turnId: e.turnId, text: e.text } };
-      const bindingFailed = await $.store.get(bindingFailedKey(session, e.agentId));
-      if (bindingFailed) candidate.bindingPending = true;
-      restoreBinding(key, candidate);
-      if (!candidate.v) {
-        const directory = await $.fs.stat(await $.session.cwd(), { resolve: true });
-        if (directory.kind !== 'dir' || !directory.realPath) throw new Error('Native workspace must resolve to an existing directory.');
-        candidate.v = 2; candidate.cwd = directory.realPath;
-      }
-      delete candidate.finishedAt;
-      const reserveSize = stateSize(candidate) - (state ? stateSize(state) : 0);
-      const budget = await prune($, { reserveCount: state ? 0 : 1, reserveSize, keepKey: key,
-        pending: key => observedBindings.has(key) || resumedSpawns.has(key) });
-      const code = budget.count + Number(!state) > MAX_RECORDS || budget.size + reserveSize > MAX_STORE_SIZE
-        ? 'native_capacity' : !state && (resumedSpawns.has(key) || (!observedBindings.has(key) && !bindingFailed)) ? 'native_binding_gone' : null;
-      if (code) return await refuse(code);
-      resumedSpawns.delete(key);
-      state = candidate;
-      // One retry: the spawn-time guard still protects the binding meanwhile.
-      try { await save($, state); } catch { await save($, state); }
-      if (!state.bindingPending) await $.store.delete(bindingFailedKey(session, e.agentId));
-      observedBindings.delete(key);
+        // Reject oversized input before recheck, pruning or any binding write.
+        if (e.text.length > 65536) return await refuse('native_message_too_large');
+        rememberPrompt($, e);
+        if (state) restoreBinding(key, state);
+        if (state?.answeredTurn === e.turnId || state?.intent?.turnId === e.turnId || state?.incoming?.turnId === e.turnId) {
+          // A redelivered start: this turn already persisted its binding, so the
+          // spawn-time guard is stale.
+          if (observedBindings.has(key) && !state.bindingPending) {
+            await save($, state);
+            await $.store.delete(bindingFailedKey(session, e.agentId));
+            observedBindings.delete(key); resumedSpawns.delete(key);
+          }
+          return;
+        }
+        if (state?.intent && state.intent.turnId !== state.answeredTurn && !await isClosed($, state)
+          && !await recheck($, state).catch(() => false)) return;
+        if (refusals.get(key)?.report.blockers[0].code === 'native_binding_gone') return await refuse('native_binding_gone');
+        refusals.delete(key);
+        base = JSON.stringify(state ?? null);
+        candidate = { ...(state || { type: AGENT_TYPE, session, agentId: e.agentId, name: (agent.name !== e.agentId && agent.name) || observedBindings.get(key)?.name,
+          bindingPending: !observedBindings.has(key) }), turnId: e.turnId, incoming: { turnId: e.turnId, text: e.text } };
+        bindingFailed = await $.store.get(bindingFailedKey(session, e.agentId));
+        if (bindingFailed) candidate.bindingPending = true;
+        restoreBinding(key, candidate);
+        if (!candidate.v) {
+          const directory = await $.fs.stat(await $.session.cwd(), { resolve: true });
+          if (directory.kind !== 'dir' || !directory.realPath) throw new Error('Native workspace must resolve to an existing directory.');
+          candidate.v = 2; candidate.cwd = directory.realPath;
+        }
+        delete candidate.finishedAt;
+        return true;
+      })();
+      if (prepared) await serializeAdmission(async () => {
+        // A late completion or cancellation of this agent's previous turn can
+        // save while this start waits; rebase onto the latest binding so its
+        // confirmation and size are neither undone nor misaccounted.
+        const latest = await $.store.get(key);
+        if (JSON.stringify(latest ?? null) !== base) {
+          if (state && !latest) return await refuse('native_binding_gone');
+          if (latest) {
+            candidate = { ...latest, turnId: e.turnId, incoming: candidate.incoming, v: latest.v ?? candidate.v, cwd: latest.cwd ?? candidate.cwd,
+              ...(candidate.bindingPending ? { bindingPending: true } : {}) };
+            delete candidate.finishedAt;
+            restoreBinding(key, candidate);
+          }
+          state = latest;
+        }
+        const reserveSize = stateSize(candidate) - (state ? stateSize(state) : 0);
+        const budget = await prune($, { reserveCount: state ? 0 : 1, reserveSize, keepKey: key,
+          pending: key => observedBindings.has(key) || resumedSpawns.has(key) });
+        const code = budget.count + Number(!state) > MAX_RECORDS || budget.size + reserveSize > MAX_STORE_SIZE
+          ? 'native_capacity' : !state && (resumedSpawns.has(key) || (!observedBindings.has(key) && !bindingFailed)) ? 'native_binding_gone' : null;
+        if (code) return await refuse(code);
+        resumedSpawns.delete(key);
+        state = candidate;
+        // One retry: the spawn-time guard still protects the binding meanwhile.
+        try { await save($, state, { admit: true }); } catch { await save($, state, { admit: true }); }
+        if (!state.bindingPending) await $.store.delete(bindingFailedKey(session, e.agentId));
+        observedBindings.delete(key);
+      });
       return next(e);
     } finally { if (dispatching.get(key) === lock) dispatching.delete(key); }
   }).catch(passthrough);
@@ -1202,7 +1312,8 @@ export function register(on) {
         if (state.incoming?.turnId === e.turnId) rememberPrompt($, { ...e, text: state.incoming.text });
         if (await $.store.get(bindingFailedKey(session, e.agentId))) state.bindingPending = true;
         restoreBinding(key, state);
-        const progress = progressFor($, e, state, text => Promise.all([...running.listeners].map(item => item.push(text))));
+        const progress = progressFor($, e, state, text => Promise.all([...running.listeners].map(item => item.push(text))),
+          () => !running.done && dispatching.get(key) === running);
         await progress.begin();
         // Pending process I/O suspends the hook budget. Timer callbacks only
         // wake the generator; never poll with clock.sleep (which spends it).

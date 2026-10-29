@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { lifecycleHarness } from './fake-codex-fixture.mjs';
 import { TIER_1_NAMES, TIER_2_NAMES, TIER_3_NAMES, NAME_TIER_WEIGHTS } from '../plugins/codex/scripts/lib/agent-name-pool.mjs';
 import { ACTIVITY_RETAINED_MAX, ACTIVITY_PENDING_MAX } from '../plugins/codex/scripts/lib/activity.mjs';
-import { createJobProgressUpdater } from '../plugins/codex/scripts/lib/tracked-jobs.mjs';
+import { createJobProgressUpdater, createProgressReporter } from '../plugins/codex/scripts/lib/tracked-jobs.mjs';
 import { buildWorkerReport, parseStructuredReport } from '../plugins/codex/scripts/lib/worker-report.mjs';
 import { fullReport, directReport } from '../plugins/codex/scripts/lib/job-runtime.mjs';
 const {
@@ -1132,6 +1132,51 @@ test("an owner renewal refused just after wake succeeds after the worker's pause
   assert.equal(shifted.leaseRenewedAt, now - 500);
   const renewed = renewLease(cwd, record.id, "owner");
   assert.equal(renewed.leaseRenewedAt, now); assert.equal(renewed.leaseExpiresAt, now + 180000);
+});
+
+test("runtime stop always aborts despite progress or cancellation persistence failures", t => {
+  let tick;
+  t.mock.method(globalThis, "setInterval", callback => { tick = callback; return null; });
+  for (const fault of ["progress-log", "progress-state", "requestCancel", "both", "latched-reason", "reentrant"]) {
+    const cwd = makeTempDir(), id = `stop-${fault}`;
+    writeJobFile(cwd, id, { id, status: "running", ownerAttached: true, leaseExpiresAt: Date.now() + 180000 });
+    const file = resolveJobFile(cwd, id), logFile = file.replace(/\.json$/, ".log");
+    let progressCalls = 0, persistenceCalls = 0, abortEvents = 0, failedWrites = 0;
+    const updater = createJobProgressUpdater(cwd, id);
+    const runtime = new JobRuntime(cwd, id, { onProgress: createProgressReporter({ logFile, onEvent: event => {
+      progressCalls++;
+      if (fault === "progress-state") updater(event);
+      if (fault === "reentrant") runtime.stop("owner_state_unavailable");
+    } }) });
+    runtime.abort.signal.addEventListener("abort", () => { abortEvents++; });
+    const append = fs.appendFileSync, rename = fs.renameSync;
+    const logWriter = t.mock.method(fs, "appendFileSync", function(target, ...args) {
+      if (target === logFile && ["progress-log", "both"].includes(fault)) throw Object.assign(new Error("injected progress failure"), { code: "ENOSPC" });
+      return append.call(this, target, ...args);
+    });
+    const jobWriter = t.mock.method(fs, "renameSync", function(source, target) {
+      if (target === file) {
+        persistenceCalls++;
+        if (["requestCancel", "both"].includes(fault) || (fault === "progress-state" && persistenceCalls > 1)) {
+          failedWrites++;
+          throw Object.assign(new Error("injected persistence failure"), { code: "EIO" });
+        }
+      }
+      return rename.call(this, source, target);
+    });
+    try {
+      if (fault === "latched-reason") runtime.reason = "cancelled_by_user";
+      assert.doesNotThrow(() => runtime.stop("cancelled_by_user"));
+      runtime.stop("owner_state_unavailable");
+      tick();
+      assert.equal(runtime.abort.signal.aborted, true);
+      assert.equal(runtime.abort.signal.reason, "cancelled_by_user");
+      assert.equal(runtime.reason, "cancelled_by_user");
+      assert.equal(abortEvents, 1);
+      assert.equal(progressCalls, fault === "latched-reason" ? 0 : 1);
+      assert.equal(failedWrites, ["progress-state", "requestCancel", "both"].includes(fault) ? 1 : 0);
+    } finally { logWriter.mock.restore(); jobWriter.mock.restore(); runtime.close(); }
+  }
 });
 
 test("expired leases cannot be revived before the worker observes expiry", () => {

@@ -14,7 +14,7 @@ async function drain(stream: any) {
 // A held companion keeps a real native flight open while ancillary work fails.
 // Advance timer callbacks independently, as the host does, without resolving
 // the held lookup until after observing the live stream.
-async function faultKeepalives(fault: 'append' | 'lookup' | 'queue') {
+async function faultKeepalives(fault: 'append' | 'lookup' | 'queue' | 'owner-append' | 'owner-save') {
   const capture: any = captures[3], hooks = new Map(), store = new Map(), timers = new Set<any>();
   const on: any = (name: string, matcher: any, handler: any) => {
     hooks.set(name, typeof matcher === 'function' ? matcher : handler);
@@ -22,6 +22,7 @@ async function faultKeepalives(fault: 'append' | 'lookup' | 'queue') {
   };
   registerNative(on);
   let now = 1800000000000, releaseOwner!: () => void, releaseLookup!: () => void, faultActive = true;
+  let injected = false, consumed = false, earlyClose = false, logs = 0;
   const owner = new Promise<void>(resolve => { releaseOwner = resolve; });
   const lookup = new Promise<void>(resolve => { releaseLookup = resolve; });
   const notices: any[] = [], chunks: any[] = [];
@@ -33,14 +34,20 @@ async function faultKeepalives(fault: 'append' | 'lookup' | 'queue') {
     return { cancel: () => timers.delete(item) };
   };
   const $: any = {
-    plugin: { root: '/plugin' }, ui: { invalidate() {} }, env: { get: async () => undefined },
+    plugin: { root: '/plugin' }, ui: { invalidate() {}, log() { logs++; } }, env: { get: async () => undefined },
     session: { id: async () => 'native-session', root: async () => root + '/repo', append: async (row: any) => {
       if (faultActive && fault === 'append' && notices.length) return { deny: 'Fixture refusal' };
+      if (!faultActive && fault === 'owner-append' && !injected) { injected = true; return { deny: 'Fixture refusal' }; }
       notices.push(clone(row)); return {};
     } },
     agent: { list: async () => [{ id: 'native-agent', name: 'native-worker', type: TYPE }] },
     store: { get: async (key: string) => clone(store.get(key) ?? null),
-      set: async (key: string, value: any) => { store.set(key, clone(value)); } },
+      set: async (key: string, value: any) => {
+        if (!faultActive && fault === 'owner-save' && !injected && value.notices?.count > noticesBeforeOwner) {
+          injected = true; throw new Error('Fixture progress save failure');
+        }
+        store.set(key, clone(value));
+      } },
     clock: { now: async () => now, every: (ms: number, fn: any) => timer(ms, fn), after: (ms: number, fn: any) => timer(ms, fn, true) },
     process: { run: async () => ({ exitCode: 0, stdout: '/host/node\n' }), spawn: (request: any) => {
       const command = request.argv[2];
@@ -49,7 +56,11 @@ async function faultKeepalives(fault: 'append' | 'lookup' | 'queue') {
       const stream = (async function* () {
         if (command === 'task') await owner;
         if (command === 'status' && faultActive && fault === 'lookup') await lookup;
-        for (const chunk of record.chunks) yield chunk;
+        try {
+          if (command === 'task' && fault.startsWith('owner-')) yield { stream: 'stdout', text: '[0] Owner progress\n' };
+          for (const chunk of record.chunks) yield chunk;
+          if (command === 'task') consumed = true;
+        } finally { if (command === 'task' && !consumed) earlyClose = true; }
       })();
       return Object.assign(stream, { result: Promise.resolve({ code: 0 }) });
     } },
@@ -79,7 +90,7 @@ async function faultKeepalives(fault: 'append' | 'lookup' | 'queue') {
     await settle();
     maxHeartbeatPending = Math.max(maxHeartbeatPending, heartbeatPending);
   };
-  let observed;
+  let observed, noticesBeforeOwner = 0;
   try {
     await settle();
     await advance(1500);
@@ -93,11 +104,13 @@ async function faultKeepalives(fault: 'append' | 'lookup' | 'queue') {
       : { thinking: chunks.filter(chunk => chunk.kind === 'thinking').length,
         notices: notices.length, finalChunks: chunks.filter(chunk => chunk.kind !== 'thinking').length, liveUpdates };
   } finally {
+    noticesBeforeOwner = notices.length;
     faultActive = false; resumeReader(); releaseLookup(); releaseOwner();
     const result = await pending;
     expect({ fault, report: JSON.parse(result.answer) }).toEqual({ fault, report: expect.objectContaining({ status: 'completed' }) });
     expect(timers.size).toBe(0);
   }
+  if (fault.startsWith('owner-')) return { injected, consumed, earlyClose, logged: logs > 0 };
   return observed;
 }
 
@@ -683,4 +696,7 @@ test('progress is bounded, split lines survive, duplicate notices collapse, and 
     phases: [['dim'], ['dim', 'dim'], ['success', 'dim'], ['success', 'success']], appendCalls: 7,
     projection: { hostNodes: 1, promptAndLogKept: true, nonNative: engine, fallback: engine, renderAccess: [] }
   } });
+  for (const fault of ['owner-append', 'owner-save'] as const) {
+    expect(await faultKeepalives(fault)).toEqual({ injected: true, consumed: true, earlyClose: false, logged: true });
+  }
 });

@@ -1,5 +1,5 @@
 /**
- * @typedef {Error & { data?: unknown, rpcCode?: number }} ProtocolError
+ * @typedef {Error & { data?: unknown, rpcCode?: number, code?: string, failureSource?: string }} ProtocolError
  * @typedef {import("./app-server-protocol").AppServerMethod} AppServerMethod
  * @typedef {import("./app-server-protocol").AppServerNotification} AppServerNotification
  * @typedef {import("./app-server-protocol").AppServerNotificationHandler} AppServerNotificationHandler
@@ -23,6 +23,82 @@ const PLUGIN_MANIFEST = JSON.parse(fs.readFileSync(PLUGIN_MANIFEST_URL, "utf8"))
 
 export const BROKER_ENDPOINT_ENV = "CODEX_COMPANION_APP_SERVER_ENDPOINT";
 export const BROKER_BUSY_RPC_CODE = -32001;
+export const DEFAULT_CONNECT_TIMEOUT_MS = 60000;
+// Task, review and transfer connections share this default and its override.
+export function defaultConnectTimeoutMs(env = process.env) {
+  const value = Number(env.CODEX_COMPANION_CONNECT_TIMEOUT_MS);
+  return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_CONNECT_TIMEOUT_MS;
+}
+export const MAX_OUTBOUND_BYTES = 32 * 1024 * 1024;
+export const MAX_STDERR_BYTES = 64 * 1024;
+const STDERR_TRUNCATED = "[earlier stderr truncated]\n";
+
+function transportError(message, code = "CODEX_TRANSPORT_CLOSED", cause = undefined) {
+  return Object.assign(new Error(message, { cause }), { code, failureSource: "transport" });
+}
+
+// Never await drain in the input path: an outstanding RPC may need a server
+// callback reply before it can finish. Bound each peer independently instead.
+export function createOutboundQueue(stream, onError) {
+  let queue = [], queuedBytes = 0, blocked = false, closed = false, exempt = 0, writing = 0, idle = [];
+  // An oversized frame accepted on an idle peer is not backlog while it drains.
+  const bufferedBytes = () => queuedBytes + Math.max(0, stream.writableLength - exempt);
+  // A true write() return signals capacity, not completion: count callbacks.
+  const flushedNow = () => !blocked && !queue.length && !writing;
+  const settle = () => { for (const resolve of idle.splice(0)) resolve(); };
+  const close = () => {
+    closed = true; queue = []; queuedBytes = 0;
+    stream.off("drain", drain);
+    settle();
+  };
+  const fail = error => {
+    if (closed) return;
+    close();
+    onError(error);
+  };
+  const write = frame => {
+    if (frame.length > MAX_OUTBOUND_BYTES) exempt += frame.length;
+    writing++;
+    try {
+      blocked = !stream.write(frame, () => { writing--; if (flushedNow()) settle(); });
+    } catch (error) { writing--; fail(transportError(`Codex transport write failed: ${error.message}`, error.code, error)); }
+  };
+  function drain() {
+    blocked = false; exempt = 0;
+    while (!closed && !blocked && queue.length) {
+      const frame = queue.shift();
+      queuedBytes -= frame.length;
+      write(frame);
+    }
+    if (flushedNow()) settle();
+  }
+  stream.on("drain", drain);
+  // Keep the error listener through destruction: late EPIPE/error events must
+  // remain observed even after close() has discarded the outbound queue.
+  stream.on("error", error => fail(transportError(`Codex transport write failed: ${error.message}`, error.code, error)));
+  stream.once("close", close);
+  return {
+    get bufferedBytes() { return bufferedBytes(); },
+    close,
+    // Resolves once every accepted frame reached the stream's kernel side.
+    flushed: () => closed || flushedNow() ? Promise.resolve() : new Promise(resolve => idle.push(resolve)),
+    send(message) {
+      if (closed) return;
+      const line = `${JSON.stringify(message)}\n`;
+      const bytes = Buffer.byteLength(line);
+      // The cap bounds backlog; one large frame (a long thread/read) on a
+      // physically idle peer is already in memory and must still be deliverable.
+      const physicallyIdle = !blocked && !queue.length && !stream.writableLength;
+      if (!physicallyIdle && bufferedBytes() + bytes > MAX_OUTBOUND_BYTES) {
+        fail(Object.assign(transportError("Codex transport peer exceeded the outbound buffer limit.", "CODEX_TRANSPORT_BACKPRESSURE"), { bufferedBytes: bufferedBytes(), maxBytes: MAX_OUTBOUND_BYTES }));
+        return;
+      }
+      const frame = Buffer.from(line);
+      if (blocked) { queue.push(frame); queuedBytes += bytes; }
+      else write(frame);
+    }
+  };
+}
 
 // Feed decoded UTF-8 chunks; only LF terminates a JSONL record. Unicode line
 // separators are valid JSON string data, and partial records span reads.
@@ -67,6 +143,10 @@ function createProtocolError(message, data) {
   error.data = data;
   if (data?.code !== undefined) {
     error.rpcCode = data.code;
+  }
+  if (typeof data?.data?.transportCode === "string") {
+    error.code = data.data.transportCode;
+    error.failureSource = "transport";
   }
   return error;
 }
@@ -241,6 +321,7 @@ class AppServerClientBase {
     }
     this.pending.clear();
     this.resolveExit(undefined);
+    if (!this.closed) void /** @type {any} */ (this).close().catch(() => {});
   }
 
   sendMessage(_message) {
@@ -265,12 +346,22 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       detached: process.platform !== "win32"
     });
 
+    this.outbound = createOutboundQueue(this.proc.stdin, error => this.handleExit(error));
+    this.procExited = new Promise(resolve => this.proc.once("exit", resolve));
+
     this.proc.stdout.setEncoding("utf8");
     this.proc.stderr.setEncoding("utf8");
 
     this.proc.stderr.on("data", (chunk) => {
-      this.stderr += chunk;
-      const recent = this.stderr.slice(-2048);
+      const diagnostic = Buffer.from(this.stderr + chunk);
+      if (diagnostic.length > MAX_STDERR_BYTES) {
+        this.stderrTruncated = true;
+        let start = diagnostic.length - (MAX_STDERR_BYTES - Buffer.byteLength(STDERR_TRUNCATED));
+        // Do not cut through a UTF-8 sequence at the beginning of the tail.
+        while ((diagnostic[start] & 0xc0) === 0x80) start++;
+        this.stderr = STDERR_TRUNCATED + diagnostic.subarray(start).toString("utf8");
+      } else this.stderr = diagnostic.toString("utf8");
+      const recent = this.stderr;
       if (!this.startupWarning && /websocket|switching to http|falling back.*http/i.test(recent) && /retry|timed? ?out|timeout|fallback|falling back|switching/i.test(recent)) {
         this.startupWarning = "WebSocket retry/fallback observed. Consider setup --transport http after reviewing the transport trade-offs; restart the runtime. Defaults were not changed.";
         this.options.onRuntimeEvent?.({ startupWarning: this.startupWarning });
@@ -286,9 +377,9 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       const detail =
         code === 0
           ? null
-          : createProtocolError(
+          : Object.assign(createProtocolError(
               `codex app-server exited unexpectedly (${signal ? `signal ${signal}` : `exit ${code}`}).${stderr ? `\n${stderr}` : ""}`
-            );
+            ), { code: "CODEX_RUNTIME_EXITED", failureSource: "transport" });
       this.handleExit(detail);
     });
 
@@ -298,6 +389,16 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     // just as the broker socket does; a stream chunk is not a message boundary.
     this.stdoutHandler = (chunk) => this.handleChunk(chunk);
     this.proc.stdout.on("data", this.stdoutHandler);
+    // data callbacks consume every complete JSONL record before end/close.
+    // A dying runtime closes stdout just before its exit event; give that
+    // event a moment so its code/signal diagnostic wins.
+    const stdoutClosed = () => setTimeout(() => {
+      const stderr = this.stderr.trim();
+      if (!this.closed) this.handleExit(transportError(`codex app-server connection closed.${stderr ? `\n${stderr}` : ""}`));
+    }, 50);
+    this.proc.stdout.on("end", stdoutClosed);
+    this.proc.stdout.on("close", stdoutClosed);
+    this.proc.stdout.on("error", error => this.handleExit(transportError(`Codex app-server stdout failed: ${error.message}`, /** @type {NodeJS.ErrnoException} */ (error).code, error)));
 
     await this.request("initialize", {
       clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
@@ -310,21 +411,25 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
     if (this.closePromise) return this.closePromise;
     this.closePromise = (async () => {
       this.closed = true;
+      this.outbound?.close();
+      this.handleExit(null);
       if (this.stdoutHandler) this.proc?.stdout.off("data", this.stdoutHandler);
-      this.proc?.stdin.end();
+      this.proc?.stdin.destroy();
       await stopOwnedProcessGroup(this.proc, 150);
-      await Promise.race([this.exitPromise, new Promise(resolve => setTimeout(resolve, 500))]);
+      if (this.proc && this.proc.exitCode === null && this.proc.signalCode === null) {
+        let timer;
+        await Promise.race([this.procExited, new Promise(resolve => { timer = setTimeout(resolve, 500); })]);
+        clearTimeout(timer);
+      }
     })();
     return this.closePromise;
   }
 
   sendMessage(message) {
-    const line = `${JSON.stringify(message)}\n`;
-    const stdin = this.proc?.stdin;
-    if (!stdin) {
+    if (!this.outbound) {
       throw new Error("codex app-server stdin is not available.");
     }
-    stdin.write(line);
+    this.outbound.send(message);
   }
 }
 
@@ -339,15 +444,14 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
     await new Promise((resolve, reject) => {
       const target = parseBrokerEndpoint(this.endpoint);
       this.socket = net.createConnection({ path: target.path });
+      this.outbound = createOutboundQueue(this.socket, error => this.handleExit(error));
       this.socket.setEncoding("utf8");
       this.socket.on("connect", resolve);
       this.socket.on("data", (chunk) => {
         this.handleChunk(chunk);
       });
       this.socket.on("error", (error) => {
-        if (!this.exitResolved) {
-          reject(error);
-        }
+        reject(error);
         this.handleExit(error);
       });
       this.socket.on("close", () => {
@@ -356,6 +460,7 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
         reject(error ?? brokerClosedError());
         this.handleExit(error);
       });
+      this.socket.on("end", () => this.handleExit(this.closed ? null : brokerClosedError()));
     });
 
     const identity = await this.request("initialize", {
@@ -375,37 +480,37 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
   }
 
   async close() {
-    if (this.closed) {
-      await this.exitPromise;
-      return;
-    }
-
-    this.closed = true;
-    if (this.socket) {
-      this.socket.end();
-      const deadline = setTimeout(() => this.socket.destroy(), 300);
-      await this.exitPromise;
-      clearTimeout(deadline);
-    } else {
+    if (this.closePromise) return this.closePromise;
+    this.closePromise = (async () => {
+      this.closed = true;
+      // A healthy close still delivers accepted frames (a final answer or an
+      // interrupt) within a short grace; a broken transport closes at once.
+      if (!this.exitResolved && this.socket && !this.socket.destroyed && this.outbound) {
+        let timer;
+        await Promise.race([this.outbound.flushed(), new Promise(resolve => { timer = setTimeout(resolve, 300); })]);
+        clearTimeout(timer);
+      }
+      this.outbound?.close();
+      this.socket?.destroy();
       this.handleExit(null);
-    }
+    })();
+    return this.closePromise;
   }
 
   sendMessage(message) {
-    const line = `${JSON.stringify(message)}\n`;
-    const socket = this.socket;
-    if (!socket) {
+    if (!this.outbound) {
       throw new Error("codex app-server broker connection is not connected.");
     }
-    socket.write(line);
+    this.outbound.send(message);
   }
 }
 
 export class CodexAppServerClient {
   static async connect(cwd, options = {}) {
-    if (options.connectTimeoutMs !== undefined && options.connectDeadline === undefined) {
-      options = { ...options, connectDeadline: Date.now() + options.connectTimeoutMs };
-    }
+    const timeoutMs = options.connectTimeoutMs ?? defaultConnectTimeoutMs(options.env ?? process.env);
+    options = { ...options, connectTimeoutMs: timeoutMs, connectDeadline: options.connectDeadline ?? Date.now() + timeoutMs };
+    const timedOut = () => transportError("Codex initialize timed out.", "ETIMEDOUT");
+    if (Date.now() >= options.connectDeadline) throw timedOut();
     if (options.signal?.aborted) throw new Error("Task interrupted before runtime connection.");
     const began = Date.now();
     resolveIsolatedCodexHome(options.env ?? process.env);
@@ -416,11 +521,12 @@ export class CodexAppServerClient {
         brokerEndpoint = loadBrokerSession(cwd)?.endpoint ?? null;
       }
       if (!brokerEndpoint && !options.reuseExistingBroker) {
-        const brokerSession = await ensureBrokerSession(cwd, { env: options.env });
+        const brokerSession = await ensureBrokerSession(cwd, { env: options.env, connectDeadline: options.connectDeadline });
         brokerEndpoint = brokerSession?.endpoint ?? null;
       }
     }
     if (options.signal?.aborted) throw new Error("Task interrupted during broker startup.");
+    if (Date.now() >= options.connectDeadline) throw timedOut();
     const client = brokerEndpoint
       ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint })
       : new SpawnedCodexAppServerClient(cwd, options);
@@ -430,11 +536,11 @@ export class CodexAppServerClient {
     let connectTimer;
     try {
       const initialize = client.initialize();
-      if (options.connectTimeoutMs === undefined) await initialize;
-      else await Promise.race([initialize, new Promise((_, reject) => {
-        connectTimer = setTimeout(() => reject(Object.assign(new Error("Codex initialize probe timed out."), { code: "ETIMEDOUT" })), Math.max(1, options.connectDeadline - Date.now()));
+      await Promise.race([initialize, new Promise((_, reject) => {
+        connectTimer = setTimeout(() => reject(timedOut()), Math.max(1, options.connectDeadline - Date.now()));
       })]);
     } catch (error) {
+      client.handleExit(error);
       await client.close().catch(() => {});
       if (client.transport === "broker" && !options.signal?.aborted &&
           ["BROKER_CONNECTION_CLOSED", "ECONNRESET", "EPIPE", "ENOENT", "ECONNREFUSED"].includes(error.code)) {

@@ -951,6 +951,63 @@ test('polling hydrates every selected turn, strips other sessions, and adopts le
   expect(f.latest().feeds?.['thread:a']?.following).toBe(true);
   expect(f.latest().jobs.filter(job => job.threadId === 'a').every(job => job.detailsLoaded && job.events.length === 1)).toBe(true);
   expect(f.latest().jobs.filter(job => job.threadId === 'b').every(job => !job.detailsLoaded && !job.events.length)).toBe(true);
+
+  let payload = { bytes: 0, budget: 0, ids: [] as string[] };
+  let peakPayloadBytes = 0;
+  const large = scrollFixture({ onPayloadCache: snapshot => {
+    payload = snapshot;
+    peakPayloadBytes = Math.max(peakPayloadBytes, snapshot.bytes);
+  } });
+  for (let n = 0; n < 20; n++) {
+    const id = `large-${n}`;
+    large.add(id, n);
+    patchJob(large.files, id, { status: 'completed', completedAt: created(epoch),
+      result: { rawOutput: 'x'.repeat(1_000_000) } });
+  }
+  await large.poll(true);
+  expect(large.latest().jobs.length).toBe(20);
+  expect(payload.budget).toBe(8 * 1024 * 1024);
+  expect(payload.ids).toEqual(['large-19']);
+  expect(payload.bytes < 1_000_000).toBe(true); // Even the selected raw output is released after projection.
+  const reads = () => large.reads.filter(path => path.startsWith('/jobs/'));
+  expect(reads().length).toBe(20);
+  const firstView = large.latest();
+  large.advance(10000);
+  await large.poll(true);
+  expect(large.latest()).toEqual(firstView);
+  expect(reads().length).toBe(20); // Retained mtimes prevent reparsing unselected records.
+  for (const id of ['large-0', 'large-19']) {
+    large.latest().selectedId = id;
+    const before = reads().length;
+    await large.poll(true);
+    expect(reads().slice(before)).toEqual([`/jobs/${id}.json`]);
+    expect(payload.ids).toEqual([id]);
+    expect(large.latest().jobs.filter(job => job.detailsLoaded).map(job => job.id)).toEqual([id]);
+    expect(selectedJob(large.latest())?.events.length).toBe(1);
+  }
+  // A record bigger than the entire budget must still hydrate on selection.
+  patchJob(large.files, 'large-0', { result: { rawOutput: '界'.repeat(5_000_000) } });
+  large.latest().selectedId = 'large-0';
+  large.advance(10000);
+  await large.poll(true);
+  expect(payload.ids).toEqual(['large-0']);
+  expect(selectedJob(large.latest())?.events.length).toBe(1);
+  large.reads.length = 0;
+  await large.poll(true);
+  expect(reads()).toEqual([]);
+  // Failed publication still releases unselected payloads, preserving the view.
+  const good = large.latest();
+  patchJob(large.files, 'large-1', { status: 'running', completedAt: undefined });
+  large.advance(10000);
+  large.rejectNextWrite();
+  await large.poll(true);
+  expect(large.latest()).toBe(good);
+  expect(payload.ids).toEqual(['large-0']);
+  large.reads.length = 0;
+  await large.poll(true);
+  expect(reads()).toEqual([]);
+  expect(large.latest().jobs.find(job => job.id === 'large-1')?.active).toBe(true);
+  expect(peakPayloadBytes > 1_000_000 && peakPayloadBytes <= payload.budget).toBe(true);
 });
 
 test('retention counts twenty sessions, protects active and selected sessions and restores evicted turns', async () => {
@@ -1063,7 +1120,9 @@ test('twenty long-summary conversations stay below budget and publish an active 
 
 test("unchanged large conversations reread no jobs and retain bounded details", async () => {
   let bounds = 0, layouts = 0;
-  const f = scrollFixture({ onBound: () => { bounds++; }, onLayout: () => { layouts++; } });
+  let payload = { bytes: 0, budget: 0, ids: [] as string[] }, peakPayloadBytes = 0;
+  const f = scrollFixture({ onBound: () => { bounds++; }, onLayout: () => { layouts++; },
+    onPayloadCache: snapshot => { payload = snapshot; peakPayloadBytes = Math.max(peakPayloadBytes, snapshot.bytes); } });
   const activity = Array.from({ length: 200 }, (_, seq) => ({ seq, type: 'agentMessage', body: 'x'.repeat(4000) }));
   for (let n = 0; n < 200; n++) {
     const id = `turn-${n}`;
@@ -1117,6 +1176,21 @@ test("unchanged large conversations reread no jobs and retain bounded details", 
   await f.poll(true);
   expect(layouts).toBe(before.layouts + 1);
   expect(validView(f.latest())).toBe(true);
+  expect(f.logs).toEqual([]);
+  // Full projections can exceed the cache in aggregate too. LRU eviction must
+  // not remove selected turns from the candidate being composed this poll.
+  f.close();
+  const heavy = activity.map(event => ({ ...event, command: 'c'.repeat(2000), text: 't'.repeat(300) }));
+  for (let n = 195; n < 200; n++) patchJob(f.files, `turn-${n}`, { activity: heavy });
+  f.advance(10000);
+  await f.poll(true);
+  expect(f.latest().jobs.filter(job => job.detailsLoaded).length).toBe(5);
+  expect(payload.ids.length > 0 && payload.ids.length < 5).toBe(true);
+  expect(peakPayloadBytes <= payload.budget).toBe(true);
+  const boundedDetails = f.latest().jobs;
+  await f.poll(true);
+  expect(f.latest().jobs).toEqual(boundedDetails);
+  expect(peakPayloadBytes <= payload.budget).toBe(true);
   expect(f.logs).toEqual([]);
 });
 

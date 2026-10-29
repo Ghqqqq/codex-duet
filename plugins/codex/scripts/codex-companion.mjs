@@ -142,7 +142,7 @@ Durable run criteria, verdicts and decisions in the isolated home.
       Known criteria only; show as withdrawn with their reason and no unchecked/unmet issue.
     verdict: {"jobId":"...","verdict":"ACCEPT|ACCEPT_WITH_GLUE|REWORK|REASSIGN",
               "criteria":[{"criterion":"...","evidence":"...","result":"met|not_met|cannot_verify"}],"reason":"..."}
-      Criterion: declared exact text, a unique trailing-… prefix from show, or a unique K7/K7: id.
+      Criterion: declared exact text, a unique trailing-… prefix from show, or a unique id: K7/K7:, or F3/F3: for "F3: …".
       Unknown/ambiguous criteria are rejected; introduce new ones with add criteria.
       Historical verdict-only criteria keep their existing validation behavior; no migration is performed.
       Optional resolves: ["<jobId>", ...] names linked jobs in this run whose REWORK/REASSIGN
@@ -1869,7 +1869,7 @@ export async function reconcileLostTurn(workspaceRoot, job, { turnResult = null,
       stored = updateJob(workspaceRoot, stored.id, latest => unresolvedTask(latest) && ACTIVE.has(latest.status) && !processAlive(latest.pid)
         ? { status: "failed", phase: "failed", pid: null, completedAt: nowIso(), errorMessage: "Worker exited before its turn outcome was recorded." } : null);
     }
-    let result = turnResult ?? (stored.threadId ? await readAppServerTurn(workspaceRoot, stored, { admittingJobId }) : { turnStatus: "notStarted" });
+    let result = turnResult ?? (stored.threadId ? await readAppServerTurn(workspaceRoot, stored, { admittingJobId, privateWhenBusy: Boolean(admittingJobId) }) : { turnStatus: "notStarted" });
     if (!result) return recordTurnResolution(workspaceRoot, stored, "unknown", { status: "unknown", detail: "The recorded turn is not readable. It may not have been persisted; do not automatically rerun it." });
     const ambiguous = { turnResolution: "unknown", recovery: { status: "unknown", detail: "The thread's recorded ownership is incomplete or ambiguous; no turn was attributed to this job." } };
     const attributionConfirmed = latest => {

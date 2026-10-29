@@ -12,6 +12,7 @@ import { CodexAppServerClient } from "./app-server.mjs";
 import { ensureBrokerSession } from "./broker-lifecycle.mjs";
 import { CLAUDE_MEMORY_DIR, planClaudeSnapshots, pruneClaudeSnapshots } from "./claude-memory.mjs";
 import { planClaudeImports, sweepClaudeImports } from "./claude-session-transfer.mjs";
+import { planAgentNames, pruneAgentNames } from "./agent-names.mjs";
 
 const DAY = 86400000;
 const INTERVAL = 12 * 60 * 60 * 1000;
@@ -257,13 +258,18 @@ function expired(job, cutoff, record = job, orphan = false) {
   return (!active(job) || oldOrphan) && !unresolvedTask({ ...job, ...record }) && Number.isFinite(timestamp) && timestamp < cutoff && !job.ownerAttached && !alive(job.pid);
 }
 function eligibleRecord(index, record, cutoff) {
-  if (!record) return !unresolvedTask(index) && (active(index) || expired(index, cutoff));
+  // A missing private record cannot establish that a queued/running launch
+  // ended. Keep its remaining evidence unless the index proves quiescence.
+  if (!record) return ["completed", "failed", "cancelled", "interrupted", "blocked", "needs_input", "error"].includes(index?.status)
+    && !protectionReason(index) && expired(index, cutoff)
+    && [index.createdAt, index.startedAt, index.updatedAt].filter(value => value != null)
+      .every(value => Number.isFinite(Date.parse(value)) && Date.parse(value) < cutoff);
   return index ? expired(index, cutoff, record) && expired(record, cutoff) : expired(record, cutoff, record, true);
 }
 function protectionReason(...jobs) {
   if (jobs.some(job => job && active(job))) return "active";
   if (jobs.some(job => job?.ownerAttached)) return "owner-attached";
-  if (jobs.some(job => alive(job?.pid))) return "pid-alive";
+  if (jobs.some(job => alive(job?.pid) || alive(job?.launcherPid))) return "pid-alive";
   if (unresolvedTask(Object.assign({}, ...jobs))) return "unresolved";
   return null;
 }
@@ -321,6 +327,34 @@ function workspaceRecords(workspace, { state = null, locked = false, cache = nul
   const after = regularStat(indexFile);
   if (before?.ino !== after?.ino || before?.mtimeMs !== after?.mtimeMs || before?.size !== after?.size || (!locked && fs.existsSync(lock))) throw new Error("Workspace changed while reading; skipping.");
   return records;
+}
+
+// Every surviving job may be a follow-up address, even after it finishes.
+// Do not infer session quiescence from a partial, locked or corrupt inventory.
+// This only reads: dispatch/adoption already take workspace -> names locks.
+function reservationSessions(env, removed = []) {
+  const sessions = new Set(), root = resolveStateRoot(env);
+  const omitted = new Set(removed.map(job => path.join(job.workspace, job.jobId)));
+  try {
+    realDirectory(root);
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if ([RUN_SESSIONS_DIR, CLAUDE_MEMORY_DIR].includes(entry.name)) continue;
+      if (entry.isSymbolicLink()) return null;
+      if (!entry.isDirectory()) continue;
+      const workspace = path.join(root, entry.name);
+      for (const [id, { index, record }] of workspaceRecords(workspace)) {
+        if (omitted.has(path.join(workspace, id))) continue;
+        for (const job of [index, record]) {
+          if (!job) continue;
+          const session = job.sessionId === undefined ? job.ownerId : job.sessionId;
+          if (session == null) continue;
+          if (typeof session !== "string") return null;
+          if (session) sessions.add(session);
+        }
+      }
+    }
+  } catch { return null; }
+  return sessions;
 }
 
 function inspectWorkspaces(env, cutoff, { retainAll = false, cache = null } = {}) {
@@ -447,14 +481,15 @@ export function planRetention({ now = Date.now(), days, env = process.env } = {}
   const runs = planRuns(cutoffMs, { env });
   const snapshots = planClaudeSnapshots(cutoffMs, { env });
   const imports = planClaudeImports({ now, env });
+  const names = planAgentNames(cutoffMs, { env, inspectSessions: () => reservationSessions(env, state.jobs) });
   const threads = state.errors.length || state.incomplete ? { threads: [], errors: [] } : inspectThreads(env, cutoffMs, state.referenced);
-  const plan = { cutoff: new Date(cutoffMs).toISOString(), ...policy, jobs: state.jobs, inertWorkspaces: state.inertWorkspaces, workspacesRetained: state.workspacesRetained, runs: runs.runs, runSessions: runs.runSessions, markers: markers.markers, snapshots: snapshots.snapshots, imports: imports.imports, threads: threads.threads, retained: state.retained, errors: [...state.errors, ...markers.errors, ...runs.errors, ...snapshots.errors, ...imports.errors, ...threads.errors] };
+  const plan = { cutoff: new Date(cutoffMs).toISOString(), ...policy, jobs: state.jobs, inertWorkspaces: state.inertWorkspaces, workspacesRetained: state.workspacesRetained, runs: runs.runs, runSessions: runs.runSessions, markers: markers.markers, snapshots: snapshots.snapshots, imports: imports.imports, agentNameSessions: names.agentNameSessions, agentNameTemporaries: names.agentNameTemporaries, threads: threads.threads, retained: state.retained, errors: [...state.errors, ...markers.errors, ...runs.errors, ...snapshots.errors, ...imports.errors, ...names.errors, ...threads.errors] };
   Object.defineProperty(plan, CONTEXT, { value: { env: { ...env }, now: Number(new Date(now)), cache } });
   return plan;
 }
 
 export async function applyRetention(plan, { deleteThread } = {}) {
-  const report = { jobsDeleted: 0, runsDeleted: 0, runSessionsDeleted: 0, markersDeleted: 0, snapshotsDeleted: 0, importsDeleted: 0, threadsDeleted: 0, threadsSkipped: 0, bytesFreed: 0, inertWorkspaces: [], workspacesRetained: (plan?.workspacesRetained ?? []).map(item => ({ ...item })), retained: (plan?.retained ?? []).map(item => ({ ...item })), errors: [...(plan?.errors ?? [])], days: plan?.days, warnings: [...(plan?.warnings ?? [])] };
+  const report = { jobsDeleted: 0, runsDeleted: 0, runSessionsDeleted: 0, markersDeleted: 0, snapshotsDeleted: 0, importsDeleted: 0, agentNameSessionsDeleted: 0, agentNameTemporariesDeleted: 0, threadsDeleted: 0, threadsSkipped: 0, bytesFreed: 0, inertWorkspaces: [], workspacesRetained: (plan?.workspacesRetained ?? []).map(item => ({ ...item })), retained: (plan?.retained ?? []).map(item => ({ ...item })), errors: [...(plan?.errors ?? [])], days: plan?.days, warnings: [...(plan?.warnings ?? [])] };
   const cache = plan?.[CONTEXT]?.cache ?? new Map();
   try {
     const env = plan[CONTEXT]?.env ?? process.env, cutoff = Date.parse(plan.cutoff);
@@ -531,6 +566,11 @@ export async function applyRetention(plan, { deleteThread } = {}) {
         removedJobFiles.add(file.path);
       }
     }
+    const names = pruneAgentNames(plan, cutoff, { env, inspectSessions: () => reservationSessions(env) });
+    report.agentNameSessionsDeleted = names.agentNameSessionsDeleted;
+    report.agentNameTemporariesDeleted = names.agentNameTemporariesDeleted;
+    report.bytesFreed += names.bytesFreed;
+    report.errors.push(...names.errors);
     const runs = pruneRuns(plan.runs ?? [], cutoff, { env, runSessions: plan.runSessions ?? [] });
     report.runsDeleted = runs.runsDeleted;
     report.runSessionsDeleted = runs.runSessionsDeleted;

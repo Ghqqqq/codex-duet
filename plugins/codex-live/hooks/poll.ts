@@ -9,12 +9,17 @@ import { checkedView, publishView, reportFailure, updateFailure, viewports } fro
 const view = atom({ plugin: 'codex-live', key: 'view' } as const,
   { jobs: [], selectedId: null, nowMs: 0 } as CodexLiveState);
 
+// Charge serialized UTF-16 bytes, including escaping, separately from the
+// published view's character budget. A single oversized read is never cached.
+const PAYLOAD_CACHE_BYTES = 8 * 1024 * 1024;
+
 type Cached = {
   marker: CodexLiveMarker;
   markerName: string;
   job: CodexLiveJob;
   raw?: unknown;
   full?: CodexLiveJob;
+  fullSource?: object;
   processedMtime?: number;
   nextCheck: number;
   firstEnded?: number;
@@ -22,7 +27,10 @@ type Cached = {
   removed?: boolean;
 };
 
-export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): void; onBound?(): void; onLayout?(): void }): (force?: boolean) => Promise<void> {
+export function createPoller($: EngineInterface, diagnostics?: {
+  onCompose?(): void; onBound?(): void; onLayout?(): void;
+  onPayloadCache?(snapshot: { bytes: number; budget: number; ids: string[] }): void;
+}): (force?: boolean) => Promise<void> {
   let busy = false;
   let tick = 0;
   let session = '';
@@ -40,11 +48,38 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
   const foreignJobs = new Set<string>();
   // Successful observations outside the retained view live only while present.
   const knownJobs = new Set<string>();
-  let bounded: { key: string; sources: (CodexLiveJob | undefined)[]; state: CodexLiveState } | undefined;
+  let bounded: { key: string; sources: (object | undefined)[]; state: CodexLiveState } | undefined;
+  const payloads = new Map<Cached, number>(); // Insertion order is least recently used first.
+  let payloadBytes = 0;
+  const observePayloads = () => diagnostics?.onPayloadCache?.({ bytes: payloadBytes, budget: PAYLOAD_CACHE_BYTES,
+    ids: [...payloads.keys()].map(entry => entry.job.id) });
+  const dropPayload = (entry: Cached) => {
+    payloadBytes -= payloads.get(entry) ?? 0;
+    payloads.delete(entry);
+    entry.raw = undefined; entry.full = undefined; entry.fullSource = undefined;
+  };
+  const cachePayload = (entry: Cached, raw?: unknown, full?: CodexLiveJob, rawBytes = 0) => {
+    dropPayload(entry);
+    const bytes = full ? JSON.stringify(full).length * 2 : rawBytes;
+    if (bytes <= PAYLOAD_CACHE_BYTES) {
+      while (payloadBytes + bytes > PAYLOAD_CACHE_BYTES) dropPayload(payloads.keys().next().value!);
+      entry.raw = raw; entry.full = full;
+      if (full) entry.fullSource = {};
+      payloads.set(entry, bytes);
+      payloadBytes += bytes;
+    }
+    observePayloads();
+  };
+  const touchPayload = (entry: Cached) => {
+    const bytes = payloads.get(entry);
+    if (bytes === undefined) return;
+    payloads.delete(entry); payloads.set(entry, bytes);
+  };
 
   return async (force = false) => {
     if (busy) return;
     busy = true;
+    let detailedIds: Set<string> | undefined;
     try {
       tick++;
       const stored = await read($, view);
@@ -61,8 +96,11 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
         cache.clear(); evicted.clear(); markerNames.clear(); retryMarker.clear(); foreignJobs.clear(); knownJobs.clear();
         markerErrors.clear(); lastDiscovery = '';
         bounded = undefined;
+        payloads.clear(); payloadBytes = 0;
       }
       if (sessionChanged) current = { jobs: [], selectedId: null, nowMs: 0 };
+      const currentSelection = sessionForId(groupedSessions(current.jobs), current.selectedId);
+      detailedIds = new Set(currentSelection ? detailedTurns(currentSelection).map(job => job.id) : []);
       const previouslySeen = new Set(current.seenJobIds ?? current.jobs.map(job => job.id));
       const previouslyKnown = new Set([...previouslySeen, ...current.jobs.map(job => job.id),
         ...knownJobs]);
@@ -114,13 +152,17 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
           const previous = !foreignJobs.has(marker.jobId) ? current.jobs.find(job => job.id === marker.jobId) : undefined;
           const remembered = evicted.get(entry.name);
           const memo = remembered?.job.id === marker.jobId && remembered.marker.jobFile === marker.jobFile ? remembered : undefined;
-          if (!cache.has(marker.jobId)) cache.set(marker.jobId, {
-            marker, markerName: entry.name, job: memo?.job ?? (previous ? jobSummary(previous) : unavailableJob(marker)),
-            processedMtime: memo?.processedMtime,
-            firstEnded: memo?.firstEnded,
-            missingSince: memo?.missingSince, removed: memo?.removed,
-            full: previous?.detailsLoaded !== false ? previous : undefined, nextCheck: 0,
-          });
+          if (!cache.has(marker.jobId)) {
+            const cached: Cached = {
+              marker, markerName: entry.name, job: memo?.job ?? (previous ? jobSummary(previous) : unavailableJob(marker)),
+              processedMtime: memo?.processedMtime,
+              firstEnded: memo?.firstEnded,
+              missingSince: memo?.missingSince, removed: memo?.removed,
+              nextCheck: 0,
+            };
+            cache.set(marker.jobId, cached);
+            if (previous && previous.detailsLoaded !== false) cachePayload(cached, undefined, previous);
+          }
           evicted.delete(entry.name);
           markerNames.add(entry.name); // Only a successful parse marks the marker seen.
           retryMarker.delete(entry.name);
@@ -175,13 +217,13 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
         try {
           const stat = await $.fs.stat(entry.marker.jobFile);
           if (stat.mtimeMs !== entry.processedMtime) {
-            const raw = JSON.parse(await $.fs.read(entry.marker.jobFile));
+            const text = await $.fs.read(entry.marker.jobFile);
+            const raw = JSON.parse(text);
             if (!belongsHere(raw, entry)) continue;
             const job = jobView(raw, entry.marker, false, now);
             if ((entry.processedMtime !== undefined || current.jobs.some(previous => previous.id === job.id)) &&
                 sessionId(entry.job) !== sessionId(job)) joinedThreads.add(job.id);
-            entry.raw = raw;
-            entry.full = undefined;
+            cachePayload(entry, raw, undefined, text.length * 2);
             entry.job = { ...job, lastUpdateMs: now };
             entry.processedMtime = stat.mtimeMs; // Commit only after read + parse + projection succeeded.
           } else if (entry.job.detailsUnavailable) entry.job = { ...entry.job, detailsUnavailable: false };
@@ -277,25 +319,43 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
       };
       let planned = plan(current);
       let hydrated = false;
+      // Selected projections may temporarily exceed the cache budget; boundState
+      // still receives all five turns before applying the existing display limits.
+      const details = new Map<string, { full: CodexLiveJob; source: object }>();
+      const projectDetails = (entry: Cached, raw = entry.raw) => {
+        let full = entry.full;
+        if (!full && raw) {
+          full = jobView(raw, entry.marker, true, now);
+          cachePayload(entry, undefined, full); // The raw record is no longer needed.
+        }
+        if (!full && entry.job.detailsUnavailable) full = current.jobs.find(job => job.id === entry.job.id && job.detailsLoaded !== false);
+        if (full) {
+          touchPayload(entry);
+          details.set(entry.job.id, { full, source: entry.fullSource ?? {} });
+        }
+      };
       // An unchanged mtime cannot hydrate details discarded during eviction.
       // Only the five newest selected turns may trigger these extra reads.
       for (const id of planned.detailedIds) {
         const entry = byId.get(id)!;
-        if (entry.raw || entry.full || !entry.marker.jobFile || entry.job.detailsUnavailable) continue;
+        if (entry.raw || entry.full || !entry.marker.jobFile || entry.job.detailsUnavailable) {
+          projectDetails(entry);
+          continue;
+        }
         hydrated = true;
         try {
           const stat = await $.fs.stat(entry.marker.jobFile);
           const raw = JSON.parse(await $.fs.read(entry.marker.jobFile));
           if (!belongsHere(raw, entry)) continue;
           const summary = jobView(raw, entry.marker, false, now);
-          entry.raw = raw;
-          entry.job = { ...summary, lastUpdateMs: now };
+          entry.job = { ...summary, lastUpdateMs: stat.mtimeMs === entry.processedMtime ? entry.job.lastUpdateMs : now };
+          projectDetails(entry, raw);
           entry.processedMtime = stat.mtimeMs;
           entry.missingSince = undefined; entry.removed = false;
           entry.nextCheck = entry.job.finished ? now + 10000 : 0;
           if (entry.job.finished) firstEndedAtMs[id] = entry.firstEnded ??= firstEndedAtMs[id] ?? now;
           else if (entry.job.active || entry.job.unresolved) { delete firstEndedAtMs[id]; entry.firstEnded = undefined; }
-        } catch (error) { await unreadable(entry, error); }
+        } catch (error) { await unreadable(entry, error); projectDetails(entry); }
       }
       if (hydrated) {
         newest = newest.filter(entry => !foreignJobs.has(entry.job.id) && !removedJobs.has(entry.job.id));
@@ -305,13 +365,15 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
         diagnostics?.onCompose?.();
         if (sessionChanged && latest.sessionId !== currentSession) latest = current;
         const { visibility, selectedId, retained, retainedSessions, retainedIds, detailedIds, turnCounts, attentionOmitted } = selection ?? plan(latest);
-        const sources: (CodexLiveJob | undefined)[] = [];
+        const sources: (object | undefined)[] = [];
         const jobs = newest.filter(entry => retainedIds.has(entry.job.id)).map(entry => {
           sources.push(entry.job);
           if (!detailedIds.has(entry.job.id)) return entry.job;
-          if (!entry.full && entry.raw) entry.full = jobView(entry.raw, entry.marker, true, now);
-          sources.push(entry.full);
-          return entry.full ? { ...entry.full, detailsUnavailable: entry.job.detailsUnavailable, lastUpdateMs: entry.job.lastUpdateMs } : entry.job;
+          if (!details.has(entry.job.id)) projectDetails(entry);
+          const detail = details.get(entry.job.id);
+          // Identity tokens keep the memo from retaining an evicted full payload.
+          sources.push(detail?.source);
+          return detail ? { ...detail.full, detailsUnavailable: entry.job.detailsUnavailable, lastUpdateMs: entry.job.lastUpdateMs } : entry.job;
         });
         const active = retained.some(session => session.active);
         const stale = jobs.some(job => job.detailsUnavailable);
@@ -363,12 +425,15 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
         }
         return fitState(candidate);
       };
+      detailedIds = planned.detailedIds;
       let candidate = compose(current, planned);
       if (JSON.stringify(candidate) !== expected || updateFailure()) {
         const published = await publishView($, expected, candidate, compose);
         if (!published) return;
         candidate = published; // Status and eviction must use the view actually saved.
       }
+      const selected = sessionForId(groupedSessions(candidate.jobs), candidate.selectedId);
+      detailedIds = new Set(selected ? detailedTurns(selected).map(job => job.id) : []);
       const retainedIds = new Set(candidate.jobs.map(job => job.id));
       knownJobs.clear();
       for (const entry of [...cache.values(), ...remembered]) if (!entry.removed && entry.processedMtime !== undefined &&
@@ -392,6 +457,12 @@ export function createPoller($: EngineInterface, diagnostics?: { onCompose?(): v
       if (status !== lastStatus) { $.ui.status(status); lastStatus = status; }
       if (newlyActive.length) await $.ui.open({ id: 'codex-live', title: 'Codex' });
     } catch (error) { reportFailure($, error); }
-    finally { busy = false; }
+    finally {
+      // Also release candidates after a rejected publication. Keep summaries and
+      // mtimes so unchanged unselected records need no read or parse next time.
+      for (const entry of payloads.keys()) if (cache.get(entry.job.id) !== entry || detailedIds && !detailedIds.has(entry.job.id)) dropPayload(entry);
+      observePayloads();
+      busy = false;
+    }
   };
 }

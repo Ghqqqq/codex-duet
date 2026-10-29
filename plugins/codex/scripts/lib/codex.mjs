@@ -54,7 +54,7 @@ import { fileURLToPath } from "node:url";
 
 import { readJsonFile } from "./fs.mjs";
 import { snapshotClaudeSession } from "./claude-session-transfer.mjs";
-import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
+import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient, defaultConnectTimeoutMs } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable } from "./process.mjs";
 import { classifyRuntimeError } from "./runtime-errors.mjs";
@@ -879,6 +879,8 @@ function connectionFailure(error, client) {
 }
 
 async function withAppServer(cwd, fn, options = {}) {
+  // The existing busy-broker fallback shares the original connection budget.
+  options = { ...options, connectDeadline: options.connectDeadline ?? Date.now() + (options.connectTimeoutMs ?? defaultConnectTimeoutMs(options.env ?? process.env)) };
   let client = null;
   try {
     client = await CodexAppServerClient.connect(cwd, options);
@@ -1748,13 +1750,14 @@ export async function runAppServerTurn(cwd, options = {}) {
     approvedComputerApps: options.approvedComputerApps ?? [],
     onParentQuestion: options.onParentQuestion,
     signal: options.signal,
+    connectTimeoutMs: options.connectTimeoutMs,
     onRuntimeEvent: runtimeEvent,
     onServerRequestLog
   });
 }
 
 // Recovery is read-only: never resume a thread or submit another turn.
-export async function readAppServerTurn(cwd, job, { admittingJobId = null, env = process.env, deadline = null } = {}) {
+export async function readAppServerTurn(cwd, job, { admittingJobId = null, env = process.env, deadline = null, privateWhenBusy = false } = {}) {
   let { threadId, turnId } = job;
   const abort = new AbortController();
   let client;
@@ -1766,9 +1769,20 @@ export async function readAppServerTurn(cwd, job, { admittingJobId = null, env =
   }, deadline === null ? 10000 : Math.max(1, deadline - Date.now()));
   try {
     if (deadline !== null && Date.now() >= deadline) throw new Error("Turn recovery budget expired.");
-    client = await CodexAppServerClient.connect(cwd, { env, reuseExistingBroker: true, signal: abort.signal,
+    const connect = extra => CodexAppServerClient.connect(cwd, { env, reuseExistingBroker: true, signal: abort.signal, ...extra,
       ...(deadline === null ? {} : { onClient: candidate => { client = candidate; } }) });
-    const response = await client.request("thread/read", { threadId, includeTurns: true });
+    client = await connect({});
+    let response;
+    try { response = await client.request("thread/read", { threadId, includeTurns: true }); }
+    catch (error) {
+      // A shared broker streaming another job refuses other clients' reads.
+      // A follow-up's admission check reads the persisted thread through a
+      // private runtime instead; status and maintenance keep the cheap refusal.
+      if (!privateWhenBusy || client.transport !== "broker" || error?.rpcCode !== BROKER_BUSY_RPC_CODE) throw error;
+      await client.close();
+      client = await connect({ disableBroker: true });
+      response = await client.request("thread/read", { threadId, includeTurns: true });
+    }
     if (!turnId) {
       // A dead wrapper may have stopped before turn/start, or after sending it
       // but before saving its reply. Never infer absence from an unreadable list.

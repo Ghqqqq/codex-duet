@@ -66,7 +66,14 @@ export async function stopOwnedProcessGroup(child, graceMs = 500) {
   if (!child?.pid) return;
   const signal = value => {
     try { if (process.platform === "win32") terminateProcessTree(child.pid); else process.kill(-child.pid, value); }
-    catch (e) { if (e.code !== "ESRCH") throw e; }
+    catch (e) {
+      if (e.code === "ESRCH") return;
+      if (e.code !== "EPERM") throw e;
+      // macOS reports EPERM for a group holding a zombie. Still signal the
+      // leader itself while Node has not reaped it (so its PID is still ours).
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      try { process.kill(child.pid, value); } catch (inner) { if (!["ESRCH", "EPERM"].includes(inner.code)) throw inner; }
+    }
   };
   signal("SIGTERM");
   await new Promise(resolve => setTimeout(resolve, graceMs));

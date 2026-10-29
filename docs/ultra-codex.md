@@ -215,7 +215,7 @@ When a fresh worker resolves REWORK or REASSIGN, its verified `ACCEPT` or
 `ACCEPT_WITH_GLUE` verdict includes `resolves: ["<rejectedJobId>", ...]`.
 Jobs linked to that run can be resolved regardless of session; unknown IDs are
 rejected. Verdict criteria match declared exact text, a unique shown prefix
-ending in `…`, or a unique `K<n>` ID already present in a declared criterion.
+ending in `…`, or a unique ID (`K7`, or `F3` before a colon) already present in a declared criterion.
 Unknown or ambiguous criteria are rejected; introduce new ones with
 `journal add criteria`. Accepted `followUpOf`/`continuationOf` descendants also
 resolve earlier rejections; same-thread follow-ups can discover that predecessor

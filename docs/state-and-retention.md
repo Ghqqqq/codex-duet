@@ -67,6 +67,14 @@ pending tool identities support start/completion pairing; eviction can overcount
 a later matching completion. The pane and `/codex:status` show retained events
 only. See [activity limits](worker-lifecycle.md#fallback-and-compatibility-feed-mode).
 
+If a writer cannot read or parse a workspace's `state.json` after brief retries,
+it keeps the file as `state.json.unreadable-<time>`, rebuilds the index from the
+job records in `jobs/`, publishes it before its own change, warns on stderr and
+continues. A job record that stays unreadable after retries is left out until its
+next update. Index-only settings return
+to defaults and jobs without a job record leave the listing; both remain in the
+kept file. Read-only commands never rebuild; they show an empty listing meanwhile.
+
 ## Retention
 
 At session start, Duet's detached prewarm child cleans ended job records, session
@@ -78,8 +86,16 @@ attached owners, live worker PIDs and unresolved turns (a lost or unconfirmed
 turn that may still run on the server). Dead orphan records whose outcome is
 still unresolved remain protected until reconciliation proves the turn ended.
 Expired dead orphan files that are not unresolved can be cleaned even if their
-saved status is stale; stale running
-index entries without private records are removed when not unresolved.
+saved status is stale. An index entry whose private record is missing is removed
+only when it shows a terminal status, has no protection (including a live
+launcher PID) and every recorded timestamp is past the cutoff; a stale `running`
+entry without its record stays until recovery or manual cleanup.
+
+Worker-name reservations are kept per session while any retained job can still
+be addressed. Age cleanup retires a session's reservations once no surviving job
+belongs to that session, no live writer holds a claim and the folder is past the
+cutoff. Stale claim temporaries from dead processes are also removed. Partial,
+locked or unreadable job inventories retain every reservation.
 
 Every detached session-start prewarm also runs stale-job maintenance, independently
 of the 12-hour age-cleanup interval, under the same retention lock. A pass has a

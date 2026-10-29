@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { makeTempDir, initGitRepo, run, requireLocalSockets, waitForCondition } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { resolveStateDir, resolveStateRoot, unresolvedTask } from "../plugins/codex/scripts/lib/state.mjs";
-import { addEntry, linkJournalJob, finishJournalJob, validateRun } from "../plugins/codex/scripts/lib/run-journal.mjs";
+import { addEntry, linkJournalJob, finishJournalJob, validateRun, showRun, closeRun } from "../plugins/codex/scripts/lib/run-journal.mjs";
 import { planRetention, applyRetention, runAutomaticRetention } from "../plugins/codex/scripts/lib/retention.mjs";
 
 const cli = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
@@ -107,8 +107,63 @@ test("journal validation is read-only and passed close preserves state until ver
   assert.deepEqual(json(f.journal(["close"], { judgment: "passed", summary: "Now checked" })).openIssues, []);
   assert.equal(fs.existsSync(f.pointer), false);
 
+  // Failed writes roll back exactly; interrupted tails stay read-only until
+  // the next locked mutation discards them. All ordinary operations recover.
+  for (const mode of ["partial", "fsync", "torn", "unterminated", "malformed-last"]) {
+    const recovered = f.start("Append integrity", []), recoveryJob = linked(f, recovered, `job-${mode}`);
+    const file = f.file(recovered), clean = fs.readFileSync(file, "utf8");
+    const decision = { summary: "Observed recovery", basis: "Synthetic failure injection" };
+    if (mode === "partial") {
+      const write = fs.writeFileSync;
+      const failure = t.mock.method(fs, "writeFileSync", function(target, data, ...args) {
+        if (typeof target === "number" && String(data).includes('"type":"decision"')) {
+          write.call(this, target, String(data).slice(0, 23), ...args);
+          throw Object.assign(new Error("Synthetic full disk"), { code: "ENOSPC" });
+        }
+        return write.call(this, target, data, ...args);
+      });
+      assert.throws(() => addEntry(f.cwd, SESSION, "decision", decision, recovered, f.env), { code: "ENOSPC" });
+      failure.mock.restore();
+      assert.equal(fs.readFileSync(file, "utf8"), clean);
+    } else if (mode === "fsync") {
+      const sync = fs.fsyncSync; let failed = false;
+      const failure = t.mock.method(fs, "fsyncSync", function(fd) {
+        if (!failed) { failed = true; throw Object.assign(new Error("Synthetic sync failure"), { code: "EIO" }); }
+        return sync.call(this, fd);
+      });
+      assert.throws(() => addEntry(f.cwd, SESSION, "decision", decision, recovered, f.env), { code: "EIO" });
+      failure.mock.restore();
+      assert.equal(fs.readFileSync(file, "utf8"), clean);
+    } else {
+      const tail = mode === "torn" ? '{"summary":"恢复' : mode === "malformed-last" ? '{bad}\n'
+        : JSON.stringify({ ...decision, type: "decision", recordedAt: new Date().toISOString() });
+      fs.appendFileSync(file, tail);
+    }
+    const damaged = fs.readFileSync(file, "utf8"), diagnostic = t.mock.method(console, "warn", () => {});
+    assert.deepEqual(showRun(f.cwd, SESSION, recovered, f.env).decisions, []);
+    assert.equal(diagnostic.mock.callCount() > 0, !["partial", "fsync"].includes(mode));
+    assert.equal(fs.readFileSync(file, "utf8"), damaged, "reading a torn tail does not mutate the journal");
+    addEntry(f.cwd, SESSION, "decision", decision, recovered, f.env);
+    assert.equal(finishJournalJob(recoveryJob, { status: "completed" }, f.env), true);
+    addEntry(f.cwd, SESSION, "verdict", { ...verdict(recoveryJob.id), criteria: [] }, recovered, f.env);
+    closeRun(f.cwd, SESSION, { judgment: "passed", summary: "Recovered" }, recovered, f.env);
+    diagnostic.mock.restore();
+    assert.deepEqual(f.rows(recovered).map(row => row.type), ["run_started", "job_started", "decision", "job_finished", "verdict", "run_closed"]);
+  }
+  const corrupt = f.start("Interior corruption", []), clean = fs.readFileSync(f.file(corrupt), "utf8");
+  for (const tail of [clean, '{"unfinished":']) {
+    fs.writeFileSync(f.file(corrupt), clean + '{bad}\n' + tail);
+    const damaged = fs.readFileSync(f.file(corrupt), "utf8");
+    assert.throws(() => showRun(f.cwd, SESSION, corrupt, f.env), SyntaxError);
+    assert.throws(() => addEntry(f.cwd, SESSION, "decision", { summary: "Must fail", basis: "Interior corruption" }, corrupt, f.env), SyntaxError);
+    assert.throws(() => closeRun(f.cwd, SESSION, { judgment: "abandoned", summary: "Must fail" }, corrupt, f.env), SyntaxError);
+    assert.equal(fs.readFileSync(f.file(corrupt), "utf8"), damaged);
+  }
+  fs.writeFileSync(f.file(corrupt), clean);
+  json(f.journal(["close"], { judgment: "passed", summary: "Fixture restored" }));
+
   const canonical = "K7: Recover  durable\njournal evidence across sessions. " + "Check the retained evidence. ".repeat(9);
-  const criteria = [canonical, "K70: A separate criterion", "K8: Literal…", "K8: Literal… extended", "K9: First", "K9: Second"];
+  const criteria = [canonical, "K70: A separate criterion", "K8: Literal…", "K8: Literal… extended", "K9: First", "K9: Second", "S1: Session criterion", "R12: Review criterion", "ABCD2: Four letters", "S2: First", "S2: Second", "ABCDE3: Too long", "s1: Lowercase", "S3 No colon"];
   const matching = f.start("Canonical criterion matching", criteria);
   const displayed = f.call(["journal", "show"]).stdout.match(/K7:.*?…/)[0];
   // Duplicate declarations do not make a unique criterion ambiguous.
@@ -120,15 +175,20 @@ test("journal validation is read-only and passed close preserves state until ver
     assert.deepEqual(checked.issues.filter(issue => issue.kind === "unmet_criterion").map(issue => issue.criterion), [canonical]);
     assert.equal(checked.issues.some(issue => issue.kind === "unchecked_criterion" && issue.criterion === canonical), false);
   }
+  for (const stableId of ["S1", "R12", "ABCD2"]) for (const criterion of [stableId, `${stableId}:`]) {
+    json(f.journal(["add", "verdict"], { ...verdict("alias-job"), criteria: [{ criterion, evidence: "Observed ID match", result: "met" }] }));
+    assert.equal(f.rows(matching).at(-1).criteria[0].criterion, criteria.find(text => text.startsWith(`${stableId}:`)));
+  }
   const matched = snapshot(f.stateRoot);
   for (const [criterion, code] of [["K404", "UNKNOWN_CRITERION"], ["Unregistered", "UNKNOWN_CRITERION"], ["…", "UNKNOWN_CRITERION"],
-    ["K9", "AMBIGUOUS_CRITERION"], ["K9: …", "AMBIGUOUS_CRITERION"]]) {
+    ["K9", "AMBIGUOUS_CRITERION"], ["K9: …", "AMBIGUOUS_CRITERION"], ["S2", "AMBIGUOUS_CRITERION"],
+    ["ABCDE3", "UNKNOWN_CRITERION"], ["s1", "UNKNOWN_CRITERION"], ["S3", "UNKNOWN_CRITERION"]]) {
     const input = { ...verdict("alias-job"), criteria: [
       { criterion: "K7", evidence: "A valid item must not partially append", result: "met" },
       { criterion, evidence: "Invalid reference", result: "met" }
     ] };
     assert.throws(() => addEntry(f.cwd, SESSION, "verdict", input, undefined, f.env), error =>
-      error.code === code && JSON.stringify(error.knownCriteriaIds) === JSON.stringify(["K7", "K70", "K8", "K9"]));
+      error.code === code && JSON.stringify(error.knownCriteriaIds) === JSON.stringify(["K7", "K70", "K8", "K9", "S1", "R12", "ABCD2", "S2"]));
     assert.equal(f.journal(["add", "verdict"], input).status, 1);
     assert.deepEqual(snapshot(f.stateRoot), matched);
   }
@@ -646,7 +706,7 @@ test("finish returns a boolean and retries a failed append without overwriting i
   }
   const open = fs.openSync;
   const deny = t.mock.method(fs, "openSync", function(file, flags, ...args) {
-    if (file === f.file(runId) && (flags & fs.constants.O_WRONLY)) throw new Error("fixture append denied");
+    if (file === f.file(runId) && (flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR))) throw new Error("fixture append denied");
     return open.call(this, file, flags, ...args);
   });
   const report = { status: "completed", summary: "First published report" };
@@ -665,7 +725,7 @@ test("journal write failures never change direct task outcome, and terminal writ
   const f = fixture(), runId = f.start();
   const baseline = json(f.call(["task", "--direct", "--sandbox", "read-only"], "Check write failure."));
   const preload = path.join(f.root, "deny-journal.mjs");
-  fs.writeFileSync(preload, `import fs from 'node:fs'; const open = fs.openSync; fs.openSync = function(file, flags, ...rest) { if (String(file).endsWith('/journal.jsonl') && typeof flags === 'number' && (flags & fs.constants.O_WRONLY)) throw Object.assign(new Error('fixture journal write denied'), {code:'EACCES'}); return open.call(this,file,flags,...rest); };`);
+  fs.writeFileSync(preload, `import fs from 'node:fs'; const open = fs.openSync; fs.openSync = function(file, flags, ...rest) { if (String(file).endsWith('/journal.jsonl') && typeof flags === 'number' && (flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR))) throw Object.assign(new Error('fixture journal write denied'), {code:'EACCES'}); return open.call(this,file,flags,...rest); };`);
   const before = snapshot(f.runs);
   const denied = f.call(["task", "--direct", "--sandbox", "read-only"], "Check write failure.", { NODE_OPTIONS: `--import=${preload}` });
   const report = json(denied); assert.equal(report.status, baseline.status); assert.equal(report.summary, baseline.summary); assert.deepEqual(snapshot(f.runs), before);

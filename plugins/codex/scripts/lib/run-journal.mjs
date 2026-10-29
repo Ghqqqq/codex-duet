@@ -89,22 +89,46 @@ function runStateDirectory(value, env) {
   if (typeof value !== "string" || path.dirname(value) !== resolveStateRoot(env) || path.normalize(value) !== value || path.basename(value) === RUN_SESSIONS_DIR) throw new Error("Run stateDir must be a workspace directory directly under the isolated state root.");
   return value;
 }
+function parseEntries(text, runId) {
+  const terminated = text.endsWith("\n"), lines = text.split("\n"), rows = [];
+  if (terminated) lines.pop();
+  let bytes = 0;
+  for (const [index, line] of lines.entries()) {
+    const last = index === lines.length - 1;
+    // A newline commits a row. Reads stay read-only; the next locked append
+    // removes this tail before writing, so it cannot become interior damage.
+    if (last && !terminated) break;
+    try { rows.push(JSON.parse(line)); }
+    catch (error) { if (!last) throw error; break; }
+    bytes += Buffer.byteLength(line) + 1;
+  }
+  if (rows[0]?.type !== "run_started" || rows[0].runId !== runId || rows.some(row => !row.type || !Number.isFinite(Date.parse(row.recordedAt)))) throw new Error(`Invalid journal for run ${runId}.`);
+  if (bytes < Buffer.byteLength(text)) console.warn(`Ignoring incomplete final journal entry for run ${runId} (${Buffer.byteLength(text) - bytes} bytes).`);
+  return { rows, bytes };
+}
 function entries(stateDir, runId, env) {
   const dir = directory(runDir(stateDir, runId), env);
-  const rows = read(path.join(dir, "journal.jsonl")).trimEnd().split("\n").map(line => JSON.parse(line));
-  if (rows[0]?.type !== "run_started" || rows[0].runId !== runId || rows.some(row => !row.type || !Number.isFinite(Date.parse(row.recordedAt)))) throw new Error(`Invalid journal for run ${runId}.`);
-  return rows;
+  return parseEntries(read(path.join(dir, "journal.jsonl")), runId).rows;
 }
 function append(stateDir, runId, type, data) {
   const file = path.join(runDir(stateDir, runId), "journal.jsonl");
   const stat = fs.lstatSync(file, { throwIfNoEntry: false });
   if (stat && !stat.isFile()) throw new Error("Journal must be a regular file.");
-  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+  const fd = fs.openSync(file, fs.constants.O_RDWR | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
   try {
-    if (!fs.fstatSync(fd).isFile()) throw new Error("Journal must be a regular file.");
+    const before = fs.fstatSync(fd);
+    if (!before.isFile()) throw new Error("Journal must be a regular file.");
     fs.fchmodSync(fd, 0o600);
-    fs.writeFileSync(fd, `${JSON.stringify({ ...data, type, recordedAt: new Date().toISOString() })}\n`);
-    fs.fsyncSync(fd);
+    const length = before.size ? parseEntries(fs.readFileSync(fd, "utf8"), runId).bytes : 0;
+    if (length !== before.size) fs.ftruncateSync(fd, length);
+    try {
+      fs.writeFileSync(fd, `${JSON.stringify({ ...data, type, recordedAt: new Date().toISOString() })}\n`);
+      fs.fsyncSync(fd);
+    } catch (error) {
+      try { fs.ftruncateSync(fd, length); fs.fsyncSync(fd); }
+      catch (rollback) { throw new AggregateError([error, rollback], "Journal append and rollback failed."); }
+      throw error;
+    }
   } finally { fs.closeSync(fd); }
 }
 function activePointer(sessionId, env) {
@@ -212,10 +236,12 @@ export function validateTaskRun(cwd, runId, env = process.env) {
   requireOpen(entries(selected.stateDir, runId, env), runId, true);
   return selected;
 }
-const criterionId = criterion => /^(K\d+)(?=:|\s|$)/.exec(criterion)?.[1];
+// K<n> keeps its 1.4.5 forms; other ids need a colon, so a leading word such
+// as "S3 bucket" is not mistaken for an id.
+const criterionId = criterion => (/^(K\d+)(?=:|\s|$)/.exec(criterion) ?? /^([A-Z]{1,4}\d+)(?=:)/.exec(criterion))?.[1];
 function matchCriterion(criterion, known, runId) {
   if (known.includes(criterion)) return criterion;
-  const stableId = /^(K\d+):?$/.exec(criterion)?.[1];
+  const stableId = /^([A-Z]{1,4}\d+):?$/.exec(criterion)?.[1];
   const prefix = criterion.endsWith("…") ? criterion.slice(0, -1) : "";
   const matches = known.filter(text => stableId ? criterionId(text) === stableId
     : prefix && (text.startsWith(prefix) || text.replace(/\s+/g, " ").startsWith(prefix)));

@@ -132,13 +132,15 @@ export function legacyStateRoots(env = process.env) {
   return roots;
 }
 
-function readState(stateFile) {
-  if (!fs.existsSync(stateFile)) {
-    return defaultState();
-  }
-
+function readState(stateFile, { strict = false } = {}) {
   try {
     const parsed = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    // Keep legacy defaults for omitted fields, but never normalize a damaged
+    // index into empty jobs before a writer publishes it.
+    if (strict && (!parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+      (parsed.jobs !== undefined && !Array.isArray(parsed.jobs)))) {
+      throw new Error("Invalid job-state index.");
+    }
     return {
       ...defaultState(),
       ...parsed,
@@ -148,7 +150,12 @@ function readState(stateFile) {
       },
       jobs: Array.isArray(parsed.jobs) ? parsed.jobs : []
     };
-  } catch {
+  } catch (cause) {
+    if (strict && cause.code !== "ENOENT") {
+      throw Object.assign(new Error(`Cannot read Codex job-state index for mutation: ${stateFile}`, { cause }), {
+        code: "ERR_CODEX_STATE_UNREADABLE"
+      });
+    }
     return defaultState();
   }
 }
@@ -276,7 +283,8 @@ function lockStateDir(stateDir, action, { lockTimeoutMs = LOCK_TIMEOUT_MS, creat
 function withStateLock(cwd, action, options = {}) {
   const stateDir = resolveStateDir(cwd);
   return lockStateDir(stateDir, () => {
-    migrateUnderLock(stateDir);
+    // The writer below rebuilds an unreadable index; migration waits for it.
+    try { migrateUnderLock(stateDir); } catch (error) { if (error.code !== "ERR_CODEX_STATE_UNREADABLE") throw error; }
     return action(stateDir);
   }, options);
 }
@@ -475,6 +483,59 @@ function readWorkspaceRecords(dir, onlyId = null) {
   }
   return { config: state.config, records };
 }
+
+// A writer never publishes an empty index over one it cannot read. After brief
+// retries it keeps the unreadable file beside the index, rebuilds the jobs from
+// their private records (each job's authoritative state) and publishes that
+// index before the caller's mutation runs; index-only config returns to
+// defaults.
+function rebuildJobs(stateDir) {
+  const jobsDir = path.join(stateDir, JOBS_DIR_NAME), jobs = [], unreadable = [];
+  let names = [];
+  try { names = fs.readdirSync(jobsDir); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  for (const name of names) {
+    if (!/^[A-Za-z0-9_-]+\.json$/.test(name) || name.endsWith(".result.json")) continue;
+    let record = null;
+    for (let attempt = 0; attempt < 3 && record === null; attempt++) {
+      if (attempt) Atomics.wait(LOCK_WAIT, 0, 0, 50);
+      try { record = JSON.parse(fs.readFileSync(path.join(jobsDir, name), "utf8")); }
+      catch (error) { if (error.code === "ENOENT") break; }
+    }
+    if (record && typeof record === "object" && !Array.isArray(record)) jobs.push(withoutPrivateActivity(indexEntryOf({ id: name.slice(0, -5), ...record })));
+    else if (fs.existsSync(path.join(jobsDir, name))) unreadable.push(name);
+  }
+  return { jobs, unreadable };
+}
+function readStateForWrite(stateDir) {
+  const stateFile = path.join(stateDir, STATE_FILE_NAME);
+  for (let attempt = 0; ; attempt++) {
+    try { return readState(stateFile, { strict: true }); }
+    catch (error) {
+      if (error.code !== "ERR_CODEX_STATE_UNREADABLE") throw error;
+      if (attempt >= 2) break;
+      Atomics.wait(LOCK_WAIT, 0, 0, 50);
+    }
+  }
+  // A hard link keeps the old bytes without reading them, and the index path
+  // is never absent; copy where links are unavailable. Without a kept copy the
+  // index is not replaced: the write fails instead.
+  const kept = `${stateFile}.unreadable-${Date.now()}`;
+  try { fs.linkSync(stateFile, kept); }
+  catch (linkError) {
+    try { fs.copyFileSync(stateFile, kept, fs.constants.COPYFILE_EXCL); }
+    catch (cause) {
+      throw Object.assign(new Error(`Cannot keep the unreadable Codex job-state index ${stateFile}; it was not replaced.`, { cause }), { code: "ERR_CODEX_STATE_UNREADABLE", linkError });
+    }
+  }
+  const { jobs, unreadable } = rebuildJobs(stateDir);
+  const rebuilt = { ...defaultState(), jobs };
+  writeJsonAtomically(stateFile, rebuilt);
+  try {
+    process.stderr.write(`Duet: the job index ${stateFile} was unreadable; kept it as ${path.basename(kept)} and rebuilt the index from ${jobs.length} job records.` +
+      `${unreadable.length ? ` Unreadable job records left out until their next update: ${unreadable.join(", ")}.` : ""}\n`);
+  } catch {}
+  return rebuilt;
+}
 function readLegacyRecords(legacyDir, onlyId = null, { lockTimeoutMs = LEGACY_LOCK_TIMEOUT_MS } = {}) {
   try {
     return lockStateDir(legacyDir, () => readWorkspaceRecords(legacyDir, onlyId), { lockTimeoutMs: Math.min(lockTimeoutMs, LEGACY_LOCK_TIMEOUT_MS), create: false });
@@ -489,7 +550,7 @@ const isLive = (record, fallbackPid = null) => isActiveStatus(record?.status) &&
 // Newer updatedAt wins; a live legacy job is only noted as pending.
 function mergeLegacyRecords(stateDir, legacyDir, legacy, marker, selected = null) {
   const stateFile = path.join(stateDir, STATE_FILE_NAME), jobsDir = path.join(stateDir, JOBS_DIR_NAME);
-  const state = readState(stateFile), current = new Map(state.jobs.map(job => [job.id, job]));
+  const state = readState(stateFile, { strict: true }), current = new Map(state.jobs.map(job => [job.id, job]));
   const imports = new Map();
   let pending = 0;
   for (const { id, index, file } of legacy.records.values()) {
@@ -555,6 +616,9 @@ function migrateUnderLock(stateDir, lockOptions = {}) {
   const memo = MIGRATION.get(stateDir);
   const retryDue = memo?.retryAt != null && Date.now() >= memo.retryAt;
   if (memo && !retryDue && (!memo.pending.length || Date.now() - memo.checkedAt < PENDING_RECHECK_MS)) return memo;
+  // Migration publishes records and its marker too; refuse all of them when
+  // the destination index cannot be read, even if no legacy sources exist.
+  readState(path.join(stateDir, STATE_FILE_NAME), { strict: true });
   const marker = readMarker(stateDir);
   let changed = false, retryAt = null;
   if (!memo || retryDue) {
@@ -583,9 +647,16 @@ function ensureMigrated(stateDir, lockOptions = {}) {
     if (markerMtime(stateDir) !== memo.markerMtimeMs) memo = remember(stateDir, readMarker(stateDir), memo.retryAt);
     if (Date.now() - memo.checkedAt < PENDING_RECHECK_MS) return memo;
   }
-  // Inside this process's own critical section the lock is already held.
-  if (HELD_LOCKS.has(stateDir)) return migrateUnderLock(stateDir, lockOptions);
-  return lockStateDir(stateDir, () => migrateUnderLock(stateDir, lockOptions), lockOptions);
+  try {
+    // Inside this process's own critical section the lock is already held.
+    if (HELD_LOCKS.has(stateDir)) return migrateUnderLock(stateDir, lockOptions);
+    return lockStateDir(stateDir, () => migrateUnderLock(stateDir, lockOptions), lockOptions);
+  } catch (error) {
+    if (error.code !== "ERR_CODEX_STATE_UNREADABLE") throw error;
+    // Reads still degrade without marking migration complete; retry once the
+    // index is readable. Mutation callers perform their own strict read.
+    return { pending: readMarker(stateDir).pending };
+  }
 }
 
 // A job served in place lives in its legacy directory until its worker ends.
@@ -694,7 +765,7 @@ function commitState(stateDir, previousState, state) {
 
 export function saveState(cwd, state) {
   return withStateLock(cwd, stateDir => {
-    const current = readState(path.join(stateDir, STATE_FILE_NAME));
+    const current = readStateForWrite(stateDir);
     return commitState(stateDir, current, mergeSnapshot(state, current));
   });
 }
@@ -719,8 +790,7 @@ export function removeJobsFromState(stateDir, select, options = {}) {
 
 export function updateState(cwd, mutate) {
   return withStateLock(cwd, stateDir => {
-    const stateFile = path.join(stateDir, STATE_FILE_NAME);
-    const previousState = readState(stateFile);
+    const previousState = readStateForWrite(stateDir);
     const state = structuredClone(previousState);
     mutate(state);
     return commitState(stateDir, previousState, state);
@@ -822,23 +892,30 @@ export function readJobFile(jobFile) {
 // answer, cancellation and progress updates. A stale reader cannot erase them.
 export function updateJob(cwd, jobId, mutate, options = {}) {
   return lockStateDir(jobStateDir(cwd, jobId, { lockTimeoutMs: options.lockTimeoutMs }), stateDir => {
-    const state = readState(path.join(stateDir, STATE_FILE_NAME));
     const file = path.join(stateDir, JOBS_DIR_NAME, `${jobId}.json`);
+    const state = readStateForWrite(stateDir);
     const indexed = state.jobs.find(j => j.id === jobId);
     const current = fs.existsSync(file) ? { ...indexed, ...readJobFile(file) } : indexed;
     if (!current) throw new Error("Job record not found.");
+    const publish = record => {
+      // Keep raw results/output and the activity journal in the private job file.
+      // Status reads the index: cursor updates after completion must not copy raw
+      // tool payloads into its output, or duplicate a growing journal there.
+      const { result, report, rendered, activity, activityPendingTools, ...indexedNext } = record;
+      const interruptionReason = result?.interruptionReason ?? report?.interruptionReason;
+      if (interruptionReason) Object.assign(indexedNext, { interruptionReason, interruptionConfirmed: result?.interruptionConfirmed ?? report?.interruptionConfirmed });
+      commitState(stateDir, state, { ...state, jobs: [indexedNext, ...state.jobs.filter(j => j.id !== jobId)] });
+    };
     const patch = mutate(structuredClone(current));
-    if (patch == null) return current;
+    if (patch == null) {
+      // A crash between the private write and the index commit leaves an
+      // active index entry behind a finished record; any later update repairs it.
+      if (indexed && ["queued", "running"].includes(indexed.status) && !["queued", "running"].includes(current.status)) publish(current);
+      return current;
+    }
     const next = { ...current, ...patch, updatedAt: nowIso() };
     writeJsonAtomically(file, next);
-    const jobs = state.jobs.filter(j => j.id !== jobId);
-    // Keep raw results/output and the activity journal in the private job file.
-    // Status reads the index: cursor updates after completion must not copy raw
-    // tool payloads into its output, or duplicate a growing journal there.
-    const { result, report, rendered, activity, activityPendingTools, ...indexedNext } = next;
-    const interruptionReason = result?.interruptionReason ?? report?.interruptionReason;
-    if (interruptionReason) Object.assign(indexedNext, { interruptionReason, interruptionConfirmed: result?.interruptionConfirmed ?? report?.interruptionConfirmed });
-    commitState(stateDir, state, { ...state, jobs: [indexedNext, ...jobs] });
+    publish(next);
     return next;
   }, options);
 }

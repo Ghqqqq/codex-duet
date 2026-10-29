@@ -297,6 +297,7 @@ use `--to` after the fork completes.
 | --- | --- |
 | `CLAUDE_CONFIG_DIR` | Absolute Claude profile root for fallback instructions/rules, auto-memory exclusions, transcript discovery/validation and import staging/cleanup; missing, empty or relative values use `~/.claude` for these operations |
 | `CODEX_COMPANION_CLAUDE_MD=0` | Disable instruction capture/forwarding; use a fresh thread to opt out |
+| `CODEX_COMPANION_CONNECT_TIMEOUT_MS` | Positive integer deadline for starting and initializing the Codex runtime (broker startup and direct fallback included) for tasks, reviews and transfers; default 60,000 ms |
 | `CODEX_COMPANION_IMPORT_MAX_BYTES` | Positive integer import byte limit; default 20 MiB (20,971,520 bytes) |
 | `CODEX_COMPANION_SESSION_ID` | Session scope, exported by SessionStart; `--session <id>` overrides it |
 | `CODEX_COMPANION_TRANSCRIPT_PATH` | Current Claude JSONL transcript, exported by SessionStart; `--source` overrides it for imports |

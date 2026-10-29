@@ -363,6 +363,7 @@ async function handleLine(line) {
   }
 
   const message = JSON.parse(line);
+  if (BEHAVIOR === "transport-close-stdout" && message.method === "config/read") return;
   if (["turn/start", "review/start", "turn/interrupt", "thread/resume", "thread/read", "thread/backgroundTerminals/clean"].includes(message.method)) {
     const params = ["turn/start", "review/start"].includes(message.method) ? { threadId: message.params.threadId } : message.params;
     fs.appendFileSync(STATE_PATH + ".requests.jsonl", JSON.stringify({ serverId: process.pid, method: message.method, params }) + "\\n");
@@ -389,20 +390,48 @@ async function handleLine(line) {
       case "initialize":
         if (state.unreachable) throw new Error("Fixture server unreachable");
         if (BEHAVIOR === "w5-initialize-hang") break;
+        if (BEHAVIOR === "transport-stderr") {
+          for (let i = 0; i < 256; i++) await new Promise(resolve => process.stderr.write("界".repeat(21845), resolve));
+          await new Promise(resolve => process.stderr.write("\\nwebsocket retry falling back http\\nTAIL", resolve));
+        }
         state.capabilities = message.params.capabilities || null;
         saveState(state);
         send({ id: message.id, result: { userAgent: "fake-codex-app-server" } });
         break;
 
       case "initialized":
+        if (BEHAVIOR === "transport-slow-stdin") {
+          process.stdin.pause();
+          setInterval(() => {}, 1000);
+          send({ method: "fixture/paused", params: {} });
+        }
         break;
 
       case "account/read":
+        if (BEHAVIOR === "transport-close-stdin") {
+          process.stdin.pause(); fs.closeSync(0);
+          setInterval(() => {}, 1000);
+          send({ method: "fixture/closedStdin", params: {} });
+          send({ id: "broken-pipe-callback", method: "fixture/unsupported", params: {} });
+          break;
+        }
+        if (BEHAVIOR === "transport-close-stdout") {
+          setInterval(() => {}, 1000);
+          process.stdout.end(JSON.stringify({ id: message.id, result: buildAccountReadResult() }) + "\\n");
+          break;
+        }
+        if (BEHAVIOR === "transport-slow-peer") {
+          const frame = JSON.stringify({ method: "fixture/output", params: { text: "x".repeat(65536) } }) + "\\n";
+          for (let i = 0; i < 640; i++) await new Promise(resolve => process.stdout.write(frame, resolve));
+        }
         if (BEHAVIOR.startsWith("auth-error:")) throw new Error(BEHAVIOR.slice("auth-error:".length));
         send({ id: message.id, result: buildAccountReadResult() });
         break;
 
       case "config/read":
+        if (BEHAVIOR === "transport-stderr") {
+          setInterval(() => {}, 1000); process.stdout.end(); break;
+        }
         if (BEHAVIOR === "config-read-fails") {
           throw new Error("config/read failed for cwd");
         }

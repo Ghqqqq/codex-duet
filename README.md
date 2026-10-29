@@ -268,7 +268,7 @@ start --switch` leaves the old run open and selects a new one. `duet task --run
 active run, add, close and task linking use the sole open workspace run; with
 several open runs, tasks stay unlinked and add/close require selection. Verdict
 criteria accept exact declared text, a unique shown prefix ending in `…`, or a
-unique declared `K<n>` ID; unknown criteria are rejected. `resolves` can reference
+unique declared ID such as `K7` or `F3:`; unknown criteria are rejected. `resolves` can reference
 jobs linked to the run from any session.
 Validation flags a linked terminal job without a recorded finish as
 `unrecorded_finish`; reading its result details retries finish recording.

@@ -24,20 +24,20 @@ function connectToEndpoint(endpoint) {
 }
 
 export async function waitForBrokerEndpoint(endpoint, timeoutMs = 2000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     const ready = await new Promise((resolve) => {
       const socket = connectToEndpoint(endpoint);
-      socket.on("connect", () => {
-        socket.end();
-        resolve(true);
-      });
-      socket.on("error", () => resolve(false));
+      const finish = value => { clearTimeout(timer); socket.destroy(); resolve(value); };
+      const timer = setTimeout(() => finish(false), Math.max(1, deadline - Date.now()));
+      socket.on("connect", () => finish(true));
+      socket.on("error", () => finish(false));
+      socket.on("close", () => finish(false));
     });
     if (ready) {
       return true;
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(50, deadline - Date.now()))));
   }
   return false;
 }
@@ -106,23 +106,25 @@ export function clearBrokerSession(cwd) {
   unlinkIfPresent(resolveBrokerStateFile(cwd));
 }
 
-async function isBrokerEndpointReady(endpoint) {
+async function isBrokerEndpointReady(endpoint, timeoutMs = 150) {
   if (!endpoint) {
     return false;
   }
   try {
-    return await waitForBrokerEndpoint(endpoint, 150);
+    return await waitForBrokerEndpoint(endpoint, timeoutMs);
   } catch {
     return false;
   }
 }
 
 export async function ensureBrokerSession(cwd, options = {}) {
+  const budget = ms => Math.max(0, Math.min(ms, (options.connectDeadline ?? Infinity) - Date.now()));
   resolveIsolatedCodexHome(options.env ?? process.env);
   const existing = loadBrokerSession(cwd);
-  if (existing && (await isBrokerEndpointReady(existing.endpoint))) {
+  if (existing && (await isBrokerEndpointReady(existing.endpoint, budget(150)))) {
     return existing;
   }
+  if (!budget(Infinity)) return null;
 
   if (existing) {
     teardownBrokerSession({
@@ -154,7 +156,7 @@ export async function ensureBrokerSession(cwd, options = {}) {
     env: options.env ?? process.env
   });
 
-  const ready = await waitForBrokerEndpoint(endpoint, options.timeoutMs ?? 2000);
+  const ready = await waitForBrokerEndpoint(endpoint, budget(options.timeoutMs ?? 2000));
   if (!ready) {
     // This target PID was spawned here; never kill an inherited saved PID.
     await stopOwnedProcessGroup(child);

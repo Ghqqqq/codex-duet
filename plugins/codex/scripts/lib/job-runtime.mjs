@@ -625,12 +625,16 @@ export class JobRuntime {
     tick(); this.timer = setInterval(tick, 250);
   }
   stop(reason) {
-    if (this.reason) return;
-    this.reason = reason;
-    try { requestCancel(this.cwd, this.id, reason); }
-    catch { /* Still interrupt if the job store is unavailable. */ }
-    this.onProgress?.({ message: `Interrupt requested: ${reason}.`, phase: "interrupting" });
-    this.abort.abort(reason);
+    if (this.abort.signal.aborted) return;
+    try {
+      // A recorded reason can precede abort (including a reentrant stop).
+      if (this.reason) return;
+      this.reason = reason;
+      try { requestCancel(this.cwd, this.id, reason); }
+      catch { /* Still interrupt if the job store is unavailable. */ }
+      this.onProgress?.({ message: `Interrupt requested: ${reason}.`, phase: "interrupting" });
+    } catch { /* Progress is diagnostic; its failure must not disable cancellation. */ }
+    finally { this.abort.abort(this.reason); }
   }
   async question(message) {
     const { text } = await askParentQuestion(this.cwd, this.id, { ...message.params.arguments, callId: message.params.callId }, { signal: this.abort.signal, onProgress: this.onProgress });

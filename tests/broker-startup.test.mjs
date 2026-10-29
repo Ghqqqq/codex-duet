@@ -477,6 +477,15 @@ test("stopping a direct shell's whole descendant tree preserves its worker, shar
   const peer = json(f.call("task", "--fresh", "--detached", "--json", "fixture peer"));
   const peerJob = await waitUntil(() => { const current = job(f, peer.jobId); return current.turnId && current; });
   assert.equal(f.state().appServerStarts, 2, "the peer uses the existing busy-broker fallback");
+  // While the broker streams the holder's turn, a follow-up's admission read of
+  // the peer's thread uses a private runtime instead of reporting it unreadable.
+  const codexModule = new URL("../plugins/codex/scripts/lib/codex.mjs", import.meta.url).href;
+  const recovered = run(process.execPath, ["--input-type=module", "-e", `
+    import { readAppServerTurn } from ${JSON.stringify(codexModule)};
+    console.log(JSON.stringify(await readAppServerTurn(process.cwd(), ${JSON.stringify({ threadId: peerJob.threadId, turnId: peerJob.turnId })}, { privateWhenBusy: true })));
+  `], { cwd: f.repo, env: f.env });
+  assert.equal(JSON.parse(recovered.stdout || "null")?.turnId, peerJob.turnId, recovered.stderr);
+  assert.equal(f.state().appServerStarts, 3);
   // A short-lived helper can sit in the tree for a moment without a ledger
   // record; take new snapshots until every PID in the tree is one we started.
   const { table, tree } = await waitUntil(() => {
@@ -529,7 +538,187 @@ test("stopping a direct shell's whole descendant tree preserves its worker, shar
   assert.equal(alive(brokerServerPid), true);
   assert.equal(json(f.call("cancel", peer.jobId, "--json")).confirmation, "confirmed", "the surviving peer remains cancellable");
   assert.equal(f.state().lastInterrupt.turnId, peerJob.turnId);
-  assert.equal(f.state().appServerStarts, 2, "neither app-server was replaced");
+  assert.equal(f.state().appServerStarts, 3, "neither app-server was replaced; the third is the private recovery read");
   t.diagnostic(`SIGTERM tree=${tree.join(",")}; worker=${owned.pid}; broker=${brokerPid}; peer=${peerJob.pid}; owner_stopped confirmed with turnEnded in ${elapsed} ms`);
 });
 }
+
+test("transport failures settle requests, reap runtimes and bound retained buffers", { timeout: 45000 }, async t => {
+  const transport = await import("../plugins/codex/scripts/lib/app-server.mjs");
+  const { stopOwnedProcessGroup } = await import("../plugins/codex/scripts/lib/process.mjs");
+  const guarded = async promise => {
+    let timer;
+    try { return await Promise.race([promise, new Promise(resolve => { timer = setTimeout(() => resolve({ watchdog: true }), 3000); })]); }
+    finally { clearTimeout(timer); }
+  };
+  await t.test("S3-1: asynchronous stdin failure is contained in the worker and broker", async () => {
+    const observations = [];
+    for (const broker of [false, true]) {
+      const f = fixture("transport-close-stdin");
+      const result = run(process.execPath, ["--input-type=module", "-e", `
+        import { CodexAppServerClient } from ${JSON.stringify(new URL("../plugins/codex/scripts/lib/app-server.mjs", import.meta.url).href)};
+        const client = await CodexAppServerClient.connect(process.cwd(), { disableBroker: ${!broker} });
+        const watchdog = setTimeout(() => process.exit(42), 5000);
+        const closed = new Promise(resolve => client.setNotificationHandler(m => { if (m.method === 'fixture/closedStdin') resolve(); }));
+        const first = client.request('account/read', {}).then(() => null, error => error.code);
+        await closed;
+        const second = Promise.resolve().then(() => client.request('config/read', {})).then(() => null, error => error.code);
+        console.log(JSON.stringify({ errors: await Promise.all([first, second]), pending: client.pending.size }));
+        await client.close(); clearTimeout(watchdog);
+      `], { cwd: f.dir, env: f.env });
+      const state = JSON.parse(fs.readFileSync(path.join(f.dir, "fake-codex-state.json")));
+      await guarded(until(() => state.launches.every(entry => !alive(entry.pid))));
+      const survivors = state.launches.filter(entry => alive(entry.pid));
+      // Baseline crashes must not strand the fake runtime used to reproduce it.
+      for (const entry of survivors) await stopOwnedProcessGroup(entry, 50);
+      const session = broker ? (await import("../plugins/codex/scripts/lib/broker-lifecycle.mjs")).loadBrokerSession(f.dir) : null;
+      const brokerLog = session ? fs.readFileSync(session.logFile, "utf8") : "";
+      const uncaughtEpipe = (result.stderr + brokerLog).includes("Unhandled 'error' event");
+      t.diagnostic(JSON.stringify({ finding: "S3-1", broker, exit: result.status, uncaughtEpipe, survivingRuntime: survivors.length, result: result.stdout.trim() }));
+      observations.push({ result, survivors, uncaughtEpipe });
+    }
+    for (const { result, survivors, uncaughtEpipe } of observations) {
+      assert.equal(result.status, 0, result.stderr);
+      const observed = JSON.parse(result.stdout);
+      assert.equal(observed.pending, 0);
+      assert.ok(observed.errors.every(Boolean));
+      assert.equal(uncaughtEpipe, false);
+      assert.equal(survivors.length, 0);
+    }
+  });
+  await t.test("S3-2: default initialize deadline and one startup/fallback budget", async () => {
+    const f = fixture("w5-initialize-hang");
+    let client;
+    const realTimeout = globalThis.setTimeout, scheduled = [];
+    // Exercise the production default without spending a minute on a hung fake.
+    globalThis.setTimeout = (fn, ms, ...args) => {
+      if (ms >= 59000 && ms <= 60000) { scheduled.push(ms); return realTimeout(fn, 250, ...args); }
+      return realTimeout(fn, ms, ...args);
+    };
+    let outcome;
+    try {
+      outcome = await guarded(CodexAppServerClient.connect(f.dir, { env: f.env, disableBroker: true, onClient: value => { client = value; } }).then(() => ({ connected: true }), error => ({ code: error.code })));
+    } finally { globalThis.setTimeout = realTimeout; await client?.close(); }
+    t.diagnostic(JSON.stringify({ finding: "S3-2", outcome, defaultTimerCount: scheduled.length, pending: client.pending.size, alive: alive(client.proc.pid) }));
+    assert.deepEqual(outcome, { code: "ETIMEDOUT" });
+    assert.equal(scheduled.length, 1);
+    assert.equal(client.pending.size, 0); assert.equal(alive(client.proc.pid), false);
+
+    const startup = fixture("w5-initialize-hang"), candidates = [];
+    const startupResult = await guarded(CodexAppServerClient.connect(startup.dir, { env: startup.env, connectTimeoutMs: 1800, onClient: value => candidates.push(value) }).then(() => null, error => error.code));
+    for (const candidate of candidates) await candidate.close();
+    assert.equal(startupResult, "ETIMEDOUT");
+    assert.equal(candidates.length, 0, "an exhausted broker startup budget cannot spawn the direct fallback");
+    const state = JSON.parse(fs.readFileSync(path.join(startup.dir, "fake-codex-state.json")));
+    assert.ok(state.launches.length > 0);
+    assert.ok(state.launches.every(entry => !alive(entry.pid)));
+
+    const fallback = fixture("w5-initialize-hang"), clients = [];
+    const close = await serve(fallback, socket => socket.destroy());
+    try {
+      const result = await guarded(CodexAppServerClient.connect(fallback.dir, { env: fallback.env, brokerEndpoint: fallback.endpoint, connectTimeoutMs: 600, onClient: value => clients.push(value) }).then(() => null, error => error.code));
+      assert.equal(result, "ETIMEDOUT");
+      assert.deepEqual(clients.map(value => value.transport), ["broker", "direct"]);
+      assert.equal(new Set(clients.map(value => value.options.connectDeadline)).size, 1);
+      assert.ok(clients.every(value => value.pending.size === 0));
+      assert.equal(alive(clients[1].proc.pid), false);
+    } finally { for (const candidate of clients) await candidate.close(); await close(); }
+  });
+  await t.test("S3-3: stdout EOF preserves complete responses and rejects pending work", async () => {
+    const f = fixture("transport-close-stdout"), client = await CodexAppServerClient.connect(f.dir, { env: f.env, disableBroker: true });
+    let outcome;
+    try {
+      const complete = client.request("account/read", {}), pending = client.request("config/read", {});
+      outcome = await guarded(Promise.allSettled([complete, pending]));
+      t.diagnostic(JSON.stringify({ finding: "S3-3", outcome: Array.isArray(outcome) ? outcome.map(row => ({ status: row.status, code: row.reason?.code })) : outcome, pending: client.pending.size }));
+    } finally { await client.close(); }
+    assert.equal(outcome[0]?.status, "fulfilled");
+    assert.equal(outcome[0].value.account.type, "chatgpt");
+    assert.equal(outcome[1]?.status, "rejected"); assert.equal(outcome[1].reason.code, "CODEX_TRANSPORT_CLOSED");
+    assert.equal(client.pending.size, 0); assert.equal(alive(client.proc.pid), false);
+  });
+  await t.test("S3-6: stderr retains a bounded UTF-8 tail and still detects warnings", async () => {
+    const f = fixture("transport-stderr"), events = [];
+    const client = await CodexAppServerClient.connect(f.dir, { env: f.env, disableBroker: true, onRuntimeEvent: event => events.push(event) });
+    try {
+      await until(() => client.stderr.endsWith("TAIL"));
+      const retained = Buffer.byteLength(client.stderr);
+      t.diagnostic(JSON.stringify({ finding: "S3-6", emittedBytes: 256 * 65535, retainedBytes: retained, truncated: Boolean(client.stderrTruncated) }));
+      assert.ok(retained <= 64 * 1024); assert.equal(client.stderrTruncated, true);
+      assert.equal(client.stderr.includes("\uFFFD"), false);
+      assert.ok(events.some(event => event.startupWarning));
+      await assert.rejects(client.request("config/read", {}), error => error.code === "CODEX_TRANSPORT_CLOSED" && error.message.includes(client.stderr.trim()));
+    } finally { await client.close(); }
+  });
+  await t.test("S3-5: slow runtime and broker sockets have bounded ordered writers", async () => {
+    for (const broker of [false, true]) {
+      const f = fixture("transport-slow-stdin");
+      let paused;
+      const stopped = new Promise(resolve => { paused = resolve; });
+      const close = broker ? await serve(f, (socket, message) => {
+        if (message.method === "initialize") socket.write(JSON.stringify({ id: message.id, result: { codexCompanionHome: resolveIsolatedCodexHome(f.env), codexCompanionRuntime: resolveCodexRuntimeIdentity(f.env) } }) + "\n");
+        if (message.method === "initialized") { socket.pause(); paused(); }
+      }) : async () => {};
+      const client = await CodexAppServerClient.connect(f.dir, { env: f.env, ...(broker ? { brokerEndpoint: f.endpoint } : { disableBroker: true }), onClient: value => value.setNotificationHandler(message => { if (message.method === "fixture/paused") paused(); }) });
+      try {
+        await stopped;
+        const pending = client.request("account/read", {}).then(() => null, error => error.code);
+        const frame = { method: "fixture/fill", params: { text: "x".repeat(65536) } };
+        let peak = 0;
+        for (let i = 0; i < 640; i++) {
+          client.sendMessage(frame);
+          peak = Math.max(peak, client.outbound?.bufferedBytes ?? (client.proc?.stdin ?? client.socket).writableLength);
+        }
+        const failure = client.exitError?.code ?? null;
+        t.diagnostic(JSON.stringify({ finding: "S3-5", broker, peakBytes: peak, failure }));
+        assert.ok(peak <= 32 * 1024 * 1024);
+        assert.equal(failure, "CODEX_TRANSPORT_BACKPRESSURE");
+        assert.equal(await pending, failure);
+      } finally { await client.close(); await close(); }
+    }
+    // A stalled Writable must receive no further writes until drain; queued
+    // records retain wire order, including server-request callback responses.
+    const { Writable } = await import("node:stream");
+    const delivered = [], callbacks = [];
+    const stream = new Writable({ highWaterMark: 1, write(chunk, encoding, callback) { delivered.push(JSON.parse(chunk)); callbacks.push(callback); } });
+    const failures = [], writer = transport.createOutboundQueue(stream, error => failures.push(error));
+    writer.send({ id: 1, method: "account/read" }); writer.send({ id: "callback", result: {} }); writer.send({ id: 2, method: "config/read" });
+    assert.equal(delivered.length, 1);
+    for (let i = 0; i < 3; i++) { callbacks.shift()(); await new Promise(resolve => setImmediate(resolve)); }
+    assert.deepEqual(delivered.map(message => message.id), [1, "callback", 2]);
+    assert.equal(writer.bufferedBytes, 0); assert.deepEqual(failures, []); writer.close(); stream.destroy();
+    // One oversized frame on an idle peer is delivered, and ordinary frames
+    // behind it while it drains are not counted against the backlog cap.
+    const large = [], drains = [];
+    const slow = new Writable({ highWaterMark: 1, write(chunk, encoding, callback) { large.push(chunk.length); drains.push(callback); } });
+    const bulk = transport.createOutboundQueue(slow, error => failures.push(error));
+    bulk.send({ id: 3, result: { text: "x".repeat(33 * 1024 * 1024) } }); bulk.send({ method: "turn/completed", params: {} });
+    while (drains.length) { drains.shift()(); await new Promise(resolve => setImmediate(resolve)); }
+    assert.equal(large.length, 2); assert.deepEqual(failures, []); bulk.close(); slow.destroy();
+  });
+  await t.test("S3-5: overflowing one broker consumer preserves the broker and other peers", async () => {
+    const f = fixture("transport-slow-peer"), broker = await readyBroker(f.dir, f.env);
+    const client = await CodexAppServerClient.connect(f.dir, { env: f.env, brokerEndpoint: broker.endpoint });
+    let peer;
+    try {
+      client.socket.pause();
+      const pending = client.request("account/read", {}).catch(() => {});
+      const result = await guarded(until(() => fs.readFileSync(broker.logFile, "utf8").includes("CODEX_TRANSPORT_BACKPRESSURE")));
+      const logged = fs.readFileSync(broker.logFile, "utf8").split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line));
+      t.diagnostic(JSON.stringify({ finding: "S3-5-broker", result, errors: logged.filter(event => event.event === "transport_error"), brokerAlive: alive(broker.pid) }));
+      assert.ok(logged.some(event => event.event === "transport_error" && event.code === "CODEX_TRANSPORT_BACKPRESSURE" && event.bufferedBytes <= 32 * 1024 * 1024));
+      peer = await CodexAppServerClient.connect(f.dir, { env: f.env, brokerEndpoint: broker.endpoint });
+      assert.equal(peer.transport, "broker");
+      assert.ok((await peer.request("initialize", {})).codexCompanionHome);
+      assert.equal(alive(broker.pid), true);
+      const response = await guarded((async () => {
+        for (;;) {
+          try { return await peer.request("config/read", {}); }
+          catch (error) { if (error.rpcCode !== transport.BROKER_BUSY_RPC_CODE) throw error; await delay(10); }
+        }
+      })());
+      assert.deepEqual(response.config, { model_provider: "openai" });
+      client.socket.resume(); await pending;
+    } finally { await client.close(); await peer?.close(); broker.close(); }
+  });
+});

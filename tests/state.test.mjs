@@ -4,8 +4,9 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { initGitRepo, makeTempDir } from "./helpers.mjs";
-import { ensureStateDir, listSessionJobs, resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateDirForRoot, resolveStateFile, resolveStateRoot, saveState, updateJob, updateState } from "../plugins/codex/scripts/lib/state.mjs";
+import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
+import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
+import { ensureStateDir, listJobs, listSessionJobs, loadState, resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateDirForRoot, resolveStateFile, resolveStateRoot, saveState, updateJob, updateState, writeJobFile } from "../plugins/codex/scripts/lib/state.mjs";
 
 test("resolveStateDir is a per-workspace directory under the isolated home, independent of CLAUDE_PLUGIN_DATA and the temp dir", () => {
   const workspace = makeTempDir();
@@ -140,4 +141,76 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
   } finally {
     fs.readFileSync = read;
   }
+});
+
+test("unreadable indexes degrade for reads and are rebuilt, never emptied, by writers", t => {
+  const missing = makeTempDir();
+  assert.deepEqual(loadState(missing).jobs, []);
+  assert.equal(updateState(missing, state => { state.config.stopReviewGate = true; }).config.stopReviewGate, true);
+  const keptFiles = workspace => fs.readdirSync(resolveStateDir(workspace)).filter(name => name.startsWith("state.json.unreadable-"));
+
+  for (const fault of ["EIO", "invalid-json", "invalid-jobs", "invalid-root"]) {
+    const workspace = makeTempDir(), id = "retained";
+    writeJobFile(workspace, id, { id, status: "completed", result: "retained result" });
+    saveState(workspace, { config: { sentinel: "retained config" }, jobs: [{ id, status: "completed" }, { id: "other", status: "completed" }] });
+    const file = resolveStateFile(workspace), jobFile = resolveJobFile(workspace, id);
+    if (fault !== "EIO") fs.writeFileSync(file, { "invalid-json": '{"jobs":[', "invalid-jobs": '{"jobs":{}}', "invalid-root": 'null' }[fault]);
+    const before = fs.readFileSync(file, "utf8"), read = fs.readFileSync;
+    const injected = Object.assign(new Error("injected state read failure"), { code: "EIO" });
+    const reader = t.mock.method(fs, "readFileSync", function(target, ...args) {
+      if (target === file && fault === "EIO") throw injected;
+      return read.call(this, target, ...args);
+    });
+    try {
+      assert.deepEqual(loadState(workspace).jobs, []);
+      assert.deepEqual(listJobs(workspace), []);
+      assert.deepEqual(keptFiles(workspace), []);
+      // Even a no-op write keeps the unreadable index aside and publishes the
+      // jobs rebuilt from their private records before its mutation runs.
+      assert.equal(updateJob(workspace, id, () => null).status, "completed");
+    } finally { reader.mock.restore(); }
+    assert.equal(updateJob(workspace, id, () => ({ phase: "changed" })).phase, "changed");
+    const kept = keptFiles(workspace);
+    assert.equal(kept.length, 1);
+    assert.equal(read(path.join(resolveStateDir(workspace), kept[0]), "utf8"), before);
+    assert.equal(JSON.parse(read(jobFile, "utf8")).result, "retained result");
+    const rebuilt = loadState(workspace);
+    assert.deepEqual(rebuilt.jobs.map(job => [job.id, job.phase, job.result]), [[id, "changed", undefined]]);
+    // A crash between the private write and the index commit leaves an active
+    // entry behind a finished record; the next update, even a no-op, repairs it.
+    saveState(workspace, { ...rebuilt, jobs: [{ id, status: "running" }] });
+    assert.equal(updateJob(workspace, id, () => null).status, "completed");
+    assert.equal(loadState(workspace).jobs.find(job => job.id === id).status, "completed");
+  }
+
+  // Cold reads may trigger migration. Reads leave a damaged destination as is
+  // and do not mark migration complete; the first writer rebuilds it, and
+  // migration then proceeds on the readable index.
+  const workspace = makeTempDir(), stateDir = resolveStateDir(workspace), stateFile = resolveStateFile(workspace);
+  const legacyDir = path.join(process.env.CLAUDE_PLUGIN_DATA, "state", path.basename(stateDir));
+  ensureStateDir(workspace);
+  fs.mkdirSync(path.join(legacyDir, "jobs"), { recursive: true });
+  fs.writeFileSync(path.join(legacyDir, "state.json"), JSON.stringify({ jobs: [{ id: "legacy", status: "completed" }] }));
+  const damaged = '{"jobs":[';
+  fs.writeFileSync(stateFile, damaged);
+  const marker = path.join(stateDir, ".legacy-migration.json");
+  assert.deepEqual(loadState(workspace).jobs, []);
+
+  const bin = makeTempDir(); installFakeCodex(bin);
+  const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
+  const command = (cwd, ...args) => run(process.execPath, [script, ...args], { cwd, env: buildEnv(bin) });
+  const status = command(workspace, "status", "--json");
+  assert.equal(status.status, 0, status.stderr);
+  assert.deepEqual(JSON.parse(status.stdout).running, []);
+  const emptyResult = command(makeTempDir(), "result", "--json"), damagedResult = command(workspace, "result", "--json");
+  assert.equal(emptyResult.status, 1);
+  assert.equal(damagedResult.status, emptyResult.status);
+  assert.equal(damagedResult.stdout, emptyResult.stdout);
+  assert.equal(fs.readFileSync(stateFile, "utf8"), damaged);
+  assert.equal(fs.existsSync(marker), false);
+
+  updateState(workspace, () => {});
+  assert.deepEqual(keptFiles(workspace).map(name => fs.readFileSync(path.join(stateDir, name), "utf8")), [damaged]);
+  assert.deepEqual(loadState(workspace).jobs.map(job => job.id), ["legacy"]);
+  assert.equal(fs.existsSync(marker), true);
 });

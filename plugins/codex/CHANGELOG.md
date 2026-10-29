@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.4.6
+
+### Stability fixes
+
+- A broken app-server pipe no longer crashes the worker or broker. Each runtime stdin and broker socket now has an error listener installed before its first write. An asynchronous EPIPE, a closed stdout or a closed socket settles the connection as a transport loss, rejects pending requests and cleans up the owned process group once. A runtime that exits keeps its exit code or signal in the error even when stdout closes first, and closing a direct runtime waits up to 500 ms for its exit. Group cleanup tolerates the EPERM that macOS returns for a group holding a zombie, and then signals a not-yet-reaped leader directly.
+- `initialize` has a default 60-second deadline, shared by broker startup, the busy-broker direct fallback and the direct connection. `CODEX_COMPANION_CONNECT_TIMEOUT_MS` changes it for tasks, reviews and transfers. On expiry the owned runtime is stopped and the connection fails with `ETIMEDOUT`. No task work is replayed.
+- Outbound writes to each runtime, broker client and broker peer go through an ordered queue that honours `drain`. A peer whose backlog would exceed 32 MiB is disconnected with `CODEX_TRANSPORT_BACKPRESSURE`, and the broker and other peers keep running. A single frame of any size, for example a long `thread/read`, is still delivered to an idle peer, and frames behind it are not counted against the cap while it drains. A healthy broker-client close still delivers accepted frames within 300 ms; a broken transport closes at once. Runtime stderr keeps only a 64 KiB tail with a truncation marker; startup-warning detection uses that tail.
+- Cancellation and lease expiry always abort the running turn, even when recording the interruption fails (for example, a full disk). A writer that still cannot read or parse `state.json` after brief retries no longer publishes an empty index. It keeps the unreadable file as `state.json.unreadable-<time>`, rebuilds the index from the job records, publishes it before applying its own change, warns on stderr and continues, so running workers keep their progress, lease and ending. Job records are retried too; one that stays unreadable is left out until its next update. If no copy of the old index can be kept, the write fails and the index is left untouched. Read-only status and listings still degrade without writing. A crash between a job-record write and its index commit is repaired by that job's next update.
+- Native admission inventory and commit are serialized across agents in one adapter, so concurrent starts can no longer exceed the 128-binding or 2 MiB store budgets. Per-agent waits and recovery lookups stay outside that queue, so a slow agent does not spend another agent's `turn.start` budget; the commit rebases onto the latest binding, so a cancellation confirmed meanwhile is kept. Each turn owns its binding: a late heartbeat, notice or cancellation callback from an earlier turn can no longer overwrite a follow-up that was already accepted. A failed progress notice or progress store write is logged and no longer closes the owner stream; launch and ownership writes still fail the turn. Spawn guards whose `turn.start` never produced a binding count toward the store budget and are reclaimed after a day, so a delayed first start after a reload keeps its native identity.
+- A follow-up's admission check reads its predecessor's thread through a private runtime when the shared broker is streaming another job. Before, a follow-up to a worker whose turn end was still unconfirmed was refused with `thread_busy` while another worker in the same workspace was running, because the check could not read the thread. Status and maintenance reads keep the cheap refusal.
+- Retention keeps a job whose private record is missing unless its index shows a terminal status, has no protection and every recorded timestamp is past the cutoff. A live launcher PID also protects a job. Name reservations of expired sessions are retired once the session has no surviving job and no live writer; stale claim temporaries are removed too.
+- A journal append that fails or is torn no longer poisons the run. A failed write rolls back to the last complete row, and readers ignore an incomplete final line, which the next locked append removes.
+- codex-live releases the full payloads of unselected jobs after projecting them and keeps raw payloads in an 8 MiB cache, evicting the least recently used. Selecting a job reloads its details.
+
+### Run journal
+
+- Verdict criteria accept any id of one to four uppercase letters followed by digits (for example `F3`, `S1` or `AC2`) followed by `:` at the start of a declared criterion, in addition to `K<n>`, which keeps its 1.4.5 forms.
+
+### Known limits
+
+- Admission and binding writes are serialized within one adapter module. A store write already in flight in a module from before `/reload-plugins` is not ordered with the new module: in that window a late cancellation write can still replace a just-admitted follow-up, and two admissions can slightly exceed the budgets.
+- A 1.4.5 follow-up admitted just before upgrading, then rejected before it starts (for example an invalid `DUET:` line), reports a generic hook failure once.
+- When the codex-live selection changes while a poll is publishing, the newly selected job can show without details for one poll.
+- A missing private record now keeps a stale `running` index entry until recovery or manual cleanup. 1.4.5 deleted it at the first age cleanup.
+- Rebuilding an unreadable index drops what only the index held: settings such as the review gate return to defaults, and jobs without a job record disappear from listings. Both remain in the kept file.
+- Name reservation and retirement share one lock. A slow retirement pass can push a native name reservation past its two-second budget; the Agent call then keeps its passed name.
+
 ## 1.4.5
 
 ### Stability fixes
