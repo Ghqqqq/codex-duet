@@ -2284,14 +2284,23 @@ test("stop hook does not block when Codex is unavailable even if the review gate
 });
 
 test("stop hook runs the actual task with stale auth and allows technical failures", () => {
-  for (const [behavior, failureReason] of [
+  for (const [behavior, failureReason, raw] of [
     ["refreshable-auth", null],
     ["auth-run-fails", /authentication expired; run codex login/],
-    ["verbose-task", /returned an unexpected answer/]
+    ["verbose-task", /returned an unexpected answer/],
+    ["review-ok", null, "BLOCK:"],
+    ["review-ok", null, "BLOCK:   \n"]
   ]) {
     const repo = makeTempDir();
     const binDir = makeTempDir();
     installFakeCodex(binDir, behavior);
+    if (raw !== undefined) {
+      const fake = path.join(binDir, "codex");
+      fs.writeFileSync(fake, fs.readFileSync(fake, "utf8").replace(
+        "function taskPayload(prompt, resume) {",
+        `function taskPayload(prompt, resume) { return ${JSON.stringify(raw)};`
+      ));
+    }
     initGitRepo(repo);
     fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
     run("git", ["add", "README.md"], { cwd: repo });
@@ -2310,7 +2319,10 @@ test("stop hook runs the actual task with stale auth and allows technical failur
     });
 
     assert.equal(result.status, 0, result.stderr);
-    if (failureReason) {
+    if (raw !== undefined) {
+      assert.equal(result.stdout.trim(), "");
+      assert.ok(result.stderr.trim().length > 0);
+    } else if (failureReason) {
       assert.equal(result.stdout.trim(), "", `${behavior} must not block the stop`);
       assert.match(result.stderr, failureReason);
     } else {

@@ -22,10 +22,12 @@ const failedEnded = job => job.status === 'failed' && (job.recovered || (job.res
   && (job.result.turnEnded || job.result.structured || (job.result.failureSource !== 'transport'
     && (job.result.workerStatus || (job.result.errorCode !== 'BROKER_CONNECTION_CLOSED'
       && !/^(Codex broker connection closed during startup\.|Connection to Codex closed while the turn was running\.|Codex connection closed before turn completion; recover the recorded job\.)$/i.test(job.result.error ?? job.errorMessage ?? '')))))));
-const ended = (job, state) => ENDED.includes(job.status)
-  || failedEnded(job)
-  || (['interrupted', 'cancelled'].includes(job.status) && job.interruptionConfirmed === true)
-  || (state.cancellation?.confirmation === 'confirmed' && state.cancellation.jobId === job.id);
+const ended = (job, state) => (['interrupted', 'cancelled'].includes(job.status) && job.interruptionConfirmed === true)
+  || (state.cancellation?.confirmation === 'confirmed' && state.cancellation.jobId === job.id)
+  || (!RECOVERY_STATUSES.includes(state.status)
+    && ![...ACTIVE, ...RECOVERY_STATUSES].includes(job.recovery?.status)
+    && !(job.result?.inferredCompletion === true && job.result.turnEnded === false)
+    && (ENDED.includes(job.status) || failedEnded(job)));
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_RECORDS = 128, MAX_STORE_SIZE = 2 * 1024 * 1024;
 const stateSize = state => JSON.stringify(state ?? null).length * 4;
@@ -38,12 +40,21 @@ const knownTypes = new Map();
 const liveProgress = new Map();
 const toolAgents = new Map(), agentDisplays = new Map();
 const promptTurns = new Map(), turnPrompts = new Map(), turnLogs = new Map();
+const promptPrefixes = new Map();
+const ambiguousEchoes = new Set();
+const COORDINATOR_PREFIX = 'The coordinator sent a message while you were working:\n';
+const COORDINATOR_SUFFIX = '\n\nAddress this before completing your current task.';
 const logKey = (agentId, turnId) => JSON.stringify([agentId, turnId]);
 const invalidateProgress = $ => {
   try { $.ui.invalidate('ui.render'); } catch { /* Display must never affect a turn. */ }
 };
 function rememberDisplay(map, id, value) {
   map.delete(id); map.set(id, value);
+  if (map === promptTurns && typeof id === 'string' && id.length >= 24) {
+    const prefix = id.slice(0, 24), rows = promptPrefixes.get(prefix) ?? new Set();
+    rows.delete(id); rows.add(id);
+    promptPrefixes.set(prefix, rows);
+  }
   if (map.size > 256) {
     // Short finished jobs must not evict the row of an older live agent.
     const oldest = [...map.keys()].find(key => {
@@ -54,42 +65,92 @@ function rememberDisplay(map, id, value) {
       return !liveProgress.has(map === toolAgents ? value : key);
     }) ?? map.keys().next().value;
     map.delete(oldest);
+    if (map === promptTurns && typeof oldest === 'string') {
+      const prefix = oldest.slice(0, 24), rows = promptPrefixes.get(prefix);
+      rows?.delete(oldest);
+      if (!rows?.size) promptPrefixes.delete(prefix);
+    }
     if (map === agentDisplays) for (const [key, log] of turnLogs) {
       if (log.agentId === oldest) turnLogs.delete(key);
     }
   }
 }
+function bindRow($, uuid, turn) {
+  const row = promptTurns.get(uuid);
+  row.turnId = turn.turnId; turn.uuid = uuid;
+  delete row.text; delete turn.text;
+  invalidateProgress($);
+}
 function bindPrompt($, turn) {
   if (turn.uuid) return;
   // Append may precede or follow turn.start. Consume each row and turn once,
   // in order within its own agent; identical later briefs keep separate logs.
-  // A SendMessage follow-up is stored with the host's framing around the
-  // text turn.start received ("The coordinator sent a message …"). Prefer an
-  // exact row; otherwise take the newest unbound row that frames this text.
-  let match = null;
+  // A SendMessage follow-up row and its turn.start text both carry the host's
+  // framing ("The coordinator sent a message …"). Prefer an exact row;
+  // otherwise take the oldest unbound row that contains this text.
+  let framed = null;
   for (const [uuid, row] of promptTurns) {
     if (row.turnId || row.agentId !== turn.agentId || typeof row.text !== 'string') continue;
-    if (row.text === turn.text) { match = uuid; break; }
-    if (turn.text && row.text.includes(turn.text)) match = uuid;
+    if (row.text === turn.text) return bindRow($, uuid, turn);
+    if (turn.text && row.text.includes(turn.text)) framed ??= uuid;
   }
-  if (match) {
-    const row = promptTurns.get(match);
-    row.turnId = turn.turnId; turn.uuid = match;
-    delete row.text; delete turn.text;
-    invalidateProgress($);
-  }
+  if (framed) bindRow($, framed, turn);
 }
 function rememberPrompt($, e) {
   if (typeof e.text !== 'string' || e.text.length > 65536) return;
   const key = logKey(e.agentId, e.turnId);
   if (turnPrompts.has(key)) return;
-  const turn = { agentId: e.agentId, turnId: e.turnId, text: e.text.trim() };
+  const turn = { agentId: e.agentId, turnId: e.turnId, text: e.text.trim(), full: e.text };
+  for (const previous of turnPrompts.values()) if (previous.full === turn.full) {
+    // Remember duplicate text even if a matching turn or its alias expires.
+    ambiguousEchoes.add(turn.full);
+    if (ambiguousEchoes.size > 256) ambiguousEchoes.delete(ambiguousEchoes.values().next().value);
+    break;
+  }
   rememberDisplay(turnPrompts, key, turn);
   bindPrompt($, turn);
+}
+function displayPrompt(e) {
+  const direct = promptTurns.get(e.requestId);
+  if (direct) return direct;
+  // Display normalization preserves the first 24 UUID characters and replaces
+  // the remainder with a hex block index. The index shares row retention.
+  if (typeof e.requestId === 'string' && e.requestId.length === 36 && /^[0-9a-f]{12}$/i.test(e.requestId.slice(24))) {
+    const rows = promptPrefixes.get(e.requestId.slice(0, 24));
+    if (rows?.size) {
+      let match;
+      for (const uuid of rows) {
+        const row = promptTurns.get(uuid);
+        if (!row || match && (match.agentId !== row.agentId || match.turnId !== row.turnId)) return;
+        match ??= row;
+      }
+      return match;
+    }
+  }
+  // SendMessage's visible echo bypasses append and has its own id. Match only
+  // exact, unique coordinator framing. Render order cannot identify a turn,
+  // and losing older turns must not make previously ambiguous text safe.
+  const text = e.props?.text;
+  if (typeof e.requestId !== 'string' || e.props?.origin?.kind !== 'coordinator'
+    || typeof text !== 'string' || text.replace(/\s/g, '').length < 8) return;
+  const framed = COORDINATOR_PREFIX + text + COORDINATOR_SUFFIX;
+  if (ambiguousEchoes.has(framed)) return;
+  let match;
+  for (const turn of turnPrompts.values()) {
+    if (turn.echo || turn.full !== framed) continue;
+    if (match) return;
+    match = turn;
+  }
+  if (!match) return;
+  match.echo = e.requestId;
+  const row = { agentId: match.agentId, turnId: match.turnId };
+  rememberDisplay(promptTurns, e.requestId, row);
+  return row;
 }
 function updateDisplay($, state, job) {
   const view = agentDisplays.get(state.agentId);
   if (!view || !liveProgress.has(state.agentId) || view.turnId !== (state.incoming?.turnId ?? state.intent?.turnId)) return;
+  liveProgress.get(state.agentId).cwd = job?.request?.cwd ?? state.cwd;
   view.name = state.worker || state.name || view.name;
   if (typeof state.effort === 'string') view.effort = state.effort;
   if (job) {
@@ -152,9 +213,123 @@ function appendLog($, log, text) {
     invalidateProgress($);
   } catch { /* The display log must never affect progress delivery. */ }
 }
-const entryText = entry => entry.kind === 'event' ? `${entry.title} · ${entry.result}`
-  : entry.kind === 'message' ? `Codex: ${entry.title}` : entry.title;
-const entryStyle = entry => entry.kind === 'event' ? resultStyle(entry.result)
+// Parse for display only. Quoted, escaped and nested separators are not chains.
+// Unsupported shell constructs stay visible and are never folded.
+function commandParts(command) {
+  const parts = [];
+  let start = 0, quote = '', depth = 0, safe = true;
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i], next = command[i + 1];
+    if (char === '\\' && quote !== "'") { i++; continue; }
+    if (quote) {
+      if (char === quote) quote = '';
+      else if (quote !== "'" && (char === '`' || char === '$' && next === '(')) safe = false;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') { quote = char; if (char === '`') safe = false; continue; }
+    if ('<>'.includes(char) || char === '#' || char === '\n') safe = false;
+    if ('({'.includes(char)) { depth++; safe = false; }
+    else if (')}'.includes(char)) { depth--; safe = false; }
+    if (depth !== 0 || !';&|'.includes(char)) continue;
+    if (char === '&' && next !== '&') { safe = false; continue; }
+    parts.push(command.slice(start, i).trim());
+    if (next === char && char !== ';') i++;
+    start = i + 1;
+  }
+  parts.push(command.slice(start).trim());
+  return { parts, safe: safe && !quote && depth === 0 && parts.every(Boolean)
+    && !command.endsWith('…') && command.length < 160 };
+}
+const shellWords = command => command.match(/(?:[^\s'"\\]+|'[^']*'|"(?:\\.|[^"\\])*"|\\.)+/g) ?? [];
+const unquote = word => /^(?:'[^']*'|"[^"\\]*")$/.test(word) ? word.slice(1, -1) : word;
+const programName = word => unquote(word ?? '').split('/').at(-1);
+// GNU getopt and git accept any unambiguous prefix of a long option.
+const longOption = (arg, ...names) => {
+  const name = arg.split('=')[0];
+  return name.length > 2 && name.startsWith('--') && names.some(full => full.startsWith(name));
+};
+function exploration(entry) {
+  if (entry.kind !== 'event' || entry.running || !/^Done\b/.test(entry.result) || !entry.title.startsWith('Bash(')) return null;
+  const { parts, safe } = commandParts(entry.title.slice(5, -1));
+  if (!safe) return null;
+  const programs = parts.map(part => {
+    const words = shellWords(part);
+    // Only literal bare words and complete quoted words are modeled here.
+    // Composite quotes, escapes and expansions can disguise write options.
+    if (words.some(word => !/^(?:[^\s'"\\$`*?\[\]~]+|'[^'\\$`]*'|"[^"\\$`]*")$/.test(word))) return null;
+    // Fold only a bare program name or a system bin path: never an
+    // assignment's value (BASH_ENV=./cat) or a local file named like a reader.
+    const [first, ...args] = words.map(unquote);
+    if (!/^(?:(?:\/usr(?:\/local)?|\/opt\/homebrew)?\/bin\/)?[a-z][a-z-]*$/.test(first ?? '')) return null;
+    const name = programName(first);
+    if (name === 'sed') return args[0] === '-n' && /^(?:(?:[\d$]+(?:,[\d$]+)?)?p\s*;?\s*)+$/.test(args[1] ?? '')
+      && !args.slice(2).some(arg => arg.startsWith('-')) ? name : null;
+    if (name === 'find' && args.some(arg => /^-(?:exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/.test(arg))) return null;
+    if (name === 'git') return ['diff', 'show', 'log', 'status', 'rev-parse', 'ls-files'].includes(args[0])
+      && !args.some(arg => /%[-+ ]?G/.test(arg) || longOption(arg, '--output', '--ext-diff', '--textconv', '--show-signature', '--help',
+        '--remerge-diff', '--diff-merges', '--submodule', '--alternate-refs')) ? name : null;
+    return ['rg', 'grep', 'nl', 'cat', 'head', 'tail', 'ls', 'wc', 'find', 'tree', 'file', 'stat'].includes(name)
+      && !(name === 'tree' && args.some(arg => /^-[^-]*[oR]/.test(arg) || longOption(arg, '--output')))
+      && !(name === 'rg' && args.some(arg => /^-[^-]*z/.test(arg) || longOption(arg, '--pre', '--hostname-bin', '--search-zip')))
+      && !(name === 'file' && args.some(arg => /^-[^-]*[CzZp]/.test(arg)
+        || longOption(arg, '--compile', '--uncompress', '--uncompress-noreport', '--preserve-date'))) ? name : null;
+  });
+  return programs.every(Boolean) ? programs[0] : null;
+}
+function foldEntries(entries) {
+  const folded = [];
+  for (let i = 0; i < entries.length;) {
+    const names = new Map();
+    let end = i, name;
+    while (end < entries.length && (name = exploration(entries[end]))) {
+      names.set(name, (names.get(name) ?? 0) + 1); end++;
+    }
+    if (end - i >= 2) {
+      const detail = [...names].map(([name, count]) => name + (count > 1 ? ` ×${count}` : '')).join(', ');
+      folded.push({ kind: 'event', title: `Explored · ${end - i} commands (${detail})`, result: 'Done', running: false });
+      i = end;
+    } else folded.push(entries[i++]);
+  }
+  return folded;
+}
+function displayPath(path, context = {}) {
+  const cwd = context.cwd?.replace(/\/+$/, ''), home = context.home?.replace(/\/+$/, '');
+  if (cwd && (path === cwd || path.startsWith(cwd + '/')) && !path.slice(cwd.length).split('/').includes('..')) return path.slice(cwd.length + 1) || '.';
+  if (home && (path === home || path.startsWith(home + '/'))) return '~' + path.slice(home.length);
+  return path;
+}
+function eventTitle(entry, context) {
+  const title = entry.title;
+  if (title.startsWith('Bash(')) {
+    const { parts } = commandParts(title.slice(5, -1));
+    let first = true;
+    const command = parts[0].replace(/(?:[^\s'"\\]+|'[^']*'|"(?:\\.|[^"\\])*"|\\.)+/g, token => {
+      const word = unquote(token), quote = word === token ? '' : token[0];
+      const path = first && word.startsWith('/') ? programName(word)
+        : word.replace(/^(--[^=]+=)?(\/.*)$/, (_, option, value) => (option ?? '') + displayPath(value, context));
+      first = false;
+      return quote + path + quote;
+    });
+    return { title: `Bash(${command})`, suffix: parts.length > 1 ? ` (+${parts.length - 1})` : '' };
+  }
+  return { title: title.replace(/^((?:Write|Update|Delete)\()(.*)\)$/, (_, action, path) => action + displayPath(path, context) + ')'), suffix: '' };
+}
+function eventStatus(entry) {
+  const result = entry.result;
+  if (entry.running) return '… running';
+  if (/^Done\b/.test(result)) return '✓' + result.slice(4).replace(/^\s*\((.*)\)$/, ' $1');
+  if (/^(?:Error|Failed|Blocked)\b/.test(result)) return '✗' + result.replace(/^(?:Error|Failed|Blocked)\b:?\s*/, ' ').replace(/\s+\([^)]*\)$/, '').trimEnd();
+  const added = /^\+(\d+|\?) [−-]0$/.exec(result);
+  if (entry.title.startsWith('Write(') && added) return `✓ new · ${added[1]} lines`;
+  return result;
+}
+const entryText = (entry, context) => {
+  if (entry.kind !== 'event') return entry.kind === 'message' ? `Codex: ${entry.title}` : entry.title;
+  const { title, suffix } = eventTitle(entry, context);
+  return `${title}${suffix} ${eventStatus(entry)}`;
+};
+const entryStyle = entry => entry.kind === 'event'
+  ? (/^\+\d+ [−-]\d+$/.test(entry.result) ? { color: 'success' } : resultStyle(entry.result))
   : entry.kind === 'message' ? { color: 'text' } : { dimColor: true };
 function lineStyle(text) {
   if (/^Codex:/.test(text)) return { color: 'text' };
@@ -171,30 +346,53 @@ const displayRow = (e, children, props = {}) => ({ type: 'Box', props: {
   width: displayWidth(e)
 }, children: [{ type: 'Text', props: { wrap: 'truncate-end', ...props }, children }] });
 const progressRow = (e, text, prefix = '') => displayRow(e, [prefix + text.replace(/\s+/g, ' ')], lineStyle(text));
-function logRows(e, entry) {
+// A host without Intl.Segmenter falls back to code points rather than
+// failing to load the adapter.
+const graphemeSegmenter = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+const textChars = text => graphemeSegmenter ? Array.from(graphemeSegmenter.segment(text), part => part.segment) : Array.from(text);
+const charWidth = char => /[\p{Mark}\u200d]/u.test(char) ? 0 : /\p{Emoji_Presentation}|[\u1100-\u115f\u2329\u232a\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe6f\uff01-\uff60\uffe0-\uffe6\u{1f300}-\u{1faff}\u{20000}-\u{3ffff}]/u.test(char) ? 2 : 1;
+const cellWidth = char => /\p{Emoji_Presentation}|\p{Emoji}\uFE0F/u.test(char) ? 2
+  : Array.from(char).reduce((width, point) => width + charWidth(point), 0);
+const textWidth = text => textChars(text).reduce((width, char) => width + cellWidth(char), 0);
+function takeCells(chars, width) {
+  let result = '', used = 0;
+  for (const char of chars) { const size = cellWidth(char); if (used + size > width) break; result += char; used += size; }
+  return result;
+}
+function middleText(text, width) {
+  if (textWidth(text) <= width) return text;
+  if (width < 1) return '';
+  const left = Math.ceil((width - 1) / 2), chars = textChars(text);
+  return takeCells(chars, left) + '…' + textChars(takeCells([...chars].reverse(), width - 1 - left)).reverse().join('');
+}
+function eventRow(e, entry, context) {
+  const width = displayWidth(e), dotWidth = Math.min(2, width), status = eventStatus(entry);
+  const statusWidth = Math.min(width - dotWidth, textWidth(status) + 1), titleWidth = width - dotWidth - statusWidth;
+  const { title, suffix } = eventTitle(entry, context);
+  const label = middleText(title, Math.max(0, titleWidth - textWidth(suffix))) + suffix;
+  const cell = (width, children, props = {}, box = {}) => ({ type: 'Box', props: { width, flexShrink: 0, ...box },
+    children: [{ type: 'Text', props: { wrap: 'truncate-end', ...props }, children }] });
+  return { type: 'Box', props: { width, flexDirection: 'row' }, children: [
+    cell(dotWidth, ['● '], entryStyle(entry)),
+    cell(titleWidth, [label], { color: 'text', bold: true }, { flexGrow: 1, flexShrink: 1, minWidth: 0 }),
+    cell(statusWidth, [' ' + status], entryStyle(entry))
+  ] };
+}
+function logRows(e, entry, context) {
   let rows;
   if (entry.kind === 'message') {
-    const chars = Array.from(entry.title.replace(/\s+/g, ' ')), width = Math.max(1, displayWidth(e) - 2);
+    const chars = textChars(entry.title.replace(/\s+/g, ' ')), width = Math.max(1, displayWidth(e) - 2);
     rows = [];
-    while (chars.length && rows.length < 3) {
-      let count = 0, cells = 0;
-      // Budget non-Latin glyphs conservatively; the host clips each row in
-      // terminal cells. Explicit rows keep commentary to three at any width.
-      while (count < chars.length) {
-        const size = chars[count].codePointAt(0) > 255 ? 2 : 1;
-        if (cells + size > width) break;
-        cells += size; count++;
-      }
+    while (chars.length && rows.length < 4) {
+      const last = rows.length === 3, overflow = textWidth(chars.join('')) > width;
+      let count = textChars(takeCells(chars, width - (last && overflow ? 1 : 0))).length;
       count = Math.max(1, count);
       const space = chars.slice(0, count).lastIndexOf(' ');
       if (space > 0 && count < chars.length) count = space + 1;
       const text = chars.splice(0, count).join('').trimEnd();
-      rows.push(displayRow(e, [(rows.length ? '  ' : '● ') + text + (rows.length === 2 && chars.length ? '…' : '')], { color: 'text' }));
+      rows.push(displayRow(e, [(rows.length ? '  ' : '● ') + text + (last && chars.length ? '…' : '')], { color: 'text' }));
     }
-  } else if (entry.kind === 'event') rows = [
-    displayRow(e, [`● ${entry.title}`], { bold: true, color: 'text' }),
-    displayRow(e, [`  ⎿ ${entry.running ? 'Running…' : entry.result}`], entryStyle(entry))
-  ];
+  } else if (entry.kind === 'event') rows = [eventRow(e, entry, context)];
   else rows = [displayRow(e, [entry.title], { dimColor: true })];
   return { type: 'Box', props: { flexDirection: 'column' }, children: rows };
 }
@@ -245,6 +443,8 @@ function boundedText(value, budget) {
 }
 // Active and unresolved recovery reports are consumed before native completion.
 const RECOVERY_STATUSES = ['unknown', 'unreachable'];
+// A turn whose job is still active or whose ending is unconfirmed never closes.
+const UNSETTLED = [...ACTIVE, ...RECOVERY_STATUSES];
 const REPORT_STATUSES = new Set([...ACTIVE, ...RECOVERY_STATUSES, 'completed', 'needs_input', 'needs_answer', 'blocked',
   'failed', 'interrupted', 'cancelled', 'owner_stopped', 'ownership_moved']);
 const REPORT_FIELDS = new Set(['status', 'worker', 'jobId', 'summary', 'summaryTruncated', 'blockers',
@@ -556,7 +756,7 @@ async function companion($, state, args, input = '', progress) {
         if (end) {
           const text = line.trimEnd();
           if (!overflow && (/^\[\d+\] /.test(text) || /^… \d+ progress lines omitted$/.test(text))) {
-            try { await progress.line(text.replace(/^\[\d+\] /, '').slice(0, 200)); }
+            try { const value = text.replace(/^\[\d+\] /, ''); await progress.line(value.slice(0, value.startsWith('Codex:') ? 607 : 200)); }
             catch (error) { progressError($, error); }
           }
           line = ''; overflow = false;
@@ -640,12 +840,16 @@ const save = ($, state, { fields, valid = () => true, close = false,
 };
 async function handles($, state, jobId, recovery = false, persist = true, { waitMs = 0, ...timing } = {}) {
   const args = ['status', jobId, '--json', ...(waitMs ? ['--wait', '--timeout-ms', String(waitMs), '--poll-interval-ms', '250'] : [])];
-  const { job } = await snapshot($, state, args, timing);
+  const { job, recovery: notice } = await snapshot($, state, args, timing);
   if (!job || job.sessionId !== state.session) throw new Error('Duet job is missing or belongs to another session.');
   if (state.intent?.kind === 'task' && job.dispatchNonce !== state.intent.nonce) throw new Error('Duet dispatch nonce does not match the native launch intent.');
   if (state.jobId === job.id && state.ownerId && state.ownerId !== job.ownerId) throw new Error('Duet job ownership changed; refusing to adopt another owner implicitly.');
+  if (notice) job.recovery = notice;
+  const unresolved = [...ACTIVE, ...RECOVERY_STATUSES].includes(job.recovery?.status)
+    || (job.result?.inferredCompletion === true && job.result.turnEnded === false);
   Object.assign(state, { jobId: job.id, ownerId: job.ownerId, threadId: job.threadId, worker: job.agentName,
-    status: job.status });
+    status: unresolved ? job.recovery?.status || 'unknown' : job.status });
+  if (unresolved) delete state.finishedAt;
   updateDisplay($, state, job);
   if (persist) await save($, state);
   return job;
@@ -828,8 +1032,10 @@ async function cancel($, state, deadline) {
     if (['interrupted', 'cancelled'].includes(job?.status) && job.interruptionConfirmed === true) {
       state.cancellation = { jobId: job.id, status: job.status, confirmation: 'confirmed', turnInterrupted: true, reason: job.interruptionReason };
     }
-    state.status = state.cancellation?.status || 'blocked';
-    state.finishedAt = await $.clock.now();
+    if (!RECOVERY_STATUSES.includes(state.status)) state.status = state.cancellation?.status || 'blocked';
+    // Completion belongs to stopJob, after recovery and cancellation evidence
+    // have been checked. An attempted interrupt alone does not finish a turn.
+    delete state.finishedAt;
   } catch (error) {
     state.cancellation = { status: 'unconfirmed', message: 'Cancellation unconfirmed; inspect duet status. Owner-loss and question timeout remain the fallback.',
       error: String(error?.message || error).slice(0, 200) };
@@ -850,11 +1056,26 @@ async function stopJob($, state, deadline) {
   if (!job) return null;
   const confirmed = state.cancellation?.confirmation === 'confirmed' && state.cancellation.jobId === job.id;
   // Just after a confirmed cancel the job record can still read running.
-  state.status = confirmed && ACTIVE.includes(job.status) ? state.cancellation.status : job.status;
+  if (confirmed) state.status = ACTIVE.includes(job.status) ? state.cancellation.status : job.status;
+  else if (!RECOVERY_STATUSES.includes(state.status)) state.status = job.status;
+  let report;
+  // A terminal-looking record can still hide an unresolved inferred turn.
+  // Read its report before publishing any closure, including on turn.complete.
+  if (!confirmed && !ACTIVE.includes(job.status) && job.interruptionConfirmed !== true) {
+    report = await snapshot($, state, ['result', job.id, '--report'], { deadline, timeoutMs: 500 });
+    if (report.jobId !== job.id) throw new Error('Duet report does not match the recorded job handle.');
+    if (RECOVERY_STATUSES.includes(report.status)) {
+      state.status = report.status;
+      delete state.finishedAt;
+      await save($, state, { turnId: state.intent?.turnId, fields: ['status'] });
+      return { job, report };
+    }
+  }
   if (!ended(job, state)) return null;
+  state.finishedAt = await $.clock.now();
   await closeTurn($, state);
   await save($, state, { turnId: state.intent?.turnId, fields: ['status', 'cancellation', 'finishedAt'] });
-  return job;
+  return { job, report };
 }
 // An open turn whose stop could not be confirmed may have ended since (for
 // example through duet cancel); the job record decides.
@@ -883,10 +1104,11 @@ const stoppingReport = state => ({ status: 'interrupted', worker: state.worker |
   next: nativeNext(state, 'interrupted'), details: nativeDetails(state) });
 async function stoppedReport($, state) {
   const deadline = await $.clock.now() + 4500;
-  const job = await stopJob($, state, deadline);
-  if (!job) return null;
+  const stopped = await stopJob($, state, deadline);
+  if (!stopped) return null;
+  const { job } = stopped;
   if (ACTIVE.includes(job.status)) return cancelledReport(state, state.status);
-  const report = await snapshot($, state, ['result', job.id, '--report'], { deadline, timeoutMs: 500 });
+  const report = stopped.report || await snapshot($, state, ['result', job.id, '--report'], { deadline, timeoutMs: 500 });
   if (report.jobId !== job.id) throw new Error('Duet report does not match the recorded job handle.');
   if (RECOVERY_STATUSES.includes(report.status)) return report;
   return { ...report, status: job.status, worker: job.agentName || null, jobId: job.id, next: nativeNext(state, job.status) };
@@ -930,7 +1152,7 @@ function progressFor($, e, state, publish, currentFlight) {
     lastStreamedAt = await $.clock.now();
   };
   const notice = (value, final = false, alreadyStreamed = false) => {
-    const text = value.slice(0, 200);
+    const text = value.slice(0, value.startsWith('Codex:') ? 607 : 200);
     const pending = noticing.then(async () => {
       if (!active()) return;
       // The display log has its own short dedupe window. Command starts never
@@ -1060,18 +1282,20 @@ export function register(on) {
     if (binding?.effort !== undefined) state.effort = binding.effort;
   };
   nodes.clear(); flights.clear(); startedTypes.clear(); knownTypes.clear(); dispatching.clear(); liveProgress.clear(); unstartedSince.clear();
-  toolAgents.clear(); agentDisplays.clear(); promptTurns.clear(); turnPrompts.clear(); turnLogs.clear();
+  toolAgents.clear(); agentDisplays.clear(); promptTurns.clear(); promptPrefixes.clear(); ambiguousEchoes.clear(); turnPrompts.clear(); turnLogs.clear();
   on('session.append', async ($, e, next) => {
     const result = await next(e);
     try {
-      // d.ts: render requestId is the message id; append uuid is that row's
-      // pinned id on every later read. Main rows have no agentId. No text-only
-      // fallback: an unobserved row (including after reload) draws alone.
+      // Keep appended row ids as the primary binding. Display normalization
+      // and coordinator echoes are resolved separately from module state.
       if (result?.deny || !e.agentId || e.message.type !== 'user'
         || !['prompt', 'delivery'].includes(e.door) || promptTurns.has(e.uuid)) return result;
       // A row can arrive before native identification. Retain the bounded
       // candidate now; only a native turn.start can bind it to a visible log.
-      const text = result.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
+      // A SendMessage follow-up (a coordinator row) carries its text as a string.
+      const content = result.message.content;
+      const text = typeof content === 'string' ? content
+        : content.filter(block => block.type === 'text').map(block => block.text).join('\n');
       if (text.length > 65536) return result;
       rememberDisplay(promptTurns, e.uuid, { agentId: e.agentId, text: text.trim() });
       for (const turn of turnPrompts.values()) if (turn.agentId === e.agentId) bindPrompt($, turn);
@@ -1079,7 +1303,7 @@ export function register(on) {
     return result;
   }).catch(passthrough);
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    const turn = promptTurns.get(e.requestId);
+    const turn = displayPrompt(e);
     if (!turn?.turnId) return next(e);
     const prompt = promptDisplay(e.props.text);
     const engine = await next(prompt ? { ...e, props: { ...e.props, text: prompt.text } } : e);
@@ -1089,7 +1313,7 @@ export function register(on) {
       ...(prompt ? [displayRow(e, [prompt.header], { dimColor: true })] : []),
       engine,
       ...(log?.omitted ? [displayRow(e, [`… ${log.omitted} earlier lines (ctrl+o for the full record)`], { dimColor: true })] : []),
-      ...(log?.entries.map(entry => logRows(e, entry)) ?? [])
+      ...(log ? foldEntries(log.entries).map(entry => logRows(e, entry, log)) : [])
     ] };
   }).catch(passthrough);
   on('ui.render', { component: 'Spinner' }, ($, e, next) => {
@@ -1115,7 +1339,8 @@ export function register(on) {
       rows.push(displayRow(e, [
         { type: 'Text', props: { bold: true }, children: [view.name.replace(/\s+/g, ' ')] },
         { type: 'Text', props: { dimColor: true }, children: [` · ${rest.join(' · ')}`] }
-      ]), ...feed.entries.slice(-3).map(entry => displayRow(e, ['⎿ ' + entryText(entry).replace(/\s+/g, ' ')], entryStyle(entry))));
+      ]), ...foldEntries(feed.entries).slice(-3).map(entry => entry.kind === 'event' ? eventRow(e, entry, feed)
+        : displayRow(e, ['⎿ ' + entryText(entry, feed).replace(/\s+/g, ' ')], entryStyle(entry))));
     } else rows.push(progressRow(e, `${view.name} · ${displayStatus(view.status)} · ${elapsedDisplay(view.elapsedMs)}`));
     if (view.question) rows.push(progressRow(e, `Question: ${view.question}`, '⎿ '));
     return { type: 'Box', props: { flexDirection: 'column' }, children: [engine, ...rows] };
@@ -1349,6 +1574,9 @@ export function register(on) {
           });
         } catch { /* Rendering still updates on progress if timers are unavailable. */ }
         const state = await $.store.get(key) || { session, agentId: e.agentId, name: agent.name };
+        // Display context only; never persist it or perform host I/O in render.
+        running.feed.cwd = state.cwd;
+        try { running.feed.home = await $.env.get('HOME'); } catch { /* Optional display shortening. */ }
         if (state.incoming?.turnId === e.turnId) rememberPrompt($, { ...e, text: state.incoming.text });
         if (await $.store.get(bindingFailedKey(session, e.agentId))) state.bindingPending = true;
         restoreBinding(key, state);
@@ -1370,6 +1598,8 @@ export function register(on) {
           }
           if (RECOVERY_STATUSES.includes(report.status)) {
             uncertain = true;
+            state.status = report.status;
+            delete state.finishedAt;
             report = { ...report, status: 'blocked' };
           }
           await progress.usage(report.usage);
@@ -1382,12 +1612,12 @@ export function register(on) {
               : blocked('Stopped from /tasks before Duet recorded the job; run duet status --all before retrying.', state, 'native_stop_unconfirmed');
           }
           report ||= blocked(error?.message || 'Native adapter failed.', state);
-          uncertain ||= state.intent?.turnId === e.turnId && (error.protocolError || !state.jobId || ACTIVE.includes(state.status));
+          uncertain ||= state.intent?.turnId === e.turnId && (error.protocolError || !state.jobId || UNSETTLED.includes(state.status));
         } finally { timer.cancel(); early.cancel(); await progress.stop(); }
         // A stopped turn closes only through closeTurn's evidence, and no turn
-        // closes while its job still reads active.
-        if (state.intent?.turnId === e.turnId && (ACTIVE.includes(state.status) || stopping)) {
-          uncertain ||= ACTIVE.includes(state.status) || !await isClosed($, state).catch(() => false);
+        // closes while its job still reads active or unresolved.
+        if (state.intent?.turnId === e.turnId && (UNSETTLED.includes(state.status) || stopping)) {
+          uncertain ||= UNSETTLED.includes(state.status) || !await isClosed($, state).catch(() => false);
         }
         // Do not overwrite a different active turn's handles or saved answer.
         if (state.v === 2 && (state.incoming?.turnId === e.turnId || state.intent?.turnId === e.turnId)) {
@@ -1396,7 +1626,7 @@ export function register(on) {
           // A turn that failed before recording its own intent leaves the
           // previous intent's closure as it was.
           if (!uncertain && (!state.intent || state.intent.turnId === e.turnId)) state.answeredTurn = e.turnId;
-          if (!uncertain && report.status !== 'needs_answer' && !ACTIVE.includes(state.status)) state.finishedAt = await $.clock.now();
+          if (!uncertain && report.status !== 'needs_answer' && !UNSETTLED.includes(state.status)) state.finishedAt = await $.clock.now();
           // questionId means shown to Claude, not observed in the job. Earlier
           // saves can fail and turn the response into blocked; only this path
           // commits the question whose needs_answer report we actually return.

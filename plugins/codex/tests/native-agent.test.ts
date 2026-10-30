@@ -120,9 +120,9 @@ async function faultKeepalives(fault: 'append' | 'lookup' | 'queue' | 'owner-app
   return observed;
 }
 
-// The host's append and render envelopes share the row id. Exercise both
-// append/start orderings, identical briefs, and overlapping command titles.
-async function displayReplay() {
+// Exercise append/start orderings, independently minted coordinator echoes,
+// normalized render ids, identical briefs, and overlapping command titles.
+async function displayReplay(exercise?: (api: any) => Promise<void>) {
   const hooks = new Map(), store = new Map(), engine = { type: 'engine', ref: 0 };
   registerNative((name: string, matcher: any, handler: any) => {
     const key = name === 'ui.render' ? matcher.component : name;
@@ -135,7 +135,7 @@ async function displayReplay() {
     } };
   });
   const capture: any = captures[3], text = 'Identical native brief.';
-  let current: any, phaseTrees: any[] = [], forwarded: any;
+  let current: any, phaseTrees: any[] = [], summaryTrees: any[] = [], forwarded: any, columns = 120;
   const renderAccess: string[] = [];
   const renderHost = new Proxy({}, { get(_, key) { renderAccess.push(String(key)); throw new Error('Render must use display state only'); } });
   const $: any = {
@@ -143,7 +143,7 @@ async function displayReplay() {
     session: { id: async () => 'native-session', root: async () => root + '/repo', append: async () => ({}) },
     fs: { stat: async (path: string) => ({ kind: 'dir', realPath: path }) },
     agent: { list: async () => [{ id: current.agentId, name: current.agentId, type: TYPE }] },
-    store: { get: async (key: string) => clone(store.get(key) ?? null), set: async (key: string, value: any) => { store.set(key, clone(value)); } },
+    store: { delete: async (key: string) => { store.delete(key); }, get: async (key: string) => clone(store.get(key) ?? null), set: async (key: string, value: any) => { store.set(key, clone(value)); } },
     clock: { now: async () => 1800000000000, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) },
     process: { run: async (argv: string[], init: any) => {
       if (argv[0] === 'node') return { exitCode: 0, stdout: '/host/node\n' };
@@ -160,7 +160,9 @@ async function displayReplay() {
       const stream = (async function* () {
         if (command === 'task') for (const line of current.lines) {
           yield { stream: 'stdout', text: `[0] ${line}\n` };
-          phaseTrees.push(await render(current.uuid, 'unclassified', current.text));
+          phaseTrees.push(await render(current.requestId, current.kind, current.text));
+          if (exercise) summaryTrees.push(await hooks.get('ToolUse')(renderHost, { component: 'ToolUse', surface: 'terminal',
+            viewport: { columns }, props: { tool: 'Agent', tool_use_id: current.uuid, input: { subagent_type: TYPE } } }, async () => engine));
         }
         for (const chunk of record.chunks) yield { ...chunk,
           text: chunk.text.replaceAll('native-session:native-agent:turn-1', `native-session:${current.agentId}:${current.turnId}`) };
@@ -169,7 +171,7 @@ async function displayReplay() {
     } },
   };
   const render = async (uuid: string, kind = 'unclassified', body = text) => {
-    const input = { component: 'UserMessage', surface: 'terminal', requestId: uuid,
+    const input = { component: 'UserMessage', surface: 'terminal', requestId: uuid, viewport: { columns },
       props: { text: body, origin: { kind }, isExpanded: true } };
     const original = clone(input);
     let drawing: any;
@@ -179,27 +181,38 @@ async function displayReplay() {
     return tree;
   };
   let appendCalls = 0;
-  const append = async (uuid: string, agentId?: string, door = 'prompt', body = text) => {
-    const input = { uuid, agentId, door, origin: { kind: agentId ? 'unclassified' : 'composer' },
-      message: { type: 'user', content: [{ type: 'text', text: body }] } };
+  const append = async (uuid: string, agentId?: string, door = 'prompt', body = text, plain = false) => {
+    const input = { uuid, agentId, door, origin: { kind: plain ? 'coordinator' : agentId ? 'unclassified' : 'composer' },
+      message: { type: 'user', content: plain ? body : [{ type: 'text', text: body }] } };
     const result = { uuid, message: input.message };
     const next = async (e: any) => { expect(e).toEqual(input); appendCalls++; return result; };
     expect(await (hooks.has('session.append') ? hooks.get('session.append')($, input, next) : next(input))).toEqual(result);
   };
-  const run = async (agentId: string, turnId: string, before: boolean, lines: string[], body = text, appended = body) => {
-    current = { agentId, turnId, uuid: `${agentId}:${turnId}`, lines, text: body };
+  const run = async (agentId: string, turnId: string, before: boolean, lines: string[], body = text, appended = body, plain = false,
+    row: { uuid?: string, echo?: boolean, append?: boolean } = {}) => {
+    const uuid = row.uuid ?? `${agentId}:${turnId}`;
+    current = { agentId, turnId, uuid, requestId: row.echo ? `${uuid}-echo` : uuid,
+      kind: row.echo ? 'coordinator' : 'unclassified', lines, text: body };
+    // plain: like a SendMessage follow-up, the row's content is a string and
+    // turn.start receives the same framed text.
+    const started = plain ? appended : body;
     store.set(`native:v2:native-session:${agentId}`, { type: TYPE, session: 'native-session', agentId, name: agentId,
-      v: 2, cwd: root + '/repo', permissionMode: 'default', incoming: { turnId, text: body } });
-    if (before) await append(current.uuid, agentId, 'prompt', appended);
+      v: 2, cwd: root + '/repo', permissionMode: 'default', incoming: { turnId, text: started } });
+    if (exercise) {
+      await hooks.get('agent.spawn')($, { subagentType: TYPE, tool_use_id: current.uuid }, async () => ({ agentId }));
+      store.delete(`native:binding-failed:v1:native-session:${agentId}`);
+    }
+    const write = (body: string) => row.append === false ? Promise.resolve() : append(current.uuid, agentId, 'prompt', body, plain);
+    if (before) await write(appended);
     await hooks.get('classic.SubagentStart')($, { session_id: 'native-session', agent_id: agentId, agent_type: TYPE }, async () => ({}));
-    await hooks.get('turn.start')($, { agentId, turnId, text: body }, async () => ({ turnId }));
-    if (!before) await append(current.uuid, agentId, 'prompt', body);
+    await hooks.get('turn.start')($, { agentId, turnId, text: started }, async () => ({ turnId }));
+    if (!before) await write(body);
     // A replayed row must not steal the next turn's binding.
-    await append(current.uuid, agentId, 'prompt', body);
-    phaseTrees = [];
+    await write(body);
+    phaseTrees = []; summaryTrees = [];
     const result = await drain(hooks.get('turn.step')($, { agentId, turnId, index: 0 }, () => { throw new Error('Unexpected model'); }));
     expect({ agentId, turnId, report: JSON.parse(result.result.answer) }).toEqual({ agentId, turnId, report: expect.objectContaining({ status: 'completed' }) });
-    return { tree: clone(await render(current.uuid, 'unclassified', body)), phases: clone(phaseTrees) };
+    return { tree: clone(await render(current.requestId, current.kind, body)), phases: clone(phaseTrees), summaries: clone(summaryTrees) };
   };
   await append('parent');
   const first = await run('agent-a', 'turn-1', true,
@@ -207,15 +220,43 @@ async function displayReplay() {
   const parent = await render('parent', 'composer'), unidentified = await render('unidentified');
   const second = await run('agent-b', 'turn-1', false, ['Codex: second agent']);
   const firstRetained = JSON.stringify(await render('agent-a:turn-1')) === JSON.stringify(first.tree);
-  // A SendMessage follow-up row carries the host's framing around the text.
+  const frame = (body: string) => `The coordinator sent a message while you were working:\n${body}\n\nAddress this before completing your current task.`;
+  // The appended coordinator row is hidden. Its visible echo has a separate
+  // id and bare text, while turn.start receives the full framed text.
   const followup = await run('agent-a', 'turn-2', true, ['Codex: follow-up'], text,
-    `The coordinator sent a message while you were working:\n${text}\n\nAddress this before completing your current task.`);
+    frame(text), true, { echo: true });
+  const followupLog = JSON.stringify(followup.tree) === JSON.stringify(await render('agent-a:turn-2', 'coordinator', text));
+  const uuid = '12345678-1234-1234-1234-123456789abc';
+  const normalized = await run('agent-normalized', 'turn-1', true, ['Codex: normalized id'], text, text, false, { uuid });
+  const normalizedId = normalized.tree.type === 'Box'
+    && JSON.stringify(await render(uuid.slice(0, 24) + '000000000001')) === JSON.stringify(normalized.tree);
+  await run('agent-prefix-collision', 'turn-1', true, ['Codex: colliding prefix'], text, text, false,
+    { uuid: uuid.slice(0, 24) + 'bbbbbbbbbbbb' });
+  const ambiguousPrefix = await render(uuid.slice(0, 24) + '000000000001');
+  const repeated = 'Identical follow-up message.';
+  // The same text cannot identify either turn, even within one agent. Both
+  // echoes must stay undecorated when the newer row renders first.
+  await run('agent-repeat', 'turn-1', true, ['Codex: first repeat'], repeated, frame(repeated), true);
+  await run('agent-repeat', 'turn-2', true, ['Codex: second repeat', 'Codex: another entry'], repeated, frame(repeated), true);
+  const nonCoordinator = await render('repeat-unclassified', 'unclassified', repeated);
+  const unmatchedCoordinator = await render('unmatched-coordinator', 'coordinator', 'No recorded turn matches this message.');
+  const echoOrder = [await render('repeat-echo-2', 'coordinator', repeated), await render('repeat-echo-1', 'coordinator', repeated)];
+  // Re-rendering in chronological order must not resolve that ambiguity.
+  const echoRetained = [await render('repeat-echo-1', 'coordinator', repeated), await render('repeat-echo-2', 'coordinator', repeated)];
+  const extraEcho = await render('repeat-echo-3', 'coordinator', repeated);
+  // Once the framed turn is consumed, identical bare first-turn text must
+  // never supply another coordinator echo's log.
+  const bareFallback = await render('bare-echo', 'coordinator', text);
+  const unappended = await run('agent-unappended', 'turn-1', true, ['Codex: unappended'], 'Unappended follow-up.',
+    frame('Unappended follow-up.'), true, { echo: true, append: false });
   const oldTurnsRetained = [first, second].map((value, i) =>
     render(`${i ? 'agent-b' : 'agent-a'}:turn-1`).then((tree: any) => JSON.stringify(tree) === JSON.stringify(value.tree)));
-  const events = (tree: any) => (tree.children ?? []).slice(1).filter((row: any) => row.children?.[0]?.children?.[0]?.props.bold);
-  const phases = first.phases.map(tree => events(tree).map((entry: any) => entry.children[1].children[0].props.color ?? 'dim'));
+  const events = (tree: any) => (tree.children ?? []).slice(1).filter((row: any) => row.children?.[0]?.children?.[1]?.children?.[0]?.props.bold);
+  const phases = first.phases.map(tree => events(tree).map((entry: any) => entry.children[0].children[0].children[0].props.color ?? 'dim'));
   const observed = { parent, unidentified, decorated: [first, second, followup].map(value => value.tree.type === 'Box'),
-    firstRetained, oldTurnsRetained: await Promise.all(oldTurnsRetained), phases, appendCalls };
+    firstRetained, oldTurnsRetained: await Promise.all(oldTurnsRetained), phases, appendCalls,
+    binding: { followupLog, normalizedId, ambiguousPrefix, nonCoordinator, unmatchedCoordinator, echoOrder, echoRetained, extraEcho,
+      bareFallback, unappended: unappended.tree.type === 'Box' } };
   const brief = '\nKeep this brief.\n\n  Preserve its indentation.\n';
   const header = "DUET: --model=gpt-6-astra --effort xhigh --fast --sandbox read-only --cwd '/very/long/absolute path/int-145/'\r\n";
   const projected = await run('agent-header', 'turn-1', true, ['Codex: header fixture'], header + brief);
@@ -228,7 +269,24 @@ async function displayReplay() {
   const invalid = 'DUET: --unsupported\n' + brief;
   const fallback = await render(current.uuid, 'unclassified', invalid);
   expect(forwarded.props.text).toBe(invalid);
-  return { ...observed, projection: {
+  if (exercise) await exercise({ run, setColumns: (value: number) => { columns = value; },
+    setHome: (value: string) => { $.env.get = async (name: string) => name === 'HOME' ? value : undefined; } });
+  const shared = 'Same follow-up for different agents.';
+  await run('agent-ambiguous-a', 'turn-1', true, ['Codex: first candidate'], shared, frame(shared), true);
+  await run('agent-ambiguous-b', 'turn-1', true, ['Codex: second candidate', 'Codex: another entry'], shared, frame(shared), true);
+  const ambiguous = [await render('ambiguous-echo-1', 'coordinator', shared), await render('ambiguous-echo-2', 'coordinator', shared)];
+  // Expire only the older candidate through the 256-turn retention boundary.
+  // Losing history cannot identify the old echo, so it must remain unbound.
+  // These starts record display history without running any additional jobs.
+  for (let i = 0; i < 255; i++) {
+    const turnId = `retention-${i}`, agentId = 'agent-ambiguous-b', text = 'Unrelated retention fixture.';
+    const key = `native:v2:native-session:${agentId}`;
+    store.set(key, { ...store.get(key), incoming: { turnId, text } });
+    await hooks.get('turn.start')($, { agentId, turnId, text }, async () => ({ turnId }));
+  }
+  const ambiguityResolved = await render('ambiguous-echo-1', 'coordinator', shared);
+  const ambiguityConsumed = await render('ambiguous-echo-3', 'coordinator', shared);
+  return { ...observed, ambiguity: { ambiguous, resolved: ambiguityResolved, consumed: ambiguityConsumed }, projection: {
     hostNodes: nodes(projected.tree).filter(node => node.type === 'engine').length,
     promptAndLogKept: nodes(plain).every(node => nodes(projected.tree).some(other => JSON.stringify(node) === JSON.stringify(other)) || node === plain),
     nonNative, fallback, renderAccess
@@ -649,13 +707,13 @@ test('progress is bounded, split lines survive, duplicate notices collapse, and 
     if (notices.count === 4) {
       runningEntry = clone(tree.children[4]);
       parentBeforeCompletion = clone(parent);
-      expect(runningEntry.children).toHaveLength(2);
+      expect(runningEntry.children).toHaveLength(1);
       expect(styles(runningEntry).some(props => props.dimColor)).toBe(true);
     }
     if (notices.count === 5) {
       const completed = tree.children[4];
-      expect(completed.children).toHaveLength(2);
-      expect(completed.children[0]).toEqual(runningEntry.children[0]);
+      expect(completed.children).toHaveLength(1);
+      expect(completed.children[0].children[1].children).toEqual(runningEntry.children[0].children[1].children);
       expect(styles(completed).some(props => props.color === 'success')).toBe(true);
       expect(parent.children).toHaveLength(parentBeforeCompletion.children.length);
       expect(parent.children.filter((row: any) => styles(row).some(props => props.color === 'success'))).toHaveLength(1);
@@ -725,10 +783,150 @@ test('progress is bounded, split lines survive, duplicate notices collapse, and 
   const queue = await faultKeepalives('queue'), display = await displayReplay();
   expect({ queue, display }).toEqual({ queue: { maxHeartbeatPending: 1, heartbeatPending: 1 }, display: {
     parent: engine, unidentified: engine, decorated: [true, true, true], firstRetained: true, oldTurnsRetained: [true, true],
-    phases: [['dim'], ['dim', 'dim'], ['success', 'dim'], ['success', 'success']], appendCalls: 7,
+    phases: [['dim'], ['dim', 'dim'], ['success', 'dim'], ['success', 'success']], appendCalls: 15,
+    binding: { followupLog: true, normalizedId: true, ambiguousPrefix: engine, nonCoordinator: engine, unmatchedCoordinator: engine,
+      echoOrder: [engine, engine], echoRetained: [engine, engine], extraEcho: engine, bareFallback: engine, unappended: true },
+    ambiguity: { ambiguous: [engine, engine], resolved: engine, consumed: engine },
     projection: { hostNodes: 1, promptAndLogKept: true, nonNative: engine, fallback: engine, renderAccess: [] }
   } });
   for (const fault of ['owner-append', 'owner-save'] as const) {
     expect(await faultKeepalives(fault)).toEqual({ injected: true, consumed: true, earlyClose: false, logged: true });
   }
+});
+
+test('compact logs fold completed exploration, preserve boundaries and reserve outcome cells at 80 and 120 columns', async () => {
+  await displayReplay(async ({ run, setColumns, setHome }: any) => {
+    const plain = (node: any): string => typeof node === 'string' ? node : (node.children ?? []).map(plain).join('');
+    const entries = (tree: any) => tree.children.filter((entry: any) => entry.props?.flexDirection === 'column'
+      && (entry.children[0]?.children.length === 3 || entry.children[0]?.children[0]?.props.color === 'text'));
+    const event = (entry: any) => entry.children.length === 1 && entry.children[0].children.length === 3;
+    const foldCount = (entry: any) => Number(/· (\d+) commands/.exec(plain(entry))?.[1] ?? 0);
+    const command = (text: string, result = 'Done') => `Bash(${text}) · ${result}`;
+    const read = ['rg --files lib', "rg -n 'Approval|Grant' lib/codex.mjs", 'rg --files tests',
+      "sed -n '204,290p' lib/setup-config.mjs", "sed -n '70,145p' lib/codex.mjs", "sed -n '1,230p' tests/approvals.mjs",
+      'nl -ba lib/cua-config.mjs', 'cat tests/test-environment.mjs'];
+    setHome('/Users/fixture');
+    for (const columns of [80, 120]) {
+      setColumns(columns);
+      const long = `node ${root}/repo/${'segment/'.repeat(11)}file.mjs && cat b`;
+      const lines = ['Codex: ' + 'Checking approval parsing and temporary grants. '.repeat(20), ...read.map(text => command(text)),
+        command(long, 'Error: exit 1'), 'Codex: ' + 'Checking the candidate defects and their reproduction. '.repeat(20),
+        'Write(repro-mirror-partial.mjs) · +42 −0', command('/Users/fixture/runtime/bin/node repro-policy.mjs'),
+        command('node --import test-root-preload.mjs --test tests/policy.mjs', 'Done (1.8s)')];
+      const rendered = await run(`compact-${columns}`, 'turn-1', true, lines);
+      const log = entries(rendered.phases.at(-1)), events = log.filter(event), messages = log.filter((entry: any) => !event(entry));
+      expect(log).toHaveLength(7);
+      expect(events).toHaveLength(5);
+      expect(messages.map((entry: any) => entry.children.length)).toEqual([4, 4]);
+      for (const message of messages) {
+        expect(plain(message.children.at(-1)).endsWith('…')).toBe(true);
+        expect(plain(message).length > 300).toBe(true);
+        expect(message.children.every((row: any) => plain(row).length <= columns)).toBe(true);
+      }
+      expect(events.map(foldCount)).toEqual([8, 0, 0, 0, 0]);
+      expect(events.map((entry: any) => entry.children[0].children[0].children[0].props.color)).toEqual(['success', 'error', 'success', 'success', 'success']);
+      for (const entry of events) {
+        expect(entry.children).toHaveLength(1);
+        const row = entry.children[0], [dot, title, outcome] = row.children;
+        expect(row.props.width).toBe(columns);
+        expect(row.children.reduce((sum: number, cell: any) => sum + cell.props.width, 0)).toBe(columns);
+        expect(outcome.props.flexShrink).toBe(0);
+        expect(outcome.props.width >= plain(outcome).length).toBe(true);
+        expect(title.props.flexGrow).toBe(1);
+        expect(title.props.minWidth).toBe(0);
+        expect(plain(title).length <= title.props.width).toBe(true);
+        expect(dot.children[0].props.color).toBe(outcome.children[0].props.color);
+      }
+      const failure = events[1].children[0].children;
+      expect(plain(failure[1]).includes('…')).toBe(true);
+      expect(/\(\+1\)$/.test(plain(failure[1]))).toBe(true);
+      expect(Number(/exit (\d+)/.exec(plain(failure[2]))?.[1])).toBe(1);
+      expect(Number(/(\d+) lines/.exec(plain(events[2].children[0].children[2]))?.[1])).toBe(42);
+      expect(Number(/(\d+\.\d+)s/.exec(plain(events[4].children[0].children[2]))?.[1])).toBe(1.8);
+      expect(plain(events[3]).includes('/Users/')).toBe(false);
+      // Fold before taking the last three: the parent retains the message
+      // preceding eight calls, then the folded row and the isolated error.
+      const summary = rendered.summaries[9].children.slice(2);
+      expect(summary).toHaveLength(3);
+      expect(Number(/· (\d+) commands/.exec(plain(summary[1]))?.[1])).toBe(8);
+      expect(summary[2]).toEqual(events[1].children[0]);
+      const full = entries(rendered.phases[8]);
+      expect(full.filter(event).map(foldCount)).toEqual([8]);
+      expect(summary[1]).toEqual(full.find(event).children[0]);
+    }
+    setColumns(120);
+    const breaks = [command('cat b', 'Error: exit 2'), command('cat b', 'running'), command('node change.mjs'),
+      'Codex: boundary', 'Write(b) · +2 −0', command('cat b > output'), command('cat b >> output'),
+      command('cat b; touch output'), command('cat "$(touch output)"'), command('cat `touch output`'),
+      command('cat <(touch output)'), command('cat b &'), command("sed -n -i '1p' b"),
+      command("sed -n '1w output' b"), command("sed -n 's/a/b/w output' b"), command('find . -delete'),
+      command('find . -exec touch output \\;'), command('git diff --output=output'), command('tree -o output'),
+      command('file -C magic'), command('rg --pre=script pattern b'), command('cat b', 'exit unknown')];
+    for (let i = 0; i < breaks.length; i++) {
+      const result = await run(`boundary-${i}`, 'turn-1', true, [command('cat a'), breaks[i], command('cat c')]);
+      const log = entries(result.phases.at(-1));
+      expect(log).toHaveLength(3);
+      expect(log.map(foldCount)).toEqual([0, 0, 0]);
+      if (i < 2) expect(log[1].children[0].children[0].children[0].props).toEqual(expect.objectContaining(
+        i === 0 ? { color: 'error' } : { dimColor: true }));
+    }
+    // Unmodeled shell words stay visible in both logs.
+    const unsupported = ['find . -name victim -de"lete"', 'find . -ex"ec" touch output \\;',
+      'git diff --out"put"=output', 'tree -"o" output', 'find . -de\\lete',
+      'git diff --${OPTION}=output', 'tree "-$OPTION" output', 'find . -del*', 'find . -delet[e]',
+      // An assignment's value or a local file is never the program.
+      "BASH_ENV=./cat /bin/bash -c 'cat input'", "'X=./cat' /usr/bin/touch output", './cat input',
+      // Abbreviated long options and clustered short ones still write.
+      'file --comp -m magic', 'git diff --out=output', 'tree -ao output', 'tree -H . -L 1 -R',
+      'rg --hostname-bin=./tool -n x', 'rg -nz x', 'file -bZ input.Z', 'git log --show-signature',
+      'git show --format=%GG HEAD', 'git show --format=%+GG HEAD', 'git status --help'];
+    for (let i = 0; i < unsupported.length; i++) {
+      const result = await run(`unsupported-${i}`, 'turn-1', true,
+        ['cat first', unsupported[i], 'cat last'].map(text => command(text)));
+      const log = entries(result.phases.at(-1));
+      expect(log).toHaveLength(3);
+      expect(log.map(foldCount)).toEqual([0, 0, 0]);
+      expect(result.summaries.at(-1).children.slice(2)).toEqual(log.map((entry: any) => entry.children[0]));
+    }
+    const ordinary = [...read, 'git diff', 'git show HEAD', 'git log -1', 'git status --short',
+      'ls -la', 'wc -l input', 'find . -name "*.mjs"', 'cat "input"', 'cat input && wc -l input'];
+    const ordinaryLog = entries((await run('ordinary-fold', 'turn-1', true, ordinary.map(text => command(text)))).phases.at(-1));
+    expect(ordinaryLog.map(foldCount)).toEqual([ordinary.length]);
+    for (const columns of [80, 120]) {
+      setColumns(columns);
+      // Independent fixture widths: every listed emoji is two cells, e+acute
+      // is one, and the ASCII title/tail/suffix each occupy one cell per char.
+      for (const [glyph, cells] of [['⌚', 2], ['☕', 2], ['©️', 2], ['😀', 2], ['🧑‍🔬', 2], ['é', 1]] as const) {
+        const result = await run(`wide-${columns}-${glyph.codePointAt(0)}`, 'turn-1', true,
+          [command(`cat ${(glyph + 'aaaaaaa').repeat(12)}/tail.txt && cat next`, 'Error: exit 1')]);
+        const [, title] = entries(result.phases.at(-1))[0].children[0].children;
+        const label = plain(title), rest = label.split(glyph).join('');
+        const used = (label.length - rest.length) / glyph.length * cells + rest.length;
+        expect(used <= title.props.width).toBe(true);
+        expect(/^[\x20-\x7e…]*$/.test(rest)).toBe(true); // No partial grapheme remains.
+        expect(label.endsWith('/tail.txt) (+1)')).toBe(true);
+      }
+    }
+    setColumns(120);
+    // Separators inside quotes/escapes/subshells never inflate the suffix.
+    const quoted = ["rg 'a;b && c || d | e' f && cat f", 'cat a\\;b || head c',
+      'node "a;b" | cat f', 'node $(printf "a;b") && cat f', 'node (a; b) && cat f'];
+    for (let i = 0; i < quoted.length; i++) {
+      const result = await run(`quoted-${i}`, 'turn-1', true, [command(quoted[i])]);
+      const title = entries(result.phases.at(-1))[0].children[0].children[1];
+      expect(Number(/\(\+(\d+)\)$/.exec(plain(title))?.[1])).toBe(1);
+    }
+    const paths = await run('paths', 'turn-1', true, [
+      command(`node ${root}/repo/src/x.mjs /Users/fixture/notes/x.mjs`, 'Done'),
+      command(`node ${root}/repo-other/x.mjs`, 'Done')]);
+    const pathRows = entries(paths.phases.at(-1));
+    expect(plain(pathRows[0]).includes(root + '/repo/')).toBe(false);
+    expect(plain(pathRows[0]).includes('~/notes/')).toBe(true);
+    expect(plain(pathRows[1]).includes(root + '/repo-other/')).toBe(true);
+    // Rendering a fold never consumes stored entries or completion pairing.
+    const running = await run('fold-fifo', 'turn-1', true, [command('cat a', 'running'), command('cat a', 'running'),
+      command('cat a'), command('cat a'), command('rg x b', 'running'), command('rg x b', 'Error: exit 3')]);
+    expect(running.phases.map((tree: any) => entries(tree).length)).toEqual([1, 2, 2, 1, 2, 2]);
+    expect(entries(running.phases.at(-1)).map(foldCount)).toEqual([2, 0]);
+  });
 });

@@ -5,7 +5,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { makeTempDir, initGitRepo, run } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { computerUseSetup, ensureComputerUseApproval, grantComputerAppsForThread, normalCodexHome } from "../plugins/codex/scripts/lib/setup-config.mjs";
+import { computerUseSetup, ensureComputerUseApproval, grantComputerAppsForThread, normalCodexHome, readTomlField } from "../plugins/codex/scripts/lib/setup-config.mjs";
+import { acquireConfigLock } from "../plugins/codex/scripts/lib/tool-config.mjs";
 
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
 const USER_FILE = '# user\'s Codex app\n[apps]\nallowed = ["com.google.Chrome", "com.apple.finder", "not a bundle id"]\ndenied = ["com.evil.App"]\n';
@@ -32,7 +33,7 @@ function fixture(behavior = "review-ok") {
 }
 const allowedIn = file => fs.existsSync(file) ? JSON.parse(/"allowed" = (\[.*\])/.exec(fs.readFileSync(file, "utf8"))?.[1] ?? "[]") : null;
 
-test("mirror copies only the user's always-allowed apps, idempotently and without touching ~/.codex", () => {
+test("mirror copies only the user's always-allowed apps, idempotently and without touching ~/.codex", t => {
   const f = fixture();
   assert.equal(normalCodexHome(f.env), f.env.CODEX_HOME);
   const first = computerUseSetup({ env: f.env });
@@ -54,6 +55,78 @@ test("mirror copies only the user's always-allowed apps, idempotently and withou
   // A hand-written isolated entry survives mirroring.
   fs.writeFileSync(f.isolatedFile, '["apps"]\n"allowed" = ["com.apple.finder","com.apple.Terminal","com.local.Hand"]\n');
   assert.deepEqual(computerUseSetup({ env: f.env }).allowed.map(a => [a.app, a.source]), [["com.local.Hand", "explicit"], ["com.apple.finder", "mirrored"], ["com.apple.Terminal", "mirrored"]]);
+
+  // approvals-2: lock failure cannot expose a grant before provenance exists.
+  for (const locked of ["duet", "computer-use"]) {
+    const interrupted = fixture(), home = interrupted.env.CODEX_COMPANION_HOME;
+    const lockFile = path.join(home, locked, "config.toml");
+    fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+    const release = acquireConfigLock(lockFile);
+    try {
+      assert.throws(() => computerUseSetup({ env: interrupted.env }), /another process/);
+      assert.equal(fs.existsSync(interrupted.isolatedFile), false);
+      assert.equal(fs.existsSync(path.join(home, "duet", "config.toml")), false);
+    } finally { release(); }
+    fs.writeFileSync(path.join(interrupted.userDir, "config.toml"), '[apps]\nallowed = []\n');
+    assert.deepEqual(computerUseSetup({ env: interrupted.env, approval: "ask" }).allowed, []);
+  }
+  // Interrupt each commit boundary, both while adding mirrors and withdrawing
+  // them. This also exercises pending entries absent from/present in the list.
+  for (const operation of ["mirror", "ask"]) for (const failAt of [1, 2, 3]) {
+    const interrupted = fixture(), env = interrupted.env;
+    const preference = path.join(env.CODEX_COMPANION_HOME, "duet", "config.toml");
+    computerUseSetup({ env, approval: "ask", allow: ["com.local.Explicit"] });
+    if (operation === "ask") computerUseSetup({ env, approval: "mirror" });
+    let commits = 0;
+    const rename = fs.renameSync;
+    const fault = t.mock.method(fs, "renameSync", (from, to) => {
+      if ([preference, interrupted.isolatedFile].includes(to) && ++commits === failAt) throw Object.assign(new Error("Injected mirror write failure"), { code: "EIO" });
+      return rename(from, to);
+    });
+    try { assert.throws(() => computerUseSetup({ env, approval: operation }), { code: "EIO" }); }
+    finally { fault.mock.restore(); }
+    assert.equal(commits, failAt);
+    const record = fs.readFileSync(preference, "utf8");
+    const provenance = [...(readTomlField(record, ["computer_use_mirrored_apps"]) ?? []), ...(readTomlField(record, ["computer_use_mirrored_pending_apps"]) ?? [])];
+    assert.ok(allowedIn(interrupted.isolatedFile).filter(app => app !== "com.local.Explicit").every(app => provenance.includes(app)));
+    assert.deepEqual(interrupted.digest(), interrupted.userHash);
+    fs.writeFileSync(path.join(interrupted.userDir, "config.toml"), '[apps]\nallowed = []\n');
+    assert.deepEqual(ensureComputerUseApproval({ env }).allowed, ["com.local.Explicit"]);
+    assert.deepEqual(computerUseSetup({ env, approval: "ask" }).allowed, [{ app: "com.local.Explicit", source: "explicit" }]);
+    assert.deepEqual(allowedIn(interrupted.isolatedFile), ["com.local.Explicit"]);
+    assert.equal(readTomlField(fs.readFileSync(preference, "utf8"), ["computer_use_mirrored_pending_apps"]), undefined);
+    assert.deepEqual(computerUseSetup({ env }).changedFiles, []);
+  }
+  // Task startup retries a transient finalization error. If the allowlist
+  // remains unwritable, it continues with the previous grants and provenance.
+  for (const persistent of [false, true]) {
+    const interrupted = fixture(), env = interrupted.env;
+    const preference = path.join(env.CODEX_COMPANION_HOME, "duet", "config.toml");
+    const source = path.join(interrupted.userDir, "config.toml");
+    fs.writeFileSync(source, '[apps]\nallowed = []\n');
+    computerUseSetup({ env, allow: ["com.local.Explicit"] });
+    const previous = fs.readFileSync(interrupted.isolatedFile, "utf8");
+    fs.writeFileSync(source, USER_FILE);
+    const preload = path.join(interrupted.dir, "mirror-fault.mjs");
+    fs.writeFileSync(preload, `import fs from 'node:fs';
+const rename = fs.renameSync, files = ${JSON.stringify([preference, interrupted.isolatedFile])};
+let commits = 0;
+fs.renameSync = (from, to) => {
+  if (files.includes(to) && (${persistent ? "to === files[1]" : "++commits === 3"})) throw Object.assign(new Error('Injected mirror write failure'), { code: 'EIO' });
+  return rename(from, to);
+};\n`);
+    const done = interrupted.json(run(process.execPath, [script, "task", "--json", "--report", "inspect"], {
+      cwd: interrupted.repo, env: { ...env, NODE_OPTIONS: `--import=${preload}` }
+    }));
+    assert.equal(done.status, "completed");
+    const seen = readTomlField(interrupted.state().lastTurnStart.computerUse.global, ["apps", "allowed"]);
+    assert.deepEqual(seen, persistent ? ["com.local.Explicit"] : ["com.local.Explicit", "com.google.Chrome", "com.apple.finder"]);
+    if (persistent) assert.equal(fs.readFileSync(interrupted.isolatedFile, "utf8"), previous);
+    else assert.equal(readTomlField(fs.readFileSync(preference, "utf8"), ["computer_use_mirrored_pending_apps"]), undefined);
+    assert.deepEqual(interrupted.digest(), interrupted.userHash);
+    fs.writeFileSync(source, '[apps]\nallowed = []\n');
+    assert.deepEqual(computerUseSetup({ env, approval: "ask" }).allowed, [{ app: "com.local.Explicit", source: "explicit" }]);
+  }
 });
 
 test("ask stops mirroring and removes mirrored apps; allow/revoke/list/dry-run behave through the CLI", () => {

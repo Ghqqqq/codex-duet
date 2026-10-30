@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { getRepoRoot } from "./git.mjs";
 
 function git(cwd, args) {
   const result = spawnSync("git", args, {
@@ -14,19 +15,50 @@ function git(cwd, args) {
 
 function fingerprint(root, name) {
   const target = path.resolve(root, name);
-  const parent = fs.realpathSync(path.dirname(target));
-  if (parent !== root && !parent.startsWith(`${root}${path.sep}`)) throw new Error("External symlink parent");
-  const stat = fs.lstatSync(target);
-  if (stat.isSymbolicLink()) return `symlink:${fs.readlinkSync(target)}`;
-  if (!stat.isFile()) throw new Error("Not a regular file"); // No traversal of submodules/devices.
-  const hash = createHash("sha256");
-  const fd = fs.openSync(target, "r");
-  try {
-    const buffer = Buffer.alloc(64 * 1024);
-    let count;
-    while ((count = fs.readSync(fd, buffer, 0, buffer.length, null))) hash.update(buffer.subarray(0, count));
-  } finally { fs.closeSync(fd); }
-  return `${stat.mode & 0o111}:${hash.digest("hex")}`;
+  const sameVersion = (a, b) => a.dev === b.dev && a.ino === b.ino && a.mode === b.mode &&
+    a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let fd;
+    let inspected = false;
+    try {
+      const parent = fs.realpathSync(path.dirname(target));
+      if (parent !== root && !parent.startsWith(`${root}${path.sep}`)) throw new Error("External symlink parent");
+      const file = path.join(parent, path.basename(target));
+      const stat = fs.lstatSync(file);
+      inspected = true;
+      const stillAtPath = (sample) => fs.realpathSync(path.dirname(target)) === parent &&
+        fs.realpathSync(parent) === parent && sameVersion(sample, fs.lstatSync(file));
+      if (stat.isSymbolicLink()) {
+        const link = fs.readlinkSync(file);
+        if (stillAtPath(stat)) return `symlink:${link}`;
+        continue;
+      }
+      if (!stat.isFile()) throw new Error("Not a regular file"); // No traversal of submodules/devices.
+      // NONBLOCK also prevents a replacement FIFO from stalling before fstat.
+      fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+      const before = fs.fstatSync(fd);
+      if (!before.isFile() || !sameVersion(stat, before) || !stillAtPath(before)) continue;
+      const hash = createHash("sha256");
+      const buffer = Buffer.alloc(64 * 1024);
+      let bytes = 0, count;
+      // Bound a growing file's sample as well as the number of retries.
+      while (bytes <= before.size && (count = fs.readSync(fd, buffer, 0, Math.min(buffer.length, before.size + 1 - bytes), null))) {
+        hash.update(buffer.subarray(0, count));
+        bytes += count;
+      }
+      const after = fs.fstatSync(fd);
+      if (bytes === before.size && sameVersion(before, after) && stillAtPath(after)) {
+        return `${after.mode & 0o111}:${hash.digest("hex")}`;
+      }
+    } catch (error) {
+      // An initially absent file is a deletion. A disappearance after inspection
+      // is an unstable sample and must not be certified as complete.
+      if (attempt === 0 && !inspected && error.code === "ENOENT") throw error;
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  }
+  throw new Error("File unavailable or changed during snapshot");
 }
 
 // Hash all tracked and nonignored untracked files, including already-dirty
@@ -35,7 +67,7 @@ function fingerprint(root, name) {
 export function snapshotWorkspace(cwd) {
   const snapshot = { status: "complete", files: new Map(), preExistingChanges: [], unavailablePaths: [] };
   try {
-    const root = fs.realpathSync(git(cwd, ["rev-parse", "--show-toplevel"])[0].trimEnd());
+    const root = fs.realpathSync(getRepoRoot(cwd));
     snapshot.root = root;
     const untracked = git(root, ["ls-files", "--others", "--exclude-standard", "-z"]);
     const diffArgs = ["--name-only", "--no-ext-diff", "--no-textconv", "--no-renames", "-z"];

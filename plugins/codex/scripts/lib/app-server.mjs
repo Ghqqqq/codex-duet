@@ -282,9 +282,9 @@ class AppServerClientBase {
       return;
     }
     const { reply, summary } = decideServerRequest(message, this.serverRequestPolicy);
-    // A Computer Use elicitation for this turn that no per-call flag covers is
-    // the parent's decision: the owner answers through the question bridge and
-    // the reply is accept or cancel, never a persistence instruction to Codex.
+    // The policy's shared Computer Use check has already bound this request to
+    // a supported server and empty form. Only that shape may become an app
+    // question; the reply never carries a persistence instruction to Codex.
     if (summary.kind === "computer-use-app" && summary.decision !== "approved" && summary.reason !== "turn-mismatch" && this.options.onApprovalRequest) {
       logServerRequest({ ...summary, decision: "pending", reason: "ask-parent" }, this.options.onServerRequestLog);
       const meta = message.params?._meta ?? {};

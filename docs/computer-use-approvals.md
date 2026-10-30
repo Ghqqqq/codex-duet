@@ -68,7 +68,10 @@ isolated allowed = (current − previously mirrored − revoked)
 - Bookkeeping: `computer_use_mirrored_apps` and `computer_use_revoked_apps` in
   `duet/config.toml` remember which entries came from the mirror and which the
   user withdrew, so a later `ask` removes exactly the mirrored ones and a
-  revoked app stays out until it is allowed again.
+  revoked app stays out until it is allowed again. The mirror holds both locks
+  and records `computer_use_mirrored_pending_apps` before writing the allowlist,
+  then the final record, so an interrupted mirror never leaves a mirrored app
+  looking explicit.
 
 ### Ask
 
@@ -103,8 +106,10 @@ apps for that call. Two mechanisms cover both runtimes:
   `<isolated home>/computer-use/sessions/<thread id>.toml` `[apps] allowed`, the
   session-scoped persisted state node_repl consults on every app request, and
   the file is restored (or removed) when the turn ends, even on failure.
-- If the runtime forwards the elicitation (`mcpServer/elicitation/request` with
-  `_meta.connector_id = "computer-use"`), the policy accepts it only for an
+- If the runtime forwards the elicitation (`mcpServer/elicitation/request` from
+  the `node_repl` or `cua_repl` server, in form mode, with an empty requested
+  schema, `_meta.connector_id = "computer-use"` and `tool_params` of exactly
+  `{app}`; unknown envelope and `_meta` keys are ignored), the policy accepts it only for an
   exact bundle-id match on the current thread/turn, with
   `{ action: "accept" }` and no `_meta.persist`, so nothing outlives the request.
   Everything else is cancelled (`cancel` is not persisted as a deny).

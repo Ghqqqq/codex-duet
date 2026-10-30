@@ -4,6 +4,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { collectReviewContext, getWorkingTreeState, resolveReviewTarget } from "../plugins/codex/scripts/lib/git.mjs";
+import { snapshotWorkspace } from "../plugins/codex/scripts/lib/workspace-changes.mjs";
+import { resolveWorkspaceRoot } from "../plugins/codex/scripts/lib/workspace.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 
 test("resolveReviewTarget prefers working tree when repo is dirty", () => {
@@ -50,6 +52,27 @@ test("resolveReviewTarget prefers working tree when repo is dirty", () => {
   assert.throws(() => resolveReviewTarget(subdir, { base: "missing-base" }));
   run("git", ["update-ref", "-d", "refs/remotes/origin/main"], { cwd });
   assert.throws(() => resolveReviewTarget(subdir));
+
+  const parent = makeTempDir();
+  const spaced = path.join(parent, "trailing-space "), sibling = spaced.slice(0, -1);
+  fs.mkdirSync(spaced); initGitRepo(spaced);
+  fs.mkdirSync(path.join(spaced, "sub"));
+  fs.writeFileSync(path.join(spaced, "own.txt"), "own repository");
+  for (const withSibling of [false, true]) {
+    if (withSibling) {
+      fs.mkdirSync(sibling); initGitRepo(sibling);
+      fs.writeFileSync(path.join(sibling, "other.txt"), "other repository");
+    }
+    const inside = path.join(spaced, "sub");
+    const context = collectReviewContext(inside, resolveReviewTarget(inside));
+    assert.equal(context.repoRoot, fs.realpathSync(spaced));
+    assert.equal(resolveWorkspaceRoot(inside), fs.realpathSync(spaced));
+    assert.deepEqual(context.changedFiles, ["own.txt"]);
+    const snapshot = snapshotWorkspace(inside);
+    assert.equal(snapshot.status, "complete");
+    assert.equal(snapshot.root, fs.realpathSync(spaced));
+    assert.deepEqual([...snapshot.files.keys()], ["own.txt"]);
+  }
 });
 
 test("resolveReviewTarget falls back to branch diff when repo is clean", () => {
@@ -166,7 +189,7 @@ test("collectReviewContext skips untracked directories in working tree review", 
   assert.doesNotMatch(context.content, /NESTED_PRIVATE_SENTINEL/);
 });
 
-test("collectReviewContext skips broken untracked symlinks instead of crashing", () => {
+test("collectReviewContext skips broken untracked symlinks instead of crashing", (t) => {
   const cwd = makeTempDir();
   initGitRepo(cwd);
   fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
@@ -180,6 +203,56 @@ test("collectReviewContext skips broken untracked symlinks instead of crashing",
   assert.equal(target.mode, "working-tree");
   assert.ok(context.content.includes("broken-link"));
 
+  fs.unlinkSync(path.join(cwd, "broken-link"));
+  const leaf = path.join(fs.realpathSync(cwd), "new.txt");
+  const outside = path.join(makeTempDir(), "outside.txt");
+  fs.writeFileSync(outside, "outside content");
+  const open = fs.openSync, read = fs.readSync;
+  for (const mutation of ["symlink-before-open", "symlink-after-read", "grow-before-open", "grow-before-read", "replace-after-read"]) {
+    fs.rmSync(leaf, { force: true }); fs.writeFileSync(leaf, "small");
+    let mutated = false, watchedFd, bytesRead = 0;
+    const mutate = () => {
+      mutated = true;
+      if (mutation.startsWith("symlink")) {
+        fs.unlinkSync(leaf); fs.symlinkSync(outside, leaf);
+      } else if (mutation.startsWith("grow")) {
+        fs.writeFileSync(leaf, Buffer.alloc(8 * 1024 * 1024, 65));
+      } else {
+        fs.unlinkSync(leaf); fs.writeFileSync(leaf, "replacement");
+      }
+    };
+    t.mock.method(fs, "openSync", function (name, ...args) {
+      if (name === leaf && !mutated && mutation.endsWith("before-open")) mutate();
+      const fd = open.call(this, name, ...args);
+      if (name === leaf && args[0] !== "w") watchedFd = fd;
+      return fd;
+    });
+    t.mock.method(fs, "readSync", function (fd, ...args) {
+      if (fd === watchedFd && !mutated && mutation === "grow-before-read") mutate();
+      const count = read.call(this, fd, ...args);
+      if (fd === watchedFd) {
+        bytesRead += count;
+        if (!mutated && mutation.endsWith("after-read")) mutate();
+      }
+      return count;
+    });
+    const collected = collectReviewContext(cwd, target);
+    t.mock.restoreAll();
+    assert.equal(mutated, true);
+    assert.ok(bytesRead <= 24 * 1024 + 1);
+    assert.equal(collected.untrackedInlineFiles, 0);
+    assert.equal(collected.untrackedInlineBytes, 0);
+    assert.equal(collected.omittedUntracked.length, 1);
+    const omitted = collected.omittedUntracked[0];
+    assert.equal(omitted.path, "new.txt");
+    if (mutation.startsWith("symlink")) {
+      assert.equal(omitted.reason, "symlink, not inlined");
+      assert.equal(omitted.size, fs.lstatSync(leaf).size);
+    } else if (mutation.startsWith("grow")) {
+      assert.equal(omitted.size, 8 * 1024 * 1024);
+      assert.ok(omitted.reason.includes("byte limit"));
+    }
+  }
 });
 
 test("collectReviewContext falls back to lightweight context for larger adversarial reviews", () => {

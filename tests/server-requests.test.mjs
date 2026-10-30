@@ -3,6 +3,7 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseArgs } from "../plugins/codex/scripts/lib/args.mjs";
+import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
 import { normalizeBrowserOrigin, normalizeBrowserOrigins, normalizeBundleId, normalizeBundleIds, decideServerRequest, parseApprovalAnswer, ServerRequestRelay } from "../plugins/codex/scripts/lib/server-requests.mjs";
 import { makeTempDir, initGitRepo, run, requireLocalSockets, readyBroker } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
@@ -98,7 +99,7 @@ const computerUseRequest = (patch = {}, meta = {}) => ({ id: 9, method: "mcpServ
   _meta: { codex_approval_kind: "mcp_tool_call", connector_id: "computer-use", connector_name: "Computer Use", persist: ["session", "always"], riskLevel: "medium", tool_name: "get_app_state", tool_params: { app: "com.google.Chrome" }, tool_params_display: "DO_NOT_LOG_FIXTURE", ...meta }, ...patch
 } });
 
-test("Computer Use elicitations accept only a listed bundle id for the current turn and never persist", () => {
+test("Computer Use elicitations accept only a listed bundle id for the current turn and never persist", async () => {
   const apps = { ...policy, approvedComputerApps: ["com.google.Chrome"] };
   const matched = decideServerRequest(computerUseRequest(), apps);
   assert.deepEqual(matched.reply, { id: 9, result: { action: "accept" } }, "no _meta.persist: the grant lasts one request");
@@ -136,6 +137,49 @@ test("Computer Use elicitations accept only a listed bundle id for the current t
   relay.request(computerUseRequest({}, { connector_id: "other" }), owner);
   relay.response({ id: sent[2].id, result: { action: "accept" } }, owner);
   assert.deepEqual(replies[2], { id: 9, result: { action: "cancel" } }, "accepting other elicitations stays unsupported");
+
+  // approvals-1: metadata cannot turn an unrelated/broader request into app
+  // consent, whether covered by a flag, answered by a client, or parent-routed.
+  const f = fixture(), questions = [], forwardedReplies = [];
+  const client = await CodexAppServerClient.connect(f.repo, { env: f.env, disableBroker: true,
+    onApprovalRequest: question => { questions.push(question); return { action: "accept" }; }, onServerRequestLog: () => {} });
+  const sendMessage = client.sendMessage;
+  client.sendMessage = message => forwardedReplies.push(message);
+  client.setServerRequestContext(policy.threadId, policy.turnId);
+  try {
+    for (const serverName of ["node_repl", "cua_repl"]) {
+      for (const message of [computerUseRequest({ serverName }), computerUseRequest({ serverName, extra: true }), computerUseRequest({ serverName }, { extra: true })]) {
+        const result = decideServerRequest(message, apps);
+        assert.deepEqual(result.reply.result, { action: "accept" });
+        assert.equal(result.summary.kind, "computer-use-app");
+        relay.request(message, owner);
+        relay.response({ id: sent.at(-1).id, result: { action: "accept" } }, owner);
+        assert.deepEqual(replies.at(-1).result, { action: "accept" });
+      }
+      const invalid = [
+        computerUseRequest({ serverName: "unrelated_mcp_server" }),
+        computerUseRequest({ serverName, mode: "url", url: "https://example.net/consent", elicitationId: "consent" }),
+        computerUseRequest({ serverName, requestedSchema: { type: "object", properties: { token: { type: "string" } } } }),
+        computerUseRequest({ serverName, requestedSchema: { type: "object", properties: {}, extra: true } }),
+        computerUseRequest({ serverName }, { tool_params: { app: "com.google.Chrome", extra: true } })
+      ];
+      for (const message of invalid) {
+        const result = decideServerRequest(message, apps);
+        assert.deepEqual(result.reply.result, { action: "cancel" });
+        assert.notEqual(result.summary.kind, "computer-use-app");
+        relay.request(message, owner);
+        relay.response({ id: sent.at(-1).id, result: { action: "accept" } }, owner);
+        assert.deepEqual(replies.at(-1).result, { action: "cancel" });
+        client.handleServerRequest(message);
+        assert.deepEqual(forwardedReplies.at(-1).result, { action: "cancel" });
+        assert.equal(questions.length, 0);
+      }
+    }
+    client.handleServerRequest(computerUseRequest({ extra: true }, { extra: true }));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(questions.map(q => q.app), ["com.google.Chrome"]);
+    assert.deepEqual(forwardedReplies.at(-1).result, { action: "accept" });
+  } finally { client.sendMessage = sendMessage; await client.close(); }
 });
 
 test("bundle ids are validated without echoing input and de-duplicated", () => {

@@ -1076,7 +1076,8 @@ function directLines(stdout) {
   const lines = stdout.slice(0, -1).split("\n");
   assert.equal(lines.at(-1), JSON.stringify(JSON.parse(lines.at(-1))), "last line is compact JSON");
   for (const line of lines.slice(0, -1)) {
-    assert.ok(line.length > 0 && line.length <= 200, "progress is compact and single-line");
+    // Codex messages may carry up to 600 characters after their prefix; other progress stays within 200.
+    assert.ok(line.length > 0 && line.length <= (/^\[\d+\] Codex: /.test(line) ? 600 + line.indexOf("Codex: ") + 7 : 200), "progress is compact and single-line");
     assert.ok(!line.startsWith("{"), "progress cannot be mistaken for JSON");
     assert.doesNotMatch(line, /[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/, "progress has no terminal controls or embedded newlines");
   }

@@ -136,8 +136,10 @@ draws its own transcript. It shows prompts, tool calls, file changes, plans and
 pending questions, and keeps follow-ups on one thread in one conversation.
 Status labels make it clear what needs you: **Question for Claude**, **Needs your
 attention** or **Outcome unknown**. `/codex-live` opens it at any width. `/tasks`
-and the native agent view show compact progress such as
-`Bash(npm test) · Done (21.1s)`.
+shows compact progress such as `Bash(npm test) · Done (21.1s)`. The native agent
+view groups it: consecutive commands it can confirm are read-only fold into one
+`Explored · 6 commands` row, and every other step takes one row ending in a
+status such as `✓ 21.1s` or `✗ exit 1`.
 
 <p align="center">
   <img src="docs/assets/codex-live-demo.png" alt="codex-live pane showing three Codex workers on a demo repository: one reviewing, one finished implementing compound durations with file updates and test runs, one finished investigating" width="88%">

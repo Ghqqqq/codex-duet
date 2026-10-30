@@ -77,18 +77,23 @@ function reportText(text, summaryOnly = false) {
   return text;
 }
 function changeLineCounts(change) {
+  const kind = change.kind?.type ?? change.kind;
   const diff = change.diff ?? change.kind?.unified_diff;
-  if (typeof diff === "string") {
-    let added = 0, removed = 0;
-    for (const line of diff.split(/\r?\n/)) {
-      if (line.startsWith("+") && !line.startsWith("+++")) added += 1;
-      if (line.startsWith("-") && !line.startsWith("---")) removed += 1;
-    }
-    return { added, removed };
-  }
-  const content = change.content ?? change.kind?.content;
-  if ((change.kind?.type ?? change.kind) === "add" && typeof content === "string") {
+  // FileUpdateChange.diff is the full file content for an add, not a
+  // unified patch. Legacy notifications instead put it in content.
+  const content = change.content ?? change.kind?.content ?? (kind === "add" ? diff : undefined);
+  if (kind === "add" && typeof content === "string") {
     return { added: content === "" ? 0 : content.split("\n").length - (content.endsWith("\n") ? 1 : 0) };
+  }
+  if (typeof diff === "string") {
+    let added = 0, removed = 0, hunk = false;
+    for (const line of diff.split(/\r?\n/)) {
+      if (line.startsWith("@@")) hunk = true;
+      if (line.startsWith("+") && (hunk || !line.startsWith("+++"))) added += 1;
+      if (line.startsWith("-") && (hunk || !line.startsWith("---"))) removed += 1;
+    }
+    // An opaque nonempty payload is unknown, not an empty change.
+    return diff === "" || hunk || added || removed ? { added, removed } : {};
   }
   return {};
 }
@@ -103,11 +108,17 @@ export function itemActivity(item, lifecycle, starts, key, now = Date.now()) {
   const base = { type: item.type, status: statusOf(item, lifecycle), lifecycle };
   switch (item.type) {
     case "agentMessage":
-      return lifecycle === "completed" && item.text ? [{ ...base, text: snippet(reportText(item.text), 300), body: redactActivity(reportText(item.text, true)).slice(0, 4000) }] : [];
-    case "commandExecution":
-      return [{ ...base, command: snippet(commandExcerpt(redactActivity(item.command).split(/\r?\n/)[0], true), 160), exitCode: Number.isInteger(item.exitCode) ? item.exitCode : null, durationMs }];
+      return lifecycle === "completed" && item.text ? [{ ...base, text: snippet(reportText(item.text), 600), body: redactActivity(reportText(item.text, true)).slice(0, 4000) }] : [];
+    case "commandExecution": {
+      const [first, ...rest] = redactActivity(item.command).split(/\r?\n/);
+      const command = commandExcerpt(first, true);
+      // The fold classifier must see that executable text was omitted, even
+      // if later display cleanup removes a shell wrapper from the excerpt.
+      const incomplete = rest.some(line => line.trim()) || command.length > 160;
+      return [{ ...base, command: incomplete ? `${command.slice(0, 159)}…` : command, exitCode: Number.isInteger(item.exitCode) ? item.exitCode : null, durationMs }];
+    }
     case "fileChange":
-      return lifecycle === "completed" ? (item.changes ?? []).map(change => ({ ...base, path: snippet(change.path, 180), kind: ["add", "delete", "update"].includes(change.kind?.type ?? change.kind) ? (change.kind?.type ?? change.kind) : "unknown", ...changeLineCounts(change) })) : [];
+      return lifecycle === "completed" ? (item.changes ?? []).map(change => ({ ...base, status: typeof item.status === "string" ? item.status : "unknown", path: snippet(change.path, 180), kind: ["add", "delete", "update"].includes(change.kind?.type ?? change.kind) ? (change.kind?.type ?? change.kind) : "unknown", ...changeLineCounts(change) })) : [];
     case "mcpToolCall":
     case "dynamicToolCall":
       return [{ ...base, callId: item.id ?? null, server: snippet(item.server ?? item.namespace ?? "dynamic", 80), tool: snippet(item.tool ?? item.name ?? "unknown", 80), durationMs }];
@@ -117,11 +128,16 @@ export function itemActivity(item, lifecycle, starts, key, now = Date.now()) {
 export function planActivity(plan = []) {
   return [{ type: "plan", steps: plan.map(step => snippet(step.step, 80)), statuses: plan.map(step => ["pending", "inProgress", "completed"].includes(step.status) ? step.status : "pending") }];
 }
+// The native run log folds an excerpt as the whole call. An assignment can
+// select code a read-only program runs (BASH_ENV, LD_PRELOAD, GIT_*), so it is
+// hidden before such programs and shells only when every name is inert.
+const INERT_ENVIRONMENT = /^(?:LANG|LANGUAGE|LC_[A-Z]+|TZ|TERM|COLUMNS|LINES|NO_COLOR|FORCE_COLOR|CLICOLOR(?:_FORCE)?|CI|npm_config_[A-Za-z0-9_]+)$/;
+const FOLDABLE_PROGRAM = /^(?:rg|grep|nl|cat|head|tail|ls|wc|find|tree|file|stat|sed|git|zsh|bash|sh)$/;
 // Display-only parsing: never evaluate shell text. Leave unsupported or
 // incomplete prefixes intact, including assignments with no command after them.
 function stripEnvironment(command) {
   const word = /^(?:[^\s'"\\;&|<>()`]|'[^']*'|"(?:\\.|[^"\\])*"|\\.)+(?=\s|[;&|<>()]|$)/;
-  let rest = command, env = false, options = false;
+  let rest = command, env = false, options = false, assigned = false;
   for (;;) {
     const token = word.exec(rest)?.[0];
     if (!token || token.startsWith("#")) return command;
@@ -133,9 +149,16 @@ function stripEnvironment(command) {
       if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return command;
       rest = next.slice(name.length).trimStart();
       continue;
-    } else if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) options = false;
-    else {
-      return env && token.startsWith("-") ? command : rest;
+    } else if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+      // Expansion can execute commands. Keep assignments whose shell meaning
+      // this display-only parser cannot establish instead of hiding them.
+      if (/[$`\\]/.test(token)) return command;
+      assigned ||= !INERT_ENVIRONMENT.test(token.slice(0, token.indexOf("=")));
+      options = false;
+    } else {
+      // env treats a quoted NAME=value as an assignment; keep env with it.
+      if (env && (token.startsWith("-") || /^['"][A-Za-z_][A-Za-z0-9_]*=/.test(token))) return command;
+      return assigned && FOLDABLE_PROGRAM.test(token.replace(/['"\\]/g, "").split("/").at(-1)) ? command : rest;
     }
     rest = rest.slice(token.length).trimStart();
   }
@@ -199,7 +222,11 @@ export function formatActivity(event, options = {}) {
     }
     case "fileChange": {
       const action = event.kind === "add" ? "Write" : event.kind === "delete" ? "Delete" : "Update";
-      detail = `${action}(${activityPath(event.path, root)}) · +${event.added ?? (event.kind === "delete" ? 0 : "?")} −${event.removed ?? (event.kind === "add" ? 0 : "?")}`;
+      const result = ["completed", "success"].includes(event.status)
+        ? `+${event.added ?? (event.kind === "delete" ? 0 : "?")} −${event.removed ?? (event.kind === "add" ? 0 : "?")}`
+        : ["failed", "error", "declined", "cancelled", "interrupted"].includes(event.status) ? `Error: ${event.status}`
+        : ["started", "inProgress", "running", "queued"].includes(event.status) ? "running" : "outcome unknown";
+      detail = `${action}(${activityPath(event.path, root)}) · ${result}`;
       break;
     }
     case "mcpToolCall":

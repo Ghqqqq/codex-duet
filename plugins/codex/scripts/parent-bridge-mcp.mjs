@@ -6,11 +6,13 @@
 // across workspaces.
 import path from "node:path";
 import process from "node:process";
+import { randomUUID } from "node:crypto";
 import { createJsonLineReader } from "./lib/app-server.mjs";
 import { ACTIVE, ASK_PARENT, PARENT_BRIDGE_ENV, recordedThreadJobs, askParentQuestion } from "./lib/job-runtime.mjs";
 import { readJobFile, resolveJobFile } from "./lib/state.mjs";
 
 const cwd = process.env[PARENT_BRIDGE_ENV.cwd], envThread = process.env[PARENT_BRIDGE_ENV.threadId], envJob = process.env[PARENT_BRIDGE_ENV.jobId];
+const caller = { pid: process.pid, nonce: randomUUID() };
 const validThread = id => typeof id === "string" && /^[A-Za-z0-9._-]{1,120}$/.test(id);
 // Match the job filename alphabet used by retention, with a bounded length.
 const validJob = id => typeof id === "string" && /^[A-Za-z0-9_-]{1,120}$/.test(id);
@@ -100,7 +102,7 @@ process.stdin.on("data", createJsonLineReader(async line => {
           ? await jobForTurn(threadId, validTurn(turnId) ? turnId : null) : null;
         if (!job) { send({ id: message.id, result: { ...result("No Duet task is listening on this thread right now. Proceed on a conservative assumption within the authorized scope and report it."), isError: true } }); break; }
         const callId = typeof _meta?.callId === "string" && /^[A-Za-z0-9_-]{1,120}$/.test(_meta.callId) ? _meta.callId : null;
-        const { text } = await askParentQuestion(job.workspaceRoot, job.id, { question: args.question, options: args.options ?? [], callId });
+        const { text } = await askParentQuestion(job.workspaceRoot, job.id, { question: args.question, options: args.options ?? [], callId }, { caller, turnId: job.turnId });
         send({ id: message.id, result: result(text) });
         break;
       }

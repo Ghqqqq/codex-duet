@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.4.8
+
+### Stability fixes
+
+- `duet cancel` racing a natural completion now agrees with the committed job. A cancel accepted before the terminal commit is applied by that commit under the state lock: the job ends `cancelled` and its background terminals are cleaned. A run that already stopped for its own reason (owner stop, lease expiry, signal) keeps that reason. A cancel that finds the job already ended reports that job's own status. `turnInterruptAttempted` and `turnInterrupted` report only an interrupt Duet actually sent and confirmed, and exit 2 means the ending is unconfirmed. A parent question resolved as interrupted now also stops the runtime.
+- `status --wait --owner` keeps renewing after one refused renewal, so a wait that wakes after a pause no longer lets the job reach `lease_expired`.
+- A stopped native agent whose inferred completion could not be confirmed stays unresolved. The stop reads the recovery report before it writes `finishedAt` or the closed-turn marker; an `unknown` or `unreachable` recovery writes neither, also when a later lookup or wait fails, so pressure eviction and age expiry no longer remove a binding whose turn may still run. Native cancel no longer stamps `finishedAt` either.
+- An answer accepted just before the parent-question MCP bridge died no longer blocks every later question or app approval for that job. Each question slot records the bridge process that asked. A restarted bridge retrying the exact same call on the same turn receives the answer once, and an answer whose bridge is gone is archived as `orphaned` after the question deadline.
+- Computer Use elicitations are recognised only from the `node_repl` or `cua_repl` server, in form mode, with an empty requested schema and `tool_params` of exactly `{app}`. Another configured MCP server can no longer be auto-approved by a per-call app flag or forwarded as an app question. Unknown envelope and `_meta` keys are ignored.
+- The Computer Use mirror holds the preference and allowlist locks together and writes a pending provenance record (`computer_use_mirrored_pending_apps`) before the allowlist, then the final record. A failed or interrupted write can no longer turn a mirrored app into an explicit grant that survives source revocation and `ask`. Task start retries a failed mirror before it proceeds.
+- Touched-file snapshots open each file without following symlinks or blocking on a FIFO and compare the descriptor's identity, size and times before and after hashing, for up to three samples. A file that keeps changing is listed as unavailable and marks the snapshot `partial`, instead of keeping a stale fingerprint under `complete`. A symlink is compared by its link text.
+- The adversarial-review untracked collector reads at most 24,577 bytes per file through one verified descriptor. A replacement symlink is never followed, a growing file is not read in full, and the omission manifest records the observed size and reason.
+- A review-gate answer of a bare `BLOCK:` with no reason counts as an unexpected answer and allows the stop, as documented.
+- A repository root that ends in whitespace is used exactly; only Git's trailing newline is removed.
+- Progress for a newly added file counts its lines from the file content. A file change shows line counts only when Codex reports it completed; a failed or declined change shows `Error: <status>`, and one without a status `outcome unknown`. Codex message progress keeps up to 600 characters.
+- A command excerpt that dropped later lines or text ends in `…`, and a leading assignment containing `$`, a backtick or a backslash stays in the excerpt instead of being hidden as an environment prefix. Before a program the run log can fold, or a shell, an assignment is hidden only when its name is inert (locale, terminal, colour, `CI` or `npm_config_*`), so `BASH_ENV=… bash -c …` stays visible.
+
+### Native agent view
+
+- SendMessage follow-ups and question answers now show their run log in the agent view. Claude Code hides the framed coordinator row it appends for such a message and instead draws a separate echo of the bare message, with its own id and without `session.append`, so since 1.4.5 only a worker's first turn had a log. The adapter binds that echo by the host's exact framing ("The coordinator sent a message while you were working: …") to the one turn that received it; an echo whose text reached more than one turn stays unbound rather than risk the wrong log. Render ids that the host normalises (the first 24 characters kept, the rest replaced by a block index) still find their row.
+- The run log under the Agent row and in the agent view is grouped. Two or more consecutive successful read-only shell calls fold into one `Explored · N commands (rg ×3, …)` row. A call folds only when every chain segment is read-only, its excerpt is complete and its program is a bare name or a system `bin` path; composite quoting, escapes, expansions, globs and assignment words stay visible. Every other event takes one row with a status cell (`✓`, `✗ exit N`, `… running`, `✓ new · N lines` for a completed add) and a middle-truncated title, with paths shown relative to the job folder or `~`. Widths and cuts follow grapheme clusters, with emoji counted as two cells. Codex messages wrap to four rows.
+
+### Known limits
+
+- Change tracking does more checks per file. On a 5,000-file fixture a snapshot took about 400 ms instead of 200 ms, and review context with 5,000 untracked files about 400 ms instead of 135 ms. Larger repositories scale accordingly.
+- An unresolved native recovery has no age expiry. It stays protected and counts toward the 128-binding budget until its job's ending is confirmed, for example by `duet status <worker>` or `duet cancel <worker>`.
+- Run-log folding judges only the command text. Ambient configuration (repository Git config, inherited environment, shell startup files) can still make a folded command run helpers, and an ordinary `git status` may refresh the index.
+- A message queued to a worker that is still running may get no visible echo row, so that turn shows no run log, and a follow-up whose exact text was sent more than once shows none either. Use `codex-live` or `duet result <worker> --details` for those turns.
+- After `/reload-plugins`, an older follow-up row with the same text as a new follow-up can show the new turn's log, because the host's render event identifies neither the agent nor the turn.
+- Turns already in flight when `/reload-plugins` runs keep the 1.4.7 hook module, including its run-log view and stop handling, until they end.
+
 ## 1.4.7
 
 ### Stability fixes

@@ -96,11 +96,11 @@ export function ensureGitRepository(cwd) {
   if (result.status !== 0) {
     throw new Error("This command must run inside a Git repository.");
   }
-  return result.stdout.trim();
+  return result.stdout.replace(/\n$/, "");
 }
 
 export function getRepoRoot(cwd) {
-  return gitChecked(cwd, ["rev-parse", "--show-toplevel"]).stdout.trim();
+  return gitChecked(cwd, ["rev-parse", "--show-toplevel"]).stdout.replace(/\n$/, "");
 }
 
 export function detectDefaultBranch(cwd) {
@@ -241,24 +241,67 @@ function formatUntrackedFile(cwd, relativePath, budget) {
   if (!stat.isFile()) {
     return omit("skipped: not a regular file");
   }
-  if (stat.size > MAX_UNTRACKED_BYTES) {
-    return omit(`skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit`);
-  }
-  if (budget.files >= MAX_INLINE_UNTRACKED_FILES || budget.bytes + stat.size > MAX_INLINE_UNTRACKED_BYTES) {
-    omit("skipped: aggregate untracked inline budget");
-    return "";
-  }
-
+  const overLimit = () => omit(`skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit`);
+  const sameIdentity = (a, b) => a.dev === b.dev && a.ino === b.ino && a.mode === b.mode;
+  const sameVersion = (a, b) => sameIdentity(a, b) && a.size === b.size &&
+    a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+  const changed = () => {
+    try {
+      const current = fs.lstatSync(absolutePath);
+      if (current.isSymbolicLink()) {
+        stat = current;
+        return omit("symlink, not inlined");
+      }
+    } catch { /* The path may have disappeared since the descriptor was opened. */ }
+    return omit("skipped: file changed during collection");
+  };
   let buffer;
+  let fd;
   try {
-    const file = fs.realpathSync(absolutePath);
-    const relative = path.relative(fs.realpathSync(cwd), file);
+    const root = fs.realpathSync(cwd);
+    const parent = fs.realpathSync(path.dirname(absolutePath));
+    const relative = path.relative(root, parent);
     if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       return omit("skipped: outside repository");
     }
-    buffer = fs.readFileSync(file);
+    const file = path.join(parent, path.basename(absolutePath));
+    const inspected = stat;
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    stat = fs.fstatSync(fd);
+    const stillAtPath = () => fs.realpathSync(path.dirname(absolutePath)) === parent &&
+      fs.realpathSync(parent) === parent && sameVersion(stat, fs.lstatSync(file));
+    if (!stat.isFile()) return omit("skipped: not a regular file");
+    if (!sameIdentity(inspected, stat) || !stillAtPath()) return changed();
+    if (stat.size > MAX_UNTRACKED_BYTES) return overLimit();
+    if (budget.files >= MAX_INLINE_UNTRACKED_FILES || budget.bytes + stat.size > MAX_INLINE_UNTRACKED_BYTES) {
+      omit("skipped: aggregate untracked inline budget");
+      return "";
+    }
+    const before = stat;
+    buffer = Buffer.alloc(MAX_UNTRACKED_BYTES + 1);
+    let bytes = 0, count;
+    while (bytes < buffer.length && (count = fs.readSync(fd, buffer, bytes, buffer.length - bytes, null))) bytes += count;
+    stat = fs.fstatSync(fd);
+    buffer = buffer.subarray(0, bytes);
+    if (stat.size > MAX_UNTRACKED_BYTES || bytes > MAX_UNTRACKED_BYTES) {
+      // A file may shrink again after we observed the extra byte.
+      stat = { ...stat, size: Math.max(stat.size, bytes) };
+      return overLimit();
+    }
+    if (bytes !== stat.size || !sameVersion(before, stat) || !stillAtPath()) {
+      return changed();
+    }
   } catch {
+    try {
+      const current = fs.lstatSync(absolutePath);
+      if (current.isSymbolicLink()) {
+        stat = current;
+        return omit("symlink, not inlined");
+      }
+    } catch { /* Keep the descriptor's last observed size, if available. */ }
     return omit("skipped: broken symlink or unreadable file");
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
   }
   if (!isProbablyText(buffer)) {
     return omit("skipped: binary file");
@@ -266,7 +309,7 @@ function formatUntrackedFile(cwd, relativePath, budget) {
 
   const content = [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
   const bytes = Buffer.byteLength(content, "utf8") + 2;
-  if (buffer.length > MAX_UNTRACKED_BYTES || budget.bytes + bytes > MAX_INLINE_UNTRACKED_BYTES) {
+  if (budget.bytes + bytes > MAX_INLINE_UNTRACKED_BYTES) {
     omit("skipped: aggregate untracked inline budget");
     return "";
   }

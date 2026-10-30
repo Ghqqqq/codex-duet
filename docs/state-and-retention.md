@@ -191,6 +191,9 @@ space is needed; it no longer blocks admission merely by reaching 128 records.
 Active turns and pending questions remain protected. Unconfirmed cancellations
 are protected from pressure eviction until the turn is proven ended (a closed
 turn or confirmed cancellation), or the existing seven-day age expiry is reached.
+A stopped agent whose recovery is unresolved (an inferred completion with an
+unconfirmed turn, or an `unknown`/`unreachable` report) gets no finish time, so
+neither pressure eviction nor age expiry removes it until an ending is confirmed.
 
 Timestamped spawn guards protect bindings awaiting their start for ten minutes;
 a guard whose start never produced a binding is reclaimed after 24 hours.

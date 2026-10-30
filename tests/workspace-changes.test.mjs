@@ -36,7 +36,7 @@ test("snapshots separate pre-existing dirt from same-size edits, staging, rename
   assert.equal(delta.fileTracking.status, "complete");
 });
 
-test("snapshots ignore ignored files, do not read symlink targets, and degrade explicitly outside git", () => {
+test("snapshots ignore ignored files, do not read symlink targets, and degrade explicitly outside git", (t) => {
   const f = fixture();
   f.write(".gitignore", "ignored\n");
   const external = makeTempDir();
@@ -53,6 +53,55 @@ test("snapshots ignore ignored files, do not read symlink targets, and degrade e
   const delta = compareWorkspaceSnapshots(unavailable, unavailable, ["event-file"]);
   assert.deepEqual(delta.touchedFiles, ["event-file"]);
   assert.equal(delta.fileTracking.status, "partial");
+
+  const file = path.join(fs.realpathSync(f.repo), "changing");
+  const halves = (a, b) => Buffer.concat([Buffer.alloc(65536, a), Buffer.alloc(65536, b)]);
+  fs.writeFileSync(file, halves("A", "B"));
+  const baseline = snapshotWorkspace(f.repo);
+  fs.writeFileSync(file, halves("A", "C"));
+  const open = fs.openSync, read = fs.readSync;
+  let watchedFd, writes = 0, opens = 0;
+  t.mock.method(fs, "openSync", function (name, ...args) {
+    const fd = open.call(this, name, ...args);
+    if (name === file && (args[0] === "r" || typeof args[0] === "number")) { watchedFd = fd; opens++; }
+    return fd;
+  });
+  t.mock.method(fs, "readSync", function (fd, ...args) {
+    const count = read.call(this, fd, ...args);
+    if (fd === watchedFd && count && !writes++) fs.writeFileSync(file, halves("D", "B"));
+    return count;
+  });
+  const changed = compareWorkspaceSnapshots(baseline, snapshotWorkspace(f.repo));
+  assert.deepEqual(changed.touchedFiles, ["changing"]);
+  assert.equal(changed.fileTracking.status, "complete");
+  assert.equal(opens, 2);
+
+  // Every sample changes, so the bounded retry must become partial.
+  t.mock.method(fs, "readSync", function (fd, ...args) {
+    const count = read.call(this, fd, ...args);
+    if (fd === watchedFd && count) fs.appendFileSync(file, ".");
+    return count;
+  });
+  opens = 0;
+  const unstable = snapshotWorkspace(f.repo);
+  assert.equal(opens, 3);
+  assert.equal(unstable.status, "partial");
+  assert.deepEqual(unstable.unavailablePaths, ["changing"]);
+  assert.equal(compareWorkspaceSnapshots(baseline, unstable).fileTracking.status, "partial");
+  t.mock.restoreAll();
+
+  let swapped = false;
+  t.mock.method(fs, "openSync", function (name, ...args) {
+    if (name === file && !swapped) {
+      swapped = true;
+      fs.unlinkSync(file); fs.symlinkSync(target, file);
+    }
+    return open.call(this, name, ...args);
+  });
+  const replacement = snapshotWorkspace(f.repo);
+  assert.equal(swapped, true);
+  assert.equal(replacement.status, "complete");
+  assert.equal(replacement.files.get("changing"), `untracked:symlink:${target}`);
 });
 
 test("task reports 26 shell-edited files in an already dirty repository without file-change events", () => {

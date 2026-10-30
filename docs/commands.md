@@ -80,7 +80,9 @@ repository are eligible for inlining; files outside the repository are never
 read by this collector. Path collection preserves non-ASCII and quoted names.
 Untracked inlining is capped at 24 KiB per file (`MAX_UNTRACKED_BYTES`),
 256 KiB including framing (`MAX_INLINE_UNTRACKED_BYTES`) and 32 files
-(`MAX_INLINE_UNTRACKED_FILES`). An omission manifest gives paths, sizes and
+(`MAX_INLINE_UNTRACKED_FILES`). Each file is read through one descriptor opened
+without following symlinks; a file replaced or grown during collection is
+omitted. An omission manifest gives paths, observed sizes and
 reasons, and the reviewer is told to collect omitted content itself. Git metadata
 commands have an 8 MiB limit (`MAX_GIT_METADATA_BYTES`); overflow fails explicitly
 instead of reviewing silently truncated output.

@@ -163,8 +163,9 @@ Its feed limit is 60 lines;
 new questions return immediately.
 
 Activity is captured at item start/completion (completed assistant messages),
-not token-by-token: assistant snippets ≤300 characters, command first lines
-≤160 with exit/duration, file path/kind, MCP/dynamic server/tool/status/duration,
+not token-by-token: assistant snippets ≤600 characters, command first lines
+≤160 with exit/duration (ending in `…` when later lines or text were omitted),
+file path/kind/outcome, MCP/dynamic server/tool/status/duration,
 and plan step titles ≤80. Durations use protocol milliseconds or observed
 start/completion time; unknown durations are omitted and unknown command exits
 say `exit unknown`, never an invented success. Progress lines use the pane's names:
@@ -174,12 +175,16 @@ Bash(npm test) · running
 Bash(npm test) · Done (21.1s)
 Bash(npm test) · Error: exit 1 (21.1s)
 Update(src/index.ts) · +3 −1
+Write(notes.md) · Error: failed
 server - tool (MCP) · Done
 Update Todos · 1/3 · Verify the change
 ```
 
-Recognized leading environment prefixes and shell wrappers are omitted from
-command display; captured verification retains the complete command. Durations
+Recognized literal leading environment prefixes and shell wrappers are omitted
+from command display (an assignment containing `$`, a backtick or a backslash
+stays visible, and before a foldable read-only program or a shell only inert
+locale, terminal, colour, `CI` and `npm_config_*` assignments are hidden); a file change shows line counts only when Codex reports it
+completed, and one without a status shows `outcome unknown`; captured verification retains the complete command. Durations
 below one second are omitted. Files inside the job's cwd are shown relative to it;
 outside paths stay absolute. Adds and deletes use `Write` and `Delete`. Native
 command-start lines are live only, without consuming durable-notice slots; the
@@ -451,6 +456,12 @@ the owned client/server; startup interruption also has a bounded client cleanup.
 Confirmed cancellation requires terminal turn evidence, not the interrupt RPC ack.
 Cancel returns unconfirmed (exit 2) if evidence is unavailable, including legacy
 records without a control-aware worker. It does not kill a historical PID.
+A cancel that finds the job already ended reports that job's own status. A cancel
+accepted while the run is finishing is applied by the terminal commit under the
+state lock: the job ends `cancelled` and its background terminals are cleaned,
+unless the run already stopped for its own reason (owner stop, lease expiry,
+signal), which it keeps. `turnInterruptAttempted` and `turnInterrupted` report
+only an interrupt Duet actually sent and confirmed.
 Broker shutdown is idempotent and completes socket/file cleanup even if the
 app-server has already exited and a request against its client throws
 synchronously. Transport-loss recovery reports `blocked` with

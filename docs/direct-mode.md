@@ -69,6 +69,11 @@ entries, name, model, effort, speed and elapsed time) and under each turn's prom
 row in the agent view (up to 40 entries). Each log is bound to the row's appended
 `uuid`, keeping identical briefs separate; same-title starts and completions
 merge FIFO. Unobserved rows, including after reload, render without a log.
+Both logs are grouped: two or more consecutive successful read-only shell calls
+fold into one `Explored · N commands` row (a chained command folds only when every
+segment is read-only and names a bare or system `bin` program; an incomplete
+excerpt, an assignment word or quoting the display does not model stays visible), other events take one row with a status cell (`✓`, `✗ exit N`,
+`… running`, `✓ new · N lines` for a completed add), and Codex messages wrap to four rows.
 The spinner shows `<worker> · running · <elapsed>`. The `DUET:` flag line draws as
 a compact `Codex · model · effort · speed · sandbox · folder` header, with only
 supplied settings and `fork` when requested. Completion lines use colours matching

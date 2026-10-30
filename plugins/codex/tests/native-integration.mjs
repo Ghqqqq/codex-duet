@@ -1307,7 +1307,7 @@ async function nativeStability() {
       cwd: `${f.root}/repo`, incoming: { turnId: 'turn-1', text: 'First brief.' },
       notices: { turnId: 'turn-1', count: 0, started: true } } });
     f.$.process.run = async argv => argv[0] === 'node' ? { exitCode: 0, stdout: process.execPath }
-      : { exitCode: 0, stdout: JSON.stringify(argv[3] === '--all'
+      : { exitCode: 0, stdout: JSON.stringify(argv[2] === 'result' ? { status: job.status, jobId: job.id } : argv[3] === '--all'
         ? { running: [], recent: [], latestFinished: job } : { job }) };
     f.$.process.spawn = request => {
       const command = request.argv[2];
@@ -1634,6 +1634,91 @@ async function nativeStability() {
     assert.equal(f.readStore()[key].finishedAt, undefined);
     assert.equal(f.readStore()[key].status, status);
     assert.equal(f.timers.size, 0);
+  }
+  // delta-2: an exception after a same-turn lookup found an unresolved
+  // inferred completion must not mark the turn answered or finished.
+  {
+    const { f, owner } = host(); owner.resolve();
+    await step(f, 'native-agent', 'turn-1');
+    const state = f.readStore()[key];
+    for (const name of ['answeredTurn', 'answer', 'finishedAt']) delete state[name];
+    f.setStore({ [key]: { ...state, status: 'running' } });
+    const run = f.$.process.run;
+    f.$.process.run = async (argv, init) => {
+      const result = await run(argv, init);
+      if (argv[2] !== 'status') return result;
+      const value = JSON.parse(result.stdout);
+      if (value.job) Object.assign(value, { recovery: { status: 'unknown' },
+        job: { ...value.job, status: 'completed', result: { inferredCompletion: true, turnEnded: false } } });
+      return { ...result, stdout: JSON.stringify(value) };
+    };
+    f.$.process.spawn = () => { throw new Error('Fixture host process unavailable'); };
+    assert.equal((await step(f, 'native-agent', 'turn-1')).status, 'blocked');
+    const saved = f.readStore()[key];
+    assert.deepEqual([saved.status, saved.answeredTurn, saved.finishedAt], ['unknown', undefined, undefined]);
+    assert.equal(f.readStore()['native:closed:v1:native-session:native-agent'], undefined);
+  }
+  // delta-2: an owner stop must establish recovery before writing closure or
+  // completion evidence, even when only result --report reveals uncertainty.
+  for (const status of ['unknown', 'unreachable']) for (const source of ['envelope', 'inferred', 'report']) {
+    const { f, owner } = host(), run = f.$.process.run, spawn = f.$.process.spawn;
+    const closed = 'native:closed:v1:native-session:native-agent';
+    const recovery = { status, jobId: 'task-1', blockers: [{ code: 'thread_busy' }], next: 'duet result task-1 --report' };
+    let confirmed = false;
+    f.$.process.run = async (argv, init) => {
+      if (argv[2] === 'result') return { exitCode: 2, stdout: JSON.stringify(recovery) };
+      if (argv[2] === 'cancel') return { exitCode: 2, stdout: JSON.stringify({ jobId: 'task-1',
+        status: 'interrupt_unconfirmed', confirmation: 'unconfirmed', turnInterrupted: false }) };
+      const result = await run(argv, init);
+      if (argv[2] !== 'status') return result;
+      const value = JSON.parse(result.stdout);
+      if (value.job) {
+        if (confirmed) Object.assign(value.job, { status: 'interrupted', interruptionConfirmed: true });
+        else if (source === 'envelope') value.recovery = { status };
+        else if (source === 'inferred') value.job.result = { inferredCompletion: true, turnEnded: false };
+      }
+      return { ...result, stdout: JSON.stringify(value) };
+    };
+    f.$.process.spawn = request => {
+      const child = spawn(request);
+      if (request.argv[2] !== 'task') return child;
+      return Object.assign((async function* () {
+        for await (const chunk of child) yield { ...chunk, text: JSON.stringify({ status: 'owner_stopped', jobId: 'task-1' }) + '\n' };
+      })(), { result: child.result });
+    };
+    const set = f.$.store.set;
+    f.$.store.set = async (name, value) => {
+      if (!confirmed) {
+        assert.notEqual(name, closed);
+        if (name === key) assert.equal(value.finishedAt, undefined);
+      }
+      return set(name, value);
+    };
+    owner.resolve();
+    assert.deepEqual(await step(f, 'native-agent', 'turn-1'), { ...recovery, status: 'blocked' });
+    // The separate aborted-dispatch callback uses the same ending gate.
+    await f.invoke('turn.complete', { agentId: 'native-agent', turnId: 'turn-1', isAborted: true }, async () => ({}));
+    const saved = f.readStore()[key];
+    assert.equal(saved.status, status);
+    assert.equal(saved.finishedAt, undefined);
+    assert.equal(saved.answeredTurn, undefined);
+    assert.equal(saved.cancellation.confirmation, 'unconfirmed');
+    assert.equal(f.readStore()[closed], undefined);
+    assert.equal(f.timers.size, 0);
+    f.setStore({ ...f.readStore(), ...Object.fromEntries(Array.from({ length: 127 }, (_, i) => [
+      `native:v2:protected:${i}`, { v: 2, status: 'running' } ])) });
+    await spawnAgent(f, 'contender'); await start(f, 'contender');
+    assert.deepEqual(f.readStore()[key], saved);
+    assert.equal(f.readStore()['native:v2:native-session:contender'], undefined);
+    confirmed = true;
+    await f.invoke('turn.complete', { agentId: 'native-agent', turnId: 'turn-1', isAborted: true }, async () => ({}));
+    assert.equal(f.readStore()[key].cancellation.confirmation, 'confirmed');
+    assert.equal(f.readStore()[key].status, 'interrupted');
+    assert.equal(typeof f.readStore()[key].finishedAt, 'number');
+    assert.equal(f.readStore()[closed].turnId, 'turn-1');
+    await spawnAgent(f, 'replacement'); await start(f, 'replacement');
+    assert.equal(f.readStore()[key], undefined);
+    assert.ok(f.readStore()['native:v2:native-session:replacement']);
   }
   return { races, failures, admission: { count, refusal }, size: { withinBudget: size <= 2 * 1024 * 1024, bytes: size,
     records: admitted.length, capacityRefusals, failedWrites },

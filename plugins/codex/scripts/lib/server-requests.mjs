@@ -46,14 +46,31 @@ export function normalizeBundleIds(values = []) {
   return [...new Set(values.map(normalizeBundleId))];
 }
 
-// node_repl's Computer Use policy (computer-use-policy.js) asks for an app with
-// exactly this metadata before every tool call. The host normally resolves it
-// from persisted state; when it reaches this client instead, a per-call flag may
-// accept it for the listed app in the current thread, and nothing else.
+// setup installs cua_repl; tool sync also preserves the legacy node_repl server.
+// Only their empty-form Computer Use request is supported. Metadata supplied by
+// another server, or attached to a broader form/URL request, is not app consent.
+// Unknown envelope/metadata fields are ignored; the schema and tool parameters
+// remain closed so an app grant cannot approve additional input or actions.
 function computerUseElicitation(params) {
+  if (!object(params) ||
+      !["node_repl", "cua_repl"].includes(params.serverName) || params.mode !== "form" ||
+      typeof params.threadId !== "string" || !params.threadId ||
+      (params.turnId != null && typeof params.turnId !== "string") || typeof params.message !== "string" ||
+      !only(params.requestedSchema, ["type", "properties"]) || params.requestedSchema.type !== "object" ||
+      !only(params.requestedSchema.properties, [])) return null;
   const meta = params?._meta;
-  if (!object(meta) || meta.connector_id !== "computer-use" || meta.codex_approval_kind !== "mcp_tool_call" || !object(meta.tool_params)) return null;
-  try { return normalizeBundleId(meta.tool_params.app); } catch { return null; }
+  if (!object(meta) ||
+      meta.connector_id !== "computer-use" || meta.codex_approval_kind !== "mcp_tool_call" ||
+      (meta.connector_name !== undefined && meta.connector_name !== "Computer Use") ||
+      (meta.persist !== undefined && (!Array.isArray(meta.persist) || meta.persist.length !== 2 || meta.persist[0] !== "session" || meta.persist[1] !== "always")) ||
+      (meta.riskLevel !== undefined && typeof meta.riskLevel !== "string") ||
+      typeof meta.tool_name !== "string" || !meta.tool_name ||
+      (meta.tool_params_display !== undefined && typeof meta.tool_params_display !== "string") ||
+      !only(meta.tool_params, ["app"])) return null;
+  try {
+    const app = normalizeBundleId(meta.tool_params.app);
+    return app === meta.tool_params.app ? app : null;
+  } catch { return null; }
 }
 
 // The parent's answer to a forwarded Computer Use request: one call, the rest of

@@ -535,9 +535,18 @@ export function activeJobForThread(cwd, threadId) {
  */
 // kind "question" is Codex's own ask_parent call; kind "approval" is a Computer
 // Use request the runtime forwards, with the fixed choices from APPROVAL_CHOICES.
-export async function askParentQuestion(cwd, id, { question, options = [], kind = "question", callId = null }, { signal = null, onProgress = null, stopped = () => false } = {}) {
-  const questionId = `${kind}-${randomUUID()}`;
-  const askedAt = new Date(Date.now()).toISOString();
+const questionCaller = { pid: process.pid, nonce: randomUUID() };
+const sameQuestionCaller = (left, right) => left?.pid === right?.pid && left?.nonce === right?.nonce;
+function questionCallerGone(previous, caller) {
+  if (!Number.isInteger(previous?.pid) || !previous.nonce) return false;
+  // A new process can reuse a dead bridge's PID, but never its start nonce.
+  if (previous.pid === caller.pid) return previous.nonce !== caller.nonce;
+  try { process.kill(previous.pid, 0); return false; }
+  catch (error) { return error.code === "ESRCH"; }
+}
+export async function askParentQuestion(cwd, id, { question, options = [], kind = "question", callId = null }, { signal = null, onProgress = null, stopped = () => false, caller = questionCaller, turnId = null } = {}) {
+  let questionId = `${kind}-${randomUUID()}`;
+  let askedAt = new Date(Date.now()).toISOString();
   // Tool call IDs come from the dynamic request or MCP _meta.callId. Approval
   // requests have no ask_parent item. Never guess a missing ID from question
   // order, text, or the MCP transport's independent request ID.
@@ -551,22 +560,34 @@ export async function askParentQuestion(cwd, id, { question, options = [], kind 
   const admittedJob = updateJob(cwd, id, current => {
     let patch = {};
     const previous = current.pendingQuestion;
-    // A dead bridge cannot run its finally. Reclaim only unanswered expired
-    // slots; an answer accepted before the deadline still belongs to its caller.
-    if (previous && previous.answer === undefined && Date.now() >= previous.expiresAt) {
+    const callerGone = previous && questionCallerGone(previous.caller, caller);
+    // Transfer an undelivered answer only to an exact call on the same turn.
+    // Claim under the lock; concurrent retries cannot both consume the answer.
+    if (ACTIVE.has(current.status) && !current.cancelRequested && previous?.answer !== undefined && callerGone &&
+        kind === "question" && callId && previous.callId === callId && previous.kind === kind &&
+        turnId && previous.turnId === turnId && current.turnId === turnId && previous.text === question &&
+        JSON.stringify(previous.options) === JSON.stringify(options)) {
+      questionId = previous.id;
+      askedAt = previous.askedAt;
+      return { pendingQuestion: { ...previous, caller }, phase: "needs_answer" };
+    }
+    // A live caller still owns its accepted answer after expiry. A dead caller
+    // that was not retried must not block every subsequent question forever.
+    if (previous && Date.now() >= previous.expiresAt && (previous.answer === undefined || callerGone)) {
+      const resolution = previous.answer === undefined ? "expired" : "orphaned";
       patch = { pendingQuestion: null, phase: current.cancelRequested ? "interrupting" : "running",
-        lastQuestion: { id: previous.id, resolution: "expired" },
+        lastQuestion: { id: previous.id, resolution },
         questionHistory: [...(current.questionHistory ?? []).slice(-19), {
           id: previous.id, callId: previous.callId ?? null, kind: previous.kind ?? "question",
           text: previous.text, options: previous.options, askedAt: previous.askedAt,
-          answeredAt: null, answer: null, resolution: "expired"
+          answeredAt: null, answer: previous.answer?.slice(0, 2000) ?? null, resolution
         }] };
       current = { ...current, ...patch };
     }
-    if (!ACTIVE.has(current.status) || current.cancelRequested) admission = "interrupted";
+    if (!ACTIVE.has(current.status) || current.cancelRequested || (turnId && current.turnId !== turnId)) admission = "interrupted";
     else if (current.pendingQuestion) admission = "busy";
     else {
-      const pending = { id: questionId, callId, kind, text: question, options, askedAt,
+      const pending = { id: questionId, callId, kind, text: question, options, askedAt, caller, turnId: current.turnId ?? null,
         expiresAt: Date.now() + (current.questionTimeoutSec ?? 900) * 1000 };
       return { ...patch, pendingQuestion: pending, phase: "needs_answer" };
     }
@@ -579,6 +600,7 @@ export async function askParentQuestion(cwd, id, { question, options = [], kind 
     return { text: "Another parent question is pending. Proceed on a conservative assumption and report it.", resolution: "busy" };
   }
   const pending = admittedJob.pendingQuestion;
+  const ownsQuestion = current => current.pendingQuestion?.id === questionId && sameQuestionCaller(current.pendingQuestion.caller, caller);
   onProgress?.({ message: `Parent question pending: ${questionId}.`, phase: "needs_answer" });
   let text = "No answer arrived before the timeout. Proceed on a conservative assumption within the authorized scope and report the assumption. If essential input is missing, finish with needs_input.";
   let resolution = "timeout";
@@ -587,20 +609,20 @@ export async function askParentQuestion(cwd, id, { question, options = [], kind 
     while (!aborted() && Date.now() < pending.expiresAt) {
       const current = readJobFile(resolveJobFile(cwd, id));
       if (!ACTIVE.has(current.status) || current.cancelRequested) break;
-      if (current.pendingQuestion?.id !== questionId) break;
+      if (!ownsQuestion(current)) break;
       if (current.pendingQuestion.answer !== undefined) { text = current.pendingQuestion.answer; resolution = "answered"; break; }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     const current = readJobFile(resolveJobFile(cwd, id));
     if (aborted() || !ACTIVE.has(current.status) || current.cancelRequested) { resolution = "interrupted"; text = "The owner cancelled this task. Stop work and report interrupted."; }
-    else if (current.pendingQuestion?.id === questionId && current.pendingQuestion.answer !== undefined) { text = current.pendingQuestion.answer; resolution = "answered"; }
+    else if (ownsQuestion(current) && current.pendingQuestion.answer !== undefined) { text = current.pendingQuestion.answer; resolution = "answered"; }
     return { text, resolution };
   } finally {
     updateJob(cwd, id, current => {
-      if (current.pendingQuestion?.id !== questionId) {
+      if (!ownsQuestion(current)) {
         // Admission may already have archived this abandoned question. Never
         // clear a successor's slot, restore its phase or duplicate its history.
-        return current.questionHistory?.some(entry => entry.id === questionId) ? {} : historyPatch(current, resolution);
+        return current.pendingQuestion?.id === questionId || current.questionHistory?.some(entry => entry.id === questionId) ? {} : historyPatch(current, resolution);
       }
       return { ...historyPatch(current, resolution, current.pendingQuestion.answer), lastQuestion: { id: questionId, resolution },
         pendingQuestion: null, phase: resolution === "interrupted" || current.cancelRequested ? "interrupting" : "running" };
@@ -678,7 +700,8 @@ export class JobRuntime {
     finally { this.abort.abort(this.reason); }
   }
   async question(message) {
-    const { text } = await askParentQuestion(this.cwd, this.id, { ...message.params.arguments, callId: message.params.callId }, { signal: this.abort.signal, onProgress: this.onProgress });
+    const { text, resolution } = await askParentQuestion(this.cwd, this.id, { ...message.params.arguments, callId: message.params.callId }, { signal: this.abort.signal, onProgress: this.onProgress });
+    if (resolution === "interrupted") this.stop(readJobFile(resolveJobFile(this.cwd, this.id)).cancelRequested?.reason ?? this.reason ?? "cancelled_by_user");
     return textReply(text);
   }
   // A forwarded Computer Use request. Only an explicit answer grants anything;
@@ -686,6 +709,7 @@ export class JobRuntime {
   async approval(request) {
     const question = `Codex asks to control ${request.app}${request.toolName ? ` (Computer Use tool ${request.toolName})` : " via Computer Use"}. Allow? Nothing outside the isolated Codex home is changed by any choice.`;
     const { text, resolution } = await askParentQuestion(this.cwd, this.id, { question, options: APPROVAL_OPTIONS, kind: "approval" }, { signal: this.abort.signal, onProgress: this.onProgress });
+    if (resolution === "interrupted") this.stop(readJobFile(resolveJobFile(this.cwd, this.id)).cancelRequested?.reason ?? this.reason ?? "cancelled_by_user");
     return resolution === "answered" ? parseApprovalAnswer(text) : "deny";
   }
   close() { runtimeJobs.delete(this.abort.signal); clearInterval(this.timer); for (const [signal, handler] of this.handlers) process.off(signal, handler); }

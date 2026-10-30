@@ -754,6 +754,9 @@ separately. Reports truncate path arrays with omitted counts; full arrays are
 saved in the result artifact. Snapshots read file/symlink metadata without following
 external symlink targets and do not traverse submodule contents or ignored files.
 Non-Git/unreadable snapshots are marked partial and fall back to available events.
+Each file is opened without following symlinks or blocking on a FIFO and sampled
+up to three times; a file that keeps changing is listed as unavailable and marks
+the snapshot partial. Symlinks are compared by link text.
 Concurrent edits can appear in the comparison; a snapshot cannot prove which
 worker caused them. An edit reverted before the final snapshot is visible only
 if the server emitted a file-change event.

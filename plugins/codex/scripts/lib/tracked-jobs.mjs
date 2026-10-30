@@ -2,7 +2,7 @@ import fs from "node:fs";
 import process from "node:process";
 
 import { readJobFile, resolveJobFile, resolveJobLogFile, upsertJob, writeJobFile, updateJob } from "./state.mjs";
-import { recordFinishedJob } from "./job-runtime.mjs";
+import { recordFinishedJob, continuationReport, leaseExpiryReport } from "./job-runtime.mjs";
 import { appendActivity } from "./activity.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
@@ -181,7 +181,7 @@ export async function runTrackedJob(job, runner, options = {}) {
 
   try {
     const execution = await runner();
-    const completionStatus = execution.jobStatus ?? (execution.exitStatus === 0 ? "completed" : "failed");
+    let completionStatus = execution.jobStatus ?? (execution.exitStatus === 0 ? "completed" : "failed");
     const reviewArtifacts = job.jobClass === "review"
       ? { rawOutputFile: job.rawOutputFile, resultFile: job.resultFile }
       : {};
@@ -191,29 +191,54 @@ export async function runTrackedJob(job, runner, options = {}) {
       fs.writeFileSync(job.resultFile, `${JSON.stringify(execution.payload, null, 2)}\n`, { mode: 0o600 });
     }
     const completedAt = nowIso();
-    recordFinishedJob(updateJob(job.workspaceRoot, job.id, () => ({
-      status: completionStatus,
-      summary: execution.summary,
-      threadId: execution.threadId ?? null,
-      turnId: execution.turnId ?? null,
-      pid: null,
-      phase: completionStatus === "completed" ? "done" : completionStatus,
-      completedAt,
-      result: execution.payload,
-      ...reviewArtifacts,
-      report: execution.report ?? null,
-      rendered: execution.rendered
-    })));
-    upsertJob(job.workspaceRoot, {
-      id: job.id,
-      status: completionStatus,
-      threadId: execution.threadId ?? null,
-      turnId: execution.turnId ?? null,
-      summary: execution.summary,
-      phase: completionStatus === "completed" ? "done" : completionStatus,
-      pid: null,
-      completedAt
-    });
+    let committed;
+    while (true) {
+      let cleanupThread;
+      committed = updateJob(job.workspaceRoot, job.id, current => {
+        // Stop acceptance and terminal publication share the job lock. The
+        // watchdog may already be closed when cancellation wins this race.
+        // A run that already stopped for its own reason (owner stop, lease,
+        // signal) keeps it; only a stop accepted after the run ended is applied here.
+        const ownReason = execution.payload?.interruptionReason;
+        const reason = ownReason ? null : current.cancelRequested?.reason;
+        // Either stop still needs the cleanup a finished capture could not send.
+        if ((reason || ownReason) && job.jobClass === "task" && execution.threadId && !current.backgroundTerminals) {
+          cleanupThread = execution.threadId;
+          return null;
+        }
+        if (reason && job.jobClass === "task") {
+          completionStatus = reason === "cancelled_by_user" ? "cancelled" : "interrupted";
+          execution.jobStatus = completionStatus;
+          execution.exitStatus = 1;
+          Object.assign(execution.payload, { status: 1, workerStatus: completionStatus,
+            interruptionReason: reason, interruptionConfirmed: Boolean(execution.payload.turnEnded) });
+          if (execution.report) Object.assign(execution.report, { status: completionStatus, interruptionReason: reason,
+            interruptionConfirmed: execution.payload.interruptionConfirmed }, continuationReport({ ...current, threadId: execution.threadId }),
+            leaseExpiryReport({ ...current, result: execution.payload }));
+          if (job.resultFile) fs.writeFileSync(job.resultFile, `${JSON.stringify(execution.payload, null, 2)}\n`, { mode: 0o600 });
+        }
+        return {
+          status: completionStatus,
+          summary: execution.summary,
+          threadId: execution.threadId ?? null,
+          turnId: execution.turnId ?? null,
+          pid: null,
+          phase: completionStatus === "completed" ? "done" : completionStatus,
+          completedAt,
+          result: execution.payload,
+          ...reviewArtifacts,
+          report: execution.report ?? null,
+          rendered: execution.rendered
+        };
+      });
+      if (!cleanupThread) break;
+      // Keep the job active during late-stop cleanup so a successor cannot
+      // start on this thread until cleanup and terminal publication finish.
+      const { cleanAppServerBackgroundTerminals } = await import("./codex.mjs");
+      const backgroundTerminals = await cleanAppServerBackgroundTerminals(job.workspaceRoot, cleanupThread);
+      updateJob(job.workspaceRoot, job.id, () => ({ backgroundTerminals, turnInterruptAttempted: false, turnInterrupted: false }));
+    }
+    recordFinishedJob(committed);
     bestEffortDiagnostic(() => {
       if (job.jobClass === "task") appendLogLine(options.logFile ?? job.logFile ?? null, `Task ${completionStatus}. Final output stored separately.`);
       else appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
@@ -228,15 +253,23 @@ export async function runTrackedJob(job, runner, options = {}) {
     if (job.rawOutputFile && !fs.existsSync(job.rawOutputFile)) fs.writeFileSync(job.rawOutputFile, `${errorMessage}\n`, { mode: 0o600 });
     if (job.resultFile && !fs.existsSync(job.resultFile)) fs.writeFileSync(job.resultFile, `${JSON.stringify(failure)}\n`, { mode: 0o600 });
     const completedAt = nowIso();
-    recordFinishedJob(updateJob(job.workspaceRoot, job.id, () => ({
-      status: "failed",
-      phase: "failed",
-      errorMessage,
-      ...(error.failureSource === "transport" ? { result: failure, turnResolution: "unknown" } : {}),
-      pid: null,
-      completedAt,
-      logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
-    })));
+    recordFinishedJob(updateJob(job.workspaceRoot, job.id, current => {
+      const reason = job.jobClass === "task" ? current.cancelRequested?.reason : null;
+      const status = reason ? reason === "cancelled_by_user" ? "cancelled" : "interrupted" : "failed";
+      if (reason) {
+        Object.assign(failure, { interruptionReason: reason, interruptionConfirmed: false, turnEnded: false, workerStatus: status });
+        if (job.resultFile) fs.writeFileSync(job.resultFile, `${JSON.stringify(failure, null, 2)}\n`, { mode: 0o600 });
+      }
+      return {
+        status,
+        phase: status,
+        errorMessage,
+        ...(reason || error.failureSource === "transport" ? { result: failure, turnResolution: "unknown" } : {}),
+        pid: null,
+        completedAt,
+        logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null
+      };
+    }));
     // updateJob already publishes the record and index under one lock. A
     // second, stale index write could undo a concurrent exact-turn recovery.
     throw error;

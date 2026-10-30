@@ -160,7 +160,7 @@ export function browserOriginSetup({ allow = [], revoke = [], approval, env = pr
 // home's copy; this module keeps it in step with the user's own Codex app.
 export const COMPUTER_USE_APPROVAL_MODES = ["mirror", "ask"];
 export const BUILTIN_COMPUTER_USE_APPROVAL = "mirror";
-const CU_PREFERENCE = "computer_use_approval", CU_MIRRORED = "computer_use_mirrored_apps", CU_REVOKED = "computer_use_revoked_apps";
+const CU_PREFERENCE = "computer_use_approval", CU_MIRRORED = "computer_use_mirrored_apps", CU_REVOKED = "computer_use_revoked_apps", CU_PENDING = "computer_use_mirrored_pending_apps";
 const computerUseFile = home => path.join(home, "computer-use", "config.toml");
 export function computerUseSessionFile(home, threadId) {
   if (typeof threadId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(threadId)) throw new Error("A thread id is required for a per-call Computer Use approval.");
@@ -196,6 +196,52 @@ export function computerUseApprovalPreference(env = process.env) {
   if (!COMPUTER_USE_APPROVAL_MODES.includes(value)) throw new Error("Invalid saved computer_use_approval; repair it with setup --computer-use-approval.");
   return value;
 }
+// Hold both writers' locks before changing either file. The write-ahead record
+// keeps old provenance until removals commit, and adds new provenance before
+// grants commit. A failed/crashed pass therefore leaves either the old allowlist
+// or the intended one, with every mirrored app still identifiable on recovery.
+function applyComputerUseMirror(home, allowlist, preference, pending, dryRun) {
+  const edits = [allowlist, preference], changed = edits.filter(e => e.before !== e.after), backups = [];
+  const result = { changedFiles: changed.map(e => e.file), backups, dryRun };
+  if (dryRun || !changed.length) return result;
+  const releases = [], contents = new Map(edits.map(e => [e.file, e.before]));
+  const write = (file, after) => {
+    if (contents.get(file) === after) return;
+    if (read(home, file) !== contents.get(file)) throw new Error("Configuration changed concurrently; retry setup.");
+    const temp = `${file}.${randomUUID()}.tmp`;
+    try {
+      const fd = fs.openSync(temp, "wx", 0o600);
+      try { fs.writeFileSync(fd, after); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      if (read(home, file) !== contents.get(file)) throw new Error("Configuration changed concurrently; retry setup.");
+      fs.renameSync(temp, file);
+      contents.set(file, after);
+      // Persist the rename as well as its contents before exposing a new grant.
+      const directory = fs.openSync(path.dirname(file), "r");
+      try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+    } finally { fs.rmSync(temp, { force: true }); }
+  };
+  try {
+    for (const edit of [preference, allowlist]) {
+      safeFile(home, edit.file);
+      fs.mkdirSync(path.dirname(edit.file), { recursive: true, mode: 0o700 });
+      safeFile(home, `${edit.file}.duet-lock`);
+      releases.push(acquireConfigLock(edit.file));
+    }
+    for (const edit of edits) {
+      if (read(home, edit.file) !== edit.before) throw new Error("Configuration changed concurrently; retry setup.");
+    }
+    // Back up originals once, never the intermediate provenance record.
+    for (const edit of edits.filter(e => e.before !== e.after || (e === preference && pending !== e.before))) {
+      if (!fs.existsSync(edit.file)) continue;
+      const backup = `${edit.file}.backup-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}`;
+      fs.writeFileSync(backup, edit.before, { flag: "wx", mode: 0o600 }); backups.push(backup);
+    }
+    write(preference.file, pending);
+    write(allowlist.file, allowlist.after);
+    write(preference.file, preference.after);
+    return result;
+  } finally { for (const release of releases.reverse()) release(); }
+}
 // One idempotent pass: the isolated `[apps] allowed` list becomes
 // (current − previously mirrored − revoked) ∪ (mirror ? user's always-allowed − revoked : ∅) ∪ allow.
 // Explicit and hand-written entries persist; mirrored ones follow the source;
@@ -210,7 +256,9 @@ export function computerUseSetup({ allow = [], revoke = [], approval, env = proc
   let preferenceAfter = approval === undefined ? preferenceBefore : setTomlField(preferenceBefore, [CU_PREFERENCE], approval);
   const mode = readTomlField(preferenceAfter, [CU_PREFERENCE]) ?? BUILTIN_COMPUTER_USE_APPROVAL;
   if (!COMPUTER_USE_APPROVAL_MODES.includes(mode)) throw new Error("Invalid saved computer_use_approval; repair it with setup --computer-use-approval.");
-  const previouslyMirrored = validApps(appList(preferenceBefore, [CU_MIRRORED], "computer_use_mirrored_apps"));
+  const completedMirrors = validApps(appList(preferenceBefore, [CU_MIRRORED], CU_MIRRORED));
+  const pendingMirrors = validApps(appList(preferenceBefore, [CU_PENDING], CU_PENDING));
+  const previouslyMirrored = [...new Set([...completedMirrors, ...pendingMirrors])];
   let revoked = validApps(appList(preferenceBefore, [CU_REVOKED], "computer_use_revoked_apps"));
   revoked = [...new Set([...revoked.filter(a => !allow.includes(a)), ...revoke])];
   const source = readCodexAppComputerUseApprovals(env);
@@ -222,9 +270,19 @@ export function computerUseSetup({ allow = [], revoke = [], approval, env = proc
   // An app the user allowed explicitly (or wrote by hand) stays explicit even
   // while the Codex app also lists it, so it survives a later switch to ask.
   const mirroredRecord = mirrored.filter(a => !kept.includes(a) && !allow.includes(a));
-  if (!same(mirroredRecord, previouslyMirrored)) preferenceAfter = setTomlField(preferenceAfter, [CU_MIRRORED], mirroredRecord.length ? mirroredRecord : undefined);
+  if (!same(mirroredRecord, completedMirrors)) preferenceAfter = setTomlField(preferenceAfter, [CU_MIRRORED], mirroredRecord.length ? mirroredRecord : undefined);
+  preferenceAfter = setTomlField(preferenceAfter, [CU_PENDING], undefined);
   if (!same(revoked, validApps(appList(preferenceBefore, [CU_REVOKED], "computer_use_revoked_apps")))) preferenceAfter = setTomlField(preferenceAfter, [CU_REVOKED], revoked.length ? revoked : undefined);
-  const result = apply(home, [{ file, before, after }, { file: preference.file, before: preferenceBefore, after: preferenceAfter }], dryRun);
+  let pendingPreference = preferenceAfter;
+  if (before !== after) {
+    // Explicit allow is durable consent even if completing the write fails;
+    // all other old/pending mirror entries retain provenance until completion.
+    const retained = completedMirrors.filter(a => !allow.includes(a));
+    const pending = [...new Set([...pendingMirrors, ...mirroredRecord])].filter(a => !allow.includes(a));
+    pendingPreference = setTomlField(pendingPreference, [CU_MIRRORED], retained.length ? retained : undefined);
+    pendingPreference = setTomlField(pendingPreference, [CU_PENDING], pending.length ? pending : undefined);
+  }
+  const result = applyComputerUseMirror(home, { file, before, after }, { file: preference.file, before: preferenceBefore, after: preferenceAfter }, pendingPreference, dryRun);
   return {
     file, preference: mode,
     allowed: validApps(allowed).map(app => ({ app, source: mirroredRecord.includes(app) ? "mirrored" : "explicit" })),
@@ -232,7 +290,7 @@ export function computerUseSetup({ allow = [], revoke = [], approval, env = proc
     ...result
   };
 }
-// Before every task; never raises into the task flow.
+// Before every task; an incomplete pass is reconciled using durable provenance.
 export function ensureComputerUseApproval({ env = process.env } = {}) {
   const result = computerUseSetup({ env });
   return { computerUseApproval: result.preference, allowed: result.allowed.map(a => a.app), changedFiles: result.changedFiles, backups: result.backups };

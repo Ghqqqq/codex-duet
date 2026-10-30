@@ -153,3 +153,6 @@ plugins/codex/.generated/
 .staging-report.md
 .staging-files.txt
 .staging-review.patch
+
+# Local planning notes; never published
+docs/superpowers/

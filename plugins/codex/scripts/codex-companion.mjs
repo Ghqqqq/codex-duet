@@ -967,7 +967,18 @@ async function executeTaskRun(request) {
     if (!runtime.reason) throw error;
     const saved = readStoredJob(workspaceRoot, request.jobId);
     result = { status: 1, threadId: saved.threadId, turnId: saved.turnId, finalMessage: "Task interrupted.", touchedFiles: [], turnEnded: false };
-  } finally { runtime.close(); }
+  } finally {
+    try {
+      const saved = readStoredJob(workspaceRoot, request.jobId);
+      if (saved?.cancelRequested && !runtime.reason) runtime.stop(saved.cancelRequested.reason);
+      // Capture cleanup is only recorded after sending turn/interrupt. A stop
+      // observed after capture completed must not claim an interrupt was sent.
+      updateJob(workspaceRoot, request.jobId, current => ({
+        turnInterruptAttempted: Boolean(current.backgroundTerminals),
+        turnInterrupted: Boolean(current.backgroundTerminals && result?.turnEnded && result?.turn?.status === "interrupted")
+      }));
+    } finally { runtime.close(); }
+  }
   if (runtime.reason) Object.assign(result, { interruptionReason: runtime.reason, interruptionConfirmed: Boolean(result.turnEnded), status: 1 });
 
   Object.assign(result, compareWorkspaceSnapshots(before, snapshotWorkspace(workspaceRoot), result.touchedFiles));
@@ -1632,7 +1643,12 @@ async function handleTask(argv) {
   // Computer Use: in mirror mode (the default) the apps the user marked "always
   // allow" in their Codex app are copied into the isolated runtime's own
   // approval file (read-only on ~/.codex; a no-op once in step).
-  try { ensureComputerUseApproval(); } catch (error) { process.stderr.write(`Computer Use approval preference not applied: ${error.message}\n`); }
+  try { ensureComputerUseApproval(); } catch {
+    // Retry an interrupted mirror before starting the runtime. Persistent
+    // failures leave the old allowlist or a fully recorded new one; pending
+    // provenance is retained, so no partial grant becomes explicit consent.
+    try { ensureComputerUseApproval(); } catch (error) { process.stderr.write(`Computer Use approval preference not applied: ${error.message}\n`); }
+  }
   // Project instructions: let Codex read CLAUDE.md where no AGENTS.md exists
   // (its own project_doc_fallback_filenames; a no-op once written).
   try { ensureProjectDocs(); } catch (error) { process.stderr.write(`Project instructions preference not applied: ${error.message}\n`); }
@@ -2039,7 +2055,7 @@ async function handleStatus(argv) {
     const deadline = Date.now() + Math.max(0, Number(options["timeout-ms"]) || DEFAULT_STATUS_WAIT_TIMEOUT_MS);
     const scheduleRenewal = current => {
       if (!options.wait || !options.owner || !ACTIVE.has(current.status) || current.ownerId !== options.owner ||
-          current.cancelRequested || current.leaseExpiresAt <= Date.now() || process.ppid !== parentPid || Date.now() >= deadline) return;
+          current.cancelRequested || process.ppid !== parentPid || Date.now() >= deadline) return;
       renewalTimer = setTimeout(() => {
         if (process.ppid !== parentPid || Date.now() >= deadline) return;
         try { scheduleRenewal(renewLease(selected.workspaceRoot, selected.job.id, options.owner)); }
@@ -2175,6 +2191,21 @@ async function handleCancel(argv) {
   const { options, positionals } = parseCommandInput(argv, COMMAND_OPTIONS.cancel);
   let cwd = resolveCommandCwd(options), reference = positionals[0] ?? "";
   let namedWorker = false;
+  let selectedTarget;
+  const reportOutcome = current => {
+    const ended = !ACTIVE.has(current.status);
+    const confirmed = ended && current.result?.interruptionConfirmed === true;
+    const alreadyEnded = ended && !current.cancelRequested;
+    const attempted = current.turnInterruptAttempted ?? Boolean(current.backgroundTerminals);
+    const payload = { jobId: current.id, ...(current.agentName ? { agentName: current.agentName } : {}),
+      status: confirmed || alreadyEnded ? current.status : "interrupt_unconfirmed",
+      confirmation: confirmed || alreadyEnded ? "confirmed" : "unconfirmed",
+      turnInterruptAttempted: attempted,
+      turnInterrupted: attempted && (current.turnInterrupted ?? confirmed), reason: "cancelled_by_user",
+      backgroundTerminals: current.backgroundTerminals ?? { cleaned: false, detail: "Background terminal cleanup has not been confirmed." } };
+    outputCommandResult(payload, `${JSON.stringify(payload, null, 2)}\n`, options.json);
+    if (!confirmed && !alreadyEnded) process.exitCode = 2;
+  };
   if (reference) {
     const target = resolveWorkerTarget(cwd, reference, { command: "cancel", nameState: "cancel", legacyReferences: true });
     namedWorker = target.job.agentName?.toLowerCase() === reference.toLowerCase();
@@ -2193,6 +2224,11 @@ async function handleCancel(argv) {
       const predecessorId = stored.result?.blockers?.find(blocker => blocker.code === "thread_busy")?.predecessorJobId;
       const predecessor = predecessorId && readStoredJob(snapshot.workspaceRoot, predecessorId);
       if (predecessor?.threadId === stored.threadId && unresolvedTask(predecessor)) stored = predecessor;
+    }
+    if (stored) selectedTarget = { workspaceRoot: snapshot.workspaceRoot, job: stored };
+    if (stored && !ACTIVE.has(stored.status) && !unresolvedTask(stored)) {
+      reportOutcome(stored);
+      return;
     }
     // Save intent before handle discovery or an interrupt can race recovery.
     // Keep a protected launch reservation index-only until its launcher writes.
@@ -2246,8 +2282,8 @@ async function handleCancel(argv) {
       const latest = readStoredJob(snapshot.workspaceRoot, stored.id);
       const confirmed = latest.recovered === true && latest.result?.turnEnded === true;
       const payload = { jobId: stored.id, ...(stored.agentName ? { agentName: stored.agentName } : {}),
-        status: confirmed ? "cancelled" : "interrupt_unconfirmed", confirmation: confirmed ? "confirmed" : "unconfirmed",
-        turnInterruptAttempted: interruption.attempted, turnInterrupted: confirmed, reason: "cancelled_by_user",
+        status: confirmed ? latest.status : "interrupt_unconfirmed", confirmation: confirmed ? "confirmed" : "unconfirmed",
+        turnInterruptAttempted: interruption.attempted && Boolean(interruption.transport), turnInterrupted: confirmed && interruption.result?.turnStatus === "interrupted", reason: "cancelled_by_user",
         backgroundTerminals: interruption.backgroundTerminals,
         detail: confirmed ? `Recorded turn resolved as ${latest.recovery.turnStatus}.` : `Could not confirm cancellation; the turn remains unresolved. ${interruption.detail}` };
       appendLogLine(stored.logFile, payload.detail);
@@ -2256,23 +2292,19 @@ async function handleCancel(argv) {
       return;
     }
   }
-  const { workspaceRoot, job } = resolveCancelableJob(cwd, reference, { env: process.env });
-  requestCancel(workspaceRoot, job.id);
+  const { workspaceRoot, job } = selectedTarget ?? resolveCancelableJob(cwd, reference, { env: process.env });
+  let current = requestCancel(workspaceRoot, job.id);
+  if (!ACTIVE.has(current.status) && !unresolvedTask(current)) {
+    reportOutcome(current);
+    return;
+  }
   appendLogLine(job.logFile, "Cancelled by user: interrupt requested; awaiting confirmation.");
-  let current;
   for (const deadline = Date.now() + 6000; Date.now() < deadline;) {
     current = readStoredJob(workspaceRoot, job.id);
     if (!ACTIVE.has(current.status)) break;
     await sleep(100);
   }
-  const confirmed = current?.result?.interruptionConfirmed === true ||
-    (!ACTIVE.has(current?.status) && current?.result?.turnEnded === true);
-  current = updateJob(workspaceRoot, job.id, latest => latest.backgroundTerminals ? null
-    : { backgroundTerminals: { cleaned: false, detail: "Background terminal cleanup has not been confirmed." } });
-  const payload = { jobId: job.id, ...(job.agentName ? { agentName: job.agentName } : {}), status: confirmed ? "cancelled" : "interrupt_unconfirmed", confirmation: confirmed ? "confirmed" : "unconfirmed",
-    turnInterruptAttempted: true, turnInterrupted: confirmed, reason: "cancelled_by_user", backgroundTerminals: current.backgroundTerminals };
-  outputCommandResult(payload, `${JSON.stringify(payload, null, 2)}\n`, options.json);
-  if (!confirmed) process.exitCode = 2;
+  reportOutcome(readStoredJob(workspaceRoot, job.id));
 }
 
 function reportMovedOwner(job, owner, json) {
@@ -2527,7 +2559,8 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
           const text = redactActivity(formatActivity(event, { root: current.request?.cwd ?? workspaceRoot })).replace(/\s+/g, " ").trim();
           // Progress never marks directOutputStarted: a later signal must still
           // emit its owner_stopped JSON. The formatter prefixes every event.
-          const line = text.length > 200 ? `${text.slice(0, 199)}…` : text;
+          const limit = event.type === "agentMessage" ? 600 + `[${event.seq}] Codex: `.length : 200;
+          const line = text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
           progress.push(line);
         } else if (!json && (feedMax === 0 || streamed < feedMax)) {
           streamed += 1;

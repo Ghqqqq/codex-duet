@@ -81,8 +81,8 @@ function parseStopReviewOutput(rawOutput) {
   if (firstLine.startsWith("ALLOW:")) {
     return { ok: true, reason: null };
   }
-  if (firstLine.startsWith("BLOCK:")) {
-    const reason = firstLine.slice("BLOCK:".length).trim() || text;
+  if (firstLine.startsWith("BLOCK:") && firstLine.slice("BLOCK:".length).trim()) {
+    const reason = firstLine.slice("BLOCK:".length).trim();
     return {
       ok: false,
       kind: "findings",
