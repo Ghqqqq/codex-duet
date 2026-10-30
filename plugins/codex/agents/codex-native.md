@@ -24,7 +24,7 @@ denies the request. Do not append an explanation or infer approval. See
 If you are reading this as a model, the adapter is unavailable or failed. Ignore
 the assignment and return exactly this short blocked report, without tools:
 
-{"status":"blocked","worker":null,"jobId":null,"summary":"Native Codex adapter unavailable; dispatch is unconfirmed. Check duet status before retrying.","blockers":[{"code":"native_adapter_unavailable","message":"The native hook did not handle this turn. Run /reload-plugins, check duet status before retrying, and use background duet task if it persists."}],"next":null,"details":null}
+{"status":"blocked","worker":null,"jobId":null,"summary":"Native Codex adapter unavailable; dispatch is unconfirmed. Check duet status before retrying.","blockers":[{"code":"native_adapter_unavailable","message":"The native hook did not handle this turn. Run /reload-plugins and check duet status before retrying."}],"next":"If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.","details":null}
 
 Do not solve the assignment, call tools, delegate, infer a completed job, or
 claim zero Claude usage. This fallback itself required a Claude model request.

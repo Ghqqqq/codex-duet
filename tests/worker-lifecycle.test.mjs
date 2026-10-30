@@ -167,7 +167,7 @@ test("agent names avoid collisions when the pool is exhausted", () => {
     "task", "answer", "wait", "result", "status", "cancel", "adopt", "setup", "review", "journal",
     "list", "help", "main", "next", "done", "stop", "all", "none", "true", "false", "null",
     // Remaining subcommands in codex-companion.mjs, including internal ones.
-    "cleanup", "adversarial-review", "transfer", "task-worker", "task-resume-candidate", "ultra-codex"
+    "cleanup", "adversarial-review", "transfer", "task-worker", "task-resume-candidate", "ultra-codex", "pair", "duel"
   ]);
   assert.ok(AGENT_NAMES.every(name => !reserved.has(name.toLowerCase())));
   const first = pickAgentName([], () => 0);
@@ -1725,6 +1725,223 @@ test("closed stdout during direct progress stops the owner without a crash", asy
   }
 });
 
+test("detached fallback spawn failure throws synchronously without an unhandled error", () => {
+  const dir = makeTempDir("failed-detached-spawn-");
+  const result = run(process.execPath, ["--input-type=module", "-e", `
+    import { spawnDetached } from ${JSON.stringify(new URL('../plugins/codex/scripts/lib/process.mjs', import.meta.url).href)};
+    let threw = false;
+    try {
+      spawnDetached(process.execPath, ['-e', ''], { cwd: ${JSON.stringify(path.join(dir, "missing"))}, stdio: 'ignore' });
+    } catch (error) { threw = error instanceof Error; }
+    // Allow the failed child's asynchronous error event to fire. A synchronous
+    // throw alone must not leave an unhandled event that kills this caller.
+    await new Promise(resolve => setTimeout(resolve, 50));
+    console.log(JSON.stringify({ threw, survived: true }));
+  `], { cwd: dir });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /detached launcher failed; using direct detached spawn/);
+  assert.deepEqual(JSON.parse(result.stdout), { threw: true, survived: true });
+});
+
+test("automatic inferred-turn recheck reconciles without a command and remains bounded", async t => {
+  // The broker intentionally waits four seconds before retiring an abandoned
+  // stream with no terminal notification. Recheck after that existing grace.
+  const launch = (allowInterrupt, initial = "6000", retry = "7000", holdRead = false) => {
+    const f = fixture("inferred-final:running");
+    Object.assign(f.env, { CODEX_COMPANION_INFERRED_RECHECK_MS: initial, CODEX_COMPANION_INFERRED_RECHECK_RETRY_MS: retry });
+    if (holdRead) {
+      const binary = path.join(f.dir, "codex"), source = fs.readFileSync(binary, "utf8"), branch = 'case "thread/read": {';
+      assert.ok(source.includes(branch));
+      fs.writeFileSync(binary, source.replace(branch, `${branch}
+        if (fs.existsSync(STATE_PATH + '.hold-read')) {
+          fs.writeFileSync(STATE_PATH + '.read-held', '');
+          while (!fs.existsSync(STATE_PATH + '.release-read')) await new Promise(resolve => setTimeout(resolve, 20));
+        }
+      `));
+    }
+    assert.equal(run(process.execPath, [path.join(f.dir, "codex"), "app-server"], { cwd: f.repo, env: f.env, input: "" }).status, 0);
+    fs.writeFileSync(path.join(f.dir, "fake-codex-state.json"), JSON.stringify({ ...f.state(), allowInterrupt }));
+    const first = direct(f.call("task", "--fresh", "--direct", "--quiet", "fixture"));
+    const original = storedJob(f, first.jobId);
+    assert.equal(original.result.inferredCompletion, true);
+    assert.equal(original.result.turnEnded, false, "report returns before reconciliation");
+    return { f, original };
+  };
+  const helper = (f, id) => f.call("inferred-turn-recheck", id, "--cwd", f.repo);
+  const quiet = result => { assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout, ""); assert.equal(result.stderr, ""); };
+  const reads = f => f.requests().filter(request => request.method === "thread/read");
+  const bytes = (f, id) => {
+    const record = storedJob(f, id);
+    return [path.join(resolveStateDir(f.repo, f.env), "jobs", `${id}.json`), path.join(resolveStateDir(f.repo, f.env), "state.json"),
+      record.rawOutputFile, record.resultFile, record.logFile].map(file => [fs.readFileSync(file, "utf8"), fs.statSync(file).mtimeMs]);
+  };
+
+  await t.test("broker interruption after the answer is recovered automatically; duplicates do nothing", async () => {
+    const { f, original } = launch(true);
+    // Only observe files from here through recovery: no status, wait, result,
+    // maintenance or follow-up command can perform the reconciliation for us.
+    const resolved = await until(() => {
+      const current = storedJob(f, original.id);
+      return current.recovery?.status === "recovered" && current;
+    }, 12000);
+    assert.equal(resolved.status, "completed");
+    assert.equal(resolved.result.turnEnded, true);
+    assert.equal(resolved.recovery.turnStatus, "interrupted");
+    assert.deepEqual([resolved.recovery.threadId, resolved.recovery.turnId], [original.threadId, original.turnId]);
+    assert.match(resolved.recovery.detail, /after the final answer.*no stop was requested/);
+    assert.equal(resolved.result.rawOutput, original.result.rawOutput);
+    assert.equal(JSON.parse(fs.readFileSync(resolved.resultFile)).recovery.status, "recovered");
+    assert.equal(f.requests().filter(request => request.method === "turn/start").length, 1);
+    const interrupts = f.requests().filter(request => request.method === "turn/interrupt");
+    assert.ok(interrupts.length >= 1);
+    const serverId = f.requests().find(request => request.method === "turn/start").serverId;
+    assert.ok(interrupts.every(request => request.serverId === serverId), "only the original broker interrupts, including its shutdown cleanup");
+    assert.ok(interrupts.every(request => request.params.threadId === original.threadId && request.params.turnId === original.turnId));
+    assert.equal(reads(f).length, 2, "confirmation plus one automatic recheck");
+    assert.ok(reads(f).every(request => request.params.threadId === original.threadId && request.params.includeTurns));
+    await until(() => !alive(resolved.inferredRecheck.pid));
+    const before = bytes(f, original.id), requestsBefore = f.requests();
+    quiet(helper(f, original.id)); quiet(helper(f, original.id));
+    assert.deepEqual(bytes(f, original.id), before, "already recovered jobs receive no writes");
+    assert.deepEqual(f.requests(), requestsBefore);
+    assert.doesNotMatch(f.call("help").stdout, /inferred-turn-recheck/);
+  });
+
+  for (const terminal of [true, false]) await t.test(terminal ? "one later retry recovers the exact turn" : "a still-running turn stops after two attempts", async () => {
+    const { f, original } = launch(false);
+    const claimed = await until(() => storedJob(f, original.id).inferredRecheck?.pid && storedJob(f, original.id));
+    const before = bytes(f, original.id), requestsBefore = f.requests();
+    quiet(helper(f, original.id));
+    assert.deepEqual(bytes(f, original.id), before, "a duplicate helper cannot claim the scheduled job");
+    assert.deepEqual(f.requests(), requestsBefore);
+    await until(() => storedJob(f, original.id).recovery?.status === "running");
+    if (terminal) {
+      const state = f.state();
+      Object.assign(state.threads.find(thread => thread.id === original.threadId).turns.find(turn => turn.id === original.turnId),
+        { status: "interrupted", completedAt: Math.floor(Date.now() / 1000) });
+      fs.writeFileSync(path.join(f.dir, "fake-codex-state.json"), JSON.stringify(state));
+    }
+    await until(() => !alive(claimed.inferredRecheck.pid));
+    const resolved = storedJob(f, original.id);
+    assert.equal(resolved.recovery.status, terminal ? "recovered" : "running");
+    assert.equal(resolved.status, "completed");
+    assert.equal(resolved.result.turnEnded, terminal);
+    assert.equal(reads(f).length, 3, "confirmation plus exactly two automatic checks");
+    const finished = bytes(f, original.id);
+    quiet(helper(f, original.id));
+    assert.deepEqual(bytes(f, original.id), finished, "an exhausted helper is never restarted");
+    assert.equal(reads(f).length, 3);
+  });
+
+  await t.test("deleted, changed and stopped jobs are untouched when the helper wakes", async () => {
+    const { f, original } = launch(false, "2000");
+    const claimed = await until(() => storedJob(f, original.id).inferredRecheck?.pid && storedJob(f, original.id));
+    patchJob(f, original.id, { turnId: "replacement-turn" });
+    const changed = bytes(f, original.id);
+    await until(() => !alive(claimed.inferredRecheck.pid));
+    assert.deepEqual(bytes(f, original.id), changed);
+    assert.equal(reads(f).length, 1);
+    for (const patch of [{ turnId: original.turnId, cancelRequested: { reason: "cancelled_by_user" } },
+      { cancelRequested: null, ownerDetachReason: "signal" }, { ownerDetachReason: null, recovered: true }]) {
+      patchJob(f, original.id, { ...patch, inferredRecheck: { ...original.inferredRecheck, claimedAt: null, pid: null } });
+      const before = bytes(f, original.id);
+      quiet(helper(f, original.id));
+      assert.deepEqual(bytes(f, original.id), before);
+    }
+    const file = path.join(resolveStateDir(f.repo, f.env), "jobs", `${original.id}.json`);
+    fs.unlinkSync(file);
+    const index = fs.readFileSync(path.join(resolveStateDir(f.repo, f.env), "state.json"), "utf8");
+    quiet(helper(f, original.id));
+    assert.equal(fs.existsSync(file), false);
+    assert.equal(fs.readFileSync(path.join(resolveStateDir(f.repo, f.env), "state.json"), "utf8"), index);
+    assert.equal(reads(f).length, 1);
+    fs.rmSync(resolveStateDir(f.repo, f.env), { recursive: true });
+    quiet(helper(f, original.id));
+    assert.equal(fs.existsSync(resolveStateDir(f.repo, f.env)), false, "deleted state directories are not recreated");
+  });
+
+  await t.test("a stop recorded during the exact-turn read prevents helper writes", async () => {
+    const { f, original } = launch(true, "6000", "7000", true);
+    const statePath = path.join(f.dir, "fake-codex-state.json");
+    fs.writeFileSync(statePath + ".hold-read", "");
+    await until(() => fs.existsSync(statePath + ".read-held"));
+    patchJob(f, original.id, { cancelRequested: { reason: "cancelled_by_user" } });
+    const before = bytes(f, original.id), pid = storedJob(f, original.id).inferredRecheck.pid;
+    fs.writeFileSync(statePath + ".release-read", "");
+    await until(() => !alive(pid));
+    assert.deepEqual(bytes(f, original.id), before, "helper revalidates under the terminal commit lock");
+    assert.equal(reads(f).length, 2);
+  });
+
+  await t.test("terminal commits exclude confirmed, non-inferred, cancelled, stopped and review jobs; spawn errors stay optional", () => {
+    const f = fixture();
+    const result = json(run(process.execPath, ["--input-type=module", "-e", `
+      import fs from 'node:fs';
+      import cp from 'node:child_process';
+      import { syncBuiltinESMExports } from 'node:module';
+      import { runTrackedJob } from ${JSON.stringify(new URL('../plugins/codex/scripts/lib/tracked-jobs.mjs', import.meta.url).href)};
+      import { readJobFile, resolveJobFile } from ${JSON.stringify(new URL('../plugins/codex/scripts/lib/state.mjs', import.meta.url).href)};
+      const spawns = [], committed = [], records = [], fallbacks = [];
+      const spawnSync = cp.spawnSync;
+      let unrefs = 0, fault = null;
+      cp.spawnSync = (command, args, options) => {
+        if (command !== process.execPath || args[0] !== '--input-type=module') return spawnSync(command, args, options);
+        const target = JSON.parse(args.at(-1));
+        spawns.push({ command: target.command, args: target.args, detached: target.options.detached,
+          stdio: target.options.stdio, home: options.env.CODEX_COMPANION_HOME });
+        committed.push(readJobFile(resolveJobFile(process.cwd(), target.args[2])).status);
+        if (fault) throw new Error('fixture launcher failure');
+        return { status: 0, stdout: '123456\\n' };
+      };
+      cp.spawn = (command, args) => {
+        fallbacks.push(args[2]);
+        if (fault === 'sync') throw new Error('fixture fallback failure');
+        return { pid: process.pid, once() {}, unref: () => { unrefs++; } };
+      };
+      syncBuiltinESMExports();
+      const cases = [
+        { id: 'confirmed', payload: { turnEnded: true } }, { id: 'ordinary', payload: { inferredCompletion: false } },
+        { id: 'cancelled', status: 'cancelled' }, { id: 'stopped', status: 'interrupted' }, { id: 'failed', status: 'failed' },
+        { id: 'cancel-intent', job: { cancelRequested: { reason: 'cancelled_by_user' } } },
+        { id: 'owner-stop', job: { ownerDetachReason: 'signal' } },
+        { id: 'result-stop', payload: { interruptionReason: 'owner_stopped' } },
+        { id: 'report-stop', report: { interruptionReason: 'owner_stopped' } },
+        { id: 'review', job: { jobClass: 'review' } },
+        { id: 'eligible' }, { id: 'eligible' }, { id: 'sync-failure', fault: 'sync' }, { id: 'launcher-fallback', fault: 'fallback' }
+      ];
+      for (const item of cases) {
+        fault = item.fault;
+        const tracked = { id: item.id, jobClass: 'task', workspaceRoot: process.cwd(), backgroundTerminals: {},
+          logFile: process.cwd() + '/' + item.id + '.log', rawOutputFile: process.cwd() + '/' + item.id + '.txt',
+          resultFile: process.cwd() + '/' + item.id + '.json', ...item.job };
+        const execution = { exitStatus: 0, jobStatus: item.status ?? 'completed', threadId: 'thread', turnId: 'turn',
+          payload: { status: 0, rawOutput: 'captured answer', inferredCompletion: true, turnEnded: false, ...item.payload },
+          report: { status: item.status ?? 'completed', ...item.report } };
+        const returned = await runTrackedJob(tracked, async () => execution);
+        records.push({ id: item.id, returned: returned === execution, job: readJobFile(resolveJobFile(process.cwd(), item.id)) });
+      }
+      console.log(JSON.stringify({ spawns, committed, unrefs, records, fallbacks }));
+    `], { cwd: f.repo, env: f.env }));
+    assert.equal(result.spawns.length, 3, "one eligible launch and two injected launcher failures; no duplicate or excluded launches");
+    assert.deepEqual(result.committed, ["completed", "completed", "completed"]);
+    assert.deepEqual(result.fallbacks, ["sync-failure", "launcher-fallback"]);
+    assert.equal(result.unrefs, 1, "spawnDetached owns unref for its successful fallback");
+    for (const spawn of result.spawns) {
+      assert.equal(spawn.command, process.execPath);
+      assert.deepEqual(spawn.args, [script, "inferred-turn-recheck", spawn.args[2], "--cwd", f.repo]);
+      assert.equal(spawn.detached, true); assert.deepEqual(spawn.stdio, ["ignore", "ignore", "ignore"]); assert.equal(spawn.home, f.env.CODEX_COMPANION_HOME);
+    }
+    for (const record of result.records) {
+      assert.equal(record.returned, true);
+      assert.equal(Boolean(record.job.inferredRecheck), ["eligible", "sync-failure", "launcher-fallback"].includes(record.id), record.id);
+    }
+    assert.equal(storedJob(f, "sync-failure").status, "completed");
+    assert.match(fs.readFileSync(path.join(f.repo, "sync-failure.log"), "utf8"), /Could not start automatic inferred-turn reconciliation/);
+    assert.equal(storedJob(f, "launcher-fallback").status, "completed");
+    assert.doesNotMatch(fs.readFileSync(path.join(f.repo, "launcher-fallback.log"), "utf8"), /Could not start automatic inferred-turn reconciliation/);
+  });
+});
+
 test("inferred final answers confirm the exact turn or remain recoverable by name and job ID", async t => {
   const { unresolvedTask } = await import('../plugins/codex/scripts/lib/state.mjs');
   const stored = (shared, id) => readJobFile(path.join(resolveStateDir(shared.repo, shared.env), "jobs", `${id}.json`));
@@ -1732,6 +1949,9 @@ test("inferred final answers confirm the exact turn or remain recoverable by nam
   // One real inferred turn supplies both unresolved history and broker-cleanup
   // variants. Every replay starts from its complete, quiescent durable snapshot.
   const shared = fixture("inferred-final:running");
+  // This test owns lazy-recovery timing and replays durable snapshots. Keep
+  // automatic helpers asleep until the suite's process-ledger teardown.
+  shared.env.CODEX_COMPANION_INFERRED_RECHECK_MS = "3600000";
   const binary = path.join(shared.dir, "codex"), source = fs.readFileSync(binary, "utf8");
   const interruptCase = 'case "turn/interrupt": {';
   assert.ok(source.includes(interruptCase));
@@ -1878,6 +2098,7 @@ test("inferred final answers confirm the exact turn or remain recoverable by nam
     const replay = mode === "running";
     if (replay) restoreRunning();
     const current = replay ? shared : fixture(`inferred-final:${mode}`);
+    current.env.CODEX_COMPANION_INFERRED_RECHECK_MS = "3600000";
     const first = direct(replay
       ? current.call("wait", launch.jobId, "--direct", "--quiet")
       : current.call("task", "--fresh", "--direct", "--quiet", "fixture"), mode === "failed" ? 1 : 0);

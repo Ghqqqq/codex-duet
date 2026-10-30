@@ -117,42 +117,148 @@ path is available. See [direct mode](direct-mode.md).
 
 ### `/codex:ultra-codex`
 
-Orchestrates a substantive task with parallel Codex workers the way Claude
-Code's Ultracode mode orchestrates Claude subagents. Claude scouts the code,
-writes precise assignments, judges results and integrates; Codex workers do the
-investigation, implementation and adversarial review, so the heavy lifting spends
-Codex quota only.
+Orchestrates substantive work with parallel Codex workers. Claude scouts,
+briefs, judges and integrates. Readers, independent designs/judges, area × lens
+reviews and varied searches scale to the work-list. Each accepted item advances
+when its dependencies are ready; wait for all results only for a shared contract,
+comparison, deduplication or integration. Conversation and trivial mechanical
+edits stay inline; a single-file question is not an exemption.
 
-```bash
-/codex:ultra-codex on --thorough          # session mode: every substantive prompt is orchestrated
-/codex:ultra-codex off                    # back to normal; lists Codex jobs still running
+```text
+Usage: /codex:ultra-codex [on [--quick|--thorough] [--max-workers <n|auto|unlimited>] [<task>] | off | status | [--quick|--thorough] [--max-workers <n|auto|unlimited>] <task>]
+
+/codex:ultra-codex on --thorough --max-workers auto
+/codex:ultra-codex --quick add --json to the cancel command and cover it with a test
 /codex:ultra-codex status
-/codex:ultra-codex --quick add --json to the cancel command and cover it with a test   # one task, mode unchanged
+/codex:ultra-codex off
 ```
 
-`on` works like `/effort ultracode`: a per-session switch (keyed by the Claude
-session id across workspaces, so other sessions in the same repository are
-unaffected). While it is on, a `UserPromptSubmit` hook adds a one-line reminder to every prompt and
-Claude applies the orchestration protocol to each substantive task; chat,
-one-line fixes and single-file questions stay inline. `off`, `/clear`, a new
-session or the session's end turn it off; `--resume` keeps it. The saved scale
-(`--quick`/`--thorough`, default auto) and `--max-workers` apply to every task
-in the mode.
+`--quick`/`--thorough` choose depth (default `auto`), with at most one selected.
+The default cap follows native Ultracode: min(16, CPU count − 2) workers in
+flight, with a minimum of one (16 on an 18-core Mac). `--max-workers` raises or
+lowers it: `auto` uses that formula, integers must be 1–64, and `unlimited`
+removes it. The cap limits concurrency, never coverage; excess work queues and
+existing saved caps are retained. It is advisory, not a runtime scheduler.
+Sixteen native read-only workers were measured in flight together; larger or
+heavy mutating fan-out is not a measured guarantee.
 
-Because workers use a different model and receive the conversation only through
-an explicit `--fork`, the command puts Claude's
-effort at both ends of each assignment: every brief follows a fixed template
-(objective, why, known context with file:line, interface contract, owned paths,
-non-goals, acceptance criteria, verification commands, when to ask), and every
-report goes through the same acceptance protocol (scope check, reading the diff,
-criterion → evidence → verdict, verification and assumptions audits, then
-`ACCEPT` / `ACCEPT WITH GLUE` / `REWORK` / `REASSIGN`). Phases: scout → understand
-(parallel read-only workers) → design (thorough only, independent drafts judged
-by Claude) → implement (disjoint ownership or worktrees) → accept → verify
-(adversarial reviewers plus the test suite, loop until dry) → integrate.
-`--max-workers <n>` sets Claude's advisory concurrency ceiling (default 6), not
-a runtime scheduler limit. Details and the mapping
-to Ultracode's Workflow tool: [ultra-codex](ultra-codex.md).
+Ultra defaults to `gpt-6.1-sol`/`medium` for scanning/triage and sol/`xhigh` for
+implementation, investigation and ordinary review; `gpt-6-astra`/`xhigh` or
+supported `max` is for adversarial verification, judging, hard debugging and deep
+architecture. Speed is normal unless requested. Details: [ultra-codex](ultra-codex.md).
+
+### `/codex:pair`
+
+One `gpt-6-astra` worker at `xhigh`, normal speed executes a bounded task end to
+end. Claude plans, writes a full brief and accepts every diff with its own
+checks. Rework stays on the same thread, at most two rounds after the initial
+result. An optional read-only verifier runs sequentially on a stable candidate;
+there is no fan-out. Pair has no mode options.
+
+```text
+Usage: /codex:pair [on [<task>] | off | status | <task>]
+
+/codex:pair on
+/codex:pair fix the failing parser test
+/codex:pair off
+```
+
+Recommend ultra for breadth or competing investigations, duel for contested
+designs or high-risk assumptions; switching requires an explicit mode-control
+request. See [pair](pair.md) for acceptance, limits and escalation.
+
+### `/codex:duel`
+
+One Claude general-purpose subagent versus one `gpt-6-astra` worker at `xhigh`,
+normal speed. The Claude participant inherits the session model and consumes
+the owner's Claude quota. Claude's main loop relays every substantive exchange
+and arbitrates: builder/breaker for implementation, independent drafts followed
+by reciprocal critique for design/analysis.
+
+```text
+Usage: /codex:duel [on [--rounds <n>] [<task>] | off | status | [--rounds <n>] <task>]
+
+/codex:duel on --rounds 2
+/codex:duel --rounds 2 compare these two designs
+/codex:duel off
+```
+
+`--rounds` sets the total cap including the initial build/drafts and critique:
+integer 1–3, default 3. Only the builder writes; default Codex builder/Claude
+breaker may be reversed by an explicit task request. There is no role flag.
+Unresolved blockers or unverified required criteria at the cap are incomplete
+outcomes. See [duel](duel.md) for flows, convergence and quota costs.
+
+### Orchestration controls
+
+All three commands share `[on [<mode-options>] [<task>] | off | status |
+[<mode-options>] <task>]`. No arguments means status. `on` enables the selected
+mode; `on <task>` first validates and saves settings, then runs the task with
+those returned settings. Failed activation starts no task. Exact `off`/`status`
+are controls and reject extra task text. Leading mode options without `on`
+require a task. Unknown leading options are errors. `--help`/`-h` before task
+text shows usage/options and stops without enabling or loading the protocol.
+
+Only one mode is saved per Claude session across workspaces. `on` replaces the
+previous mode and its options. Named `off` clears only that mode; another active
+mode is unchanged. A task command selects its own mode once, without altering
+the session record, even when another mode is active. Task-prefix options
+override matching saved options; without a matching active mode, defaults apply.
+Normal prompts use the active mode and accept its leading per-task overrides.
+Parse options only before task text: later option-like words remain literal.
+`--` starts literal task text, including `on`, `off`, `status` or an option-like
+word (for example `/codex:pair -- status the parser`). A task keeps its selected
+mode; it never silently switches modes to evade a limit.
+
+While enabled, one hook adds a versioned reminder to normal prompts and
+suppresses it for all three mode commands. Controls do not load protocol text
+into Claude's context. Tasks use the shared
+[protocol](../plugins/codex/prompts/ultra-codex-protocol.md), selecting shared
+sections plus their own mode section. Its body hash is computed at runtime;
+`status --for-command` reports the current version/path, not a saved literal hash.
+See [state and lifecycle](state-and-retention.md#orchestration-mode-state) for
+schema migration, retained caps, resume/compaction and cleanup.
+
+Every mode retains precise briefs, native-first dispatch, the existing Bash
+fallback rules and the [run journal](run-journal.md). Claude fully accepts every
+changed deliverable: scope, complete diff, criteria/evidence, rerun checks,
+assumptions and an explicit verdict. Read-only probes use the lighter evidence
+pass, with adversarial confirmation of decision-driving findings and full
+acceptance for consequential/conflicting claims. Details:
+[acceptance](../plugins/codex/prompts/ultra-codex-protocol.md#accepting-a-result-every-worker-report-no-exceptions).
+
+CLI equivalents accept controls only; they never take task text or start workers:
+
+```text
+duet ultra-codex [on|off|status] [options]
+duet pair [on|off|status] [options]
+duet duel [on|off|status] [options]
+
+duet ultra-codex on --thorough --max-workers unlimited
+duet pair on
+duet duel on --rounds 2
+duet duel status --for-command
+```
+
+Omitted action is status. All accept `--cwd <dir>`/`-C <dir>`, `--session <id>`,
+`--json`, `--help`/`-h`, and `status --for-command`. Mode options are valid only
+with `on`; `--for-command` only with `status`, even when explicitly set to
+`false`. Pair rejects ultra/duel options, duel rejects ultra options, and ultra
+rejects `--rounds`. Unknown flags, contradictory scale flags, invalid numbers
+and extra positionals fail before state changes. Help takes precedence over
+invalid arguments and performs no state/runtime setup. SessionStart supplies
+the session ID; `on`/`off` need one, while status without one reports off.
+
+JSON `mode` is `on`/`off` for the requested command; `modeName` names that
+command, and `activeMode` reports the actual saved mode/options even if it is
+different. `protocolFile` and `protocolVersion` are always present. Ultra keeps
+effective `maxWorkers` (null for unlimited) plus `maxWorkersSetting`. A cross-mode
+`on` adds `replacedMode` and `runningJobs`; `off` reports `wasOn` and running jobs.
+An empty Codex job list says nothing about a duel's Claude participant: Claude
+reports its tracked state separately. Switching/off does not cancel, transfer
+or resume jobs; settle conflicting writes before new assignments. User-stopped
+work continues only with consent. Natural-language stop ends new dispatch
+immediately and reports in-flight workers.
 
 ### `/codex:transfer`
 
@@ -209,6 +315,10 @@ same raw arguments on stdin; choose another delimiter if a line equals `DUET_ARG
 Checks whether Codex is installed, reachable and logged in. If Codex is missing
 and npm is available, it can offer to install Codex for you. It also runs the
 configuration actions described under [Configuration](configuration.md).
+`duet setup --default-mode off|ultra|pair|duel` saves the orchestration mode for
+fresh Claude sessions and `/clear` (default `off`); run it separately from other
+setup changes, with `--dry-run` to preview. See
+[default orchestration mode](configuration.md#default-orchestration-mode).
 For a desktop-managed CLI, setup includes `codex.warning` with code
 `desktop_managed_codex_runtime` and a message, also shown in human next steps.
 The warning can appear while `ready` is true and never changes the selected pin.
@@ -268,6 +378,9 @@ SessionStart supplies the session ID; `--session <id>` overrides it.
 | `duet status [worker]` | Observe jobs without renewing their lease |
 | `duet cancel <worker>` | Cancel and report whether interruption was confirmed |
 | `duet setup` | Runtime readiness and configuration |
+| `duet ultra-codex [on\|off\|status]` | Ultra session controls; task text belongs in the slash command |
+| `duet pair [on\|off\|status]` | Pair session controls; one primary Codex thread |
+| `duet duel [on\|off\|status]` | Duel session controls; `on --rounds <n>` sets 1–3 total rounds |
 | `duet cleanup --dry-run --json` / `duet cleanup --json` | Preview/apply retention with read-only inert workspace reporting; text output includes manual removal hints; `--days N` overrides the period |
 | `duet journal <start\|use\|add\|validate\|close\|show\|list>` | Criteria (including `add withdraw`), verdicts and decisions; `start --switch` selects a new run while leaving the old one open; `use <runId>` selects an existing open run for the session |
 

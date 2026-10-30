@@ -10,62 +10,82 @@ per-call options the `DUET:` line rejects, or follow-ups to Bash-launched worker
 The report arrives with the completion notification. Only if
 missing, Claude runs `duet result <worker>`; full evidence and handles are in
 `duet result <worker> --details`. No output-file parsing is needed.
-`/codex:ultra-codex on` makes that the session's default (see "Mode" below);
-`off` ends it.
+`/codex:ultra-codex on` makes that the session's default (see "Mode" below).
+It is one of three modes: [pair](pair.md) keeps one executor thread, while
+[duel](duel.md) puts a Claude subagent and a Codex worker in adversarial roles.
+Only the selected mode's rules apply; all share briefs, acceptance and the journal.
 
 ## Mode: on, off, and what "off" means
 
-Ultracode is a session setting (`/effort ultracode`), and so is ultra-codex
-mode. `ultra-codex on [--quick|--thorough] [--max-workers <n>]` writes a small
-JSON record to `<isolated home>/duet/ultra-codex/<session id>.json`, shared across
-workspaces and keyed by the Claude session id that the SessionStart hook exports as
-`CODEX_COMPANION_SESSION_ID`. While the record exists, the plugin's
-`UserPromptSubmit` hook (`scripts/ultra-codex-hook.mjs`, about 70 ms) appends a
-one-line versioned reminder to every prompt (shown with the repository-relative
-protocol path):
+Ultra, pair and duel use one session record at
+`<isolated home>/duet/ultra-codex/<session-id>.json`, shared across workspaces.
+SessionStart exports its key as `CODEX_COMPANION_SESSION_ID`. `on` replaces any
+other active mode; `/codex:ultra-codex off` clears only ultra. If pair or duel is
+active, that named off leaves it unchanged. Switching/off reports this session's
+running Codex jobs without cancelling them. Claude waits for conflicting writes
+to settle before assigning new work; old jobs still count toward ultra's cap.
 
-> Ultra-codex mode on (thorough, max 4 workers). Apply protocol v86bfc6b2 to
-> substantive tasks; re-read plugins/codex/prompts/ultra-codex-protocol.md only if
-> v86bfc6b2 is not in your context.
+```text
+/codex:ultra-codex on --thorough --max-workers auto
+/codex:ultra-codex --quick add --json to the cancel command
+/codex:ultra-codex off
+duet ultra-codex status
+```
 
-Control-only invocations (`on`, `off`, `status` or no arguments) do not load the
-protocol; task invocations, including `on` with task text, use Read on its path.
-The reminder requests a re-read only when that content version is absent from
-context, so the per-prompt cost is the reminder. The hook is silent for other
-sessions in the same repository, for prompts that are the command itself, when
-no session id is present, and on any error.
-On/off/status, reminders and SessionEnd all use this session-wide record, so
-changing repositories does not lose the mode or leave another workspace armed.
-Scale and `--max-workers` remain instructions for Claude's orchestration;
-the runtime does not enforce a worker scheduler limit.
+No arguments means status. `on <task>` first enables the validated settings,
+then runs the task; a failed activation starts nothing. `<task>` without `on`
+is one-shot, even while another mode is active: the command selects ultra for
+that task and leaves the saved mode unchanged. Leading task options override
+matching saved settings for that task only; otherwise ultra defaults apply.
+A normal prompt uses the active mode, with the same task-prefix override rule.
+`--` starts literal task text; later option-like words stay in the task. Exact
+`off` and `status` take no task text. See [the grammar](commands.md#codexultra-codex).
+The CLI accepts controls only and never starts workers.
 
-Three things turn the mode off:
+The `UserPromptSubmit` hook appends one versioned reminder to normal prompts.
+**Reminder template** (placeholders, not a current version or path):
 
-- `/codex:ultra-codex off` removes the record, lists this session's Codex jobs
-  that are still running (they are not cancelled; `duet cancel <worker>` does that on
-  request) and tells Claude that the orchestration has ended.
-- The session's end (`SessionEnd` hook) and a fresh start or `/clear` for the
-  same session id (`SessionStart` with `source` other than `resume`/`compact`).
-  `claude --resume` and compaction keep the current session mode. Workspace-keyed
-  legacy mode files are discarded, not adopted; after upgrading with only a
-  legacy record, enable the mode again.
-- Records older than 30 days are pruned at the next `SessionStart`, so a
-  session that died without `SessionEnd` cannot leave the mode armed. This fixed
-  policy covers global and legacy workspace mode directories and is separate
-  from configurable job retention.
+```text
+Ultra-codex mode on (<scale>, max <n> workers (auto)). Apply protocol v<hash> to substantive tasks; re-read <absolute-protocol-path> only if v<hash> is not in your context.
+```
 
-Without the mode, the command is one-shot: `/codex:ultra-codex <task>`
-orchestrates that task and the protocol's own scope clause ends the
-orchestration when the final report is delivered. The slash command's preamble
-runs `ultra-codex status --for-command` with no arguments (the task text never
-passes through shell arguments); Claude dispatches on the arguments itself and runs
-`ultra-codex on|off` through Bash only with the fixed flags.
+An explicit integer renders `max <n> workers`; `unlimited` renders `no worker cap`.
+Pair and duel name their own section in their reminders. Run
+`duet ultra-codex status --for-command` for the actual path and current version,
+or add `--json` for `protocolFile`/`protocolVersion`. All three commands use the
+same [protocol file](../plugins/codex/prompts/ultra-codex-protocol.md) and body
+hash. An edit to any mode or shared section invalidates the version for all modes.
 
-The command lives in the plugin's namespace: type `/codex:ultra-codex`. Claude
-Code namespaces every plugin component, so the bare `/ultra-codex` is not
-registered by the plugin itself; a user-level skill
-(`~/.claude/skills/ultra-codex/SKILL.md`) that invokes `codex:ultra-codex`
-through the `Skill` tool with `$ARGUMENTS` provides the short form.
+Control-only invocations do not use Claude's Read tool or load the protocol
+body into context; the CLI reads it internally to compute the hash. Task
+invocations read the file before orchestration, then use only shared sections
+and **Ultra mode**. A reminder asks for a re-read only if that version is absent
+from context. The hook suppresses reminders for any of the three mode commands
+and stays silent without valid active state/session ID or on errors. The slash
+preamble runs the fixed `ultra-codex status --for-command`; raw task text never
+enters executable shell arguments.
+
+Existing unversioned global ultra records normalize to schema 2 on read without
+being rewritten; the next successful `on` writes the new shape. Positive saved
+caps, including older 6 and grandfathered values above 64, survive status,
+reminders, repeated ultra `on`, resume and compaction. Repeated ultra `on` resets
+scale to `auto` unless supplied and keeps the cap unless explicitly changed.
+After off or replacement, activation gets fresh defaults; inactive-mode options
+are not retained. Workspace-keyed legacy records are discarded, never adopted.
+
+SessionEnd, a fresh SessionStart and `/clear` clear the active mode; resume and
+compaction preserve it. After clearing, fresh sessions and `/clear` apply the
+opt-in default saved with `duet setup --default-mode off|ultra|pair|duel`, using
+standard mode options (new installs default to off). Per-session changes never
+change that [saved default](configuration.md#default-orchestration-mode).
+SessionStart also prunes mode records older than 30 days,
+separately from job retention. See [mode state](state-and-retention.md#orchestration-mode-state).
+Natural-language stop ends new dispatch immediately: Claude reports in-flight
+workers and clears the active mode when requested. Jobs are cancelled or
+user-stopped work continued only with the user's consent.
+
+Use the plugin names `/codex:ultra-codex`, `/codex:pair` and `/codex:duel`.
+Bare aliases require user-level configuration outside this plugin.
 
 ## How Ultracode works, and what this command copies
 
@@ -95,10 +115,10 @@ or background Bash and direct Codex jobs, so it works at any effort level withou
 | --- | --- |
 | `agent()` with `schema` | `codex:codex-native` or Bash → `duet task`; the report is schema-enforced (`schemas/worker-report.schema.json`) |
 | `parallel()` fan-out | one named native agent or background `duet task` per job; reports arrive with completion notifications |
-| `phase()` | the seven phases below, tracked with `TodoWrite`; a phase starts when the previous one's reports are in |
+| `pipeline()` / `phase()` | per-item dependencies tracked with `TodoWrite`; accept a result and start its ready downstream work as a slot opens |
 | `isolation: "worktree"` | Claude creates worktrees with `git worktree add`, passes each as `--cwd` and merges the branches; a shared checkout requires disjoint OWNED PATHS |
 | journal cache / resume | `journal show` recovers criteria, verdicts, decisions and saved worker artifacts; `duet task --continue <jobId> --cwd '<cwd>'` starts an explicitly requested continuation while its job record is retained |
-| adversarial verify, judge, loop-until-dry | the Verify phase: read-only reviewer workers, findings routed to the owning implementer, at most the configured fix rounds |
+| adversarial verify, judge, loop-until-dry | independent read-only probes, evidence-backed findings routed to the owner, bounded rework |
 
 Use the [dispatch recipe](direct-mode.md): a named native agent with an optional
 first prompt line `DUET: <flags>`, or `duet task` with a single-quoted `DUET_TASK`
@@ -172,8 +192,11 @@ Claude's effort to the two ends of each assignment:
   decision not yet made. Briefs name the pattern to copy by file and line, say
   what wrong looks like ("do not loosen assertions to make tests pass"), define
   the interface contract so parallel pieces fit, and list the decisions that
-  must come back through `ask_parent`.
-- **Acceptance** runs the same protocol on every report: status gate; scope
+  must come back through `ask_parent`. Read-only finders, judges, reviewers and
+  investigators use a shorter probe brief with one question, evidence format
+  and explicit read-only bounds. See the [brief templates](../plugins/codex/prompts/ultra-codex-protocol.md#writing-a-brief-every-codex-assignment).
+- **Full acceptance** applies to every changed deliverable, including docs,
+  tests and substantive rework: status gate; scope
   check (`changedFiles`, or `touchedFiles` in `--details`, within `OWNED PATHS`,
   confirmed with `git diff --stat`);
   reading the diff rather than the summary, looking for unrequested behaviour
@@ -185,6 +208,11 @@ Claude's effort to the two ends of each assignment:
   `ACCEPT WITH GLUE` (trivial mechanical fixes only), `REWORK` (same thread,
   findings with file:line and the failed criterion) or `REASSIGN` (corrected
   brief, when the deviation shows the brief was ambiguous).
+- **Probe acceptance** checks status, answer completeness and cited evidence.
+  Decision-driving findings receive independent adversarial confirmation, then
+  Claude spot-checks the decisive citation and records a verdict. Consequential
+  or conflicting probe claims receive full acceptance. A worker's vote never
+  accepts code or replaces a required check. See the [acceptance protocol](../plugins/codex/prompts/ultra-codex-protocol.md#accepting-a-result-every-worker-report-no-exceptions).
 
 Two rules follow from this: drift is treated first as a brief defect, so the
 brief text is fixed before resending and the fix carried into sibling briefs;
@@ -237,25 +265,80 @@ home, survive job-record pruning, and follow the retention window; they neither
 verify claims nor restart work. See [Run journal](run-journal.md) for schemas,
 commands and limits.
 
-## Phases
+## Recipes and per-item coordination
 
-1. **Scout** (Claude, inline): entry points and the exact lines the briefs will
-   cite; pick `--quick` or `--thorough`; write the task-level acceptance
-   criteria.
-2. **Understand** (parallel read-only workers): one question each; merge
-   `keyFindings`; use them to sharpen `CONTEXT`, `NON-GOALS` and the interface
-   contract.
-3. **Design** (thorough only): two independent drafts; Claude judges against
-   the task criteria, records the decision and derives the interface contract.
-4. **Implement** (parallel workers, disjoint write ownership or worktrees), one
-   templated brief each.
-5. **Accept** (Claude, per worker): the acceptance protocol, with at most two
-   rework rounds per assignment.
-6. **Verify** (parallel): adversarial reviewers with the brief, the criteria and
-   the diff, plus Claude running the tests; findings go back to the owning
-   worker; loop until dry, bounded.
-7. **Integrate** (Claude): full verification, diff inspection, final report
-   organised by criterion.
+Orchestrate every substantive task. Solo work is limited to conversational
+turns and trivial mechanical edits; a single-file question still qualifies.
+Claude scouts enough to discover the work-list and writes observable criteria
+before dispatch. Workers write substantive code; Claude owns judgment,
+integration, checks and trivial glue. Compose the recipes the task needs:
+
+| Recipe | Coverage |
+| --- | --- |
+| Understand | Parallel readers for distinct subsystem questions; reconcile interfaces and unknowns |
+| Design | Independent approaches and judges scoring the same criteria; synthesize and freeze shared contracts |
+| Review | Area × lens coverage for correctness, security, performance and regressions; verify findings and re-review affected cells |
+| Research | Independent searches by container, content, entity and time; reconcile sources and use a completeness critic |
+| Migrate | Inventory all sites, agree the transform, assign disjoint owners and verify completeness |
+| Implement and integrate | Full briefs per deliverable, accept each diff, inspect the integrated result and run the full suite |
+| Live debugging | After one failed live fix or any unexplained live behaviour, at least two competing-hypothesis investigators plus a separate live diagnostic before another fix |
+
+Track each item's dependencies, worker/job, reviewed state and next stage with
+`TodoWrite`. Accept and journal each result as it arrives, then start that item's
+ready downstream work. One area's verified findings or accepted implementation
+can advance while another area is still working. Serialize overlapping writes
+and recheck results when their inputs change. Wait for the whole set only for
+real shared dependencies: deduplication, design comparison/synthesis, a shared
+contract, a global zero-results decision or final integration. Failed or
+unverified prerequisites remain open. This is coordination through native
+dispatch and notifications; no Workflow tool or script runner is supplied.
+
+Use adversarial and perspective-diverse verification, independent judge panels,
+varied search modalities and completeness critics where they improve confidence.
+For unknown-size discovery, loop until dry (normally two consecutive rounds
+without new findings for thorough work), deduplicating against all seen findings,
+including rejected ones. Incomplete searches are not dry. This never replenishes
+the maximum of two rework rounds per assignment. Disclose sampled or omitted
+coverage and unresolved findings. The full policies live in the
+[Ultra mode section](../plugins/codex/prompts/ultra-codex-protocol.md#ultra-mode).
+
+## Scale, model tiers and concurrency
+
+`auto` chooses task depth. `--quick` skips unnecessary design and uses focused
+finders, relevant review cells and one independent verifier per finding; its
+default is one rework round. `--thorough` widens subsystem/search coverage,
+uses independent designs/judges where useful, 3–5 adversarial verifiers for
+consequential findings and a completeness critic, with up to two rework rounds.
+Scale to the discovered work-list rather than a fixed reviewer roster.
+
+| Stage | Explicit default model / effort |
+| --- | --- |
+| Mechanical scanning, inventory, triage, first-pass finders | `gpt-6.1-sol` / `medium` |
+| Implementation, investigation, design drafts, ordinary review | `gpt-6.1-sol` / `xhigh` |
+| Adversarial verification, judging, hard debugging, deep architecture | `gpt-6-astra` / `xhigh`, or justified `max` after checking support |
+
+Speed is `--normal` unless the user asks for `--fast`. Explicit user choices
+take precedence. If integration/runtime support for `max` is absent, report it
+and use `xhigh`. These are ultra's stage defaults; pair and duel explicitly
+choose astra.
+
+`--max-workers <n|auto|unlimited>` sets an advisory cap across phases,
+workspaces/worktrees, native jobs and Bash fallback jobs. The default follows
+native Ultracode: min(16, CPU count − 2) workers in flight, with a minimum of one
+(16 on an 18-core Mac). `auto` uses the runtime's available CPU count;
+`--max-workers` raises or lowers the cap, explicit integers must be 1–64, and
+`unlimited` removes it. JSON reports the effective number as `maxWorkers`
+(`null` for unlimited) and the saved choice as `maxWorkersSetting`.
+
+The cap limits concurrency, never coverage. Claude counts running and
+question-waiting jobs, queues excess work and refills slots on notifications;
+capacity errors or degraded throughput warrant fewer active slots with the
+remaining coverage queued. It is not an enforced runtime scheduler. Sixteen
+native read-only workers were measured in flight together on the shared
+runtime: all completed, with admission serialized at about 2 s per agent and no
+start delay or slowdown. Larger or heavy mutating fan-out is not a measured
+guarantee. Existing saved caps are retained
+as described above.
 
 ## What the worker report gives the orchestrator
 
@@ -322,5 +405,9 @@ is `<!-- Ultra-codex protocol v<hash> -->`. The hash is the first eight lowercas
 hex digits of SHA-256 over the UTF-8 text after removing only the matching
 version line and its newline. Keep the following blank line and all other bytes.
 `protocolVersion()` in `scripts/lib/ultra-codex-mode.mjs` computes it at runtime;
-`tests/ultra-codex-mode.test.mjs` checks that the committed header matches. After
-editing the body, recompute the header and update the example reminder above.
+`tests/ultra-codex-mode.test.mjs` checks that the committed header matches. All
+three modes share this hash and the absolute file path; the legacy filename and
+header are retained. After editing any body section, recompute the header.
+`duet ultra-codex status --for-command` (or the pair/duel equivalent) reports
+the current computed version, even if the stored header is stale. The reminder
+above is a labeled template and does not need a copied literal hash.

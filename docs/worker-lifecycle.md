@@ -488,6 +488,13 @@ notification, Duet confirms the exact server turn with a `thread/read` capped at
 five seconds. If it cannot confirm an ending, the saved answer may still say
 `completed`, but `inferredCompletion: true` and `turnEnded: false` keep the task
 unresolved for pruning, recovery and cancellation; the pane shows `Outcome unknown`.
+After a completed task is committed without a recorded stop, one detached helper
+rechecks that exact turn after about 15 seconds, then once more after 45 seconds
+if it is still running. `CODEX_COMPANION_INFERRED_RECHECK_MS` and
+`CODEX_COMPANION_INFERRED_RECHECK_RETRY_MS` override those delays. This does not
+delay the worker's report or rerun the turn; duplicate helpers and jobs already
+reconciled or changed are skipped. Status and session-start maintenance remain
+fallbacks if the helper cannot start or either bounded check cannot resolve it.
 Later reconciliation preserves the captured answer. When the broker interrupts
 the leftover turn after that answer, the job stays `completed` unless a recorded
 stop intent or an owner detach other than `returned` exists; an owner still

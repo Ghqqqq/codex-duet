@@ -5,6 +5,7 @@ import os from "node:os";
 import { acquireConfigLock, keyPath, maskTomlComments, statements, valueOf } from "./tool-config.mjs";
 import { normalizeBrowserOrigin, normalizeBrowserOrigins, normalizeBundleId, normalizeBundleIds } from "./server-requests.mjs";
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
+import { MODE_NAMES } from "./ultra-codex-mode.mjs";
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function scan(text) {
@@ -15,7 +16,7 @@ function scan(text) {
     const line = code.trim(), header = /^\[([^\n]+)\]\s*$/.exec(line);
     if (header && !line.startsWith("[[")) { section = keyPath(header[1]); return { start, end: Math.min(offset, text.length), section, header: true }; }
     if (line.startsWith("[")) section = ["unsupported-array-table"];
-    const m = /^((?:"(?:\\.|[^"\\])*"|'[^']*'|[^=])+)=([\s\S]*)$/.exec(line);
+    const m = /^((?:"(?:\\.|[^"\\])*"|'[^']*'|[^="'])+)=([\s\S]*)$/.exec(line);
     return { start, end: Math.min(offset, text.length), section, keys: m ? [...section, ...keyPath(m[1].trim())] : null, value: m?.[2], comments: comments.map(c => raw.slice(c.start, c.end)) };
   });
 }
@@ -359,6 +360,22 @@ export function defaultSandboxSetup({ mode, env = process.env, dryRun = false } 
   if (!SANDBOX_MODES.includes(defaultSandbox)) throw new Error("Invalid saved default_sandbox; repair it with setup --default-sandbox.");
   return { file, defaultSandbox, ...apply(root, [{ file, before, after }], dryRun) };
 }
+
+function savedDefaultMode(text) {
+  try {
+    const value = readTomlField(text, ["defaultMode"]);
+    return MODE_NAMES.includes(value) ? value : "off";
+  } catch { return "off"; } // Invalid preferences must never opt a session into orchestration.
+}
+/** @param {{ mode?: string, env?: NodeJS.ProcessEnv, dryRun?: boolean }} [options] */
+export function defaultModeSetup({ mode, env = process.env, dryRun = false } = {}) {
+  if (mode !== undefined && mode !== "off" && !MODE_NAMES.includes(mode)) throw new Error("--default-mode must be off, ultra, pair, or duel.");
+  const { root, file } = duetConfig(env), before = read(root, file);
+  // Store off explicitly; a missing or invalid preference also means off.
+  const after = mode === undefined ? before : setTomlField(before, ["defaultMode"], mode);
+  return { file, defaultMode: savedDefaultMode(after), ...apply(root, [{ file, before, after }], dryRun) };
+}
+
 export function transportSetup({ mode = "status", env = process.env, dryRun = false } = {}) {
   if (!["http", "websocket", "status"].includes(mode)) throw new Error("--transport must be http, websocket or status.");
   const home = resolveIsolatedCodexHome(env), file = path.join(home, "config.toml"), before = read(home, file);

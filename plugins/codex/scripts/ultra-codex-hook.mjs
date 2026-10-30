@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// UserPromptSubmit hook: while ultra-codex mode is on for this Claude session,
+// UserPromptSubmit hook: while an orchestration mode is on for this Claude session,
 // add a one-line reminder to the prompt. Silent otherwise, and silent on any
 // error: a hook failure must never block the user's prompt.
 import fs from "node:fs";

@@ -57,6 +57,9 @@ export function spawnDetached(command, args = [], options = {}) {
   } catch {
     try { fs.writeSync(2, "codex-companion: detached launcher failed; using direct detached spawn.\n"); } catch { /* a closed stderr must not prevent fallback */ }
     const child = spawnOwned(command, args, { ...options, detached: true, stdio: options.stdio ?? "ignore" });
+    // Failed spawns emit error asynchronously even when no PID was returned.
+    child.once("error", () => {});
+    if (!child.pid) throw new Error("Detached fallback spawn failed");
     child.unref();
     return { pid: child.pid };
   }

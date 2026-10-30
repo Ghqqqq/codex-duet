@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { readJobFile, resolveJobFile, resolveJobLogFile, upsertJob, writeJobFile, updateJob } from "./state.mjs";
 import { recordFinishedJob, continuationReport, leaseExpiryReport } from "./job-runtime.mjs";
 import { appendActivity } from "./activity.mjs";
+import { spawnDetached } from "./process.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 
@@ -162,6 +164,35 @@ function readStoredJobOrNull(workspaceRoot, jobId) {
   return readJobFile(jobFile);
 }
 
+export function unconfirmedInferredTask(job) {
+  return job?.jobClass === "task" && job.status === "completed" && !job.pid && !job.recovered
+    && Boolean(job.threadId && job.turnId) && job.result?.inferredCompletion === true && job.result.turnEnded === false
+    && !job.cancelRequested && !job.result.interruptionReason && !job.report?.interruptionReason && !job.interruptionReason
+    && (job.ownerDetachReason == null || job.ownerDetachReason === "returned");
+}
+
+function scheduleInferredRecheck(job) {
+  if (!unconfirmedInferredTask(job) || job.inferredRecheck) return;
+  const logFailure = () => bestEffortDiagnostic(() => appendLogLine(job.logFile,
+    "Could not start automatic inferred-turn reconciliation; status and maintenance can still reconcile it."));
+  try {
+    let scheduled = false;
+    updateJob(job.workspaceRoot, job.id, current => {
+      if (!unconfirmedInferredTask(current) || current.inferredRecheck
+        || current.threadId !== job.threadId || current.turnId !== job.turnId || current.completedAt !== job.completedAt) return null;
+      scheduled = true;
+      return { inferredRecheck: { threadId: current.threadId, turnId: current.turnId, completedAt: current.completedAt, scheduledAt: nowIso() } };
+    }, { lockTimeoutMs: 0 });
+    if (!scheduled) return;
+    // Reap the launcher so host cleanup of the worker's process tree cannot
+    // kill the helper before its delayed checks. Keep the isolated-home env.
+    spawnDetached(process.execPath, [fileURLToPath(new URL("../codex-companion.mjs", import.meta.url)),
+      "inferred-turn-recheck", job.id, "--cwd", job.workspaceRoot], {
+      cwd: job.workspaceRoot, env: process.env, detached: true, stdio: "ignore", windowsHide: true
+    });
+  } catch { logFailure(); }
+}
+
 export async function runTrackedJob(job, runner, options = {}) {
   const runningRecord = {
     ...job,
@@ -239,6 +270,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       updateJob(job.workspaceRoot, job.id, () => ({ backgroundTerminals, turnInterruptAttempted: false, turnInterrupted: false }));
     }
     recordFinishedJob(committed);
+    scheduleInferredRecheck(committed);
     bestEffortDiagnostic(() => {
       if (job.jobClass === "task") appendLogLine(options.logFile ?? job.logFile ?? null, `Task ${completionStatus}. Final output stored separately.`);
       else appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);

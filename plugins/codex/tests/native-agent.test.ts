@@ -604,7 +604,7 @@ test('typed runtime blockers select recovery without overriding thread-busy acti
   const recovery = [
     ...['context_window_exceeded', 'provider_refused', 'auth_required'].map(code => reports.get(code)),
     { ...JSON.parse(native), blockers: [{ code: 'native_capacity' }],
-      next: 'Wait for active workers to finish or stop them before starting a new native agent.' },
+      next: 'Wait for active workers to finish or stop them before starting a new native agent. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.' },
     { ...JSON.parse(native), blockers: [{ code: 'native_binding_gone' }], next: 'Start a new native agent.' },
     { ...JSON.parse(native), blockers: [{ code: 'native_message_too_large' }], next: 'Start a new native agent with a shorter brief.' },
     { ...report, notice: 'Fixture notice' },

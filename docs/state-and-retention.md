@@ -13,7 +13,7 @@ plugin's settings file:
 ~/.claude/codex-isolated/duet/state/<workspace>/state.json # per-workspace job index
 ~/.claude/codex-isolated/duet/state/<workspace>/jobs/      # <id>.json, .log, .output.txt, .result.json
 ~/.claude/codex-isolated/duet/state/<workspace>/broker.json
-~/.claude/codex-isolated/duet/ultra-codex/<session-id>.json       # session mode, shared across workspaces
+~/.claude/codex-isolated/duet/ultra-codex/<session-id>.json # single active ultra/pair/duel record, shared across workspaces
 ```
 
 `<workspace>` is a trimmed ASCII basename slug plus the first 16 lowercase
@@ -74,6 +74,58 @@ continues. A job record that stays unreadable after retries is left out until it
 next update. Index-only settings return
 to defaults and jobs without a job record leave the listing; both remain in the
 kept file. Read-only commands never rebuild; they show an empty listing meanwhile.
+
+## Orchestration mode state
+
+[Ultra](ultra-codex.md), [pair](pair.md) and [duel](duel.md) share the existing
+`duet/ultra-codex/<session-id>.json` path, keyed only by the Claude session ID.
+The directory name is retained for compatibility. There is one active record,
+with no saved bank of inactive modes. Schema 2 stores `schemaVersion: 2`,
+`sessionId`, `name`, mode-specific `options` and the ISO `since` timestamp:
+
+| `name` | `options` |
+| --- | --- |
+| `ultra` | `scale` (`auto`, `quick`, `thorough`), `maxWorkers` (`auto`, a positive integer, `unlimited`) |
+| `pair` | `{}` |
+| `duel` | `rounds` (integer 1–3, default 3) |
+
+No protocol hash, participant handles or round counters are persisted here.
+Directories/files use `0700`/`0600`; writes use a temporary file and atomic
+rename. The last successful control write wins. `on` replaces another mode;
+named `off` removes only the matching mode. One-shot tasks never change the
+record. Replacing or disabling a mode discards its options and leaves jobs
+unchanged. See [command controls](commands.md#orchestration-controls).
+
+An unversioned **session-global** record with a valid `scale` is read as ultra
+and normalized to schema 2 in memory. Status and reminders do not rewrite it;
+the next successful `on` writes the canonical shape. A missing legacy timestamp
+reads as `since: null`; the next `on` supplies it. Positive saved caps are
+retained exactly, including older caps of 6 and grandfathered values above 64.
+Missing, noninteger or nonpositive legacy caps use `auto`. Unknown schemas,
+names, malformed records and invalid mode options are treated as inactive.
+This differs from **workspace-keyed** legacy mode files: those are discarded,
+never adopted, so enable the desired mode again after that layout's upgrade.
+There is no reverse schema migration for downgrades.
+
+Fresh ultra activation defaults to `auto`, following native Ultracode:
+min(16, CPU count − 2) workers in flight, with a minimum of one (16 on an
+18-core Mac). `--max-workers <n|auto|unlimited>` raises or lowers the cap;
+explicit integers must be 1–64 and `unlimited` removes it. It limits concurrency,
+never coverage. Repeated ultra `on` resets scale to `auto` unless supplied and
+retains the saved cap unless explicitly overridden. Repeated duel `on` retains
+saved rounds. Same-mode `on` retains a known `since`; activation after off or
+replacement uses fresh defaults and a new timestamp. Resume and compaction
+preserve the active record and options.
+
+SessionEnd, `/clear` and fresh SessionStart clear the record; SessionStart for
+`resume`/`compact` preserves it. Stale mode records older than 30 days are pruned
+at SessionStart in both global and legacy locations. This fixed lifecycle is
+separate from configurable job retention. Mode changes do not cancel workers;
+conflicting writes must settle before new work. The cap and round limits are
+advisory protocol rules, not runtime scheduling or counters. Sixteen native
+read-only workers were measured in flight together; larger or heavy mutating
+fan-out is not a measured guarantee. Shared reminders and
+their current hash are described in [the ultra guide](ultra-codex.md#protocol-content-version).
 
 ## Retention
 

@@ -71,7 +71,7 @@ async function waitFor(predicate, { timeoutMs = 60000, intervalMs = 50 } = {}) {
   throw new Error("Timed out waiting for condition.");
 }
 
-const HELP_COMMANDS = ["task", "setup", "review", "adversarial-review", "transfer", "status", "result", "wait", "adopt", "answer", "cancel", "cleanup", "ultra-codex", "task-worker", "task-resume-candidate"];
+const HELP_COMMANDS = ["task", "setup", "review", "adversarial-review", "transfer", "status", "result", "wait", "adopt", "answer", "cancel", "cleanup", "ultra-codex", "pair", "duel", "task-worker", "task-resume-candidate"];
 
 function helpFixture() {
   const dir = makeTempDir(), repo = path.join(dir, "repo");
@@ -92,6 +92,18 @@ test("help takes precedence over malformed task options without side effects", (
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stderr, "");
   f.unchanged();
+});
+
+test("setup help advertises default-mode and takes precedence without side effects", () => {
+  const f = helpFixture();
+  for (const flag of ["--help", "-h"]) {
+    const result = f.call("setup", "--default-mode", "invalid", "--sync-tools", flag);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /--default-mode <off\|ultra\|pair\|duel>/);
+    f.unchanged();
+  }
+  const command = fs.readFileSync(path.join(PLUGIN_ROOT, "commands", "setup.md"), "utf8");
+  assert.match(command, /^argument-hint: .*\[--default-mode off\|ultra\|pair\|duel\]/m);
 });
 
 for (const command of ["task"]) {
@@ -187,6 +199,7 @@ test("setup is ready without npm when Codex is already installed and authenticat
   assert.equal(payload.npm.available, false);
   assert.equal(payload.codex.available, true);
   assert.equal(payload.auth.loggedIn, true);
+  assert.equal(payload.defaultMode, "off", "fresh installs do not opt into orchestration");
 });
 
 test("setup trusts app-server API key auth even when login status alone would fail", () => {
@@ -1170,6 +1183,13 @@ test("session start hook exports unchanged environment and adds compact dispatch
   assert.deepEqual(Object.keys(output), ["hookSpecificOutput"]);
   assert.equal(output.hookSpecificOutput.hookEventName, "SessionStart");
   assert.equal(typeof output.hookSpecificOutput.additionalContext, "string");
+  const context = output.hookSpecificOutput.additionalContext;
+  assert.match(context, /Agent\(subagent_type: "codex:codex-native"/);
+  assert.match(context, /load the `codex:native-fallback` skill and follow it/);
+  assert.doesNotMatch(context, /DUET_TASK|duet task|background.Bash|run_in_background|codex:codex-worker/);
+  assert.match(context, /`DUET: --model gpt-6-astra --effort xhigh --normal` unless the user chose otherwise/);
+  assert.match(context, /Active ultra, pair or duel reminders and protocols take precedence/);
+  assert.match(context, /launch receipt or `running` payload is not completion/);
   // The event can also come from stdin, with no environment file available.
   const stdinEvent = run(process.execPath, [SESSION_HOOK], { cwd: repo,
     env: { ...process.env, CLAUDE_ENV_FILE: "", CODEX_COMPANION_HOME: path.join(repo, "isolated") },

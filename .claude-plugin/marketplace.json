@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "Duet — Claude plans and accepts; Codex workers investigate, build and review in parallel, in an isolated Codex home. Fork of openai/codex-plugin-cc.",
-    "version": "1.4.8"
+    "version": "1.4.9"
   },
   "plugins": [
     {
       "name": "codex",
       "description": "Duet: delegate coding, research and review from Claude Code to parallel Codex workers.",
-      "version": "1.4.8",
+      "version": "1.4.9",
       "author": {
         "name": "OpenAI"
       },
@@ -20,7 +20,7 @@
     {
       "name": "codex-live",
       "description": "Read-only live pane for this Claude session's Duet Codex jobs.",
-      "version": "1.4.8",
+      "version": "1.4.9",
       "source": "./plugins/codex-live"
     }
   ]

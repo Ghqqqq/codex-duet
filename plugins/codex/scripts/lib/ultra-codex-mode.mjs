@@ -1,21 +1,37 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolveStateRoot } from "./state.mjs";
 
-// Ultra-codex mode is a per-Claude-session switch, like `/effort ultracode`:
-// while it is on, a UserPromptSubmit hook adds a one-line reminder to every
-// prompt and Claude applies the orchestration protocol to each substantive
-// task. The switch is keyed only by the Claude session id, next to workspace
-// state, so one session shares it across repositories while separate sessions
-// do not share it; SessionEnd and `ultra-codex off` remove it.
+// One orchestration mode per Claude session, shared across workspaces. Keep
+// the ultra-codex directory and module path for compatibility with old sessions.
 export const PROTOCOL_PATH = fileURLToPath(new URL("../../prompts/ultra-codex-protocol.md", import.meta.url));
 export const ULTRA_SCALES = ["auto", "quick", "thorough"];
-export const DEFAULT_MAX_WORKERS = 6;
+export const DEFAULT_MAX_WORKERS = "auto";
+export const PAIR_MAX_REWORK_ROUNDS = 2;
+export const DEFAULT_DUEL_ROUNDS = 3;
+export const MODE_NAMES = ["ultra", "pair", "duel"];
 const MODE_DIR = "ultra-codex";
 const SESSION_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
-const COMMAND_PROMPT = /^\s*\/(?:codex:)?ultra-codex\b/;
+const COMMAND_PROMPT = /^\s*\/(?:codex:)?(?:ultra-codex|pair|duel)(?=\s|$)/;
+const OPTION_KEYS = { ultra: ["scale", "maxWorkers"], pair: [], duel: ["rounds"] };
+
+function isObject(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
+function validSavedCap(value) { return value === "auto" || value === "unlimited" || (Number.isInteger(value) && value > 0); }
+function validRounds(value) { return Number.isInteger(value) && value >= 1 && value <= 3; }
+function validOptions(name, options) {
+  return isObject(options) && Object.keys(options).length === OPTION_KEYS[name].length &&
+    Object.keys(options).every(key => OPTION_KEYS[name].includes(key)) &&
+    (name === "pair" || (name === "duel" ? validRounds(options.rounds) :
+      ULTRA_SCALES.includes(options.scale) && validSavedCap(options.maxWorkers)));
+}
+
+export function effectiveMaxWorkers(setting, cpuCount = os.availableParallelism?.() ?? os.cpus().length) {
+  if (setting === "unlimited") return null;
+  return setting === "auto" ? Math.min(16, Math.max(1, cpuCount - 2)) : setting;
+}
 
 function modeDir(env) { return path.join(path.dirname(resolveStateRoot(env)), MODE_DIR); }
 function realDirectory(directory) {
@@ -38,7 +54,7 @@ function clearLegacyModes(sessionId, env) {
   }
 }
 export function modeFile(cwd, sessionId, env = process.env) {
-  if (typeof sessionId !== "string" || !SESSION_ID.test(sessionId)) throw new Error("Ultra-codex mode needs the Claude session id (CODEX_COMPANION_SESSION_ID, exported by the SessionStart hook); run this inside Claude Code.");
+  if (typeof sessionId !== "string" || !SESSION_ID.test(sessionId)) throw new Error("Orchestration mode needs the Claude session id (CODEX_COMPANION_SESSION_ID, exported by the SessionStart hook); run this inside Claude Code.");
   return path.join(modeDir(env), `${sessionId}.json`);
 }
 
@@ -47,18 +63,42 @@ export function readMode(cwd, sessionId, env = process.env) {
   try { file = modeFile(cwd, sessionId, env); clearLegacyModes(sessionId, env); } catch { return null; }
   try {
     const value = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (!value || typeof value !== "object" || !ULTRA_SCALES.includes(value.scale)) return null;
-    return { sessionId, scale: value.scale, maxWorkers: Number.isInteger(value.maxWorkers) && value.maxWorkers > 0 ? value.maxWorkers : DEFAULT_MAX_WORKERS, since: typeof value.since === "string" ? value.since : null, file };
+    if (!isObject(value) || (Object.hasOwn(value, "sessionId") && value.sessionId !== sessionId)) return null;
+    let name, options;
+    if (Object.hasOwn(value, "schemaVersion")) {
+      if (value.schemaVersion !== 2 || !MODE_NAMES.includes(value.name) || !validOptions(value.name, value.options)) return null;
+      name = value.name;
+      options = { ...value.options };
+    } else {
+      if (!ULTRA_SCALES.includes(value.scale)) return null;
+      name = "ultra";
+      options = { scale: value.scale, maxWorkers: Number.isInteger(value.maxWorkers) && value.maxWorkers > 0 ? value.maxWorkers : DEFAULT_MAX_WORKERS };
+    }
+    return { schemaVersion: 2, sessionId, name, options, since: typeof value.since === "string" ? value.since : null, file };
   } catch { return null; }
 }
 
-export function setMode(cwd, sessionId, { scale = "auto", maxWorkers = DEFAULT_MAX_WORKERS } = {}, env = process.env) {
-  if (!ULTRA_SCALES.includes(scale)) throw new Error("Scale must be auto, quick or thorough.");
-  if (!Number.isInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 64) throw new Error("--max-workers must be an integer from 1 to 64.");
+export function setMode(cwd, sessionId, input = {}, env = process.env) {
+  if (!isObject(input)) throw new Error("Mode input must be an object.");
+  const named = Object.hasOwn(input, "name") || Object.hasOwn(input, "options");
+  const name = named ? input.name : "ultra";
+  if (!MODE_NAMES.includes(name)) throw new Error("Mode must be ultra, pair or duel.");
+  if (Object.keys(input).some(key => !(named ? ["name", "options"] : OPTION_KEYS.ultra).includes(key))) throw new Error("Do not mix mode input shapes or options from another mode.");
+  const supplied = named ? (Object.hasOwn(input, "options") ? input.options : {}) : input;
+  if (!isObject(supplied) || Object.keys(supplied).some(key => !OPTION_KEYS[name].includes(key))) throw new Error(`Invalid options for ${name} mode.`);
+  if (Object.hasOwn(supplied, "scale") && !ULTRA_SCALES.includes(supplied.scale)) throw new Error("Scale must be auto, quick or thorough.");
+  if (Object.hasOwn(supplied, "maxWorkers") && !(supplied.maxWorkers === "auto" || supplied.maxWorkers === "unlimited" ||
+      (Number.isInteger(supplied.maxWorkers) && supplied.maxWorkers >= 1 && supplied.maxWorkers <= 64))) throw new Error("--max-workers must be an integer from 1 to 64, auto or unlimited.");
+  if (Object.hasOwn(supplied, "rounds") && !validRounds(supplied.rounds)) throw new Error("--rounds must be an integer from 1 to 3.");
+  // Validate everything before readMode's legacy cleanup or any filesystem write.
   const file = modeFile(cwd, sessionId, env);
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const previous = readMode(cwd, sessionId, env);
-  const record = { sessionId, scale, maxWorkers, since: previous?.since ?? new Date().toISOString() };
+  const matching = previous?.name === name ? previous : null;
+  const options = name === "ultra"
+    ? { scale: supplied.scale ?? "auto", maxWorkers: supplied.maxWorkers ?? matching?.options.maxWorkers ?? DEFAULT_MAX_WORKERS }
+    : name === "duel" ? { rounds: supplied.rounds ?? matching?.options.rounds ?? DEFAULT_DUEL_ROUNDS } : {};
+  const record = { schemaVersion: 2, sessionId, name, options, since: matching?.since ?? new Date().toISOString() };
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temp, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(temp, file);
@@ -108,5 +148,10 @@ export function protocolVersion(text = fs.readFileSync(PROTOCOL_PATH, "utf8")) {
 // only when its current version is absent (including after compaction).
 export function reminderText(mode, protocolPath = PROTOCOL_PATH) {
   const version = protocolVersion(fs.readFileSync(protocolPath, "utf8"));
-  return `Ultra-codex mode on (${mode.scale}, max ${mode.maxWorkers} workers). Apply protocol v${version} to substantive tasks; re-read ${protocolPath} only if v${version} is not in your context.`;
+  const name = mode.name ?? "ultra", options = mode.options ?? mode;
+  const suffix = `v${version} to substantive tasks; re-read ${protocolPath} only if v${version} is not in your context.`;
+  if (name === "pair") return `Pair mode on (one primary Codex worker, max ${PAIR_MAX_REWORK_ROUNDS} rework rounds). Apply pair protocol ${suffix}`;
+  if (name === "duel") return `Duel mode on (Claude vs Codex, max ${options.rounds} rounds). Apply duel protocol ${suffix}`;
+  const cap = options.maxWorkers === "unlimited" ? "no worker cap" : `max ${effectiveMaxWorkers(options.maxWorkers)} workers${options.maxWorkers === "auto" ? " (auto)" : ""}`;
+  return `Ultra-codex mode on (${options.scale}, ${cap}). Apply protocol ${suffix}`;
 }

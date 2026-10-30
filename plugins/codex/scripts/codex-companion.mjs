@@ -6,7 +6,7 @@ import { UNREACHABLE_GUIDANCE } from "./lib/runtime-errors.mjs";
 import { getToolAvailability, syncToolConfig } from "./lib/tool-config.mjs";
 import { buildWorkerReport, parseStructuredReport, persistTaskArtifacts, taskArtifactPaths } from "./lib/worker-report.mjs";
 import { normalizeBrowserOrigins, normalizeBundleIds } from "./lib/server-requests.mjs";
-import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, ensureBrowserApproval, ensureComputerUseApproval, ensureProjectDocs, projectDocsSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
+import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, defaultModeSetup, ensureBrowserApproval, ensureComputerUseApproval, ensureProjectDocs, projectDocsSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
 import { activityReader, formatActivity, redactActivity, snippet } from "./lib/activity.mjs";
 import { JobRuntime, ACTIVE, OWNER_GRACE_MS, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, continuationReport, fullReport, directReport, envelopeBytes, adoptJob, ownershipNotice } from "./lib/job-runtime.mjs";
 import { reserveAgentName, releaseAgentName } from "./lib/agent-names.mjs";
@@ -16,7 +16,7 @@ import { startRun, useRun, addEntry, closeRun, showRun, listRuns, renderRun, val
 import { recordFinishedJob, recordedThreadJobs, uniqueTurnAttribution } from "./lib/job-runtime.mjs";
 import { listSessionJobs, updateJob, unresolvedTask, withoutPrivateActivity } from "./lib/state.mjs";
 import { markReportEmitted } from "./lib/report-delivery.mjs";
-import { clearMode, DEFAULT_MAX_WORKERS, PROTOCOL_PATH, protocolVersion, readMode, setMode } from "./lib/ultra-codex-mode.mjs";
+import { clearMode, effectiveMaxWorkers, modeFile, PAIR_MAX_REWORK_ROUNDS, PROTOCOL_PATH, protocolVersion, readMode, setMode } from "./lib/ultra-codex-mode.mjs";
 import { snapshotWorkspace, compareWorkspaceSnapshots } from "./lib/workspace-changes.mjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -55,6 +55,7 @@ import {
   getConfig,
   listJobs,
   resolveJobFile,
+  resolveStateDir,
   setConfig,
   updateState,
   upsertJob,
@@ -76,6 +77,7 @@ import {
   createProgressReporter,
   nowIso,
   runTrackedJob,
+  unconfirmedInferredTask,
   SESSION_ID_ENV
 } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
@@ -228,6 +230,7 @@ Check isolated runtime readiness or change setup; --help, -h exits without chang
   --sync-tools  Sync tools; --profile <chrome|codex-app>  Tool profile; --replace-cua  Replace CUA config.
   --cua-template <file>  Absolute template path; --chatgpt-resources <dir>  Absolute resources path.
   --default-sandbox <read-only|workspace-write|danger-full-access>  Default task sandbox.
+  --default-mode <off|ultra|pair|duel>  Orchestration for fresh Claude sessions (default off).
   --transport <http|websocket|status>  Runtime transport; --project-docs <claude-md|agents-only>  CLAUDE.md fallback.
   --browser-approval <never-ask|ask>  Browser policy; --list-browser-origins  List origins.
   --allow-browser-origin <origin>, --revoke-browser-origin <origin>  Change saved origins (repeatable).
@@ -314,9 +317,33 @@ Omit the target only when the session has one active job.
 Remove eligible ended jobs, inactive runs, markers and unreferenced threads.
   --dry-run  Preview only; --days  Retention age; --json  JSON details; --help, -h  Show help without cleanup.`,
   "ultra-codex": `Usage: duet ultra-codex [on|off|status] [options]
-Set or inspect this session's mode (default action: status).
-  --quick, --thorough  Scale; --max-workers <n>  Worker cap; --for-command  Include protocol with status.
-  --cwd, -C <dir>  Workspace; --json  JSON output; --help, -h  Show help without changing mode.`,
+Set or inspect ultra orchestration for this Claude session (default action: status).
+  on replaces another active mode; off disables ultra only; status reports the active mode.
+  --quick, --thorough  Scale for on (default auto); choose at most one.
+  --max-workers <n|auto|unlimited>  Advisory concurrent-worker cap for on (1-64; fresh default auto).
+  Auto follows native Ultracode: min(16, CPU count - 2) workers in flight, at least 1 (16 on an 18-core Mac).
+  --max-workers raises or lowers concurrency; unlimited removes the cap. The cap never limits coverage; existing saved caps are retained.
+  Twelve concurrent workers were measured on the shared runtime; larger fan-out for heavy or mutating work is not yet a measured guarantee.
+  --for-command  With status, print a versioned task-only protocol Read instruction.
+  --cwd, -C <dir>  Workspace; --session <id>  Override the Claude session id.
+  --json  JSON output; --help, -h  Show help without changing mode.
+Tasks run through /codex:ultra-codex <task>; this CLI accepts controls only.`,
+  pair: `Usage: duet pair [on|off|status] [options]
+Set or inspect pair orchestration for this Claude session (default action: status).
+  on replaces another active mode; off disables pair only; status reports the active mode.
+  Pair uses one primary Codex thread and at most two rework rounds; it has no mode options.
+  --for-command  With status, print a versioned task-only protocol Read instruction.
+  --cwd, -C <dir>  Workspace; --session <id>  Override the Claude session id.
+  --json  JSON output; --help, -h  Show help without changing mode.
+Tasks run through /codex:pair <task>; this CLI accepts controls only.`,
+  duel: `Usage: duet duel [on|off|status] [options]
+Set or inspect duel orchestration for this Claude session (default action: status).
+  on replaces another active mode; off disables duel only; status reports the active mode.
+  --rounds <n>  Total adversarial rounds for on, including the first (1-3; default 3).
+  --for-command  With status, print a versioned task-only protocol Read instruction.
+  --cwd, -C <dir>  Workspace; --session <id>  Override the Claude session id.
+  --json  JSON output; --help, -h  Show help without changing mode.
+Tasks run through /codex:duel <task>; this CLI accepts controls only.`,
   "task-worker": `Usage: duet task-worker --job-id <id> [--cwd <dir>]
 Internal detached worker entry point; --job-id selects a stored task.
   --cwd, -C  Workspace; --help, -h  Show help without starting a worker.`,
@@ -494,6 +521,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     sessionRuntime: getSessionRuntimeStatus(process.env, workspaceRoot),
     reviewGateEnabled: Boolean(config.stopReviewGate),
     defaultSandbox: defaultSandboxSetup().defaultSandbox,
+    defaultMode: defaultModeSetup().defaultMode,
     browserOrigins: browserOriginSetup(),
     computerUse: computerUseSummary(),
     projectDocs: projectDocsSummary(),
@@ -514,7 +542,7 @@ function projectDocsSummary() {
 
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "cua-template", "chatgpt-resources", "transport", "profile", "default-sandbox", "browser-approval", "computer-use-approval", "project-docs"],
+    valueOptions: ["cwd", "cua-template", "chatgpt-resources", "transport", "profile", "default-sandbox", "default-mode", "browser-approval", "computer-use-approval", "project-docs"],
     repeatableOptions: ["allow-browser-origin", "revoke-browser-origin", "allow-computer-app", "revoke-computer-app"],
     booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "sync-tools", "dry-run", "list-browser-origins", "list-computer-apps", "replace-cua"]
   });
@@ -529,6 +557,12 @@ async function handleSetup(argv) {
   const actionsTaken = [];
   for (const key of ["cua-template", "chatgpt-resources", "profile", "replace-cua"]) {
     if (options[key] !== undefined && !options["sync-tools"]) throw new Error(`--${key} requires --sync-tools.`);
+  }
+  if (options["default-mode"] !== undefined) {
+    if (options["default-sandbox"] !== undefined || options["sync-tools"] || options.transport !== undefined || options["browser-approval"] !== undefined || options["allow-browser-origin"] || options["revoke-browser-origin"] || options["list-browser-origins"] || computerUseFlags || options["project-docs"] !== undefined || options["enable-review-gate"] || options["disable-review-gate"]) throw new Error("Run --default-mode separately from other setup changes.");
+    const report = defaultModeSetup({ mode: options["default-mode"], dryRun: Boolean(options["dry-run"]) });
+    outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
+    return;
   }
   if (options["default-sandbox"] !== undefined) {
     if (options["sync-tools"] || options.transport !== undefined || options["browser-approval"] !== undefined || options["allow-browser-origin"] || options["revoke-browser-origin"] || options["list-browser-origins"] || computerUseFlags || options["project-docs"] !== undefined || options["enable-review-gate"] || options["disable-review-gate"]) throw new Error("Run --default-sandbox separately from other setup changes.");
@@ -591,7 +625,7 @@ async function handleSetup(argv) {
     finalReport.actionsTaken.push(`CUA surfaces: ${toolSync.surfaces.join(", ") || "none"}; backends: ${toolSync.backends.join(", ") || "none"}.`);
     if (toolSync.changed) finalReport.nextSteps.push("Restart the Claude session/shared Codex runtime to load synced tools.");
   }
-  outputResult(options.json ? finalReport : `${renderSetupReport(finalReport)}Selected Codex: ${finalReport.codex.executable} (source: ${finalReport.codex.source}).\n`, options.json);
+  outputResult(options.json ? finalReport : `${renderSetupReport(finalReport)}Default mode: ${finalReport.defaultMode}.\nSelected Codex: ${finalReport.codex.executable} (source: ${finalReport.codex.source}).\n`, options.json);
 }
 
 function buildAdversarialReviewPrompt(context, focusText) {
@@ -1856,14 +1890,53 @@ function restoreMissingTaskRecord(workspaceRoot, job) {
   });
 }
 
-function recordTurnResolution(workspaceRoot, stored, outcome, recovery) {
-  updateJob(workspaceRoot, stored.id, latest => unresolvedTask(latest) && latest.threadId === stored.threadId && latest.turnId === stored.turnId
+function recordTurnResolution(workspaceRoot, stored, outcome, recovery, isCurrent = () => true) {
+  updateJob(workspaceRoot, stored.id, latest => isCurrent(latest) && unresolvedTask(latest) && latest.threadId === stored.threadId && latest.turnId === stored.turnId
     ? { turnResolution: outcome, recovery } : null);
   return { outcome, recovery };
 }
 
-export async function reconcileLostTurn(workspaceRoot, job, { turnResult = null, interruptRequested = false, admittingJobId = null } = {}) {
+async function handleInferredTurnRecheck(argv) {
+  // Internal only: the scheduler supplies an exact job ID and canonical root.
+  const [jobId, cwdFlag, workspaceRoot] = argv;
+  if (argv.length !== 3 || !jobId || path.basename(jobId) !== jobId || cwdFlag !== "--cwd" || !path.isAbsolute(workspaceRoot)) return;
+  const eligible = job => unconfirmedInferredTask(job) && job.inferredRecheck
+    && job.threadId === job.inferredRecheck.threadId && job.turnId === job.inferredRecheck.turnId
+    && job.completedAt === job.inferredRecheck.completedAt;
+  const delay = (name, fallback) => {
+    const value = Number(process.env[name]);
+    return Number.isSafeInteger(value) && value > 0 && value <= 2147483647 ? value : fallback;
+  };
+  try {
+    // Scheduled jobs already have private records. Do not import or restore a
+    // deleted job through the user-facing legacy lookup path.
+    const jobFile = path.join(resolveStateDir(workspaceRoot), "jobs", `${jobId}.json`);
+    const read = () => fs.existsSync(jobFile) ? JSON.parse(fs.readFileSync(jobFile, "utf8")) : null;
+    const original = read();
+    if (!eligible(original) || original.inferredRecheck.claimedAt) return;
+    let claimed = false;
+    updateJob(workspaceRoot, jobId, current => {
+      if (!fs.existsSync(jobFile) || !eligible(current) || current.inferredRecheck.claimedAt
+        || current.inferredRecheck.scheduledAt !== original.inferredRecheck.scheduledAt) return null;
+      claimed = true;
+      return { inferredRecheck: { ...current.inferredRecheck, claimedAt: nowIso(), pid: process.pid } };
+    });
+    if (!claimed) return;
+    const isCurrent = job => fs.existsSync(jobFile) && eligible(job) && job.inferredRecheck.pid === process.pid
+      && job.inferredRecheck.scheduledAt === original.inferredRecheck.scheduledAt;
+    for (const ms of [delay("CODEX_COMPANION_INFERRED_RECHECK_MS", 15000), delay("CODEX_COMPANION_INFERRED_RECHECK_RETRY_MS", 45000)]) {
+      await new Promise(resolve => setTimeout(resolve, ms));
+      const current = read();
+      if (!isCurrent(current)) return;
+      const result = await reconcileLostTurn(workspaceRoot, current, { isCurrent });
+      if (result.outcome !== "in_progress") return;
+    }
+  } catch { /* Optional recovery must never surface a helper failure to the user. */ }
+}
+
+export async function reconcileLostTurn(workspaceRoot, job, { turnResult = null, interruptRequested = false, admittingJobId = null, isCurrent = () => true } = {}) {
   let stored = restoreMissingTaskRecord(workspaceRoot, job);
+  if (!isCurrent(stored)) return { outcome: "unknown" };
   if (!unresolvedTask(stored)) {
     return { outcome: stored?.recovered ? stored.recovery?.turnStatus ?? stored.status : "unknown", result: stored?.result };
   }
@@ -1878,11 +1951,11 @@ export async function reconcileLostTurn(workspaceRoot, job, { turnResult = null,
     // The wrapper is dead even when its server turn cannot yet be read. Keep
     // the turn unresolved, but never advertise the dead PID as a running job.
     if (ACTIVE.has(stored.status) && stored.pid && !processAlive(stored.pid)) {
-      stored = updateJob(workspaceRoot, stored.id, latest => unresolvedTask(latest) && ACTIVE.has(latest.status) && !processAlive(latest.pid)
+      stored = updateJob(workspaceRoot, stored.id, latest => isCurrent(latest) && unresolvedTask(latest) && ACTIVE.has(latest.status) && !processAlive(latest.pid)
         ? { status: "failed", phase: "failed", pid: null, completedAt: nowIso(), errorMessage: "Worker exited before its turn outcome was recorded." } : null);
     }
     let result = turnResult ?? (stored.threadId ? await readAppServerTurn(workspaceRoot, stored, { admittingJobId, privateWhenBusy: Boolean(admittingJobId) }) : { turnStatus: "notStarted" });
-    if (!result) return recordTurnResolution(workspaceRoot, stored, "unknown", { status: "unknown", detail: "The recorded turn is not readable. It may not have been persisted; do not automatically rerun it." });
+    if (!result) return recordTurnResolution(workspaceRoot, stored, "unknown", { status: "unknown", detail: "The recorded turn is not readable. It may not have been persisted; do not automatically rerun it." }, isCurrent);
     const ambiguous = { turnResolution: "unknown", recovery: { status: "unknown", detail: "The thread's recorded ownership is incomplete or ambiguous; no turn was attributed to this job." } };
     const attributionConfirmed = latest => {
       if (!latest.threadId || latest.turnId) return true;
@@ -1894,7 +1967,7 @@ export async function reconcileLostTurn(workspaceRoot, job, { turnResult = null,
         const recovery = { status: "running", source: "thread/read", threadId: stored.threadId, turnId: result.turnId, turnStatus: "inProgress",
           detail: "The worker exited before recording its turn handle; found an unclaimed in-progress turn." };
         const current = updateJob(workspaceRoot, stored.id, latest => {
-          if (!unresolvedTask(latest) || latest.threadId !== stored.threadId || latest.turnId) return null;
+          if (!isCurrent(latest) || !unresolvedTask(latest) || latest.threadId !== stored.threadId || latest.turnId) return null;
           // Revalidate all owners and competing start windows before attaching
           // a handle. A dead wrapper still owns its recorded server turn.
           return attributionConfirmed(latest) ? { turnId: result.turnId, turnResolution: "in_progress", recovery } : ambiguous;
@@ -1906,8 +1979,8 @@ export async function reconcileLostTurn(workspaceRoot, job, { turnResult = null,
           finalMessage: "", touchedFiles: [], error: { message: "worker exited before starting its turn" } };
       }
     }
-    if (result.turnStatus === "inProgress") return recordTurnResolution(workspaceRoot, stored, "in_progress", { status: "running", detail: "The wrapper stopped; the recorded Codex turn is still in progress." });
-    if (!["completed", "failed", "interrupted", "notStarted"].includes(result.turnStatus)) return recordTurnResolution(workspaceRoot, stored, "unknown", { status: "unknown", detail: `Unrecognized turn status: ${result.turnStatus}` });
+    if (result.turnStatus === "inProgress") return recordTurnResolution(workspaceRoot, stored, "in_progress", { status: "running", detail: "The wrapper stopped; the recorded Codex turn is still in progress." }, isCurrent);
+    if (!["completed", "failed", "interrupted", "notStarted"].includes(result.turnStatus)) return recordTurnResolution(workspaceRoot, stored, "unknown", { status: "unknown", detail: `Unrecognized turn status: ${result.turnStatus}` }, isCurrent);
     // A later recovery cannot compare against the current tree: subsequent
     // turns may have edited it. Keep exact-turn events and mark coverage partial.
     Object.assign(result, {
@@ -1920,7 +1993,7 @@ export async function reconcileLostTurn(workspaceRoot, job, { turnResult = null,
     const current = updateJob(workspaceRoot, stored.id, latest => {
       // A concurrent status/result/wait may already have resolved this record.
       // Do not overwrite its outcome, timestamps, artifacts or a changed handle.
-      if (!unresolvedTask(latest) || latest.threadId !== stored.threadId || latest.turnId !== stored.turnId) return null;
+      if (!isCurrent(latest) || !unresolvedTask(latest) || latest.threadId !== stored.threadId || latest.turnId !== stored.turnId) return null;
       if (!attributionConfirmed(latest)) return ambiguous;
       const provenance = { recovered: true, recoveredAt: nowIso(), completedAt: result.turnStatus === "notStarted" ? nowIso() : result.turnEndedAt ?? latest.completedAt ?? null,
         recovery: { status: "recovered", source: stored.threadId ? "thread/read" : "worker-liveness", threadId: stored.threadId ?? null, turnId: result.turnId ?? stored.turnId, turnStatus: result.turnStatus,
@@ -1993,11 +2066,11 @@ export async function reconcileLostTurn(workspaceRoot, job, { turnResult = null,
         rawOutputFile: execution.payload.rawOutputFile, resultFile: execution.payload.resultFile,
         result: execution.payload, report: execution.report, rendered: execution.rendered };
     });
-    recordFinishedJob(current);
+    if (recovered || isCurrent(current)) recordFinishedJob(current);
     if (recovered) appendLogLine(current.logFile, stored.turnId ? `Recovered recorded turn ${stored.turnId}; status ${current.status}. No new turn submitted.` : "Resolved dead worker before turn start from thread/read. No new turn submitted.");
     return { outcome: current.recovered ? current.recovery?.turnStatus ?? current.status : "unknown", result: current.result, recovery: current.recovery };
   } catch (error) {
-    return recordTurnResolution(workspaceRoot, stored, "unknown", { status: "unreachable", detail: error.message });
+    return recordTurnResolution(workspaceRoot, stored, "unknown", { status: "unreachable", detail: error.message }, isCurrent);
   }
 }
 
@@ -2650,53 +2723,104 @@ async function handleAnswer(argv) {
   }
 }
 
-// Ultra-codex mode: a per-session switch (like `/effort ultracode`) read by the
+// Orchestration mode: a per-session switch read by the
 // UserPromptSubmit hook. `status --for-command` is what the slash command's
 // preamble runs, without interpolating task text into shell source. Claude
 // dispatches the raw arguments in prose and Reads the protocol only for tasks.
-function renderUltraMode(mode) {
-  return mode
-    ? `Ultra-codex mode: on for this session since ${mode.since ?? "unknown"} (scale: ${mode.scale}; max workers: ${mode.maxWorkers}). Turn it off with /codex:ultra-codex off.`
-    : "Ultra-codex mode: off for this session. Turn it on with /codex:ultra-codex on [--quick|--thorough] [--max-workers <n>]; a task given as arguments is orchestrated once without changing the mode.";
+const MODE_COMMANDS = {
+  ultra: { label: "Ultra-codex", verb: "ultra-codex", heading: "Ultra mode", usage: "[on [--quick|--thorough] [--max-workers <n|auto|unlimited>] [<task>] | off | status | [--quick|--thorough] [--max-workers <n|auto|unlimited>] <task>]" },
+  pair: { label: "Pair", verb: "pair", heading: "Pair mode", usage: "[on [<task>] | off | status | <task>]" },
+  duel: { label: "Duel", verb: "duel", heading: "Duel mode", usage: "[on [--rounds <n>] [<task>] | off | status | [--rounds <n>] <task>]" }
+};
+function renderOrchestrationMode(activeMode, requestedName) {
+  const { label, verb } = MODE_COMMANDS[requestedName];
+  if (!activeMode) return `${label} mode: off for this session. No orchestration mode is active. Turn it on with /codex:${verb} on; a task given as arguments is orchestrated once without changing the mode.`;
+  if (activeMode.name !== requestedName) return `${label} mode: off for this session. Active mode: ${activeMode.name}. Turn it off with /codex:${MODE_COMMANDS[activeMode.name].verb} off.`;
+  const { options } = activeMode;
+  const cap = requestedName === "ultra" ? (options.maxWorkers === "auto" ? `${effectiveMaxWorkers("auto")} (auto)` : options.maxWorkers) : null;
+  const description = requestedName === "ultra" ? `scale: ${options.scale}; max workers: ${cap}`
+    : requestedName === "pair" ? `one primary Codex worker; max rework rounds: ${PAIR_MAX_REWORK_ROUNDS}` : `Claude vs Codex; max rounds: ${options.rounds}`;
+  return `${label} mode: on for this session since ${activeMode.since ?? "unknown"} (${description}). Turn it off with /codex:${verb} off.`;
 }
-async function handleUltraCodex(argv) {
+function modeSummary(mode) {
+  return mode ? { name: mode.name, options: mode.options, since: mode.since } : null;
+}
+function modePayload(activeMode, requestedName, sessionId) {
+  const selected = activeMode?.name === requestedName;
+  return {
+    mode: selected ? "on" : "off", modeName: requestedName, sessionId, activeMode: modeSummary(activeMode),
+    protocolFile: PROTOCOL_PATH, protocolVersion: protocolVersion(),
+    ...(selected ? { since: activeMode.since } : {}),
+    ...(selected && requestedName === "ultra" ? { scale: activeMode.options.scale, maxWorkers: effectiveMaxWorkers(activeMode.options.maxWorkers), maxWorkersSetting: activeMode.options.maxWorkers } : {})
+  };
+}
+function modeRunningJobs(workspaceRoot, sessionId) {
+  return listSessionJobs(workspaceRoot, sessionId).filter(job => ACTIVE.has(job.status)).map(job => ({ jobId: job.id, ...(job.agentName ? { agentName: job.agentName } : {}), title: job.title ?? null, status: job.status }));
+}
+function modeJobLines(running) {
+  return [running.length ? `Codex jobs from this session still running: ${running.map(job => `${job.jobId} (${job.status})`).join(", ")}. Cancel them only if the user asks:` : "No Codex jobs from this session are still running.", ...running.map(job => `/codex:cancel ${job.jobId}`)];
+}
+async function handleOrchestrationMode(argv, modeName) {
+  const { label, verb, heading, usage } = MODE_COMMANDS[modeName];
+  const modeOptions = modeName === "ultra" ? ["quick", "thorough", "max-workers"] : modeName === "duel" ? ["rounds"] : [];
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "max-workers"],
-    booleanOptions: ["json", "quick", "thorough", "for-command"]
+    valueOptions: ["cwd", ...(modeName === "ultra" ? ["max-workers"] : modeName === "duel" ? ["rounds"] : [])],
+    booleanOptions: ["json", "for-command", ...(modeName === "ultra" ? ["quick", "thorough"] : [])]
   });
   const action = positionals[0] ?? "status";
-  if (!["on", "off", "status"].includes(action) || positionals.length > 1) throw new Error("ultra-codex takes one of: on [--quick|--thorough] [--max-workers <n>], off, status [--for-command].");
+  if (!["on", "off", "status"].includes(action) || positionals.length > 1) throw new Error(`${verb} takes one of: on, off, status [--for-command]; mode options apply to on only.`);
   if (options.quick && options.thorough) throw new Error("Choose either --quick or --thorough.");
-  if (action !== "on" && ["quick", "thorough", "max-workers"].some(key => options[key] !== undefined)) throw new Error("--quick, --thorough and --max-workers apply to on only.");
+  if (action !== "on" && modeOptions.some(key => options[key] !== undefined)) throw new Error(`${modeOptions.map(key => `--${key}`).join(", ")} apply to on only.`);
   if (action !== "status" && options["for-command"] !== undefined) throw new Error("--for-command applies to status only.");
   const workspaceRoot = resolveCommandWorkspace(options);
-  const sessionId = getCurrentClaudeSessionId();
+  const sessionId = getCurrentClaudeSessionId() || null;
   if (action === "status") {
     const mode = sessionId ? readMode(workspaceRoot, sessionId) : null;
-    const payload = { mode: mode ? "on" : "off", sessionId, ...(mode ? { scale: mode.scale, maxWorkers: mode.maxWorkers, since: mode.since } : {}), protocolFile: PROTOCOL_PATH };
+    const defaultMode = defaultModeSetup().defaultMode;
+    const payload = { ...modePayload(mode, modeName, sessionId), defaultMode };
     const preamble = options["for-command"]
-      ? `Usage: /codex:ultra-codex [on [--quick|--thorough] [--max-workers <n>] [<task>] | off | status | <task>]\nIf the arguments describe a task, Read ${PROTOCOL_PATH} (protocol v${protocolVersion()}) before orchestrating; otherwise do not read it.\n`
+      ? `Usage: /codex:${verb} ${usage}\nIf the arguments describe a task, Read ${PROTOCOL_PATH} (protocol v${payload.protocolVersion}) before orchestrating; otherwise do not read it.\nFor this task, apply the shared sections and "${heading}" only. Task-prefix options override saved options; a one-shot task leaves the session mode unchanged.\n`
       : "";
-    const text = `${renderUltraMode(mode)}\n${preamble}`;
+    const defaultLine = defaultMode === "off" ? "" : `default mode: ${defaultMode} (duet setup --default-mode)\n`;
+    const text = `${renderOrchestrationMode(mode, modeName)}\n${defaultLine}${preamble}`;
     outputCommandResult(payload, text, options.json);
     return;
   }
-  if (!sessionId) throw new Error("Ultra-codex mode needs the Claude session id (CODEX_COMPANION_SESSION_ID, exported by the SessionStart hook); run this inside Claude Code.");
+  modeFile(workspaceRoot, sessionId); // on/off require a valid session even when no mode is active.
+  const supplied = modeName === "ultra" ? {
+    scale: options.quick ? "quick" : options.thorough ? "thorough" : "auto",
+    ...(options["max-workers"] !== undefined ? { maxWorkers: ["auto", "unlimited"].includes(options["max-workers"]) ? options["max-workers"] : Number(options["max-workers"]) } : {})
+  } : modeName === "duel" && options.rounds !== undefined ? { rounds: Number(options.rounds) } : {};
+  // Reject numeric input before readMode can discard workspace-legacy records.
+  // setMode remains responsible for all write validation and option inheritance.
+  if (Object.hasOwn(supplied, "maxWorkers") && !["auto", "unlimited"].includes(supplied.maxWorkers) &&
+      (!Number.isInteger(supplied.maxWorkers) || supplied.maxWorkers < 1 || supplied.maxWorkers > 64)) throw new Error("--max-workers must be an integer from 1 to 64, auto or unlimited.");
+  if (Object.hasOwn(supplied, "rounds") && (!Number.isInteger(supplied.rounds) || supplied.rounds < 1 || supplied.rounds > 3)) throw new Error("--rounds must be an integer from 1 to 3.");
+  const previous = readMode(workspaceRoot, sessionId);
   if (action === "on") {
-    const maxWorkers = options["max-workers"] === undefined ? (readMode(workspaceRoot, sessionId)?.maxWorkers ?? DEFAULT_MAX_WORKERS) : Number(options["max-workers"]);
-    const mode = setMode(workspaceRoot, sessionId, { scale: options.quick ? "quick" : options.thorough ? "thorough" : "auto", maxWorkers });
-    const payload = { mode: "on", sessionId, scale: mode.scale, maxWorkers: mode.maxWorkers, since: mode.since, protocolFile: PROTOCOL_PATH };
-    outputCommandResult(payload, `${renderUltraMode(mode)}\nFrom now on every substantive prompt in this session is orchestrated with Codex workers (a reminder is attached to each prompt); conversational turns and one-line fixes stay inline.\n`, options.json);
+    const mode = setMode(workspaceRoot, sessionId, { name: modeName, options: supplied });
+    const replaced = previous && previous.name !== modeName;
+    const running = replaced ? modeRunningJobs(workspaceRoot, sessionId) : [];
+    const payload = { ...modePayload(mode, modeName, sessionId), ...(replaced ? { replacedMode: modeSummary(previous), runningJobs: running } : {}) };
+    const lines = [
+      ...(replaced ? [`Replaced ${previous.name} mode with ${modeName} mode for this session. Existing jobs are unchanged; cancel them only if the user asks.`] : []),
+      renderOrchestrationMode(mode, modeName),
+      `From now on every substantive prompt in this session uses ${modeName} orchestration (a reminder is attached to each prompt); conversational turns and trivial mechanical edits stay inline.`,
+      ...(replaced ? modeJobLines(running) : [])
+    ];
+    outputCommandResult(payload, `${lines.join("\n")}\n`, options.json);
     return;
   }
-  const wasOn = clearMode(workspaceRoot, sessionId);
-  const running = listSessionJobs(workspaceRoot, sessionId).filter(job => ACTIVE.has(job.status)).map(job => ({ jobId: job.id, ...(job.agentName ? { agentName: job.agentName } : {}), title: job.title ?? null, status: job.status }));
-  const payload = { mode: "off", sessionId, wasOn, runningJobs: running };
+  const wasOn = previous?.name === modeName && clearMode(workspaceRoot, sessionId);
+  const activeMode = wasOn ? null : previous;
+  const running = modeRunningJobs(workspaceRoot, sessionId);
+  const payload = { mode: "off", modeName, sessionId, wasOn, activeMode: modeSummary(activeMode), protocolFile: PROTOCOL_PATH, protocolVersion: protocolVersion(), runningJobs: running };
   const lines = [
-    wasOn ? "Ultra-codex mode: off. Orchestration has ended for this session." : "Ultra-codex mode was already off for this session.",
-    "Handle requests normally from here on; spawn Codex workers only when asked.",
-    running.length ? `Codex jobs from this session still running: ${running.map(job => `${job.jobId} (${job.status})`).join(", ")}. Cancel them only if the user asks:` : "No Codex jobs from this session are still running.",
-    ...running.map(job => `/codex:cancel ${job.jobId}`)
+    ...(activeMode ? [`${label} mode was already off for this session. Active mode ${activeMode.name} is unchanged.`, renderOrchestrationMode(activeMode, activeMode.name)] : [
+      wasOn ? `${label} mode: off. Orchestration has ended for this session.` : `${label} mode was already off for this session.`,
+      "Handle requests normally from here on; spawn Codex workers only when asked."
+    ]),
+    ...modeJobLines(running)
   ];
   outputCommandResult(payload, `${lines.join("\n")}\n`, options.json);
 }
@@ -2804,6 +2928,9 @@ async function main() {
     case "task-worker":
       await handleTaskWorker(argv);
       break;
+    case "inferred-turn-recheck":
+      await handleInferredTurnRecheck(argv);
+      break;
     case "wait":
       await handleWait(argv);
       break;
@@ -2826,7 +2953,13 @@ async function main() {
       await handleCancel(argv);
       break;
     case "ultra-codex":
-      await handleUltraCodex(argv);
+      await handleOrchestrationMode(argv, "ultra");
+      break;
+    case "pair":
+      await handleOrchestrationMode(argv, "pair");
+      break;
+    case "duel":
+      await handleOrchestrationMode(argv, "duel");
       break;
     default:
       throw new Error(`Unknown subcommand: ${subcommand}`);

@@ -1,5 +1,5 @@
 {
-  "description": "Session lifecycle, ultra-codex mode reminder and the optional stop-time review gate for Duet.",
+  "description": "Session lifecycle, orchestration mode reminder and the optional stop-time review gate for Duet.",
   "modules": ["./register.mjs"],
   "hooks": {
     "PreToolUse": [

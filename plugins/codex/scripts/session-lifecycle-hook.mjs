@@ -17,13 +17,11 @@ export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 // An unavailable adapter returns a report that enables the Bash fallback.
 const SESSION_START_CONTEXT = [
   'Dispatch Codex natively by default from the first dispatch: Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (the plugin assigns a scientist name, replacing a passed label unless it is a free pool name; the assigned name appears in the Agent result); an optional first prompt line DUET: <flags> sets task flags. The agent result is the Duet report; use SendMessage to the named agent for follow-ups and answers.',
-  "Bash recipe (fallback only): use it only when the native agent returns native_adapter_unavailable or native_capacity, a per-call option is rejected by the DUET: line (--run, --approve-browser-origin, --approve-computer-app, --lease-sec, --question-timeout-sec), or following up a worker launched through Bash.",
-  "Dispatch Codex with duet task <<'DUET_TASK' (brief on following lines, then DUET_TASK alone); use Bash run_in_background: true.",
-  "The background-task completion notification carries the complete Duet report.",
-  "Follow up on the same worker with duet task --to <worker> and a brief on stdin.",
-  "Answer with the report's next command verbatim, which pins --question '<questionId>', or duet answer <worker> --question '<questionId>' <<'DUET_ANSWER' (answer on following lines, then DUET_ANSWER alone).",
-  "If a report is missing, run duet result <worker>.",
-  "Run duet task --help for flags."
+  "If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.",
+  "When delegating outside an orchestration mode, explicitly set model, effort and speed: `DUET: --model gpt-6-astra --effort xhigh --normal` unless the user chose otherwise; add `--sandbox read-only` for investigation/review. Active ultra, pair or duel reminders and protocols take precedence.",
+  "Use a fresh native agent per independent job; never run two jobs on one thread at once. Concurrent edits need disjoint owned paths or separate worktrees.",
+  "Briefs state the objective, owned paths, numbered acceptance criteria and verification commands.",
+  "Accept only on evidence: read the actual diff and rerun checks. A success message, launch receipt or `running` payload is not completion; never simulate a worker report or notification."
 ].join("\n");
 const shellEscape = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 function appendEnvVar(name, value) {
@@ -50,14 +48,23 @@ async function main() {
     appendEnvVar(SESSION_ID_ENV, input.session_id);
     appendEnvVar("CODEX_COMPANION_SESSION_CWD", input.cwd || process.cwd());
     appendEnvVar(TRANSCRIPT_PATH_ENV, input.transcript_path);
-    // A mode is per session and never inherited: a stale file from a session
-    // that ended without SessionEnd is removed here. A resumed or compacted
-    // session keeps the mode it had.
+    // Clear stale state on a fresh start, then apply only the saved opt-in
+    // default. Resumed or compacted sessions keep their own mode, including off.
     try {
       pruneModes(cwd);
       if (input.session_id) {
         if (["resume", "compact"].includes(input.source)) readMode(cwd, input.session_id); // discard legacy workspace records
-        else clearMode(cwd, input.session_id);
+        else {
+          clearMode(cwd, input.session_id);
+          if (["startup", "clear"].includes(input.source)) {
+            const { defaultModeSetup } = await import("./lib/setup-config.mjs");
+            const { defaultMode } = defaultModeSetup();
+            if (defaultMode !== "off") {
+              const { setMode } = await import("./lib/ultra-codex-mode.mjs");
+              setMode(cwd, input.session_id, { name: defaultMode });
+            }
+          }
+        }
       }
     } catch { /* best effort */ }
     for (const key of ["CLAUDE_PLUGIN_DATA", "CODEX_COMPANION_HOME", "CODEX_COMPANION_BIN"]) appendEnvVar(key, process.env[key]);

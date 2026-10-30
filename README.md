@@ -75,28 +75,38 @@ to run it in the session.
 
 ## Quick start
 
-You rarely call anything yourself. Ask Claude to delegate, or let it decide that
-a task benefits from independent workers:
+Ask Claude to delegate:
 
 ```text
 Have Codex investigate why the integration tests are flaky, and in parallel have
 another Codex worker review the retry logic in src/net/.
 ```
 
-For a substantial task, hand the whole orchestration over:
+For a substantial task, hand the whole orchestration over, once or for the rest
+of the session with `on`:
 
 ```text
 /codex:ultra-codex add a --json flag to the cancel command and cover it with a test
+/codex:pair fix the failing parser test
+/codex:duel compare these two designs
 ```
 
 | Command | What it does |
 | --- | --- |
 | `/codex:ultra-codex <task>` · `on` · `off` | Claude orchestrates parallel Codex workers end to end, once or as a session mode |
+| `/codex:pair <task>` · `on` · `off` | One Codex thread executes; Claude accepts every diff |
+| `/codex:duel <task>` · `on` · `off` | Claude and Codex challenge each other; the Claude participant uses your Claude quota |
 | `/codex:review` · `/codex:adversarial-review` | Read-only Codex review of your changes; the adversarial one challenges the design |
 | `/codex:rescue <task>` | Hand one task to Codex: investigate, fix, or continue earlier work |
 | `/codex:status` · `/codex:result` · `/codex:cancel` | Inspect, read or stop jobs |
 | `/codex:transfer` | Continue the current Claude conversation in Codex |
 | `/codex:setup` | Check the runtime; opt into browser/desktop tools and other settings |
+
+To have Claude orchestrate every substantive task without typing a command,
+start each fresh session in a mode with `/codex:setup --default-mode pair` (or
+`ultra` / `duel`; the default is `off`), or paste the optional
+[CLAUDE.md policy](docs/claude-md.md) for proactive delegation outside a mode.
+Duet also ships its own dispatch and acceptance rules, so neither is required.
 
 Every command and flag: [docs/commands.md](docs/commands.md).
 
@@ -111,10 +121,11 @@ Turing, …) that the agent, `codex-live` and the report all share. A SendMessag
 to that name continues the thread or answers a pending question; stop a worker
 from `/tasks`. → [Native dispatch](docs/direct-mode.md#native-subagent-default)
 
-### Background workers
+### Fallback: background workers
 
-When native dispatch is unavailable, or a call needs an option the `DUET:` line
-rejects, Claude falls back to one background Bash call per job:
+Native dispatch is the default. Only when it is unavailable, or a call needs an
+option the `DUET:` line rejects, does Claude load the `codex:native-fallback`
+skill and run one background Bash call per job:
 
 ```bash
 duet task --model gpt-6-astra --effort xhigh --normal <<'DUET_TASK'
@@ -122,11 +133,12 @@ duet task --model gpt-6-astra --effort xhigh --normal <<'DUET_TASK'
 DUET_TASK
 ```
 
-The report arrives with the completion notification. `duet task --to <worker>`
-continues a worker, and `duet result <worker> --details` shows the full evidence.
-Typed blockers point at their recovery: `duet setup` for auth, a fresh task for
-a full context window or a provider refusal. A tracked job that ends without
-delivering its report triggers one recovery notice on the next prompt.
+The report arrives with the completion notification, and `duet result <worker>
+--details` shows the full evidence. Typed blockers point at their recovery:
+`duet setup` for auth, a fresh task for a full context window or a provider
+refusal. A tracked job that ends without delivering its report triggers one
+recovery notice on the next prompt, and a completed job whose final turn was
+left open is reconciled automatically about 15 seconds later.
 → [Direct mode](docs/direct-mode.md) · [Worker lifecycle](docs/worker-lifecycle.md)
 
 ### Live view: `codex-live` and `/tasks`
@@ -146,19 +158,27 @@ status such as `✓ 21.1s` or `✗ exit 1`.
 </p>
 <p align="center"><sub>The codex-live pane, drawn by its own layout code from three real jobs on a small demo repository.</sub></p>
 
-### Ultra-codex orchestration and the run journal
+### Orchestration modes and the run journal
 
-`/codex:ultra-codex` applies Ultracode-style orchestration with Codex as the
-workforce:
-- briefs follow a fixed template;
-- every report passes one acceptance protocol: scope check, diff review, then
-  criterion → evidence → verdict (`ACCEPT` / `ACCEPT WITH GLUE` / `REWORK` /
-  `REASSIGN`).
+| Mode | Use it for |
+| --- | --- |
+| [Ultra](docs/ultra-codex.md) | Broad work: parallel readers, implementers and reviewers |
+| [Pair](docs/pair.md) | A bounded task: one Astra worker, Claude acceptance, up to two rework rounds |
+| [Duel](docs/duel.md) | Contested designs or high-risk changes: one Claude subagent versus one Astra worker, up to three rounds |
+
+One session mode is active at a time: `on` replaces it, named `off` clears only
+that mode, and a task without `on` runs once without changing it.
+`setup --default-mode` starts every fresh session in a saved mode. All modes share
+precise briefs, diff and evidence checks, and explicit acceptance verdicts.
+Ultra's default follows native Ultracode: min(16, CPU count − 2) workers in
+flight, with a minimum of one (16 on an 18-core Mac). `--max-workers` raises or
+lowers it; `unlimited` removes it. This advisory cap limits concurrency, never
+coverage; saved caps are retained.
 
 Each run keeps a journal in the isolated home with the goal, criteria, briefs,
 reports, verdicts and decisions. Claude recovers it with `journal show` after
 compaction, and `journal validate` must pass before a passed close.
-→ [Ultra-codex](docs/ultra-codex.md) · [Run journal](docs/run-journal.md)
+→ [Run journal](docs/run-journal.md)
 
 ### Browser and desktop work
 
@@ -177,7 +197,8 @@ stay available through `result --details`. → [Commands](docs/commands.md)
 
 | Setting | Default | Change it with |
 | --- | --- | --- |
-| Model · effort · speed | `gpt-6-astra` · `xhigh` · normal | `--model`, `--effort`, `--fast` per call |
+| Model · effort · speed | `gpt-6-astra` · `xhigh` · normal (ultra picks `gpt-6.1-sol` or Astra by stage) | `--model`, `--effort`, `--fast` per call |
+| Orchestration mode in a fresh session | off | `setup --default-mode ultra\|pair\|duel` |
 | Codex sandbox | full access, like the Codex app's own full-access mode | `setup --default-sandbox …`, or `--sandbox` per call |
 | Browser | any site, no per-origin prompt | `setup --browser-approval ask` |
 | Computer Use apps | mirror your Codex app's "always allow" list | `setup --computer-use-approval ask` |
@@ -195,7 +216,8 @@ Full table and the security implications of each setting:
 | Topic | Page |
 | --- | --- |
 | Native/Bash dispatch, reports, questions, stops and recovery | [Direct mode](docs/direct-mode.md) · [Worker lifecycle](docs/worker-lifecycle.md) |
-| Orchestration protocol and phases | [Ultra-codex](docs/ultra-codex.md) |
+| Orchestration modes and shared protocol | [Ultra-codex](docs/ultra-codex.md) · [Pair](docs/pair.md) · [Duel](docs/duel.md) |
+| Optional CLAUDE.md policy for proactive delegation | [CLAUDE.md policy](docs/claude-md.md) |
 | Run journal format and commands | [Run journal](docs/run-journal.md) |
 | All slash commands and companion subcommands | [Commands](docs/commands.md) |
 | Sandbox, browser, Computer Use, transport, runtime binary | [Configuration](docs/configuration.md) · [Browser approvals](docs/browser-approvals.md) · [Computer Use approvals](docs/computer-use-approvals.md) |
@@ -209,6 +231,8 @@ Full table and the security implications of each setting:
   touched-file snapshot, the Codex sandbox and `git diff` are the controls.
 - File attribution is unreliable when several writers share one checkout. Give
   parallel writers disjoint paths or separate worktrees.
+- Sixteen read-only workers were measured in flight together; larger or heavy
+  mutating fan-out is not a measured guarantee.
 - The native adapter and `codex-live` need Claude Code's 2.1.302 function-hook
   APIs.
 

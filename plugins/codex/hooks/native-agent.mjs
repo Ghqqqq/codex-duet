@@ -9,7 +9,7 @@ const HEARTBEAT_MS = 30000;
 const EARLY_HANDLES_MS = 1500;
 const READY = 'Native Codex workers ready: Agent(subagent_type: "codex:codex-native", prompt) — optional first line "DUET: <flags>"; SendMessage to continue or answer; stop from /tasks; live progress shows inside the agent and in codex-live.';
 const GUIDE_ID = 'codex:native-dispatch';
-const NATIVE_GUIDE = 'Native Codex workers are ready. Dispatch Codex with Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (the plugin assigns a scientist name, replacing a passed label unless it is a free pool name; the assigned name appears in the Agent result); an optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast|--normal --fork --cwd <dir> sets task flags. The agent result is the Duet report; continue a worker or answer its question with SendMessage. Browser work and Computer Use run natively: an app not yet approved arrives as an approval question answered through SendMessage. Use background-Bash duet task only when the agent reports native_adapter_unavailable or native_capacity, a dispatch needs a per-call override the DUET line rejects (--run, --approve-browser-origin, --approve-computer-app, --lease-sec, --question-timeout-sec), or you follow up a worker that Bash launched.';
+const NATIVE_GUIDE = 'Native Codex workers are ready. Dispatch Codex with Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (the plugin assigns a scientist name, replacing a passed label unless it is a free pool name; the assigned name appears in the Agent result); an optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast|--normal --fork --cwd <dir> sets task flags. The agent result is the Duet report; continue a worker or answer its question with SendMessage. Browser work and Computer Use run natively: an app not yet approved arrives as an approval question answered through SendMessage. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.';
 const PERSON_ORIGINS = ['composer', 'bridge', 'sdk'];
 // Final statuses whose Codex turn is known to have ended. Interrupted,
 // cancelled and failed jobs need a confirmed cancellation instead.
@@ -579,7 +579,7 @@ function parsePrompt(text) {
 
 function admissionBlocked(code, state) {
   const [message, next] = code === 'native_capacity'
-    ? ['Native adapter capacity is full; nothing was launched.', 'Wait for active workers to finish or stop them before starting a new native agent.']
+    ? ['Native adapter capacity is full; nothing was launched.', 'Wait for active workers to finish or stop them before starting a new native agent. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.']
     : code === 'native_message_too_large'
       ? ['Native message exceeds the adapter message limit; nothing was launched.', 'Start a new native agent with a shorter brief.']
       : ['The native agent binding is no longer retained; nothing was launched.', 'Start a new native agent.'];

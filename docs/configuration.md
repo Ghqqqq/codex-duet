@@ -82,6 +82,22 @@ choice); `setup --list-browser-origins --json` includes the same. See
 [worker operations](worker-operations.md#codex-app-profile) and
 [browser approvals](browser-approvals.md#all-sites-browser-approval-the-default).
 
+## Default orchestration mode
+
+`duet setup --default-mode off|ultra|pair|duel` saves the mode for fresh Claude
+sessions and `/clear`. Run it separately from other setup changes; add
+`--dry-run` to preview it. The `defaultMode` key lives in
+`<isolated-home>/duet/config.toml`; `off` is stored explicitly. Missing or invalid
+values also mean `off`, the default for new installs. `duet setup --json` and
+each mode's `status --json` report `defaultMode`.
+
+This is opt-in because active orchestration consumes Codex quota, and duel also
+consumes Claude quota. Each fresh session uses the mode's standard options:
+ultra has auto scale and auto workers, pair has no options, and duel has three
+rounds. Per-session `on`, `off` and switches leave the saved default unchanged;
+resume and compaction preserve the session's choice, including off. Save `off`
+to stop automatic activation in future sessions.
+
 ## Computer Use app approvals
 
 Codex's Computer Use tooling asks before it drives a macOS app. The user's own

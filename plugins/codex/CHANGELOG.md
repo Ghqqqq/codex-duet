@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.4.9
+
+### Features
+
+- `duet setup --default-mode off|ultra|pair|duel` saves an opt-in orchestration default for fresh Claude sessions and `/clear`, with standard mode options. New installs remain off; session overrides and resume/compaction keep their existing semantics.
+- Three orchestration modes share one dynamically versioned protocol: ultra for parallel work, `/codex:pair` for one persistent `gpt-6-astra` executor with Claude accepting every diff and at most two rework rounds, and `/codex:duel` for a Claude general-purpose subagent versus an Astra worker. Duel supports builder/breaker and independent-draft/cross-review flows, with Claude relaying and arbitrating; `--rounds` sets 1–3 total rounds including the first (default 3).
+- Matching CLI controls are `duet ultra-codex`, `duet pair` and `duet duel`. One session mode is active at a time: `on` replaces it, named `off` clears only that mode, and a one-shot task may select another mode without changing saved state. Switching/off reports existing Codex jobs without cancelling them. Schema-2 state keeps the existing session-global path and lazily normalizes old global ultra records; resume/compaction and lifecycle cleanup are retained.
+
+### Behaviour changes
+
+- SessionStart now supplies generic delegation rules for explicit settings, job ownership, briefs and evidence-based acceptance. A new [optional CLAUDE.md policy](../../docs/claude-md.md) adds copyable proactive-delegation and model guidance; active mode protocols retain precedence.
+- Completed tasks whose final answer left the server turn unconfirmed now reconcile automatically after about 15 seconds, with one later retry if the turn is still running. A broker interruption after the answer keeps the job completed and clears `Outcome unknown` without a status command; recorded stops and failures keep their existing outcomes.
+- Always-loaded dispatch guidance now names native Agent dispatch and points to the model-invocable `codex:native-fallback` skill. Bash fallback recipes, recovery and forwarding-agent rules load only when needed; triggers and runtime behaviour are unchanged.
+- Ultra aligns with native Ultracode: orchestrate every substantive task, with solo work only for conversation or trivial mechanical edits. Fan out subsystem readers, independent designs/judges, area × lens reviews and searches; advance each accepted item to ready downstream work without blanket phase barriers. A live bug triggers at least two competing-hypothesis investigators plus a separate live diagnostic after one failed live fix or unexplained live behaviour.
+- Ultra sets model and effort by stage: `gpt-6.1-sol`/`medium` for scanning and triage, sol/`xhigh` for implementation, investigation and ordinary review; `gpt-6-astra`/`xhigh` or supported `max` for adversarial verification, judging, hard debugging and deep architectural reasoning. Speed stays normal unless requested. Changed deliverables always receive full diff/check acceptance; read-only probes use a lighter evidence pass, with adversarial confirmation for decision-driving findings and full acceptance for consequential or conflicting claims. Pair and duel retain their explicit astra/xhigh/normal defaults.
+- Ultra's default follows native Ultracode: min(16, CPU count − 2) workers in flight, with a minimum of one (16 on an 18-core Mac). `--max-workers <n|auto|unlimited>` raises or lowers it; explicit integers remain 1–64 and `unlimited` removes the cap. The cap limits concurrency, never coverage: excess work queues. Existing positive saved caps, including older 6 and grandfathered values above 64, are retained until explicitly changed or the mode is replaced/off. Native dispatch, journal, fallback and consent mechanics are unchanged.
+
+### Known limits
+
+- Worker caps and pair/duel round limits are advisory instructions, not an enforced scheduler or runtime counters. Sixteen native read-only workers were measured in flight together on the shared runtime: all completed, admission is serialized at about 2 s per agent, and start delay and run time did not degrade. Larger or heavy mutating fan-out is not a measured guarantee.
+- Duel's Claude participant inherits the session model and consumes the owner's Claude quota in addition to Codex usage. CLI job lists show Codex jobs only; Claude must also report its tracked Claude agent's state. A missing participant or unverified required check leaves the duel incomplete.
+- Session-mode state writes, like other Duet state writes, follow a symlink already present at the target path inside the user's private state directory. This predates 1.4.9 and is unchanged.
+- The automatic recheck starts its helper through the detached launcher, which a foreground `duet task` waits for (up to 1.5 s) before printing the report; native reports are committed first and are unaffected. A state directory deleted during the helper's one outstanding thread read can be recreated empty.
+
+### Fixes
+
+- Setup's TOML key parsing no longer backtracks exponentially on malformed quoted keys; a hand-edited preference file can no longer stall `duet setup` or SessionStart.
+- A detached spawn whose launcher and direct fallback both fail now throws to its caller instead of crashing the process with an unhandled `error` event.
+
 ## 1.4.8
 
 ### Stability fixes

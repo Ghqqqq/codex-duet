@@ -1758,6 +1758,8 @@ test('store retention removes old finished handles, preserves parked questions, 
   const refused = await f.turn('Do not exceed the adapter store budget.', 1);
   assert.equal(refused.status, 'blocked');
   assert.equal(refused.blockers[0].code, 'native_capacity');
+  assert.match(refused.next, /load the `codex:native-fallback` skill and follow it/);
+  assert.doesNotMatch(refused.next, /duet task|run_in_background/);
   assert.equal(Object.keys(f.readStore()).length, 128);
   assert.equal(f.capture.processes.length, 0);
   f.save();
@@ -2000,6 +2002,8 @@ test('readiness attaches once to a user prompt per session; classic startup expo
   const guided = await compose(['Agent', 'Bash']);
   assert.deepEqual(guided.sections.map(section => [section.id, section.scope]), [['intro', 'shared'], ['codex:native-dispatch', 'session']]);
   assert.ok(guided.sections[1].text.includes('codex:codex-native'));
+  assert.match(guided.sections[1].text, /load the `codex:native-fallback` skill and follow it/);
+  assert.doesNotMatch(guided.sections[1].text, /DUET_TASK|duet task|background.Bash|run_in_background/);
   assert.deepEqual((await compose(['Bash'])).sections.map(section => section.id), ['intro']);
   const submit = origin => f.invoke('prompt.submit', { text: 'Hello', wait: false, origin: { kind: origin }, context: ['Existing context'] },
     async e => ({ text: e.text, context: e.context, origin: e.origin }));
