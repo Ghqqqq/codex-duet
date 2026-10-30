@@ -46,7 +46,7 @@ The `UserPromptSubmit` hook appends one versioned reminder to normal prompts.
 **Reminder template** (placeholders, not a current version or path):
 
 ```text
-Ultra-codex mode on (<scale>, max <n> workers (auto)). Apply protocol v<hash> to substantive tasks; re-read <absolute-protocol-path> only if v<hash> is not in your context.
+Ultra-codex mode on (<scale>, max <n> workers (auto), routine <routineModel>, strong <model>). Apply protocol v<hash> to substantive tasks; re-read <absolute-protocol-path> only if v<hash> is not in your context.
 ```
 
 An explicit integer renders `max <n> workers`; `unlimited` renders `no worker cap`.
@@ -313,14 +313,18 @@ Scale to the discovered work-list rather than a fixed reviewer roster.
 
 | Stage | Explicit default model / effort |
 | --- | --- |
-| Mechanical scanning, inventory, triage, first-pass finders | `gpt-6.1-sol` / `medium` |
-| Implementation, investigation, design drafts, ordinary review | `gpt-6.1-sol` / `xhigh` |
-| Adversarial verification, judging, hard debugging, deep architecture | `gpt-6-astra` / `xhigh`, or justified `max` after checking support |
+| Mechanical scanning, inventory, triage, first-pass finders | Configured routine model (default `gpt-6.1-sol`) / `medium` |
+| Implementation, investigation, design drafts, ordinary review | Configured routine model (default `gpt-6.1-sol`) / `xhigh` |
+| Adversarial verification, judging, hard debugging, deep architecture | Configured worker model (default `gpt-6-astra`) / `xhigh`, or justified `max` after checking support |
 
 Speed is `--normal` unless the user asks for `--fast`. Explicit user choices
 take precedence. If integration/runtime support for `max` is absent, report it
-and use `xhigh`. These are ultra's stage defaults; pair and duel explicitly
-choose astra.
+and use `xhigh`. These are ultra's stage defaults; pair and duel use the
+configured worker model and effort. Change ultra's saved models with
+`duet setup --default-model <model> --ultra-routine-model <model>`; see
+[Default worker models](configuration.md#default-worker-models). The mode
+reminder and status name the effective values; `--default-effort` does not
+change ultra's effort by stage.
 
 `--max-workers <n|auto|unlimited>` sets an advisory cap across phases,
 workspaces/worktrees, native jobs and Bash fallback jobs. The default follows

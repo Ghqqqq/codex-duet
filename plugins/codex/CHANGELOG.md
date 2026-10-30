@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.4.10
+
+### Features
+
+- Configurable default worker models: `duet setup --default-model <model|default>`, `--default-effort <effort|default>` and `--ultra-routine-model <model|default>` save defaults for ordinary delegation, pair/duel and ultra's strong/routine tiers. `/codex:setup` accepts the same flags; `default` resets a setting. Explicit user choices and recorded follow-up settings take precedence. Setup, mode status and reminders show the effective values.
+- Shared `--fork` usage rules: import conversation context for assignments that depend on user decisions, failed attempts or live-debugging observations, while keeping judges, refuters, reviewers, duel opponents and blind drafts independent. Forks still require a full brief and share no prompt cache with Claude; mechanical scans should not import the transcript.
+
+### Fixes
+
+- Native `DUET: --fork` now imports the dispatching session's own transcript. SessionStart records it per session, because native companions do not see the Bash-only environment file; before this, native forks failed with "Could not identify the current Claude transcript". A Claude session started from another session's shell no longer resolves its parent's inherited transcript. An explicit `--source` still selects any transcript under Claude's projects directory.
+
+### Known limits
+
+- Models are not validated against the account; an unknown model fails at dispatch.
+- Malformed TOML in the Duet preference file is ignored when reading worker models, but a fresh dispatch still stops at the default-sandbox check. That check fails closed, as in 1.4.9; repair the file or rerun `duet setup`.
+- A fork of a transcript above the default 20 MiB import limit fails rather than truncates. Brief without `--fork` when the import exceeds the limit; long-session fork import is planned.
+
 ## 1.4.9
 
 ### Features

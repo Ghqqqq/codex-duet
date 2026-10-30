@@ -39,9 +39,10 @@ For orchestration in every fresh session without a CLAUDE.md, use
 - Give each independent job a fresh native agent; never run two jobs on one
   thread at once. Concurrent edits require disjoint owned paths. Serialize edits
   to shared files, indexes and generated outputs, or use separate worktrees.
-- Outside an orchestration mode, use `gpt-6-astra`: `medium` for mechanical scans,
-  `xhigh` by default, and `max` only for the hardest verification, judging or
-  debugging after checking integration and runtime support. If `max` is
+- Outside an orchestration mode, use the configured worker model
+  (default `gpt-6-astra`): `medium` for mechanical scans, the configured worker
+  effort (default `xhigh`) otherwise, and `max` only for the hardest verification,
+  judging or debugging after checking integration and runtime support. If `max` is
   unsupported, report the limitation and use `xhigh`. In a mode, follow its model
   tiers. Pass model, effort and speed explicitly in the `DUET:` line. Use
   `--normal` unless the user requests `--fast`; preserve explicit user choices.
@@ -55,5 +56,9 @@ For orchestration in every fresh session without a CLAUDE.md, use
   or requested by the user.
 ```
 
-Explicit user instructions and active mode protocols take precedence. Edit the
-model lines to match the models and effort levels your account offers.
+Explicit user instructions and active mode protocols take precedence. Instead
+of maintaining the snippet's model lines, take the model and effort from
+`duet setup --default-model <model> --default-effort <effort>`;
+`--ultra-routine-model <model>` sets ultra's routine tier. SessionStart guidance,
+mode reminders and status show the effective values. See
+[Default worker models](configuration.md#default-worker-models).

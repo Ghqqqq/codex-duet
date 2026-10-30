@@ -14,6 +14,10 @@ import { resolveStateDir, upsertJob, writeJobFile } from "../plugins/codex/scrip
 import { parseArgs, splitReviewArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
 import { parseStructuredOutput } from "../plugins/codex/scripts/lib/codex.mjs";
 import { validateReviewResultShape } from "../plugins/codex/scripts/lib/render.mjs";
+import { resolveClaudeSessionPath } from "../plugins/codex/scripts/lib/claude-session-transfer.mjs";
+import { claudeSnapshotFile, recordClaudeTranscript, readClaudeTranscript, readClaudeSnapshot, writeClaudeSnapshot,
+  planClaudeSnapshots, pruneClaudeSnapshots } from "../plugins/codex/scripts/lib/claude-memory.mjs";
+import { instructionInventory } from "../plugins/codex/hooks/claude-memory.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
@@ -94,16 +98,18 @@ test("help takes precedence over malformed task options without side effects", (
   f.unchanged();
 });
 
-test("setup help advertises default-mode and takes precedence without side effects", () => {
+test("setup help advertises default-mode and worker defaults and takes precedence without side effects", () => {
   const f = helpFixture();
   for (const flag of ["--help", "-h"]) {
     const result = f.call("setup", "--default-mode", "invalid", "--sync-tools", flag);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /--default-mode <off\|ultra\|pair\|duel>/);
+    for (const name of ["default-model", "default-effort", "ultra-routine-model"]) assert.ok(result.stdout.includes(`--${name} <`));
     f.unchanged();
   }
   const command = fs.readFileSync(path.join(PLUGIN_ROOT, "commands", "setup.md"), "utf8");
   assert.match(command, /^argument-hint: .*\[--default-mode off\|ultra\|pair\|duel\]/m);
+  for (const name of ["default-model", "default-effort", "ultra-routine-model"]) assert.ok(command.split("\n").find(line => line.startsWith("argument-hint:")).includes(`--${name} <`));
 });
 
 for (const command of ["task"]) {
@@ -705,7 +711,7 @@ function forkFixture(behavior = "review-ok") {
   const env = { ...buildEnv(directory), CODEX_COMPANION_HOME: path.join(directory, "isolated"),
     CLAUDE_PLUGIN_DATA: path.join(directory, "data"), CODEX_COMPANION_SESSION_ID: "fork-contract" };
   const projects = path.join(env.HOME, ".claude", "projects");
-  const source = path.join(projects, "-repo", "fork-session.jsonl");
+  const source = path.join(projects, "-repo", "fork-contract.jsonl");
   fs.mkdirSync(path.dirname(source), { recursive: true });
   const contents = [
     { type: "user", message: { content: "Synthetic prior request" } },
@@ -724,6 +730,168 @@ function forkFixture(behavior = "review-ok") {
     state: () => fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath)) : null,
     stored: id => json(call("result", id, "--json")).storedJob };
 }
+
+test("fork session source priority is explicit, recorded, unique lookup, then matching environment", () => {
+  const f = forkFixture(), sessionId = "fork-contract";
+  const put = (directory, name = sessionId) => {
+    const file = path.join(f.projects, directory, `${name}.jsonl`);
+    fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, f.contents);
+    return file;
+  };
+  const explicit = put("explicit"), recorded = put("recorded"), inherited = put("parent", "parent-session");
+  const env = { ...f.env, CODEX_COMPANION_SESSION_ID: "parent-session", CODEX_COMPANION_TRANSCRIPT_PATH: inherited };
+  const resolve = (options = {}, environment = env) => resolveClaudeSessionPath(f.repo, { sessionId, ...options }, environment);
+  recordClaudeTranscript({ sessionId, transcriptPath: recorded }, env);
+  assert.equal(resolve({ source: explicit }), fs.realpathSync(explicit));
+  assert.equal(resolve(), fs.realpathSync(recorded), "the SessionStart record wins over ambiguous lookup and inherited env");
+  recordClaudeTranscript({ sessionId, transcriptPath: inherited }, env);
+  assert.throws(() => resolve(), /must be named fork-contract.jsonl/, "a wrong recorded path fails closed");
+  fs.unlinkSync(claudeSnapshotFile(sessionId, env));
+  assert.throws(() => resolve(), /Could not identify the current Claude transcript/, "ambiguous lookup cannot pick a project");
+  assert.equal(resolve({}, f.env), fs.realpathSync(f.source), "matching Bash environment is allowed after ambiguous lookup");
+  assert.equal(resolveClaudeSessionPath(f.repo, {}, env), fs.realpathSync(inherited), "legacy no-session callers retain their env path");
+  fs.unlinkSync(explicit); fs.unlinkSync(recorded);
+  assert.equal(resolve(), fs.realpathSync(f.source), "the unique current-session leaf beats the parent environment");
+  assert.equal(resolve({ source: inherited }), fs.realpathSync(inherited), "explicit source can select another session");
+  const alias = put("alias"); fs.unlinkSync(alias); fs.symlinkSync(inherited, alias);
+  recordClaudeTranscript({ sessionId, transcriptPath: alias }, env);
+  assert.throws(() => resolve(), /must be named fork-contract.jsonl/, "canonical basename is also checked for implicit sources");
+  fs.unlinkSync(claudeSnapshotFile(sessionId, env));
+  fs.unlinkSync(f.source);
+  assert.throws(() => resolve(), /Could not identify the current Claude transcript/);
+  const disguised = put("nested/deeper");
+  assert.throws(() => resolve({}, { ...env, CODEX_COMPANION_TRANSCRIPT_PATH: disguised }), /Could not identify/,
+    "a matching basename cannot relabel an environment path belonging to another session");
+});
+
+test("fork session fallback stays one project level deep and honors the Claude config root", () => {
+  const f = forkFixture(), sessionId = "fork-contract";
+  const config = path.join(f.directory, "configured-profile"), projects = path.join(config, "projects");
+  const env = { ...f.env, CLAUDE_CONFIG_DIR: config, CODEX_COMPANION_SESSION_ID: "parent", CODEX_COMPANION_TRANSCRIPT_PATH: f.source };
+  const resolve = () => resolveClaudeSessionPath(f.repo, { sessionId }, env);
+  const deep = path.join(projects, "project", "subagents", `${sessionId}.jsonl`);
+  fs.mkdirSync(path.dirname(deep), { recursive: true }); fs.writeFileSync(deep, f.contents);
+  fs.symlinkSync(path.dirname(f.source), path.join(projects, "project-alias"));
+  const staging = path.join(projects, ".duet-import-abcdef"); fs.mkdirSync(staging);
+  fs.writeFileSync(path.join(staging, `${sessionId}.jsonl`), f.contents);
+  assert.throws(resolve, /Could not identify/, "nested transcripts, project aliases and import staging do not count");
+  const current = path.join(projects, "project", `${sessionId}.jsonl`); fs.writeFileSync(current, f.contents);
+  assert.equal(resolve(), fs.realpathSync(current));
+  assert.throws(() => resolveClaudeSessionPath(f.repo, { sessionId, source: f.source }, env), /only from/);
+  assert.equal(resolveClaudeSessionPath(f.repo, { sessionId }, { ...env, CLAUDE_CONFIG_DIR: "relative-profile" }), fs.realpathSync(f.source));
+});
+
+test("session transcript records preserve instruction snapshots and share SessionEnd and retention cleanup", () => {
+  const f = forkFixture(), sessionId = "fork-contract", file = claudeSnapshotFile(sessionId, f.env);
+  const start = () => {
+    const result = run(process.execPath, [SESSION_HOOK, "SessionStart"], { cwd: f.repo,
+      env: { ...f.env, CODEX_COMPANION_CLAUDE_MD: "0", CLAUDE_ENV_FILE: "" },
+      input: JSON.stringify({ session_id: sessionId, transcript_path: f.source, cwd: f.repo }) });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  start();
+  assert.equal(readClaudeTranscript(sessionId, f.env), f.source, "recording works with instruction capture disabled and no env file");
+  assert.equal(readClaudeSnapshot(sessionId, f.env), null, "a transcript-only record is not an instruction snapshot");
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700);
+  const snapshot = writeClaudeSnapshot({ sessionId, cwd: f.repo,
+    ...instructionInventory([{ path: "/fixture/CLAUDE.md", kind: "project", content: "Recorded instructions." }]) }, f.env);
+  assert.equal(readClaudeTranscript(sessionId, f.env), f.source);
+  start();
+  assert.deepEqual(readClaudeSnapshot(sessionId, f.env), snapshot, "record refresh does not change the inventory or its hash");
+  recordClaudeTranscript({ sessionId: "other", transcriptPath: f.source }, f.env);
+  const end = run(process.execPath, [SESSION_HOOK, "SessionEnd"], { cwd: f.repo, env: f.env,
+    input: JSON.stringify({ session_id: sessionId, cwd: f.repo }) });
+  assert.equal(end.status, 0, end.stderr); assert.equal(fs.existsSync(file), false);
+  assert.equal(readClaudeTranscript("other", f.env), f.source);
+  start();
+  const cutoff = Date.now() - 1000;
+  fs.utimesSync(file, new Date(cutoff - 1000), new Date(cutoff - 1000));
+  const plan = planClaudeSnapshots(cutoff, { env: f.env });
+  assert.deepEqual(plan.errors, []); assert.deepEqual(plan.snapshots.map(item => item.path), [file]);
+  const pruned = pruneClaudeSnapshots(plan.snapshots, cutoff, { env: f.env });
+  assert.equal(pruned.snapshotsDeleted, 1); assert.deepEqual(pruned.errors, []);
+  assert.equal(readClaudeTranscript(sessionId, f.env), null); assert.equal(readClaudeTranscript("other", f.env), f.source);
+});
+
+test("fork with --session never imports the parent transcript inherited by a nested host", () => {
+  const f = forkFixture(), sessionId = "nested-child", child = path.join(f.projects, "-repo", `${sessionId}.jsonl`);
+  fs.writeFileSync(child, JSON.stringify({ type: "user", message: { content: "Only the child conversation." } }) + "\n");
+  const result = f.json(f.call("task", "--fork", "--session", sessionId));
+  assert.equal(result.status, "completed");
+  assert.deepEqual(f.state().threads[0].visibleMessages.map(message => message.text), ["Only the child conversation."]);
+  const imported = f.state().lastExternalAgentImport;
+  fs.unlinkSync(child);
+  const refused = f.call("task", "--fork", "--session", sessionId);
+  assert.equal(refused.status, 1); assert.match(refused.stdout + refused.stderr, /Could not identify the current Claude transcript/);
+  assert.deepEqual(f.state().lastExternalAgentImport, imported, "no parent import after the child source disappears");
+  const disguised = path.join(f.projects, "-repo", "subagents", `${sessionId}.jsonl`);
+  fs.mkdirSync(path.dirname(disguised)); fs.copyFileSync(f.source, disguised);
+  f.env.CODEX_COMPANION_TRANSCRIPT_PATH = disguised;
+  const wrongOwner = f.call("task", "--fork", "--session", sessionId);
+  assert.equal(wrongOwner.status, 1); assert.match(wrongOwner.stdout + wrongOwner.stderr, /Could not identify/);
+  assert.deepEqual(f.state().lastExternalAgentImport, imported, "--session parsing cannot relabel an inherited env path");
+});
+
+test("Bash fork still sources the SessionStart env file and accepts an explicit source", () => {
+  const f = forkFixture(), envFile = path.join(f.directory, "claude-env.sh"), sessionId = "fork-contract";
+  const started = run(process.execPath, [SESSION_HOOK, "SessionStart"], { cwd: f.repo,
+    env: { ...f.env, CLAUDE_ENV_FILE: envFile },
+    input: JSON.stringify({ session_id: sessionId, transcript_path: f.source, cwd: f.repo }) });
+  assert.equal(started.status, 0, started.stderr);
+  // Emulate a pre-upgrade session without a record. Duplicate leaf names make
+  // lookup ambiguous, so success proves the shell's exported path was used.
+  fs.unlinkSync(claudeSnapshotFile(sessionId, f.env));
+  const duplicate = path.join(f.projects, "duplicate", `${sessionId}.jsonl`);
+  fs.mkdirSync(path.dirname(duplicate)); fs.writeFileSync(duplicate, "{}\n");
+  const result = f.json(run("bash", ["-c", '. "$1"\nexec "$2" task --fork', "fork-env", envFile, path.join(PLUGIN_ROOT, "bin", "duet")],
+    { cwd: f.repo, env: { ...f.env, CODEX_COMPANION_TRANSCRIPT_PATH: "", CODEX_COMPANION_SESSION_ID: "" }, input: "Synthetic fork brief." }));
+  assert.equal(result.status, "completed");
+  assert.deepEqual(f.state().threads[0].visibleMessages.map(message => message.text), ["Synthetic prior request", "Synthetic prior answer"]);
+  f.env.CODEX_COMPANION_TRANSCRIPT_PATH = path.join(f.projects, "wrong-session.jsonl");
+  assert.equal(f.json(f.call("task", "--fork", "--source", f.source)).status, "completed");
+});
+
+test("fork explicit --source imports another session despite the current session environment", () => {
+  const f = forkFixture(), source = path.join(f.projects, "other-project", "other-session.jsonl");
+  fs.mkdirSync(path.dirname(source));
+  fs.writeFileSync(source, JSON.stringify({ type: "user", message: { content: "Explicitly selected conversation." } }) + "\n");
+  assert.equal(f.env.CODEX_COMPANION_SESSION_ID, "fork-contract");
+  assert.equal(f.json(f.call("task", "--fork", "--source", source)).status, "completed");
+  assert.deepEqual(f.state().threads[0].visibleMessages.map(message => message.text), ["Explicitly selected conversation."]);
+});
+
+test("fork rejects an implicit session transcript swapped to a parent symlink between resolution and snapshot", () => {
+  const f = forkFixture(), parent = path.join(path.dirname(f.source), "parent-session.jsonl");
+  fs.writeFileSync(parent, JSON.stringify({ type: "user", message: { content: "Only the parent conversation." } }) + "\n");
+  const preload = path.join(f.directory, "swap-transcript.mjs");
+  fs.writeFileSync(preload, `
+    import fs from "node:fs";
+    import childProcess from "node:child_process";
+    import { syncBuiltinESMExports } from "node:module";
+    const spawnSync = childProcess.spawnSync;
+    let swapped = false;
+    Error.stackTraceLimit = 20;
+    childProcess.spawnSync = function(command, args, ...rest) {
+      // Availability runs after executeTransfer resolves the source, before
+      // importExternalAgentSession takes its snapshot of the resolved path.
+      if (!swapped && args?.[0] === "--version" && new Error().stack.includes("importExternalAgentSession")) {
+        swapped = true;
+        fs.unlinkSync(${JSON.stringify(f.source)});
+        fs.symlinkSync(${JSON.stringify(parent)}, ${JSON.stringify(f.source)});
+      }
+      return spawnSync(command, args, ...rest);
+    };
+    syncBuiltinESMExports();
+  `);
+  const result = run(process.execPath, ["--import", preload, path.join(PLUGIN_ROOT, "bin", "duet"), "task", "--fork"],
+    { cwd: f.repo, env: f.env, input: "Synthetic fork brief." });
+  assert.ok(fs.lstatSync(f.source).isSymbolicLink(), "the resolution-to-snapshot swap occurred");
+  assert.equal(result.status, 1, "an implicit fork must reject the swapped parent transcript");
+  assert.match(result.stdout + result.stderr, /must be named fork-contract.jsonl/);
+  assert.equal(f.state()?.lastExternalAgentImport, undefined, "no parent transcript was imported");
+  assert.deepEqual(fs.readdirSync(f.projects), ["-repo"], "no transcript was staged");
+});
 
 test("session snapshots refuse a leaf replaced after validation before reading any content", () => {
   const f = forkFixture();
@@ -1184,6 +1352,8 @@ test("session start hook exports unchanged environment and adds compact dispatch
   assert.equal(output.hookSpecificOutput.hookEventName, "SessionStart");
   assert.equal(typeof output.hookSpecificOutput.additionalContext, "string");
   const context = output.hookSpecificOutput.additionalContext;
+  // Exact 1.4.9 context: only explicitly saved worker defaults may change it.
+  assert.equal(createHash("sha256").update(context).digest("hex"), "aaeba755ebb6b2ee1209a45087e3a58445b86644a0b95c40c14ed176ce452a8c");
   assert.match(context, /Agent\(subagent_type: "codex:codex-native"/);
   assert.match(context, /load the `codex:native-fallback` skill and follow it/);
   assert.doesNotMatch(context, /DUET_TASK|duet task|background.Bash|run_in_background|codex:codex-worker/);

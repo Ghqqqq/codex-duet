@@ -107,7 +107,10 @@ smaller model. It supports `--background`, `--wait`, `--resume` and `--fresh`.
 /codex:rescue --model spark fix the issue quickly
 ```
 
-If you do not pass `--model` or `--effort`, delegated tasks use `gpt-6-astra` and `xhigh`.
+Fresh delegated tasks use the configured worker model (default `gpt-6-astra`)
+and worker effort (default `xhigh`) when no explicit user choice or flag
+overrides them; follow-ups retain recorded thread settings. See
+[Default worker models](configuration.md#default-worker-models).
 If you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`. For planned,
 parallel work Claude uses `codex:codex-native` from the first dispatch, without
 waiting for readiness. Background `duet task` is for `native_adapter_unavailable`,
@@ -142,16 +145,19 @@ existing saved caps are retained. It is advisory, not a runtime scheduler.
 Sixteen native read-only workers were measured in flight together; larger or
 heavy mutating fan-out is not a measured guarantee.
 
-Ultra defaults to `gpt-6.1-sol`/`medium` for scanning/triage and sol/`xhigh` for
-implementation, investigation and ordinary review; `gpt-6-astra`/`xhigh` or
+Ultra uses the configured routine model (default `gpt-6.1-sol`) at `medium` for
+scanning/triage and `xhigh` for implementation, investigation and ordinary
+review; the configured worker model (default `gpt-6-astra`) at `xhigh` or
 supported `max` is for adversarial verification, judging, hard debugging and deep
-architecture. Speed is normal unless requested. Details: [ultra-codex](ultra-codex.md).
+architecture. Speed is normal unless requested. The mode reminder names the
+effective models. Details: [ultra-codex](ultra-codex.md).
 
 ### `/codex:pair`
 
-One `gpt-6-astra` worker at `xhigh`, normal speed executes a bounded task end to
-end. Claude plans, writes a full brief and accepts every diff with its own
-checks. Rework stays on the same thread, at most two rounds after the initial
+One worker on the configured worker model (default `gpt-6-astra`) and worker
+effort (default `xhigh`) at normal speed executes a bounded task end to end.
+Claude plans, writes a full brief and accepts every diff with its own checks.
+Rework stays on the same thread, at most two rounds after the initial
 result. An optional read-only verifier runs sequentially on a stable candidate;
 there is no fan-out. Pair has no mode options.
 
@@ -169,7 +175,8 @@ request. See [pair](pair.md) for acceptance, limits and escalation.
 
 ### `/codex:duel`
 
-One Claude general-purpose subagent versus one `gpt-6-astra` worker at `xhigh`,
+One Claude general-purpose subagent versus one Codex worker on the configured
+worker model (default `gpt-6-astra`) and worker effort (default `xhigh`) at
 normal speed. The Claude participant inherits the session model and consumes
 the owner's Claude quota. Claude's main loop relays every substantive exchange
 and arbitrates: builder/breaker for implementation, independent drafts followed
@@ -210,9 +217,9 @@ Parse options only before task text: later option-like words remain literal.
 word (for example `/codex:pair -- status the parser`). A task keeps its selected
 mode; it never silently switches modes to evade a limit.
 
-While enabled, one hook adds a versioned reminder to normal prompts and
-suppresses it for all three mode commands. Controls do not load protocol text
-into Claude's context. Tasks use the shared
+While enabled, one hook adds a versioned reminder naming the effective model
+values to normal prompts and suppresses it for all three mode commands.
+Controls do not load protocol text into Claude's context. Tasks use the shared
 [protocol](../plugins/codex/prompts/ultra-codex-protocol.md), selecting shared
 sections plus their own mode section. Its body hash is computed at runtime;
 `status --for-command` reports the current version/path, not a saved literal hash.
@@ -251,7 +258,9 @@ the session ID; `on`/`off` need one, while status without one reports off.
 
 JSON `mode` is `on`/`off` for the requested command; `modeName` names that
 command, and `activeMode` reports the actual saved mode/options even if it is
-different. `protocolFile` and `protocolVersion` are always present. Ultra keeps
+different. Status shows the effective worker model/effort and ultra routine
+model; JSON includes `models: { model, effort, routineModel }`.
+`protocolFile` and `protocolVersion` are always present. Ultra keeps
 effective `maxWorkers` (null for unlimited) plus `maxWorkersSetting`. A cross-mode
 `on` adds `replacedMode` and `runningJobs`; `off` reports `wasOn` and running jobs.
 An empty Codex job list says nothing about a duel's Claude participant: Claude
@@ -315,6 +324,20 @@ same raw arguments on stdin; choose another delimiter if a line equals `DUET_ARG
 Checks whether Codex is installed, reachable and logged in. If Codex is missing
 and npm is available, it can offer to install Codex for you. It also runs the
 configuration actions described under [Configuration](configuration.md).
+
+```text
+duet setup --default-model <model|default> [--default-effort <effort|default>] [--ultra-routine-model <model|default>]
+/codex:setup --default-model <model|default> [--default-effort <effort|default>] [--ultra-routine-model <model|default>]
+```
+
+Each model/effort flag also works alone; they may combine with each other and
+`--dry-run`, but not another setup change. `default` removes the saved key.
+All values are validated before any write. The JSON change report and setup
+status show the effective values and each setting's `saved`/`built-in` source;
+mode reminders and status show the effective models too. For built-ins,
+precedence, examples and validation limits, see
+[Default worker models](configuration.md#default-worker-models).
+
 `duet setup --default-mode off|ultra|pair|duel` saves the orchestration mode for
 fresh Claude sessions and `/clear` (default `off`); run it separately from other
 setup changes, with `--dry-run` to preview. See

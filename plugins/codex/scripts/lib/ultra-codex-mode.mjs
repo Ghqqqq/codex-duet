@@ -146,12 +146,14 @@ export function protocolVersion(text = fs.readFileSync(PROTOCOL_PATH, "utf8")) {
 // What the UserPromptSubmit hook adds to the prompt while the mode is on.
 // Short on purpose: it is paid on every prompt. The protocol itself is read
 // only when its current version is absent (including after compaction).
-export function reminderText(mode, protocolPath = PROTOCOL_PATH) {
+export const BUILTIN_WORKER_DEFAULTS = Object.freeze({ model: "gpt-6-astra", effort: "xhigh", routineModel: "gpt-6.1-sol" });
+export function reminderText(mode, protocolPath = PROTOCOL_PATH, models = BUILTIN_WORKER_DEFAULTS) {
   const version = protocolVersion(fs.readFileSync(protocolPath, "utf8"));
+  const { model, effort, routineModel } = models;
   const name = mode.name ?? "ultra", options = mode.options ?? mode;
   const suffix = `v${version} to substantive tasks; re-read ${protocolPath} only if v${version} is not in your context.`;
-  if (name === "pair") return `Pair mode on (one primary Codex worker, max ${PAIR_MAX_REWORK_ROUNDS} rework rounds). Apply pair protocol ${suffix}`;
-  if (name === "duel") return `Duel mode on (Claude vs Codex, max ${options.rounds} rounds). Apply duel protocol ${suffix}`;
+  if (name === "pair") return `Pair mode on (one primary Codex worker on ${model}/${effort}, max ${PAIR_MAX_REWORK_ROUNDS} rework rounds). Apply pair protocol ${suffix}`;
+  if (name === "duel") return `Duel mode on (Claude vs Codex on ${model}/${effort}, max ${options.rounds} rounds). Apply duel protocol ${suffix}`;
   const cap = options.maxWorkers === "unlimited" ? "no worker cap" : `max ${effectiveMaxWorkers(options.maxWorkers)} workers${options.maxWorkers === "auto" ? " (auto)" : ""}`;
-  return `Ultra-codex mode on (${options.scale}, ${cap}). Apply protocol ${suffix}`;
+  return `Ultra-codex mode on (${options.scale}, ${cap}, routine ${routineModel}, strong ${model}). Apply protocol ${suffix}`;
 }

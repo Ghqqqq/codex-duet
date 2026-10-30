@@ -1,6 +1,6 @@
 ---
 description: Check Codex readiness and explicitly configure isolated tools, sandbox and browser access
-argument-hint: '[--sync-tools [--profile chrome|codex-app] [--replace-cua] [--cua-template <file>] [--dry-run]] [--enable-review-gate|--disable-review-gate] [--default-sandbox read-only|workspace-write|danger-full-access] [--default-mode off|ultra|pair|duel] [--browser-approval never-ask|ask] [--transport http|websocket|status] [--allow-browser-origin <origin>|--revoke-browser-origin <origin>|--list-browser-origins] [--computer-use-approval mirror|ask] [--allow-computer-app <bundle-id>|--revoke-computer-app <bundle-id>|--list-computer-apps] [--project-docs claude-md|agents-only]'
+argument-hint: '[--sync-tools [--profile chrome|codex-app] [--replace-cua] [--cua-template <file>] [--dry-run]] [--enable-review-gate|--disable-review-gate] [--default-sandbox read-only|workspace-write|danger-full-access] [--default-mode off|ultra|pair|duel] [--default-model <model|default>] [--default-effort <effort|default>] [--ultra-routine-model <model|default>] [--browser-approval never-ask|ask] [--transport http|websocket|status] [--allow-browser-origin <origin>|--revoke-browser-origin <origin>|--list-browser-origins] [--computer-use-approval mirror|ask] [--allow-computer-app <bundle-id>|--revoke-computer-app <bundle-id>|--list-computer-apps] [--project-docs claude-md|agents-only]'
 allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
 ---
 

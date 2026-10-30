@@ -82,6 +82,62 @@ choice); `setup --list-browser-origins --json` includes the same. See
 [worker operations](worker-operations.md#codex-app-profile) and
 [browser approvals](browser-approvals.md#all-sites-browser-approval-the-default).
 
+## Default worker models
+
+Save worker defaults in `<isolated-home>/duet/config.toml`, alongside the sandbox
+and orchestration-mode preferences:
+
+| Setting | Use and built-in default | Setup flag |
+| --- | --- | --- |
+| `defaultModel` | Configured worker model (default `gpt-6-astra`) for ordinary delegation, pair, duel and ultra's strong tier: verification, judging and hard debugging | `--default-model <model\|default>` |
+| `defaultEffort` | Worker effort (default `xhigh`) for ordinary delegation, pair and duel; ultra retains its effort by stage | `--default-effort <effort\|default>` |
+| `ultraRoutineModel` | Configured routine model (default `gpt-6.1-sol`) for ultra's scans, implementation and ordinary review | `--ultra-routine-model <model\|default>` |
+
+An explicit user choice in the conversation or an explicit `--model`/`--effort`
+on a call wins. Dispatch precedence is explicit flags, then recorded thread
+settings on follow-ups, then saved defaults, then built-ins. Changing a saved
+default does not replace an existing thread's recorded settings. Missing,
+invalid or malformed preferences fall back to the built-in value; reading them
+does not throw.
+
+```text
+duet setup --default-model <model|default> [--default-effort <effort|default>] [--ultra-routine-model <model|default>]
+```
+
+Each flag can also be used alone. The three flags may combine with one another
+and `--dry-run`, but not with another setup change such as `--default-mode` or
+`--default-sandbox`. All supplied values are validated before any write.
+`/codex:setup` passes the same flags:
+
+```bash
+duet setup --default-model gpt-6.1-sol --default-effort high --ultra-routine-model gpt-6.1-sol --dry-run
+duet setup --default-model gpt-6.1-sol --default-effort high --ultra-routine-model gpt-6.1-sol
+/codex:setup --default-model gpt-6-astra --default-effort xhigh
+duet setup --ultra-routine-model spark
+```
+
+Use `default` to remove the corresponding saved key and restore its built-in:
+
+```bash
+duet setup --default-model default --default-effort default --ultra-routine-model default
+```
+
+Model names use the existing alias normalization (`spark` remains an alias for
+`gpt-5.3-codex-spark`), then must match `/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/`.
+Effort accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`;
+the selected model/runtime must support it. Models are not validated against
+the account: a syntactically valid but unknown model fails at dispatch.
+
+The setup change returns a JSON report with `file`, `defaultModel`,
+`defaultEffort` and `ultraRoutineModel`, showing each effective value and its
+`source` (`saved` or `built-in`). No-argument `duet setup` status includes the
+same effective values; human output adds
+`Default models: worker <model>/<effort>, ultra routine <routineModel>.`
+Mode reminders name the effective values. `duet ultra-codex status`,
+`duet pair status` and `duet duel status` show
+`models: worker <model>/<effort>, ultra routine <routineModel>`; their JSON has
+`models: { model, effort, routineModel }`.
+
 ## Default orchestration mode
 
 `duet setup --default-mode off|ultra|pair|duel` saves the mode for fresh Claude

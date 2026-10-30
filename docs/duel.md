@@ -3,9 +3,13 @@
 Duel pairs one Claude `general-purpose` subagent with one Codex worker for a
 bounded contested design, high-risk claim or adversarial change. The Claude
 participant **inherits the session model and consumes the owner's Claude
-quota**, in addition to Codex usage. Codex defaults to **`gpt-6-astra` / `xhigh`
-/ normal speed**. Explicit user settings take precedence; justified `max` needs
-the existing integration/runtime support check first.
+quota**, in addition to Codex usage. Codex uses the configured worker model
+(default `gpt-6-astra`) and worker effort (default `xhigh`) at normal speed.
+Explicit user settings take precedence; justified `max` needs the existing
+integration/runtime support check first. Change the saved model and effort with
+`duet setup --default-model <model> --default-effort <effort>`; see
+[Default worker models](configuration.md#default-worker-models). The mode
+reminder and status name the effective values.
 
 Claude's main loop plans, relays every substantive exchange, verifies evidence
 and arbitrates. The two participants retain their identities across rounds;
@@ -140,7 +144,7 @@ version/path with `duet duel status --for-command`.
 **Reminder template** (placeholders):
 
 ```text
-Duel mode on (Claude vs Codex, max <rounds> rounds). Apply duel protocol v<hash> to substantive tasks; re-read <absolute-protocol-path> only if v<hash> is not in your context.
+Duel mode on (Claude vs Codex on <model>/<effort>, max <rounds> rounds). Apply duel protocol v<hash> to substantive tasks; re-read <absolute-protocol-path> only if v<hash> is not in your context.
 ```
 
 Round limits are advisory protocol rules, not runtime counters. Native/Bash,

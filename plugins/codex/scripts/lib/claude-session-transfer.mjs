@@ -3,10 +3,13 @@ import os from "node:os";
 import path from "node:path";
 
 import { ensureAbsolutePath } from "./fs.mjs";
+import { readClaudeTranscript } from "./claude-memory.mjs";
 
 export const TRANSCRIPT_PATH_ENV = "CODEX_COMPANION_TRANSCRIPT_PATH";
 export const IMPORT_MAX_BYTES_ENV = "CODEX_COMPANION_IMPORT_MAX_BYTES";
 const DEFAULT_IMPORT_MAX_BYTES = 20 * 1024 * 1024;
+const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
+const MAX_PROJECT_ENTRIES = 10000;
 // Match retention's configured-profile precedence; relative config roots are
 // not profiles and must not make instruction/import selection depend on cwd.
 export function resolveClaudeConfigRoot(env = process.env) {
@@ -31,13 +34,46 @@ function resolveUserPath(cwd, value, env) {
   return ensureAbsolutePath(cwd, value);
 }
 
+function findSessionTranscript(sessionId, env) {
+  if (!sessionId || /[\\/\0]/.test(sessionId)) return null;
+  // Only inspect the named leaf in direct project directories. Never recurse,
+  // follow project aliases, or choose the first match from an ambiguous scan.
+  let found = null, visited = 0;
+  try {
+    const projects = projectsDirectory(env), directory = fs.opendirSync(projects);
+    try {
+      for (let entry; (entry = directory.readSync());) {
+        if (++visited > MAX_PROJECT_ENTRIES) return null;
+        if (!entry.isDirectory() || entry.name.startsWith(".duet-import-")) continue;
+        const candidate = path.join(projects, entry.name, `${sessionId}.jsonl`);
+        if (!fs.lstatSync(candidate, { throwIfNoEntry: false })?.isFile()) continue;
+        if (found) return null;
+        found = candidate;
+      }
+    } finally { directory.closeSync(); }
+  } catch { return null; }
+  return found;
+}
+
 function validateClaudeSessionPath(cwd, options = {}, env = process.env) {
-  const requestedPath = options.source || env[TRANSCRIPT_PATH_ENV];
+  const sessionId = options.sessionId;
+  const explicitSource = options.explicitSource ?? Boolean(options.source);
+  const requestedPath = options.source || (sessionId && readClaudeTranscript(sessionId, env)) ||
+    findSessionTranscript(sessionId, env) ||
+    ((!sessionId || env[SESSION_ID_ENV] === sessionId) && env[TRANSCRIPT_PATH_ENV]);
   if (!requestedPath) {
     throw new Error("Could not identify the current Claude transcript. Retry with --source <path-to-claude-jsonl>.");
   }
 
   const sourcePath = resolveUserPath(cwd, requestedPath, env);
+  const requireSessionBasename = file => {
+    // An explicit source intentionally selects a transcript; only inferred
+    // paths must belong to the dispatching session. All stay projects-confined.
+    if (!explicitSource && sessionId && path.basename(file) !== `${sessionId}.jsonl`) {
+      throw new Error(`Claude session source must be named ${sessionId}.jsonl for the current session: ${file}`);
+    }
+  };
+  requireSessionBasename(sourcePath);
   if (path.extname(sourcePath) !== ".jsonl") {
     throw new Error(`Claude session source must be a JSONL file: ${sourcePath}`);
   }
@@ -50,6 +86,7 @@ function validateClaudeSessionPath(cwd, options = {}, env = process.env) {
   } catch {
     throw new Error(`Claude session file not found: ${sourcePath}`);
   }
+  requireSessionBasename(source);
   const relative = path.relative(projects, source);
   if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new Error(`Codex can import Claude sessions only from ${projectsDirectory(env)}: ${source}`);
@@ -134,9 +171,12 @@ export function sweepClaudeImports({ now = Date.now(), env = process.env, files 
 // Stage inside the importer's accepted projects tree, in a new owner-only
 // directory per import. A unique source path also prevents ledger reuse by a
 // second --fork of unchanged content.
-export function snapshotClaudeSession(cwd, sourcePath, env = process.env) {
+export function snapshotClaudeSession(cwd, sourcePath, env = process.env, provenance = {}) {
+  const { sessionId, explicitSource } = /** @type {{ sessionId?: string, explicitSource?: boolean }} */ (provenance);
   sweepClaudeImports({ env });
-  const { source, projects, stat: validated } = validateClaudeSessionPath(cwd, { source: sourcePath }, env);
+  // A resolved path is not necessarily a user-selected --source. Preserve its
+  // provenance when rechecking the realpath immediately before staging it.
+  const { source, projects, stat: validated } = validateClaudeSessionPath(cwd, { source: sourcePath, sessionId, explicitSource }, env);
   const maxBytes = Number(env[IMPORT_MAX_BYTES_ENV] ?? DEFAULT_IMPORT_MAX_BYTES);
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
     throw new Error(`${IMPORT_MAX_BYTES_ENV} must be a positive integer byte limit.`);

@@ -121,7 +121,7 @@ checked.
 | --- | --- | --- | --- |
 | Best for | Broad work: audits, migrations, multi-module features | One bounded task: a fix, a feature slice | Contested designs, high-risk changes |
 | Who works | Many Codex workers in parallel | One Codex worker on one thread | One Claude subagent versus one Codex worker |
-| Models | `gpt-6.1-sol` by stage; Astra verifies and judges | `gpt-6-astra` · `xhigh` | `gpt-6-astra` · `xhigh` plus your session model |
+| Models (configurable) | Routine model (default `gpt-6.1-sol`) by stage; worker model (default `gpt-6-astra`) verifies and judges | Worker model (default `gpt-6-astra`) · worker effort (default `xhigh`) | Worker model (default `gpt-6-astra`) · worker effort (default `xhigh`) plus your session model |
 | Limit | min(16, CPUs − 2) workers in flight | Two rework rounds | Three rounds (`--rounds 1-3`) |
 | Claude quota | Orchestration only | Orchestration only | Also the Claude participant |
 
@@ -132,7 +132,7 @@ Run a task once with `/codex:<mode> <task>`, keep the mode for the session with
 ### Ultra: fan out like native Ultracode
 
 <p align="center">
-  <img src="docs/assets/duet-mode-ultra.png" alt="Ultra mode: Claude plans and accepts while Codex workers fan out across understand, design, implement, review and verify, with sol and Astra tiers by stage" width="100%">
+  <img src="docs/assets/duet-mode-ultra.png" alt="Ultra mode: Claude plans and accepts while Codex workers fan out across understand, design, implement, review and verify, with configured routine and strong model tiers by stage" width="100%">
 </p>
 
 Claude splits the work-list and runs parallel readers, independent design
@@ -146,10 +146,10 @@ concurrency, never coverage.
 ### Pair: one task, one executor
 
 <p align="center">
-  <img src="docs/assets/duet-mode-pair.png" alt="Pair mode: Claude writes the brief and accepts every diff; one Astra worker executes on one thread through an initial round and at most two rework rounds" width="100%">
+  <img src="docs/assets/duet-mode-pair.png" alt="Pair mode: Claude writes the brief and accepts every diff; one Codex worker executes on one thread through an initial round and at most two rework rounds" width="100%">
 </p>
 
-Claude writes the criteria and a full brief, then one Astra worker does the task
+Claude writes the criteria and a full brief, then one Codex worker does the task
 end to end on a single thread. Claude reads every diff and reruns the checks
 itself. At most two rework rounds follow the first delivery, and an optional
 read-only verifier can challenge a round. When the task outgrows one worker,
@@ -158,7 +158,7 @@ Claude recommends ultra or duel; it never switches on its own.
 ### Duel: two models challenge each other
 
 <p align="center">
-  <img src="docs/assets/duet-mode-duel.png" alt="Duel mode: a Claude subagent and an Astra worker, with Claude relaying and arbitrating between a build-versus-break flow and an independent-drafts flow over up to three rounds" width="100%">
+  <img src="docs/assets/duet-mode-duel.png" alt="Duel mode: a Claude subagent and a Codex worker, with Claude relaying and arbitrating between a build-versus-break flow and an independent-drafts flow over up to three rounds" width="100%">
 </p>
 
 For code and bugs, Codex builds and the Claude subagent tries to break it; each
@@ -239,7 +239,7 @@ stay available through `result --details`. → [Commands](docs/commands.md)
 
 | Setting | Default | Change it with |
 | --- | --- | --- |
-| Model · effort · speed | `gpt-6-astra` · `xhigh` · normal (ultra picks `gpt-6.1-sol` or Astra by stage) | `--model`, `--effort`, `--fast` per call |
+| Model · effort · speed | configured; built-in `gpt-6-astra` · `xhigh` · normal (ultra uses the configured routine model, default `gpt-6.1-sol`, or worker model by stage) | `setup --default-model …`, `--default-effort …`, `--ultra-routine-model …`; `--model`, `--effort`, `--fast` per call |
 | Orchestration mode in a fresh session | off | `setup --default-mode ultra\|pair\|duel` |
 | Codex sandbox | full access, like the Codex app's own full-access mode | `setup --default-sandbox …`, or `--sandbox` per call |
 | Browser | any site, no per-origin prompt | `setup --browser-approval ask` |
@@ -250,7 +250,10 @@ stay available through `result --details`. → [Commands](docs/commands.md)
 | Runtime start deadline | 60 s | `CODEX_COMPANION_CONNECT_TIMEOUT_MS` |
 | Retention | Claude Code's `cleanupPeriodDays` (30 days) | `cleanup --days N`, `CODEX_COMPANION_RETENTION_DAYS` |
 
-Full table and the security implications of each setting:
+Mode reminders and status show the effective model values. Change them in
+[Default worker models](docs/configuration.md#default-worker-models); the diagrams
+above illustrate the built-in choices. Full table and the security implications
+of each setting:
 [docs/configuration.md](docs/configuration.md).
 
 ## Documentation

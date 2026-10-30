@@ -1487,7 +1487,9 @@ export async function importExternalAgentSession(cwd, options = {}) {
     throw new Error("A Claude session source path is required.");
   }
 
-  const snapshot = snapshotClaudeSession(cwd, options.sourcePath);
+  const snapshot = snapshotClaudeSession(cwd, options.sourcePath, process.env, {
+    sessionId: options.sessionId, explicitSource: options.explicitSource
+  });
   try {
     const sourceSha256 = sourceContentSha256(snapshot.snapshotPath);
     return await withDirectAppServer(cwd, async (client) => {

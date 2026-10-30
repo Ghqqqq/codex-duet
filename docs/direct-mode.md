@@ -268,14 +268,28 @@ with `--no-claude-md` on a fresh task or `CODEX_COMPANION_CLAUDE_MD=0`.
 Codex's own project-file discovery is separate; see
 [configuration](configuration.md#claude-instructions-and-conversation-imports).
 
-A normal brief does not include the conversation. Use `duet task --fork` with
-stdin to import the current Claude transcript into a new thread, then run the
-assignment. `--source '<jsonl>'` selects another allowed transcript. Imports are
-labelled “imported Claude conversation (fidelity not verified)”; fidelity has
+A normal brief does not include the conversation. Use `DUET: --fork` for a
+native worker or `duet task --fork` with stdin to import the current Claude
+transcript (no thinking) into a new thread, then run the assignment.
+`--source '<jsonl>'` selects another allowed transcript. Imports are labelled
+“imported Claude conversation (fidelity not verified)”; fidelity has
 not been established. The default import limit is 20 MiB, configurable with
 `CODEX_COMPANION_IMPORT_MAX_BYTES`; oversized imports fail rather than truncate.
 `--fork` cannot combine with `--to`, `--thread`, `--continue` or resume flags.
-Use `--to` for follow-ups after the fork.
+Use `SendMessage` for native follow-ups or `--to` for Bash follow-ups after the fork.
+
+**When to fork.** Fork when the assignment needs conversation context that a
+brief would restate poorly: user decisions and preferences, failed attempts or
+live-debugging observations. Typical uses are a pair executor's first dispatch
+after a long discussion, ultra implementers executing a design settled in the
+conversation, and live-debugging investigators. Do not fork independent judges,
+refuters, reviewers, duel opponents or blind drafts, which must not inherit
+Claude's leanings; skip it for mechanical scans that only gain cost. Keep the
+brief's objective, owned paths, criteria and verification. A Codex fork shares
+no prompt cache with Claude, so its first turn reads the whole transcript;
+choose it for needed context, not context hygiene. If the import exceeds the
+limit, brief without `--fork`. See the
+[shared brief rules](../plugins/codex/prompts/ultra-codex-protocol.md#writing-a-brief-every-codex-assignment).
 
 ### Live view with codex-live
 
@@ -384,8 +398,8 @@ lease otherwise.
 
 | Choice | Default | Override |
 | --- | --- | --- |
-| Model | `gpt-6-astra` | `--model <name>` (`spark` maps to `gpt-5.3-codex-spark`) |
-| Reasoning effort | `xhigh` | `--effort none…xhigh` or `--effort max` where the model supports it |
+| Model | Configured worker model (default `gpt-6-astra`) | `setup --default-model <name>`; `--model <name>` per call (`spark` maps to `gpt-5.3-codex-spark`) |
+| Reasoning effort | Configured worker effort (default `xhigh`) | `setup --default-effort <effort>`; `--effort none…xhigh` or `--effort max` per call where the model supports it |
 | Speed | normal | `--fast` requests the fast tier; `--normal` resets inherited speed |
 | Direct-mode timeout | 3600 s | `--timeout-sec <seconds>` (maximum 3600) |
 | Owner lease | 1800 s in direct mode; 180 s otherwise | `--lease-sec <seconds>` |
@@ -395,6 +409,11 @@ lease otherwise.
 | Computer Use apps | `mirror`: apps the user marked "always allow" in their Codex app (`~/.codex/computer-use/config.toml`, read-only) are copied into the isolated runtime's approval file before every task; any other app is asked of the parent during the task | `setup --computer-use-approval ask` stops the sync; `setup --allow-computer-app`/`--revoke-computer-app <bundle id>` adjust individual apps; `task --approve-computer-app <bundle id>` pre-approves one app for one call |
 | Claude instructions | Loaded CLAUDE.md/rules forwarded; approximate scan if unavailable | `--no-claude-md`, `CODEX_COMPANION_CLAUDE_MD=0` |
 | Codex project discovery | `CLAUDE.md` where no `AGENTS.md` exists | `duet setup --project-docs agents-only` |
+
+For model and effort, explicit user choices win; dispatch uses explicit flags,
+then recorded follow-up settings, then saved defaults, then built-ins. Mode
+reminders and status show the effective values; see
+[Default worker models](configuration.md#default-worker-models).
 
 The parent chooses a sandbox per call; fresh tasks without a flag use the
 configured default. `--to`/`--thread` inherit recorded settings unless overridden;

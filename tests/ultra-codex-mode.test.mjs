@@ -11,6 +11,8 @@ import { defaultModeSetup, readTomlField } from "../plugins/codex/scripts/lib/se
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
 const promptHook = new URL("../plugins/codex/scripts/ultra-codex-hook.mjs", import.meta.url).pathname;
 const lifecycleHook = new URL("../plugins/codex/scripts/session-lifecycle-hook.mjs", import.meta.url).pathname;
+const BUILTIN_MODELS = { model: "gpt-6-astra", effort: "xhigh", routineModel: "gpt-6.1-sol" };
+const MODELS_LINE = "models: worker gpt-6-astra/xhigh, ultra routine gpt-6.1-sol\n";
 const SESSION = "11111111-aaaa-4bbb-8ccc-000000000001";
 const MODES = [
   { name: "ultra", verb: "ultra-codex", label: "Ultra-codex", heading: "Ultra mode", options: { scale: "auto", maxWorkers: "auto" }, flags: ["--thorough", "--max-workers", "4"], saved: { scale: "thorough", maxWorkers: 4 }, repeated: { scale: "auto", maxWorkers: 4 }, usage: "[on [--quick|--thorough] [--max-workers <n|auto|unlimited>] [<task>] | off | status | [--quick|--thorough] [--max-workers <n|auto|unlimited>] <task>]" },
@@ -256,13 +258,13 @@ test("ultra-codex mode is a per-session switch: on/off/status, the prompt remind
     for (const args of [["--quick"], ["--thorough=false"], ["--max-workers", "3"], ["--max-workers", "not-a-number"],
       ...(action === "off" ? [["--for-command"], ["--for-command=false"]] : [])]) {
       assert.equal(f.call("ultra-codex", action, ...args, "--json").status, 1);
-      assert.deepEqual(f.json(f.call("ultra-codex", "status", "--json")), { ...on, defaultMode: "off" });
+      assert.deepEqual(f.json(f.call("ultra-codex", "status", "--json")), { ...on, defaultMode: "off", models: BUILTIN_MODELS });
     }
   }
   assert.equal(fs.statSync(f.modeFile(SESSION)).mode & 0o777, 0o600);
   assert.equal(modeFile(other, SESSION, f.env), f.modeFile(SESSION));
   const shared = f.json(f.call("ultra-codex", "status", "--cwd", other, "--json"));
-  assert.deepEqual(shared, { ...on, defaultMode: "off" });
+  assert.deepEqual(shared, { ...on, defaultMode: "off", models: BUILTIN_MODELS });
   assert.ok(f.prompt("refactor in another workspace", SESSION, { cwd: other }).stdout.trim().length > 0);
   const reminder = f.prompt("refactor the parser so it streams");
   assert.equal(reminder.status, 0, reminder.stderr);
@@ -462,7 +464,7 @@ test("ultra cap settings and mode inputs validate before any write", () => {
     assert.equal(on.maxWorkersSetting, setting);
     assert.equal(on.maxWorkers, effectiveMaxWorkers(setting, 18));
     assert.deepEqual(on.activeMode.options, { scale: "auto", maxWorkers: setting });
-    assert.deepEqual(f.json(f.callCpu(18, "ultra-codex", "status", "--json")), { ...on, defaultMode: "off" });
+    assert.deepEqual(f.json(f.callCpu(18, "ultra-codex", "status", "--json")), { ...on, defaultMode: "off", models: BUILTIN_MODELS });
   }
   for (const value of ["0", "65", "1.5", "many", "NaN", "Infinity"]) {
     const before = fs.readFileSync(file, "utf8");
@@ -497,10 +499,10 @@ test("saved unlimited caps survive bare and quick ultra activation through the l
       }
       assert.deepEqual(readMode(f.repo, SESSION, f.env), { ...record, file: f.modeFile(SESSION) });
       assert.deepEqual(JSON.parse(fs.readFileSync(f.modeFile(SESSION), "utf8")), record);
-      assert.deepEqual(f.json(f.call("ultra-codex", "status", "--json")), { ...expected, defaultMode: "off" });
+      assert.deepEqual(f.json(f.call("ultra-codex", "status", "--json")), { ...expected, defaultMode: "off", models: BUILTIN_MODELS });
       const status = f.call("ultra-codex", "status");
       assert.equal(status.status, 0, status.stderr);
-      assert.equal(status.stdout, `Ultra-codex mode: on for this session since ${initial.since} (scale: ${scale}; max workers: unlimited). Turn it off with /codex:ultra-codex off.\n`);
+      assert.equal(status.stdout, `Ultra-codex mode: on for this session since ${initial.since} (scale: ${scale}; max workers: unlimited). Turn it off with /codex:ultra-codex off.\n${MODELS_LINE}`);
     }
   }
 });
@@ -517,7 +519,7 @@ for (const mode of MODES) {
     };
     const on = f.json(f.call(mode.verb, "on", ...mode.flags, "--json"));
     assert.deepEqual(on.activeMode, { name: mode.name, options: mode.saved, since: on.since });
-    assert.deepEqual(f.json(f.call(mode.verb, "status", "--cwd", other, "--json")), { ...on, defaultMode: "off" });
+    assert.deepEqual(f.json(f.call(mode.verb, "status", "--cwd", other, "--json")), { ...on, defaultMode: "off", models: BUILTIN_MODELS });
     assert.equal(modeFile(other, SESSION, f.env), f.modeFile(SESSION));
     assert.ok(f.prompt("substantive task", SESSION, { cwd: other }).stdout.length > 0);
     assert.equal(f.prompt("substantive task", "another-session").stdout, "");
@@ -526,7 +528,7 @@ for (const mode of MODES) {
       const oldFiles = [legacy(f.repo), legacy(other)];
       assert.equal(f.lifecycle("SessionStart", { session_id: SESSION, source, cwd: other }).status, 0);
       for (const file of oldFiles) assert.equal(fs.existsSync(file), false);
-      assert.deepEqual(f.json(f.call(mode.verb, "status", "--json")), { ...on, defaultMode: "off" });
+      assert.deepEqual(f.json(f.call(mode.verb, "status", "--json")), { ...on, defaultMode: "off", models: BUILTIN_MODELS });
     }
     const repeated = f.json(f.call(mode.verb, "on", "--cwd", other, "--json"));
     assert.deepEqual(repeated.activeMode.options, mode.repeated);
@@ -585,7 +587,7 @@ test("mode replacement and targeted off preserve the single active record and ru
     else for (const key of ["scale", "maxWorkers", "maxWorkersSetting"]) assert.equal(Object.hasOwn(on, key), false);
     const current = f.json(f.callCpu(18, next.verb, "status", "--json"));
     const { replacedMode, runningJobs, ...normalOn } = on;
-    assert.deepEqual(current, { ...normalOn, defaultMode: "off" });
+    assert.deepEqual(current, { ...normalOn, defaultMode: "off", models: BUILTIN_MODELS });
     const other = MODES.find(mode => mode.name !== next.name);
     const otherStatus = f.json(f.call(other.verb, "status", "--json"));
     assert.deepEqual([otherStatus.mode, otherStatus.modeName, otherStatus.activeMode], ["off", other.name, on.activeMode]);
@@ -618,7 +620,7 @@ test("legacy global ultra records normalize without losing saved caps or rewriti
     const status = f.json(f.callCpu(18, "ultra-codex", "status", "--json"));
     assert.deepEqual([status.maxWorkersSetting, status.maxWorkers, status.since], [setting, effectiveMaxWorkers(setting, 18), since]);
     const capText = setting === "auto" ? "max 16 workers (auto)" : `max ${setting} workers`;
-    assert.equal(f.promptCpu(18, "substantive request").stdout, `Ultra-codex mode on (thorough, ${capText}). Apply protocol v${protocolVersion()} to substantive tasks; re-read ${PROTOCOL_PATH} only if v${protocolVersion()} is not in your context.\n`);
+    assert.equal(f.promptCpu(18, "substantive request").stdout, `Ultra-codex mode on (thorough, ${capText}, routine gpt-6.1-sol, strong gpt-6-astra). Apply protocol v${protocolVersion()} to substantive tasks; re-read ${PROTOCOL_PATH} only if v${protocolVersion()} is not in your context.\n`);
     assert.equal(fs.readFileSync(file, "utf8"), bytes, "status and hook only normalize in memory");
     assert.equal(f.call("ultra-codex", "on", "--max-workers", "80").status, 1);
     assert.equal(fs.readFileSync(file, "utf8"), bytes);
@@ -677,11 +679,11 @@ test("all reminders have exact mode settings and suppress every mode command", (
   const cases = [];
   for (const scale of ULTRA_SCALES) {
     for (const [maxWorkers, cap] of [["auto", "max 16 workers (auto)"], [6, "max 6 workers"], ["unlimited", "no worker cap"]]) {
-      cases.push({ name: "ultra", options: { scale, maxWorkers }, expected: `Ultra-codex mode on (${scale}, ${cap}). Apply protocol ${suffix}` });
+      cases.push({ name: "ultra", options: { scale, maxWorkers }, expected: `Ultra-codex mode on (${scale}, ${cap}, routine gpt-6.1-sol, strong gpt-6-astra). Apply protocol ${suffix}` });
     }
   }
-  cases.push({ name: "pair", options: {}, expected: `Pair mode on (one primary Codex worker, max 2 rework rounds). Apply pair protocol ${suffix}` });
-  for (const rounds of [1, 2, 3]) cases.push({ name: "duel", options: { rounds }, expected: `Duel mode on (Claude vs Codex, max ${rounds} rounds). Apply duel protocol ${suffix}` });
+  cases.push({ name: "pair", options: {}, expected: `Pair mode on (one primary Codex worker on gpt-6-astra/xhigh, max 2 rework rounds). Apply pair protocol ${suffix}` });
+  for (const rounds of [1, 2, 3]) cases.push({ name: "duel", options: { rounds }, expected: `Duel mode on (Claude vs Codex on gpt-6-astra/xhigh, max ${rounds} rounds). Apply duel protocol ${suffix}` });
   for (const entry of cases) {
     setMode(f.repo, SESSION, { name: entry.name, options: entry.options }, f.env);
     const result = f.promptCpu(18, "substantive task");
@@ -711,7 +713,7 @@ test("human status shows effective auto caps with injected CPU counts and preser
     record.since = since; fs.writeFileSync(f.modeFile(SESSION), JSON.stringify(record));
     const result = f.callCpu(cpuCount, "ultra-codex", "status");
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, `Ultra-codex mode: on for this session since ${since} (scale: auto; max workers: ${shown}). Turn it off with /codex:ultra-codex off.\n`);
+    assert.equal(result.stdout, `Ultra-codex mode: on for this session since ${since} (scale: auto; max workers: ${shown}). Turn it off with /codex:ultra-codex off.\n${MODELS_LINE}`);
     const payload = f.json(f.callCpu(cpuCount, "ultra-codex", "status", "--json"));
     assert.equal(payload.maxWorkers, effectiveMaxWorkers(setting, cpuCount));
     assert.equal(payload.maxWorkersSetting, setting);
@@ -725,9 +727,9 @@ test("human status shows effective auto caps with injected CPU counts and preser
     const current = f.json(f.callCpu(18, mode.verb, "status", "--json"));
     const line = `${mode.label} mode: on for this session since ${current.since} (${description}). Turn it off with /codex:${mode.verb} off.`;
     assert.equal(on.stdout, `${active ? `Replaced ${active} mode with ${mode.name} mode for this session. Existing jobs are unchanged; cancel them only if the user asks.\n` : ""}${line}\nFrom now on every substantive prompt in this session uses ${mode.name} orchestration (a reminder is attached to each prompt); conversational turns and trivial mechanical edits stay inline.\n${active ? "No Codex jobs from this session are still running.\n" : ""}`);
-    assert.equal(f.callCpu(18, mode.verb, "status").stdout, `${line}\n`);
+    assert.equal(f.callCpu(18, mode.verb, "status").stdout, `${line}\n${MODELS_LINE}`);
     const other = MODES.find(candidate => candidate.name !== mode.name);
-    assert.equal(f.callCpu(18, other.verb, "status").stdout, `${other.label} mode: off for this session. Active mode: ${mode.name}. Turn it off with /codex:${mode.verb} off.\n`);
+    assert.equal(f.callCpu(18, other.verb, "status").stdout, `${other.label} mode: off for this session. Active mode: ${mode.name}. Turn it off with /codex:${mode.verb} off.\n${MODELS_LINE}`);
     assert.equal(f.callCpu(18, other.verb, "off").stdout, `${other.label} mode was already off for this session. Active mode ${mode.name} is unchanged.\n${line}\nNo Codex jobs from this session are still running.\n`);
     active = mode.name;
   }
@@ -735,17 +737,17 @@ test("human status shows effective auto caps with injected CPU counts and preser
     f.json(f.call(mode.verb, "on", "--json"));
     assert.equal(f.call(mode.verb, "off").stdout, `${mode.label} mode: off. Orchestration has ended for this session.\nHandle requests normally from here on; spawn Codex workers only when asked.\nNo Codex jobs from this session are still running.\n`);
     assert.equal(f.call(mode.verb, "off").stdout, `${mode.label} mode was already off for this session.\nHandle requests normally from here on; spawn Codex workers only when asked.\nNo Codex jobs from this session are still running.\n`);
-    assert.equal(f.call(mode.verb, "status").stdout, `${mode.label} mode: off for this session. No orchestration mode is active. Turn it on with /codex:${mode.verb} on; a task given as arguments is orchestrated once without changing the mode.\n`);
+    assert.equal(f.call(mode.verb, "status").stdout, `${mode.label} mode: off for this session. No orchestration mode is active. Turn it on with /codex:${mode.verb} on; a task given as arguments is orchestrated once without changing the mode.\n${MODELS_LINE}`);
   }
   fs.writeFileSync(f.modeFile(SESSION), JSON.stringify({ schemaVersion: 2, name: "pair", options: {} }));
-  assert.equal(f.call("pair", "status").stdout, "Pair mode: on for this session since unknown (one primary Codex worker; max rework rounds: 2). Turn it off with /codex:pair off.\n");
+  assert.equal(f.call("pair", "status").stdout, "Pair mode: on for this session since unknown (one primary Codex worker; max rework rounds: 2). Turn it off with /codex:pair off.\n" + MODELS_LINE);
 });
 
 test("mode CLI flags, defaults, global session override and absent-session JSON remain strict", () => {
   const f = fixture(), file = f.modeFile(SESSION);
   for (const mode of MODES) {
     const noSession = run(process.execPath, [script, mode.verb, "status", "--json"], { cwd: f.repo, env: f.baseEnv });
-    assert.deepEqual(f.json(noSession), { mode: "off", modeName: mode.name, sessionId: null, activeMode: null, protocolFile: PROTOCOL_PATH, protocolVersion: protocolVersion(), defaultMode: "off" });
+    assert.deepEqual(f.json(noSession), { mode: "off", modeName: mode.name, sessionId: null, activeMode: null, protocolFile: PROTOCOL_PATH, protocolVersion: protocolVersion(), defaultMode: "off", models: BUILTIN_MODELS });
     for (const action of ["on", "off"]) {
       const result = run(process.execPath, [script, mode.verb, action], { cwd: f.repo, env: f.baseEnv });
       assert.equal(result.status, 1);
@@ -754,8 +756,8 @@ test("mode CLI flags, defaults, global session override and absent-session JSON 
     }
     const on = f.json(f.call(mode.verb, "on", "--json"));
     assert.deepEqual(on.activeMode.options, mode.options);
-    assert.deepEqual(f.json(f.call(mode.verb, "--json")), { ...on, defaultMode: "off" }, "omitted action means status");
-    assert.deepEqual(f.json(f.call(mode.verb, "status", "--for-command", "--json")), { ...on, defaultMode: "off" });
+    assert.deepEqual(f.json(f.call(mode.verb, "--json")), { ...on, defaultMode: "off", models: BUILTIN_MODELS }, "omitted action means status");
+    assert.deepEqual(f.json(f.call(mode.verb, "status", "--for-command", "--json")), { ...on, defaultMode: "off", models: BUILTIN_MODELS });
     const before = fs.readFileSync(file, "utf8");
     const invalid = [["toggle"], ["on", "task text"], ["status", "task text"], ["off", "task text"], ["on", "--unknown"], ["on", "--for-command"], ["on", "--for-command=false"], ["off", "--for-command"], ["off", "--for-command=false"]];
     const ownFlags = mode.name === "ultra" ? [["--quick"], ["--quick=false"], ["--thorough"], ["--thorough=false"], ["--max-workers", "3"], ["--max-workers=bad"]] : mode.name === "duel" ? [["--rounds", "2"], ["--rounds=false"]] : [];

@@ -943,7 +943,16 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   const source = `${f.root}/home/.claude/projects/-repo/native-session.jsonl`;
   fs.mkdirSync(path.dirname(source), { recursive: true });
   fs.writeFileSync(source, JSON.stringify({ type: 'user', message: { content: 'Synthetic prior request.' } }) + '\n');
-  f.env.CODEX_COMPANION_TRANSCRIPT_PATH = source;
+  // SessionStart writes Bash's env file, but the native host keeps its original
+  // environment. Do not source that file into the adapter or its companion.
+  const envFile = `${f.root}/claude-env`;
+  const started = spawnSync(process.execPath, [plugin + '/scripts/session-lifecycle-hook.mjs', 'SessionStart'], {
+    cwd: `${f.root}/repo`, env: { ...f.env, CLAUDE_ENV_FILE: envFile }, encoding: 'utf8',
+    input: JSON.stringify({ session_id: 'native-session', transcript_path: source, cwd: `${f.root}/repo`, source: 'startup' }),
+  });
+  assert.equal(started.status, 0, started.stderr);
+  assert.ok(fs.readFileSync(envFile, 'utf8').includes('CODEX_COMPANION_TRANSCRIPT_PATH'));
+  assert.equal(f.env.CODEX_COMPANION_TRANSCRIPT_PATH, undefined);
   const files = [{ path: '/captured/CLAUDE.md', kind: 'project', content: 'FORK_RULE_SENTINEL' }];
   const snapshot = writeClaudeSnapshot({ sessionId: 'native-session', cwd: `${f.root}/repo`, ...instructionInventory(files) }, f.env);
   const brief = '  Preserve leading space.\nDUET: this second line is brief text.\n';
@@ -960,6 +969,7 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   assert.equal(job.request.sandbox, 'read-only'); assert.equal(job.request.serviceTier, 'priority');
   assert.equal(job.request.prompt, brief);
   const runtime = f.codexState(), imported = runtime.lastExternalAgentImport;
+  assert.deepEqual(runtime.threads[0].visibleMessages.map(message => message.text), ['Synthetic prior request.']);
   const instructions = EXECUTOR_FRAMING + '\n\n### /captured/CLAUDE.md\nFORK_RULE_SENTINEL';
   assert.equal(job.request.forked, true);
   assert.equal(job.request.forkImportId, imported.importId);

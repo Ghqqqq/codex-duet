@@ -29,6 +29,44 @@ export function claudeSnapshotFile(sessionId, env = process.env) {
   return sessionId ? path.join(snapshotDirectory(env), `${hash(sessionId)}.json`) : null;
 }
 
+// Transcript metadata shares the instruction record's lock, permissions and
+// retention, but stays outside the instruction hash and write-once inventory.
+function readClaudeRecord(sessionId, env) {
+  try {
+    const file = claudeSnapshotFile(sessionId, env);
+    if (!file || fs.statSync(file).size > SNAPSHOT_BYTES) return null;
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    return data.version === 1 && data.sessionId === sessionId ? data : null;
+  } catch { return null; }
+}
+
+function writeClaudeRecord(file, record) {
+  const serialized = JSON.stringify(record);
+  if (Buffer.byteLength(serialized) > SNAPSHOT_BYTES) throw new Error("Claude instruction snapshot exceeds its storage budget.");
+  const temporary = path.join(path.dirname(file), `.${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(temporary, serialized, { flag: "wx", mode: 0o600 });
+    fs.renameSync(temporary, file);
+  } finally { fs.rmSync(temporary, { force: true }); }
+}
+
+export function recordClaudeTranscript({ sessionId, transcriptPath }, env = process.env) {
+  if (!sessionId || typeof transcriptPath !== "string" || !path.isAbsolute(transcriptPath)) return;
+  const file = claudeSnapshotFile(sessionId, env), dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  requireSnapshotDirectory(env);
+  fs.chmodSync(dir, 0o700);
+  withJournalLock(dir, () => {
+    const previous = readClaudeRecord(sessionId, env) ?? { version: 1, sessionId };
+    writeClaudeRecord(file, { ...previous, transcriptPath });
+  }, { lockTimeoutMs: 1000 });
+}
+
+export function readClaudeTranscript(sessionId, env = process.env) {
+  const transcriptPath = readClaudeRecord(sessionId, env)?.transcriptPath;
+  return typeof transcriptPath === "string" && path.isAbsolute(transcriptPath) ? transcriptPath : null;
+}
+
 function snapshotOf(payload) {
   const inventory = instructionInventory(payload.entries.map(entry => ({ path: entry.path, kind: entry.tier, content: entry.text, parent: entry.importer })));
   const data = { version: 1, sessionId: payload.sessionId, cwd: payload.cwd,
@@ -51,23 +89,17 @@ export function writeClaudeSnapshot(payload, env = process.env) {
   return withJournalLock(dir, () => {
     const previous = readClaudeSnapshot(payload.sessionId, env);
     if (previous) return previous;
-    const snapshot = snapshotOf(payload), serialized = JSON.stringify(snapshot);
+    const snapshot = snapshotOf(payload);
     if (!snapshot.inventoryAvailable) return null;
-    if (Buffer.byteLength(serialized) > SNAPSHOT_BYTES) throw new Error("Claude instruction snapshot exceeds its storage budget.");
-    const temporary = path.join(dir, `.${randomUUID()}.tmp`);
-    try {
-      fs.writeFileSync(temporary, serialized, { flag: "wx", mode: 0o600 });
-      fs.renameSync(temporary, file);
-    } finally { fs.rmSync(temporary, { force: true }); }
+    const transcriptPath = readClaudeTranscript(payload.sessionId, env);
+    writeClaudeRecord(file, { ...snapshot, ...(transcriptPath ? { transcriptPath } : {}) });
     return snapshot;
   }, { lockTimeoutMs: 1000 });
 }
 
 export function readClaudeSnapshot(sessionId, env = process.env) {
   try {
-    const file = claudeSnapshotFile(sessionId, env);
-    if (!file || fs.statSync(file).size > SNAPSHOT_BYTES) return null;
-    const { hash: savedHash, capturedAt, ...data } = JSON.parse(fs.readFileSync(file, "utf8"));
+    const { hash: savedHash, capturedAt, transcriptPath, ...data } = readClaudeRecord(sessionId, env) ?? {};
     if (data.version !== 1 || data.sessionId !== sessionId || !Array.isArray(data.entries) || digest(data) !== savedHash) return null;
     return { ...data, hash: savedHash, capturedAt };
   } catch { return null; }

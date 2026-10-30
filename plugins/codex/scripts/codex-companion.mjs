@@ -6,7 +6,7 @@ import { UNREACHABLE_GUIDANCE } from "./lib/runtime-errors.mjs";
 import { getToolAvailability, syncToolConfig } from "./lib/tool-config.mjs";
 import { buildWorkerReport, parseStructuredReport, persistTaskArtifacts, taskArtifactPaths } from "./lib/worker-report.mjs";
 import { normalizeBrowserOrigins, normalizeBundleIds } from "./lib/server-requests.mjs";
-import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, defaultModeSetup, ensureBrowserApproval, ensureComputerUseApproval, ensureProjectDocs, projectDocsSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
+import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, defaultModeSetup, workerDefaultsSetup, readWorkerDefaults, normalizeRequestedModel, VALID_REASONING_EFFORTS, ensureBrowserApproval, ensureComputerUseApproval, ensureProjectDocs, projectDocsSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
 import { activityReader, formatActivity, redactActivity, snippet } from "./lib/activity.mjs";
 import { JobRuntime, ACTIVE, OWNER_GRACE_MS, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, continuationReport, fullReport, directReport, envelopeBytes, adoptJob, ownershipNotice } from "./lib/job-runtime.mjs";
 import { reserveAgentName, releaseAgentName } from "./lib/agent-names.mjs";
@@ -104,8 +104,6 @@ const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json"
 const WORKER_REPORT_SCHEMA = path.join(ROOT_DIR, "schemas", "worker-report.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
-const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
-const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
 let directOutputStarted = false;
 // Write callbacks handle delivery failures; the stream also emits an error
@@ -231,6 +229,10 @@ Check isolated runtime readiness or change setup; --help, -h exits without chang
   --cua-template <file>  Absolute template path; --chatgpt-resources <dir>  Absolute resources path.
   --default-sandbox <read-only|workspace-write|danger-full-access>  Default task sandbox.
   --default-mode <off|ultra|pair|duel>  Orchestration for fresh Claude sessions (default off).
+  --default-model <model|default>  Worker model (built-in gpt-6-astra).
+  --default-effort <effort|default>  Worker effort (built-in xhigh).
+  --ultra-routine-model <model|default>  Ultra routine model (built-in gpt-6.1-sol).
+    Model/effort defaults may combine with each other and --dry-run, but no other setup changes.
   --transport <http|websocket|status>  Runtime transport; --project-docs <claude-md|agents-only>  CLAUDE.md fallback.
   --browser-approval <never-ask|ask>  Browser policy; --list-browser-origins  List origins.
   --allow-browser-origin <origin>, --revoke-browser-origin <origin>  Change saved origins (repeatable).
@@ -379,17 +381,6 @@ function outputCommandResult(payload, rendered, asJson) {
   outputResult(asJson ? payload : rendered, asJson);
 }
 
-function normalizeRequestedModel(model) {
-  if (model == null) {
-    return null;
-  }
-  const normalized = String(model).trim();
-  if (!normalized) {
-    return null;
-  }
-  return MODEL_ALIASES.get(normalized.toLowerCase()) ?? normalized;
-}
-
 function normalizeReasoningEffort(effort) {
   if (effort == null) {
     return null;
@@ -522,6 +513,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     reviewGateEnabled: Boolean(config.stopReviewGate),
     defaultSandbox: defaultSandboxSetup().defaultSandbox,
     defaultMode: defaultModeSetup().defaultMode,
+    ...workerDefaultsSetup(),
     browserOrigins: browserOriginSetup(),
     computerUse: computerUseSummary(),
     projectDocs: projectDocsSummary(),
@@ -542,7 +534,7 @@ function projectDocsSummary() {
 
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "cua-template", "chatgpt-resources", "transport", "profile", "default-sandbox", "default-mode", "browser-approval", "computer-use-approval", "project-docs"],
+    valueOptions: ["cwd", "cua-template", "chatgpt-resources", "transport", "profile", "default-sandbox", "default-mode", "default-model", "default-effort", "ultra-routine-model", "browser-approval", "computer-use-approval", "project-docs"],
     repeatableOptions: ["allow-browser-origin", "revoke-browser-origin", "allow-computer-app", "revoke-computer-app"],
     booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "sync-tools", "dry-run", "list-browser-origins", "list-computer-apps", "replace-cua"]
   });
@@ -557,6 +549,12 @@ async function handleSetup(argv) {
   const actionsTaken = [];
   for (const key of ["cua-template", "chatgpt-resources", "profile", "replace-cua"]) {
     if (options[key] !== undefined && !options["sync-tools"]) throw new Error(`--${key} requires --sync-tools.`);
+  }
+  if (["default-model", "default-effort", "ultra-routine-model"].some(key => options[key] !== undefined)) {
+    if (options["default-mode"] !== undefined || options["default-sandbox"] !== undefined || options["sync-tools"] || options.transport !== undefined || options["browser-approval"] !== undefined || options["allow-browser-origin"] || options["revoke-browser-origin"] || options["list-browser-origins"] || computerUseFlags || options["project-docs"] !== undefined || options["enable-review-gate"] || options["disable-review-gate"]) throw new Error("Run --default-model, --default-effort and --ultra-routine-model separately from other setup changes.");
+    const report = workerDefaultsSetup({ defaultModel: options["default-model"], defaultEffort: options["default-effort"], ultraRoutineModel: options["ultra-routine-model"], dryRun: Boolean(options["dry-run"]) });
+    outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
+    return;
   }
   if (options["default-mode"] !== undefined) {
     if (options["default-sandbox"] !== undefined || options["sync-tools"] || options.transport !== undefined || options["browser-approval"] !== undefined || options["allow-browser-origin"] || options["revoke-browser-origin"] || options["list-browser-origins"] || computerUseFlags || options["project-docs"] !== undefined || options["enable-review-gate"] || options["disable-review-gate"]) throw new Error("Run --default-mode separately from other setup changes.");
@@ -625,7 +623,7 @@ async function handleSetup(argv) {
     finalReport.actionsTaken.push(`CUA surfaces: ${toolSync.surfaces.join(", ") || "none"}; backends: ${toolSync.backends.join(", ") || "none"}.`);
     if (toolSync.changed) finalReport.nextSteps.push("Restart the Claude session/shared Codex runtime to load synced tools.");
   }
-  outputResult(options.json ? finalReport : `${renderSetupReport(finalReport)}Default mode: ${finalReport.defaultMode}.\nSelected Codex: ${finalReport.codex.executable} (source: ${finalReport.codex.source}).\n`, options.json);
+  outputResult(options.json ? finalReport : `${renderSetupReport(finalReport)}Default mode: ${finalReport.defaultMode}.\nDefault models: worker ${finalReport.defaultModel.value}/${finalReport.defaultEffort.value}, ultra routine ${finalReport.ultraRoutineModel.value}.\nSelected Codex: ${finalReport.codex.executable} (source: ${finalReport.codex.source}).\n`, options.json);
 }
 
 function buildAdversarialReviewPrompt(context, focusText) {
@@ -1292,9 +1290,11 @@ function renderTransferResult(payload) {
 
 async function executeTransfer(cwd, options = {}) {
   const sourcePath = resolveClaudeSessionPath(cwd, {
-    source: options.source
+    source: options.source, sessionId: options.sessionId
+  }, options.env);
+  const result = await importExternalAgentSession(cwd, {
+    sourcePath, sessionId: options.sessionId, explicitSource: Boolean(options.source)
   });
-  const result = await importExternalAgentSession(cwd, { sourcePath });
   const payload = {
     threadId: result.threadId,
     resumeCommand: isolatedCodexCommand(["resume", result.threadId]),
@@ -1514,6 +1514,9 @@ function handleReserveName(argv) {
 }
 
 async function handleTask(argv) {
+  // Parsing --session updates process.env; keep the inherited transcript's
+  // original session identity so a nested host cannot relabel its parent's path.
+  const forkSourceEnv = { ...process.env };
   const { options, positionals } = parseCommandInput(argv, COMMAND_OPTIONS.task);
   for (const flag of ["name", "agent-name"]) {
     if (/^(task|review|job)-/i.test(options[flag] ?? "")) {
@@ -1620,8 +1623,9 @@ async function handleTask(argv) {
   // listed bundle ids, only for this job's turn.
   const approvedComputerApps = normalizeBundleIds(options["approve-computer-app"] ?? grantRequest?.approvedComputerApps ?? []);
   const lifecycle = { owner: options.owner, leaseSec: seconds(options["lease-sec"] ?? process.env.CODEX_COMPANION_LEASE_SEC, options.direct ? 1800 : 180, "--lease-sec"), questionTimeoutSec: seconds(options["question-timeout-sec"], 900, "--question-timeout-sec") };
-  const model = normalizeRequestedModel(options.model) ?? recordedSettings.model ?? "gpt-6-astra";
-  const effort = normalizeReasoningEffort(options.effort) ?? recordedSettings.effort ?? "xhigh";
+  const defaults = readWorkerDefaults();
+  const model = normalizeRequestedModel(options.model) ?? recordedSettings.model ?? defaults.model;
+  const effort = normalizeReasoningEffort(options.effort) ?? recordedSettings.effort ?? defaults.effort;
   if (options.fast && options.normal) throw new Error("Choose either --fast or --normal.");
   const serviceTier = options.fast ? "priority" : options.normal || options.fast === false ? null : recordedSettings.serviceTier ?? null;
   const prompt = readTaskPrompt(cwd, options, positionals);
@@ -1662,7 +1666,9 @@ async function handleTask(argv) {
   let forkRequest = {};
   if (options.fork) {
     if (!prompt.trim()) throw new Error("Provide the task --fork brief on stdin.");
-    const { payload, sourceSha256, importId } = await executeTransfer(cwd, { source: options.source });
+    const { payload, sourceSha256, importId } = await executeTransfer(cwd, {
+      source: options.source, sessionId: getCurrentClaudeSessionId(), env: forkSourceEnv
+    });
     threadId = payload.threadId;
     forkRequest = {
       forked: true,
@@ -2777,12 +2783,13 @@ async function handleOrchestrationMode(argv, modeName) {
   if (action === "status") {
     const mode = sessionId ? readMode(workspaceRoot, sessionId) : null;
     const defaultMode = defaultModeSetup().defaultMode;
-    const payload = { ...modePayload(mode, modeName, sessionId), defaultMode };
+    const models = readWorkerDefaults();
+    const payload = { ...modePayload(mode, modeName, sessionId), defaultMode, models };
     const preamble = options["for-command"]
       ? `Usage: /codex:${verb} ${usage}\nIf the arguments describe a task, Read ${PROTOCOL_PATH} (protocol v${payload.protocolVersion}) before orchestrating; otherwise do not read it.\nFor this task, apply the shared sections and "${heading}" only. Task-prefix options override saved options; a one-shot task leaves the session mode unchanged.\n`
       : "";
     const defaultLine = defaultMode === "off" ? "" : `default mode: ${defaultMode} (duet setup --default-mode)\n`;
-    const text = `${renderOrchestrationMode(mode, modeName)}\n${defaultLine}${preamble}`;
+    const text = `${renderOrchestrationMode(mode, modeName)}\nmodels: worker ${models.model}/${models.effort}, ultra routine ${models.routineModel}\n${defaultLine}${preamble}`;
     outputCommandResult(payload, text, options.json);
     return;
   }

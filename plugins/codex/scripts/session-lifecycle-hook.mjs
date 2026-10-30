@@ -11,18 +11,25 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { clearMode, pruneModes, readMode } from "./lib/ultra-codex-mode.mjs";
 import { runAutomaticRetention } from "./lib/retention.mjs";
 import { activeRunContext } from "./lib/run-journal.mjs";
-import { deleteClaudeSnapshot } from "./lib/claude-memory.mjs";
+import { deleteClaudeSnapshot, recordClaudeTranscript } from "./lib/claude-memory.mjs";
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 // Name native dispatch up front so the first task needs no readiness notice.
 // An unavailable adapter returns a report that enables the Bash fallback.
-const SESSION_START_CONTEXT = [
-  'Dispatch Codex natively by default from the first dispatch: Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (the plugin assigns a scientist name, replacing a passed label unless it is a free pool name; the assigned name appears in the Agent result); an optional first prompt line DUET: <flags> sets task flags. The agent result is the Duet report; use SendMessage to the named agent for follow-ups and answers.',
-  "If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.",
-  "When delegating outside an orchestration mode, explicitly set model, effort and speed: `DUET: --model gpt-6-astra --effort xhigh --normal` unless the user chose otherwise; add `--sandbox read-only` for investigation/review. Active ultra, pair or duel reminders and protocols take precedence.",
-  "Use a fresh native agent per independent job; never run two jobs on one thread at once. Concurrent edits need disjoint owned paths or separate worktrees.",
-  "Briefs state the objective, owned paths, numbered acceptance criteria and verification commands.",
-  "Accept only on evidence: read the actual diff and rerun checks. A success message, launch receipt or `running` payload is not completion; never simulate a worker report or notification."
-].join("\n");
+async function sessionStartContext() {
+  let model = "gpt-6-astra", effort = "xhigh";
+  try {
+    const { readWorkerDefaults } = await import("./lib/setup-config.mjs");
+    ({ model, effort } = readWorkerDefaults());
+  } catch { /* built-in guidance must remain available on any preference error */ }
+  return [
+    'Dispatch Codex natively by default from the first dispatch: Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (the plugin assigns a scientist name, replacing a passed label unless it is a free pool name; the assigned name appears in the Agent result); an optional first prompt line DUET: <flags> sets task flags. The agent result is the Duet report; use SendMessage to the named agent for follow-ups and answers.',
+    "If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.",
+    `When delegating outside an orchestration mode, explicitly set model, effort and speed: \`DUET: --model ${model} --effort ${effort} --normal\` unless the user chose otherwise; add \`--sandbox read-only\` for investigation/review. Active ultra, pair or duel reminders and protocols take precedence.`,
+    "Use a fresh native agent per independent job; never run two jobs on one thread at once. Concurrent edits need disjoint owned paths or separate worktrees.",
+    "Briefs state the objective, owned paths, numbered acceptance criteria and verification commands.",
+    "Accept only on evidence: read the actual diff and rerun checks. A success message, launch receipt or `running` payload is not completion; never simulate a worker report or notification."
+  ].join("\n");
+}
 const shellEscape = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 function appendEnvVar(name, value) {
   if (!process.env.CLAUDE_ENV_FILE || value == null || value === "") return;
@@ -48,6 +55,9 @@ async function main() {
     appendEnvVar(SESSION_ID_ENV, input.session_id);
     appendEnvVar("CODEX_COMPANION_SESSION_CWD", input.cwd || process.cwd());
     appendEnvVar(TRANSCRIPT_PATH_ENV, input.transcript_path);
+    // Native companions inherit the host environment, not CLAUDE_ENV_FILE.
+    try { recordClaudeTranscript({ sessionId: input.session_id, transcriptPath: input.transcript_path }); }
+    catch { /* best effort; fork can look up the session in Claude's projects tree */ }
     // Clear stale state on a fresh start, then apply only the saved opt-in
     // default. Resumed or compacted sessions keep their own mode, including off.
     try {
@@ -76,7 +86,7 @@ async function main() {
       child.on("error", () => {}); child.unref();
     } catch { /* Missing prerequisites are reported by setup/task, not a login prompt. */ }
     const runContext = activeRunContext(cwd, input.session_id);
-    process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: SESSION_START_CONTEXT + (runContext ? `\n${runContext}` : "") } })}\n`);
+    process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: await sessionStartContext() + (runContext ? `\n${runContext}` : "") } })}\n`);
     return;
   }
   if ((event || input.hook_event_name) !== "SessionEnd") return;

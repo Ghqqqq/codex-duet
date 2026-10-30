@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import { isModeCommandPrompt, readMode, reminderText } from "./lib/ultra-codex-mode.mjs";
+import { readWorkerDefaults } from "./lib/setup-config.mjs";
 
 try {
   const raw = fs.readFileSync(0, "utf8").trim();
@@ -12,6 +13,6 @@ try {
   const sessionId = input.session_id || process.env.CODEX_COMPANION_SESSION_ID;
   if (sessionId) {
     const mode = readMode(resolveWorkspaceRoot(input.cwd || process.cwd()), sessionId);
-    if (mode && !isModeCommandPrompt(input.prompt)) process.stdout.write(`${reminderText(mode)}\n`);
+    if (mode && !isModeCommandPrompt(input.prompt)) process.stdout.write(`${reminderText(mode, undefined, readWorkerDefaults())}\n`);
   }
 } catch { /* silent */ }

@@ -2,8 +2,12 @@
 
 Pair is for a bounded task that one Codex worker can complete end to end.
 Claude plans, writes the full brief and accepts every diff. The primary worker
-uses **`gpt-6-astra` / `xhigh` / normal speed**, an explicit exception to ultra's
-stage-based sol defaults. User model, effort and speed choices take precedence.
+uses the configured worker model (default `gpt-6-astra`) and worker effort
+(default `xhigh`) at normal speed, independently of ultra's stage-based tiers.
+User model, effort and speed choices take precedence. Change the saved model
+and effort with `duet setup --default-model <model> --default-effort <effort>`;
+see [Default worker models](configuration.md#default-worker-models). The mode
+reminder and status name the effective values.
 
 Back to the [README](../README.md). Compare [ultra](ultra-codex.md) for breadth
 and [duel](duel.md) for persistent adversarial work.
@@ -52,8 +56,9 @@ thread. Session settings do not store participant identities or task counters.
    rechecks the complete resulting diff and final inputs before accepting it.
 
 Claude may request **one optional read-only verifier per initial/rework result**,
-after the primary returns and while it is idle. The default verifier is
-`gpt-6-astra`/`xhigh`/normal; a Claude general-purpose verifier may instead
+after the primary returns and while it is idle. The default verifier uses
+the configured worker model (default `gpt-6-astra`) and worker effort (default
+`xhigh`) at normal speed; a Claude general-purpose verifier may instead
 inherit the session model and use the owner's Claude quota. Give it a specific
 doubt, criteria and a stable candidate, then return confirmed defects to the
 primary. It never writes or accepts the primary's work. No panels or concurrent
@@ -106,7 +111,7 @@ an edit anywhere invalidates that common version.
 **Reminder template** (placeholders):
 
 ```text
-Pair mode on (one primary Codex worker, max 2 rework rounds). Apply pair protocol v<hash> to substantive tasks; re-read <absolute-protocol-path> only if v<hash> is not in your context.
+Pair mode on (one primary Codex worker on <model>/<effort>, max 2 rework rounds). Apply pair protocol v<hash> to substantive tasks; re-read <absolute-protocol-path> only if v<hash> is not in your context.
 ```
 
 Round limits are protocol-managed, not runtime counters. Native-first dispatch,
