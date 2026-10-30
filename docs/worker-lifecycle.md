@@ -352,7 +352,8 @@ and result reads do not renew; neither do ownerless compatibility companion wait
 Foreground owners renew while alive; detached task-workers never renew themselves.
 The default lease is 1800 seconds in direct mode, 180 seconds otherwise.
 SessionEnd matches sessionId, falling back to the old session-ID ownerId only
-for legacy jobs without sessionId. Such jobs stay
+for legacy jobs without sessionId, and rechecks owner and session under the
+cancellation lock, so a job adopted meanwhile by another session keeps running. Such jobs stay
 readable and can renew only with an explicit matching owner.
 
 An attached owner `wait` (`--owner`, including `task --direct` and `task --follow`) records
@@ -360,7 +361,8 @@ An attached owner `wait` (`--owner`, including `task --direct` and `task --follo
 its heartbeat. On SIGINT/SIGTERM/SIGHUP, a changed parent PID or a closed stdout
 pipe it marks `ownerDetachReason: signal|parent_exit|stdout_closed` and exits 130;
 a normal return (timeout, terminal, question) marks `returned`. The detached
-task-worker's 250 ms tick stops the turn with `owner_stopped` as soon as it sees
+task-worker's 250 ms tick stops the turn with `owner_stopped` as soon as it sees,
+and still sees under the state lock for the same owner and attachment,
 an abnormal detach mark (a user stop is treated like killing a native subagent),
 and with `owner_lost` when an attached owner's heartbeat is older than the grace
 period (5 s, `CODEX_COMPANION_OWNER_GRACE_SEC`, 1–600), which only happens to an
@@ -382,7 +384,9 @@ Before starting its turn, each task-worker atomically claims its queued job
 fallback after a launcher timed out under load, finds the claim and exits 0
 without running. A claim whose worker died is reclaimable only while the job is
 still queued.
-Each progress event rewrites the job record. Long, message-heavy jobs therefore
+Each progress event rewrites the job record. Progress and log writes are best
+effort: a failed write never stops the turn or changes its outcome, and newly
+learned thread/turn handles are retried with later progress until stored. Long, message-heavy jobs therefore
 write far more data than they add (known limitation; a split activity log is
 planned).
 

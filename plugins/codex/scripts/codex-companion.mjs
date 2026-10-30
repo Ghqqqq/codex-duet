@@ -380,10 +380,6 @@ function normalizeReasoningEffort(effort) {
 }
 
 function normalizeArgv(argv, argsStdin = false, config = {}) {
-  if (argv.length === 1) {
-    const [raw] = argv;
-    argv = raw?.trim() ? splitRawArgumentString(raw) : [];
-  }
   const index = argsStdin ? argv.indexOf("--args-stdin") : -1;
   const separator = argv.indexOf("--");
   if (index >= 0 && (separator < 0 || index < separator)) {
@@ -2038,12 +2034,29 @@ async function handleStatus(argv) {
     const selected = buildSingleJobSnapshot(cwd, reference);
     const renewed = renewLease(selected.workspaceRoot, selected.job.id, options.owner);
     if (reportMovedOwner(renewed, options.owner, options.json)) return;
-    const snapshot = options.wait
-      ? await waitForSingleJobSnapshot(cwd, reference, {
-          timeoutMs: options["timeout-ms"],
-          pollIntervalMs: options["poll-interval-ms"], owner: options.owner
-        })
-      : await refreshJobSnapshot(cwd, reference);
+    let renewalTimer, renewalError, snapshot;
+    const parentPid = process.ppid;
+    const deadline = Date.now() + Math.max(0, Number(options["timeout-ms"]) || DEFAULT_STATUS_WAIT_TIMEOUT_MS);
+    const scheduleRenewal = current => {
+      if (!options.wait || !options.owner || !ACTIVE.has(current.status) || current.ownerId !== options.owner ||
+          current.cancelRequested || current.leaseExpiresAt <= Date.now() || process.ppid !== parentPid || Date.now() >= deadline) return;
+      renewalTimer = setTimeout(() => {
+        if (process.ppid !== parentPid || Date.now() >= deadline) return;
+        try { scheduleRenewal(renewLease(selected.workspaceRoot, selected.job.id, options.owner)); }
+        catch (error) { renewalError = error; }
+      }, Math.min(1000, (current.leaseSec ?? 180) * 250, deadline - Date.now()));
+    };
+    try {
+      // Renewal must not depend on the snapshot polling interval or a slow recovery read.
+      scheduleRenewal(renewed);
+      snapshot = options.wait
+        ? await waitForSingleJobSnapshot(cwd, reference, {
+            timeoutMs: options["timeout-ms"],
+            pollIntervalMs: options["poll-interval-ms"], owner: options.owner
+          })
+        : await refreshJobSnapshot(cwd, reference);
+      if (renewalError) throw renewalError;
+    } finally { clearTimeout(renewalTimer); }
     if (reportMovedOwner(snapshot.job, options.owner, options.json)) return;
     outputCommandResult(snapshot, `${renderJobStatusReport(snapshot.job)}${snapshot.recovery ? `Recovery: ${snapshot.recovery.detail}\n` : ""}`, options.json);
     return;
@@ -2057,6 +2070,24 @@ async function handleStatus(argv) {
   const rendered = renderStatusPayload(report, options.json, { all: options.all });
   outputResult(options.json || !report.historyOmitted ? rendered
     : `${rendered}\nOlder finished jobs omitted in this scope: ${report.historyOmitted}\n`, options.json);
+}
+
+function storedWorkerReport(current, job = current) {
+  const report = { ...(current.report ?? buildWorkerReport({ threadId: current.threadId ?? null,
+    approvedBrowserOrigins: current.approvedBrowserOrigins ?? [], approvedComputerApps: current.approvedComputerApps ?? [],
+    ...(current.result?.codex ? { status: current.status === "completed" ? 0 : 1, rawOutput: current.result.codex.stdout } : {}),
+    ...(current.result ?? { status: 1, error: current.errorMessage ?? "No stored result." }) },
+  { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile })) };
+  if (current.jobClass === "review") {
+    report.status = current.status;
+    // Review prose is not a worker status declaration or an input request.
+    delete report.question;
+    if (current.status === "completed") report.blockers = [];
+    if (current.result?.errorCode === "review_output_invalid") {
+      report.blockers = [{ code: "review_output_invalid", message: current.result.validationError }];
+    }
+  }
+  return report;
 }
 
 async function handleResult(argv) {
@@ -2086,20 +2117,7 @@ async function handleResult(argv) {
   const storedJob = readStoredJob(workspaceRoot, job.id);
   if (options.report || options.details || !options.json) {
     const current = storedJob ?? job;
-    const report = { ...(storedJob?.report ?? buildWorkerReport({ threadId: current.threadId ?? null, approvedBrowserOrigins: storedJob?.approvedBrowserOrigins ?? [], approvedComputerApps: storedJob?.approvedComputerApps ?? [],
-      ...(storedJob?.result?.codex ? { status: current.status === "completed" ? 0 : 1, rawOutput: storedJob.result.codex.stdout } : {}),
-      ...(storedJob?.result ?? { status: 1, error: storedJob?.errorMessage ?? "No stored result." }) }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile })) };
-    if (current.jobClass === "review") {
-      report.status = current.status;
-      // Review prose is not a worker status declaration or an input request.
-      if (current.status === "completed") {
-        report.blockers = [];
-        delete report.question;
-      }
-      if (current.result?.errorCode === "review_output_invalid") {
-        report.blockers = [{ code: "review_output_invalid", message: current.result.validationError }];
-      }
-    }
+    const report = storedWorkerReport(current, job);
     Object.assign(withRunSettings(report, storedJob?.request), leaseExpiryReport(storedJob ?? job),
       storedJob?.agentName ? { agentName: storedJob.agentName } : {});
     const output = options.details
@@ -2454,7 +2472,7 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
     if (error.code === "EPIPE") { detach("stdout_closed"); process.exitCode = 130; }
   }) : null;
   const finish = async (payload, exitCode = 0, current = job) => {
-    const output = details ? fullReport(payload, current) : direct ? directReport(payload, current) : payload;
+    const output = details ? current.jobClass === "review" ? renderReviewDetails(fullReport(payload, current), current) : fullReport(payload, current) : direct ? directReport(payload, current) : payload;
     if (output.status !== payload.status) exitCode = exitCodeForReport(output.status);
     const line = JSON.stringify(output);
     try {
@@ -2525,7 +2543,7 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
       // An expired slot is abandoned (its bridge is gone): wait past it, as the
       // snapshot already reports running, instead of returning immediately.
       if (terminal || (pending && pending.answer === undefined && !(Date.now() >= pending.expiresAt) && pending.id !== afterQuestion) || Date.now() - started >= timeout * 1000 || (minimum !== null && activity.length && Date.now() - started >= minimum * 1000)) {
-        const report = terminal ? { ...(current.report ?? buildWorkerReport(current.result ?? { status: 1, error: current.errorMessage ?? "No stored result." }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile })), ...leaseExpiryReport(current) } : progressSnapshot(current);
+        const report = terminal ? { ...storedWorkerReport(current, job), ...leaseExpiryReport(current) } : progressSnapshot(current);
         if (current.agentName) report.agentName = current.agentName;
         // Compact reports may contain captured commands and assistant snippets too.
         // Preserve handles/paths; redact only display text, never serialized JSON.
@@ -2616,6 +2634,8 @@ async function handleUltraCodex(argv) {
   const action = positionals[0] ?? "status";
   if (!["on", "off", "status"].includes(action) || positionals.length > 1) throw new Error("ultra-codex takes one of: on [--quick|--thorough] [--max-workers <n>], off, status [--for-command].");
   if (options.quick && options.thorough) throw new Error("Choose either --quick or --thorough.");
+  if (action !== "on" && ["quick", "thorough", "max-workers"].some(key => options[key] !== undefined)) throw new Error("--quick, --thorough and --max-workers apply to on only.");
+  if (action !== "status" && options["for-command"] !== undefined) throw new Error("--for-command applies to status only.");
   const workspaceRoot = resolveCommandWorkspace(options);
   const sessionId = getCurrentClaudeSessionId();
   if (action === "status") {
@@ -2630,7 +2650,6 @@ async function handleUltraCodex(argv) {
   }
   if (!sessionId) throw new Error("Ultra-codex mode needs the Claude session id (CODEX_COMPANION_SESSION_ID, exported by the SessionStart hook); run this inside Claude Code.");
   if (action === "on") {
-    if (options["for-command"]) throw new Error("--for-command applies to status only.");
     const maxWorkers = options["max-workers"] === undefined ? (readMode(workspaceRoot, sessionId)?.maxWorkers ?? DEFAULT_MAX_WORKERS) : Number(options["max-workers"]);
     const mode = setMode(workspaceRoot, sessionId, { scale: options.quick ? "quick" : options.thorough ? "thorough" : "auto", maxWorkers });
     const payload = { mode: "on", sessionId, scale: mode.scale, maxWorkers: mode.maxWorkers, since: mode.since, protocolFile: PROTOCOL_PATH };

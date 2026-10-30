@@ -1,3 +1,11 @@
+function isRecognizedOption(token, valueOptions, booleanOptions, aliases) {
+  if (token === "--") return true;
+  if (!token?.startsWith("-") || token === "-") return false;
+  const rawKey = token.startsWith("--") ? token.slice(2).split("=", 1)[0] : token.slice(1);
+  const key = aliases[rawKey] ?? rawKey;
+  return valueOptions.has(key) || booleanOptions.has(key);
+}
+
 function optionDistance(left, right) {
   let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
   for (let row = 1; row <= left.length; row += 1) {
@@ -77,8 +85,9 @@ export function parseArgs(argv, config = {}) {
 
       if (valueOptions.has(key)) {
         const nextValue = inlineValue ?? argv[index + 1];
-        if (nextValue === undefined || (repeatableOptions.has(key) && nextValue.startsWith("-")) ||
-            ((config.rejectUnknown || config.rejectSeparatorValues) && inlineValue === undefined && nextValue === "--")) {
+        if (nextValue === undefined || (inlineValue === undefined &&
+            (isRecognizedOption(nextValue, valueOptions, booleanOptions, aliasMap) ||
+              (repeatableOptions.has(key) && nextValue.startsWith("-"))))) {
           throw new Error(`Missing value for --${rawKey}`);
         }
         if (repeatableOptions.has(key)) (options[key] ??= []).push(nextValue);
@@ -103,7 +112,8 @@ export function parseArgs(argv, config = {}) {
 
     if (valueOptions.has(key)) {
       const nextValue = argv[index + 1];
-      if (nextValue === undefined || ((config.rejectUnknown || config.rejectSeparatorValues) && nextValue === "--")) {
+      if (nextValue === undefined || isRecognizedOption(nextValue, valueOptions, booleanOptions, aliasMap) ||
+          (repeatableOptions.has(key) && nextValue.startsWith("-"))) {
         throw new Error(`Missing value for -${shortKey}`);
       }
       if (repeatableOptions.has(key)) (options[key] ??= []).push(nextValue);
@@ -255,6 +265,9 @@ export function splitReviewArgumentString(raw, config = {}) {
     if (takesValue && !(token.value.startsWith("--") && token.value.includes("="))) {
       const value = readRawOptionToken(raw, offset);
       if (!value) break; // parseArgs supplies the existing missing-value error.
+      if (isRecognizedOption(value.value, valueOptions, booleanOptions, aliases)) {
+        throw new Error(`Missing value for ${token.value}`);
+      }
       tokens.push(value.value);
       offset = value.end;
     }

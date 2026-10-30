@@ -341,6 +341,7 @@ owner, expired question/lease or stopping job under the same state lock. Retired
 owners still receive `ownership_moved`; ownerless compatibility helpers remain
 supported.
 Observational `/codex:status`, `duet status` and `duet result` do not renew;
+`duet status <job> --wait --owner <id>` renews that owner for the whole wait;
 ownerless compatibility companion waits also do not renew. Foreground tasks renew while their owning
 process runs and stop with `parent_exit` once the process that launched them dies;
 detached workers cannot renew themselves. Legacy records without
@@ -360,7 +361,8 @@ interruptions are confirmed like any other interruption. A normal return
 followed by silence still falls back to lease expiry.
 
 After a stop, `duet result <worker> --details` exposes recovery handles and the
-compatibility `continuationCommand`. With explicit user consent, use
+compatibility `continuationCommand` (task jobs with a recorded thread only;
+reviews and jobs that never started a thread get none). With explicit user consent, use
 `duet task --to <worker>` with a new brief, or `duet task --continue <jobId>
 --cwd '<cwd>'` to inherit that exact job's settings. These start one new turn;
 never continue automatically. Native SendMessage continuation also uses the same

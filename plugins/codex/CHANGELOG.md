@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.4.7
+
+### Stability fixes
+
+- A finished native worker's report is no longer held back by a stuck progress lookup. Handle and status lookups use one 15-second bound, and the turn's own result is delivered even if a lookup never returns.
+- A native follow-up admitted while the previous turn's cancellation is confirmed keeps that confirmation. The admission commit now rebases onto the latest binding inside its per-binding write slot, after pruning, and charges its real byte delta.
+- Starting a new task on a stopped native worker clears the stopped turn's cancellation. A completed follow-up then leaves room for new agents as ordinary finished history, instead of staying protected and causing `native_capacity`.
+- Native spawn observations age with the 24-hour orphan-guard window, so guards whose start never produced a binding are reclaimed without a reload.
+- A companion reply with a missing or unknown status is treated as a protocol error. The turn stays unresolved and blocked instead of being recorded as answered.
+- A failing progress or log write (for example a full disk) no longer crashes a worker from its heartbeat or leaks a runtime after initialize, and no longer turns a committed completion into `failed`. Progress and log output are best effort. Newly learned thread/turn handles are retried with later progress until stored.
+- Automatic stops are rechecked under the state lock before they cancel. Lease expiry, owner loss and owner stops need the same owner and attachment and a still-true condition, so a renewal or adoption that lands after the watchdog's read keeps the job running. SessionEnd cancels only jobs still owned by the ending session. Explicit `duet cancel` is unchanged.
+- Retention connects to the broker before its final reference and rollout check, so a follow-up queued while that connection starts keeps its thread. A live worker or launcher PID on either the index entry or the job record now protects a job in every record shape.
+
+### Commands and reports
+
+- `duet status <job> --wait --owner <id>` renews that owner for the whole wait, instead of once at the start.
+- `wait` on a native review reports the review's own status, so a successful review returns `completed` (exit 0) as `result` does.
+- `next` and `continuationCommand` offer `task --to`/`task --continue` only for task jobs with a recorded thread. Reviews and jobs that never started a thread get `null`. Auth blockers still suggest `duet setup`, and context or provider blockers on task jobs suggest `duet task --fresh`.
+- `result --details` and `wait --details` carry every stored blocker with its full message. Compact reports keep their bounded projection.
+- A single, already-quoted argument is no longer split again, so `--cwd='/path/with spaces'` works. Raw strings are split only for `--args-stdin`.
+- A value option followed by another recognised option or `--` (for example `--model --fast`) is a missing-value error before anything is dispatched. Use `--opt=value` for a value that starts with `-`.
+- `ultra-codex status` and `off` reject `--quick`, `--thorough` and `--max-workers`; `on` and `off` reject `--for-command`.
+- Native capacity, binding-gone and late-answer reports render as readable markdown in the agent view.
+
+### Known limits
+
+- Between retention's final recheck and its `thread/delete` request, another process can still publish a follow-up for that thread. The window now spans only the request itself.
+- A recycled PID that matches a recorded worker or launcher PID keeps that job until the process exits.
+
 ## 1.4.6
 
 ### Stability fixes

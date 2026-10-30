@@ -83,7 +83,10 @@ async function main() {
   // from historical state or shut down a broker serving another Claude session.
   for (const job of jobs) {
     if (Date.now() >= deadline) break;
-    try { requestCancel(job.workspaceRoot, job.id, "session_end", { lockTimeoutMs: 0 }); }
+    try { requestCancel(job.workspaceRoot, job.id, "session_end", {
+      lockTimeoutMs: 0,
+      expect: current => (current.sessionId === undefined ? current.ownerId : current.sessionId) === session
+    }); }
     catch { process.stderr.write(`SessionEnd interruption unconfirmed for ${job.id}; owner lease remains the fallback.\n`); }
   }
   while (jobs.length && Date.now() < deadline) {

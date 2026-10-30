@@ -8,6 +8,7 @@ import { inertIndexlessWorkspace } from "./indexless-state.mjs";
 import { APPROVAL_OPTIONS, parseApprovalAnswer } from "./server-requests.mjs";
 import { finishJournalJob } from "./run-journal.mjs";
 import { buildWorkerReport } from "./worker-report.mjs";
+import { dedupeBlockers } from "./blockers.mjs";
 import { reportJobs, reportWorkerTarget } from "./worker-resolve.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 import { reserveAgentName } from "./agent-names.mjs";
@@ -187,10 +188,11 @@ export function ownerLost(job, now = Date.now()) {
 }
 const quote = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 const companionCommand = args => `node ${quote(fileURLToPath(new URL("../codex-companion.mjs", import.meta.url)))} ${args}`;
+const resumableTask = job => job.jobClass === "task" && Boolean(job.threadId);
 export function continuationReport(job) {
-  const continuationCommand = job.threadId && job.id ? companionCommand(`task --continue ${quote(job.id)} --cwd ${quote(job.request?.cwd ?? job.workspaceRoot)} ${job.direct ? "--direct" : "--follow --report --json"}`) : null;
+  const continuationCommand = resumableTask(job) && job.id ? companionCommand(`task --continue ${quote(job.id)} --cwd ${quote(job.request?.cwd ?? job.workspaceRoot)} ${job.direct ? "--direct" : "--follow --report --json"}`) : null;
   return { continuationCommand,
-    continuationNote: continuationCommand ? "Starts one new turn on the same Codex thread with this job's recorded sandbox, write, model and browser-origin settings; append extra instructions as the prompt. It has not been run. Wait for any pending interruption to finish first." : "No thread handle was recorded; no continuation command is available." };
+    continuationNote: continuationCommand ? "Starts one new turn on the same Codex thread with this job's recorded sandbox, write, model and browser-origin settings; append extra instructions as the prompt. It has not been run. Wait for any pending interruption to finish first." : "No resumable task thread was recorded; no continuation command is available." };
 }
 // The details view retains the full report and the old direct-mode commands,
 // summary and expanded lists. JSON/feed callers keep their existing payloads.
@@ -205,6 +207,10 @@ export function fullReport(payload, job = {}) {
   // Older stored reports may predate status normalization. Project their
   // decision without rewriting the record or overriding failure states.
   const structured = job.result?.structured;
+  if (!resumableTask(job)) {
+    if (report.continuationCommand !== undefined) Object.assign(report, continuationReport(job));
+    if (report.next !== undefined && !ACTIVE.has(report.status) && report.status !== "needs_answer") report.next = null;
+  }
   if (structured) report.declaredStatus = structured.status;
   if (["completed", "needs_input", "blocked"].includes(report.status)) {
     if (structured?.blockers?.length || (report.status === "completed" && report.blockers?.length)) report.status = "blocked";
@@ -226,12 +232,31 @@ export function fullReport(payload, job = {}) {
     report.next = blocker.answerCommand ?? blocker.recoveryCommand ?? null;
     delete report.continuationCommand;
     delete report.continuationNote;
-  } else if (report.status !== "completed" && report.status !== "ownership_moved" && job.threadId) {
+  } else if (report.status !== "completed" && report.status !== "ownership_moved") {
     Object.assign(report, continuationReport({ ...job, direct: true }));
   }
   // A terminal report carries Codex's final summary, so the caller does not
   // have to read rawOutputFile for the answer itself.
   if (!ACTIVE.has(report.status) && report.status !== "needs_answer" && report.status !== "ownership_moved") {
+    const storedEntries = [...(job.result?.blockers ?? []), ...(structured?.blockers ?? [])];
+    const storedBlockers = dedupeBlockers(storedEntries).map(blocker => {
+      const message = storedEntries.reduce((longest, candidate) => candidate?.code === blocker.code &&
+        typeof candidate.message === "string" && candidate.message.length > (longest?.length ?? 0) &&
+        dedupeBlockers([blocker, candidate]).length === 1 ? candidate.message : longest, blocker.message);
+      return { ...blocker, ...(message !== undefined ? { message } : {}) };
+    });
+    if (storedBlockers.length) {
+      const inferred = dedupeBlockers([...storedBlockers, ...(report.blockers ?? [])]).filter(blocker => !storedBlockers.includes(blocker));
+      // Recovery handles in the report may be newer than the captured result.
+      const expanded = storedBlockers.map(blocker => {
+        const current = report.blockers?.find(candidate => dedupeBlockers([blocker, candidate]).length === 1);
+        return { ...current, ...blocker, ...Object.fromEntries(["cancelCommand", "recoveryCommand", "answerCommand"]
+          .filter(key => current?.[key] !== undefined).map(key => [key, current[key]])) };
+      });
+      report.blockers = [...inferred, ...expanded].map(blocker => ({ ...blocker,
+        ...(typeof blocker.message === "string" ? { message: redactActivity(blocker.message) } : {}) }));
+      report.blockersOmitted = 0;
+    }
     for (const [target, values] of [
       ["touchedFiles", job.result?.touchedFiles],
       ["preExistingChanges", job.result?.preExistingChanges],
@@ -311,6 +336,8 @@ function fitDirectEnvelope(report) {
 
 export function directReport(payload, job = {}, env = process.env) {
   const full = fullReport(payload, job);
+  // Only details expands stored blockers; retain the compact projection and its C2 field set.
+  full.blockers = payload.blockers;
   const worker = job.agentName ?? full.agentName ?? null;
   const jobId = full.jobId ?? job.id ?? null;
   let target = jobId;
@@ -358,11 +385,12 @@ export function directReport(payload, job = {}, env = process.env) {
   const runtimeBlocker = full.status === "blocked" && full.blockers?.find(blocker =>
     ["context_window_exceeded", "provider_refused", "auth_required"].includes(blocker.code));
   const nextCommand = target => busy ? busy.answerCommand ?? report.blockers.find(blocker => blocker.code === "thread_busy")?.recoveryCommand ?? null
-    : runtimeBlocker ? runtimeBlocker.code === "auth_required" ? "duet setup" : `duet task --fresh${cwdOption}`
+    // Setup needs no thread, and a fresh task suits any task job, resumable or not.
+    : runtimeBlocker && (runtimeBlocker.code === "auth_required" || job.jobClass === "task") ? runtimeBlocker.code === "auth_required" ? "duet setup" : `duet task --fresh${cwdOption}`
     : !target || ["completed", "ownership_moved"].includes(full.status) ? null
     : full.status === "needs_answer" ? full.question?.id ? `duet answer ${target} --question ${quote(full.question.id)}` : null
     : ACTIVE.has(full.status) ? `duet wait ${target}`
-    : `duet task --to ${target}`;
+    : resumableTask(job) ? `duet task --to ${target}` : null;
   report.next = nextCommand(command);
   report.details = jobId ? `duet result ${quote(jobId)}${cwdOption} --details` : null;
   if (envelopeBytes(report) > 2000) {
@@ -462,8 +490,15 @@ export function leaseExpiryReport(job) {
 export function questionMessage(question) {
   return `Question ${question.id}: ${snippet(question.text, 1000)} | Options: ${question.options?.length ? question.options.map(option => JSON.stringify(snippet(option, 160))).join("; ") : "(none)"}`;
 }
-export function requestCancel(cwd, id, reason = "cancelled_by_user", options = {}) {
-  return updateJob(cwd, id, job => ACTIVE.has(job.status) || unresolvedTask(job) ? { cancelRequested: { reason, at: new Date().toISOString() } } : null, options);
+export function requestCancel(cwd, id, reason = "cancelled_by_user", { expect = null, ...options } = {}) {
+  let applied = false;
+  const result = updateJob(cwd, id, job => {
+    if (!(ACTIVE.has(job.status) || unresolvedTask(job)) || (expect && !expect(job))) return null;
+    applied = true;
+    return { cancelRequested: { reason, at: new Date().toISOString() } };
+  }, options);
+  // Conditional callers must distinguish an unchanged record from cancellation.
+  return expect && !applied ? null : result;
 }
 export function answerQuestion(cwd, id, questionId, answer, owner) {
   if (typeof answer !== "string" || !answer.trim() || answer.length > 8000) throw new Error("Answer stdin must contain 1–8000 characters.");
@@ -614,23 +649,29 @@ export class JobRuntime {
         // Shift the current record under its lock before checking a wake tick.
         // Cancellation still wins, and normal checks resume on the next tick.
         const job = paused ? updateJob(cwd, id, current => pauseAdjustment(current, gap, now)) : readJobFile(resolveJobFile(cwd, id));
+        const sameOwner = current => current.ownerId === job.ownerId && current.ownerAttachedAt === job.ownerAttachedAt;
         if (job.cancelRequested) this.stop(job.cancelRequested.reason);
-        else if (!paused && job.leaseExpiresAt && now >= job.leaseExpiresAt) this.stop("lease_expired");
+        else if (!paused && job.leaseExpiresAt && now >= job.leaseExpiresAt) this.stop("lease_expired", {
+          expect: current => sameOwner(current) && Boolean(current.leaseExpiresAt) && Date.now() >= current.leaseExpiresAt
+        });
         // owner_stopped: the owner marked its exit (user stopped the agent/wait).
         // owner_lost: the heartbeat went silent (killed outright or crashed).
-        else if (!paused && !foreground && ownerLost(job, now)) this.stop(job.ownerAttached ? "owner_lost" : "owner_stopped");
+        else if (!paused && !foreground && ownerLost(job, now)) this.stop(job.ownerAttached ? "owner_lost" : "owner_stopped", {
+          expect: current => sameOwner(current) && current.ownerAttached === job.ownerAttached && ownerLost(current)
+        });
         else if (foreground && !this.reason) renewLease(cwd, id, foregroundOwner);
       } catch { this.stop("owner_state_unavailable"); }
     };
     tick(); this.timer = setInterval(tick, 250);
   }
-  stop(reason) {
+  stop(reason, { expect = null } = {}) {
     if (this.abort.signal.aborted) return;
+    if (!this.reason && expect && !requestCancel(this.cwd, this.id, reason, { expect })) return;
     try {
       // A recorded reason can precede abort (including a reentrant stop).
       if (this.reason) return;
       this.reason = reason;
-      try { requestCancel(this.cwd, this.id, reason); }
+      try { if (!expect) requestCancel(this.cwd, this.id, reason); }
       catch { /* Still interrupt if the job store is unavailable. */ }
       this.onProgress?.({ message: `Interrupt requested: ${reason}.`, phase: "interrupting" });
     } catch { /* Progress is diagnostic; its failure must not disable cancellation. */ }

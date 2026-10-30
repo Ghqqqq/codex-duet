@@ -77,7 +77,8 @@ leave the recorded report and Claude's hand-back unchanged. Command-start lines
 are live only; other progress remains in durable notices, capped at 200 per turn
 with a final usage-notice exemption. See [progress format](worker-lifecycle.md#fallback-and-compatibility-feed-mode).
 Keepalives stream after 30 seconds without streamed progress, even when durable
-notices are suppressed or handle lookup fails. Only one keepalive publication
+notices are suppressed or handle lookup fails. Handle and status lookups share a
+15-second bound, so a stuck lookup cannot hold back a finished report. Only one keepalive publication
 can be pending, bounding the queue when a reader is slow.
 
 `agent.spawn` records the type and a small timestamped guard, then returns;
@@ -349,7 +350,7 @@ the job protected by its lease. A stopped fallback agent cannot resume via
 SendMessage.
 
 After a stop, `duet result <worker> --details` supplies the recorded handles and
-compatibility `continuationCommand`. With explicit user consent, run
+compatibility `continuationCommand` (task jobs with a recorded thread only). With explicit user consent, run
 `duet task --to <worker>` with a new brief, or `duet task --continue <jobId>
 --cwd '<cwd>'` to retain that exact job's settings. Either starts one new turn;
 nothing continues automatically. If no thread was recorded, continuation is

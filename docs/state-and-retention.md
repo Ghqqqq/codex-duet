@@ -82,7 +82,7 @@ markers and old Codex threads that no retained job uses, at most once every 12
 hours. It follows `cleanupPeriodDays` in `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json`
 (default 30 days); `CODEX_COMPANION_RETENTION_DAYS` overrides it. Values below one
 are clamped to one day and reported. Age cleanup protects running/queued jobs,
-attached owners, live worker PIDs and unresolved turns (a lost or unconfirmed
+attached owners, live worker or launcher PIDs (on either the index entry or the job record) and unresolved turns (a lost or unconfirmed
 turn that may still run on the server). Dead orphan records whose outcome is
 still unresolved remain protected until reconciliation proves the turn ended.
 Expired dead orphan files that are not unresolved can be cleaned even if their
@@ -192,7 +192,8 @@ Active turns and pending questions remain protected. Unconfirmed cancellations
 are protected from pressure eviction until the turn is proven ended (a closed
 turn or confirmed cancellation), or the existing seven-day age expiry is reached.
 
-Timestamped spawn guards protect bindings awaiting their start for ten minutes.
+Timestamped spawn guards protect bindings awaiting their start for ten minutes;
+a guard whose start never produced a binding is reclaimed after 24 hours.
 Legacy never-started bindings get ten minutes from first observation, then yield
 under pressure after finished history. A brief over 65,536 characters is rejected
 as `native_message_too_large` before eviction. Every admission refusal clears its

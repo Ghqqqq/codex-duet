@@ -49,13 +49,19 @@ async function faultKeepalives(fault: 'append' | 'lookup' | 'queue' | 'owner-app
         store.set(key, clone(value));
       } },
     clock: { now: async () => now, every: (ms: number, fn: any) => timer(ms, fn), after: (ms: number, fn: any) => timer(ms, fn, true) },
-    process: { run: async () => ({ exitCode: 0, stdout: '/host/node\n' }), spawn: (request: any) => {
+    process: { run: async (argv: string[], init: any) => {
+      if (argv[0] === 'node') return { exitCode: 0, stdout: '/host/node\n' };
+      expect(argv[2]).toBe('status');
+      expect(init.timeoutMs > 0 && init.timeoutMs <= 15000).toBe(true);
+      if (faultActive && fault === 'lookup') await lookup;
+      return capture.processes.find((p: any) => p.kind === 'run' && p.request.argv[2] === 'status'
+        && (p.request.argv[3] === '--all') === (argv[3] === '--all')).value;
+    }, spawn: (request: any) => {
       const command = request.argv[2];
       const record = capture.processes.find((p: any) => p.kind === 'spawn' && p.request.argv[2] === command
         && (command !== 'status' || (p.request.argv[3] === '--all') === (request.argv[3] === '--all')));
       const stream = (async function* () {
         if (command === 'task') await owner;
-        if (command === 'status' && faultActive && fault === 'lookup') await lookup;
         try {
           if (command === 'task' && fault.startsWith('owner-')) yield { stream: 'stdout', text: '[0] Owner progress\n' };
           for (const chunk of record.chunks) yield chunk;
@@ -139,7 +145,15 @@ async function displayReplay() {
     agent: { list: async () => [{ id: current.agentId, name: current.agentId, type: TYPE }] },
     store: { get: async (key: string) => clone(store.get(key) ?? null), set: async (key: string, value: any) => { store.set(key, clone(value)); } },
     clock: { now: async () => 1800000000000, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) },
-    process: { run: async () => ({ exitCode: 0, stdout: '/host/node\n' }), spawn: (request: any) => {
+    process: { run: async (argv: string[], init: any) => {
+      if (argv[0] === 'node') return { exitCode: 0, stdout: '/host/node\n' };
+      expect(argv[2]).toBe('status');
+      expect(init.timeoutMs > 0 && init.timeoutMs <= 15000).toBe(true);
+      const value = capture.processes.find((p: any) => p.kind === 'run' && p.request.argv[2] === 'status'
+        && (p.request.argv[3] === '--all') === (argv[3] === '--all')).value;
+      return { ...value, stdout: value.stdout.replaceAll('native-session:native-agent:turn-1',
+        `native-session:${current.agentId}:${current.turnId}`) };
+    }, spawn: (request: any) => {
       const command = request.argv[2];
       const record = capture.processes.find((p: any) => p.kind === 'spawn' && p.request.argv[2] === command
         && (command !== 'status' || (p.request.argv[3] === '--all') === (request.argv[3] === '--all')));
@@ -431,7 +445,8 @@ function fixture(on: any, observeProgress?: (notices: any) => Promise<void>) {
 }
 
 for (const [index, capture] of captures.entries()) {
-  test(`native replay ${index + 1}: ${capture.behavior}`, async ($, on) => {
+  // Replays drive real UI mounts and recovery timers; a loaded machine needs headroom.
+  test(`native replay ${index + 1}: ${capture.behavior}`, { timeoutMs: 30000 }, async ($, on) => {
     const f = fixture(on), prompts: any[] = [];
     const engine = { type: 'engine', ref: 0 };
     if (index === 0) {
@@ -528,6 +543,23 @@ test('typed runtime blockers select recovery without overriding thread-busy acti
   ].map(value => JSON.stringify(value));
   const native = JSON.stringify({ status: 'blocked', worker: null, jobId: null, summary: 'Fixture block',
     blockers: [{ code: 'native_adapter_error', message: 'Fixture failure' }], next: null, details: null });
+  const recovery = [
+    ...['context_window_exceeded', 'provider_refused', 'auth_required'].map(code => reports.get(code)),
+    { ...JSON.parse(native), blockers: [{ code: 'native_capacity' }],
+      next: 'Wait for active workers to finish or stop them before starting a new native agent.' },
+    { ...JSON.parse(native), blockers: [{ code: 'native_binding_gone' }], next: 'Start a new native agent.' },
+    { ...JSON.parse(native), blockers: [{ code: 'native_message_too_large' }], next: 'Start a new native agent with a shorter brief.' },
+    { ...report, notice: 'Fixture notice' },
+  ];
+  for (const value of recovery) {
+    const text = JSON.stringify(value), rendered = await render(text);
+    expect(rendered === text).toBe(false);
+    if (value.notice) expect(rendered.includes(value.notice)).toBe(true);
+  }
+  for (const value of [{ ...report, notice: {} }, { ...recovery[3], next: 'Unrelated instruction' }]) {
+    const text = JSON.stringify(value);
+    expect(await render(text)).toBe(text);
+  }
   const untouched = [];
   for (const text of candidates) untouched.push(await render(text) === text);
   expect({ question: asked.includes(question.text), options: question.options.filter(option => asked.split('\n').includes(`- ${option}`)).length,

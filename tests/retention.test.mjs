@@ -9,6 +9,7 @@ import { makeTempDir, run, requireLocalSockets, readyBroker } from "./helpers.mj
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { resolveStateDir, resolveStateRoot } from "../plugins/codex/scripts/lib/state.mjs";
 import { resolveCodexRuntimeIdentity } from "../plugins/codex/scripts/lib/codex-home.mjs";
+import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
 import { resolveSessionMarkersRoot } from "../plugins/codex/scripts/lib/session-markers.mjs";
 import { resolveRetentionDays, planRetention, applyRetention, applyRetentionWithBroker, runAutomaticRetention } from "../plugins/codex/scripts/lib/retention.mjs";
 import { claudeSnapshotFile, writeClaudeSnapshot } from "../plugins/codex/scripts/lib/claude-memory.mjs";
@@ -174,6 +175,25 @@ test("only expired, detached, dead-PID ended jobs and their four artifacts are r
   for (const file of [...gone.files, ...fallback.files]) assert.equal(fs.existsSync(file), false);
   for (const record of [recent, running, queued, live, attached, boundary, invalidDate]) for (const file of record.files) assert.ok(fs.existsSync(file));
   assert.deepEqual(JSON.parse(fs.readFileSync(gone.indexFile)).jobs.map(job => job.id).sort(), ["attached", "boundary", "invalid-date", "live", "queued", "recent", "running"]);
+
+  // Either PID in either record vetoes both planning and a previously planned
+  // deletion, including a terminal index without a file and an old active orphan.
+  for (const field of ["pid", "launcherPid"]) for (const shape of ["index", "private", "missing", "orphan"]) {
+    const g = fixture(), record = seedJob(g, `live-${field}-${shape}`, shape === "orphan" ? { status: "running" } : {});
+    const index = JSON.parse(fs.readFileSync(record.indexFile));
+    if (shape === "orphan") { index.jobs = []; json(record.indexFile, index); }
+    if (shape === "missing") fs.unlinkSync(record.file);
+    const thread = rollout(g, record.threadId), preview = plan(g);
+    assert.equal(preview.jobs.length, 1);
+    if (["index", "missing"].includes(shape)) { index.jobs[0][field] = process.pid; json(record.indexFile, index); }
+    else json(record.file, { ...JSON.parse(fs.readFileSync(record.file)), [field]: process.pid });
+    const protectedPlan = plan(g);
+    assert.equal(protectedPlan.jobs.length, 0); assert.equal(protectedPlan.threads.length, 0);
+    const applied = await applyRetention(preview, { deleteThread: async () => assert.fail("live processes protect their thread") });
+    assert.equal(applied.jobsDeleted, 0); assert.equal(applied.threadsDeleted, 0); assert.deepEqual(applied.errors, []);
+    assert.ok(fs.existsSync(thread));
+    for (const artifact of shape === "missing" ? record.files.slice(1) : record.files) assert.ok(fs.existsSync(artifact));
+  }
 });
 
 test("all workspaces protect live or unresolved orphans and expire dead orphan and missing records", async () => {
@@ -377,7 +397,7 @@ test("markers use the same cutoff, preserve newer files and ignore symlinks", as
   for (const file of [recent, linkedFile, boundary, path.join(outside, "old.json")]) assert.ok(fs.existsSync(file));
 });
 
-test("apply rechecks owner attachment, private records, mtimes and new cross-workspace references", async () => {
+test("apply rechecks owner attachment, private records, mtimes and new cross-workspace references", async t => {
   const f = fixture(), job = seedJob(f, "changed"), file = rollout(f, job.threadId), markerFile = marker(f, "freshened.json");
   const secondId = randomUUID(), freshenedRollout = rollout(f, secondId), thirdId = randomUUID(); rollout(f, thirdId);
   const p = plan(f);
@@ -416,6 +436,25 @@ test("apply rechecks owner attachment, private records, mtimes and new cross-wor
   const refused = await applyRetention(linkPlan);
   assert.equal(refused.jobsDeleted, 0); assert.equal(refused.errors.length, 1);
   assert.ok(fs.existsSync(outside)); assert.ok(fs.lstatSync(linked.file).isSymbolicLink());
+
+  for (const change of ["reference", "rollout"]) {
+    const race = fixture(), threadId = randomUUID(), file = rollout(race, threadId), preview = plan(race);
+    const calls = [];
+    let connections = 0, closed = 0;
+    const connection = t.mock.method(CodexAppServerClient, "connect", async () => {
+      connections++;
+      await Promise.resolve();
+      if (change === "reference") seedJob(race, "new-followup", { status: "queued", threadId, launcherPid: process.pid });
+      else fs.utimesSync(file, new Date(race.recent), new Date(race.recent));
+      return { request: async (...args) => { calls.push(args); return {}; }, close: async () => { closed++; } };
+    });
+    try {
+      const applied = await applyRetentionWithBroker(preview, { cwd: race.cwd, env: race.env, broker: { endpoint: "fixture-broker" } });
+      assert.equal(connections, 1); assert.equal(closed, 1); assert.deepEqual(calls, []);
+      assert.equal(applied.threadsDeleted, 0); assert.equal(applied.threadsSkipped, 1); assert.deepEqual(applied.errors, []);
+      assert.ok(fs.existsSync(file));
+    } finally { connection.mock.restore(); }
+  }
 });
 
 test("unreadable state or a busy workspace lock skips the workspace and all thread deletion", async () => {

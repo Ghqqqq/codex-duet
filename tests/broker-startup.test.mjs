@@ -551,6 +551,52 @@ test("transport failures settle requests, reap runtimes and bound retained buffe
     try { return await Promise.race([promise, new Promise(resolve => { timer = setTimeout(() => resolve({ watchdog: true }), 3000); })]); }
     finally { clearTimeout(timer); }
   };
+  await t.test("runtime-1: diagnostic failures preserve handoff and other handoff failures close the client", () => {
+    const f = fixture();
+    const result = run(process.execPath, ["--input-type=module", "-e", `
+      import fs from 'node:fs';
+      import { CodexAppServerClient } from ${JSON.stringify(new URL("../plugins/codex/scripts/lib/app-server.mjs", import.meta.url).href)};
+      setTimeout(() => process.exit(42), 10000).unref();
+      const failure = Object.assign(new Error('injected handoff failure'), { code: 'EIO' });
+      let warnings = 0, timingFailures = 0;
+      const write = fs.writeSync;
+      fs.writeSync = function(fd, ...args) {
+        if (fd === 2) { warnings++; throw failure; }
+        return write.call(this, fd, ...args);
+      };
+      const observations = [];
+      for (const mode of ['timing', 'onClient', 'bookkeeping']) {
+        let allocated, returned = false, caught = false;
+        try {
+          const client = await CodexAppServerClient.connect(process.cwd(), {
+            disableBroker: true,
+            onClient: client => {
+              allocated = client;
+              if (mode === 'onClient') throw failure;
+              if (mode === 'bookkeeping') Object.defineProperty(client, 'startupTimings', { set() { throw failure; } });
+            },
+            onRuntimeEvent: () => { timingFailures++; throw failure; }
+          });
+          returned = client === allocated;
+          await client.close();
+        } catch (error) { caught = error === failure; }
+        const pid = allocated.proc?.pid;
+        let live = false;
+        if (pid) { try { process.kill(pid, 0); live = true; } catch {} }
+        observations.push({ mode, returned, caught, closed: allocated.closed, pending: allocated.pending.size, spawned: Boolean(pid), live });
+      }
+      console.log(JSON.stringify({ observations, timingFailures, warnings }));
+    `], { cwd: f.dir, env: f.env });
+    assert.equal(result.status, 0, result.stderr);
+    const observed = JSON.parse(result.stdout);
+    assert.deepEqual(observed.observations, [
+      { mode: "timing", returned: true, caught: false, closed: true, pending: 0, spawned: true, live: false },
+      { mode: "onClient", returned: false, caught: true, closed: true, pending: 0, spawned: false, live: false },
+      { mode: "bookkeeping", returned: false, caught: true, closed: true, pending: 0, spawned: true, live: false }
+    ]);
+    assert.ok(observed.timingFailures > 1);
+    assert.equal(observed.warnings, 1);
+  });
   await t.test("S3-1: asynchronous stdin failure is contained in the worker and broker", async () => {
     const observations = [];
     for (const broker of [false, true]) {

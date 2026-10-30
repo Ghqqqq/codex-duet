@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
-import { installFakeCodex } from '../../../tests/fake-codex-fixture.mjs';
+import { installFakeCodex as generateFakeCodex } from '../../../tests/fake-codex-fixture.mjs';
 import { register } from '../hooks/register.mjs';
 import { AGENT_TYPE } from '../hooks/native-agent.mjs';
 import { AGENT_NAMES } from '../scripts/lib/agent-names.mjs';
@@ -20,6 +20,37 @@ import { register as reportHooks } from '../hooks/report-delivery.mjs';
 const plugin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const captures = [];
 const roots = [];
+// Every fixture retains its own state and process ledger while executable
+// bytes are shared. No broker, job, adapter store or Codex thread is shared.
+const suiteRoot = process.env.CODEX_COMPANION_TEST_ROOT;
+const cacheRoot = fs.mkdtempSync(path.join(suiteRoot, 'native-codex-'));
+const executableCache = new Map();
+let gitTemplate;
+function initGitRepo(cwd) {
+  if (!gitTemplate) {
+    gitTemplate = path.join(cacheRoot, 'repo');
+    fs.mkdirSync(gitTemplate);
+    const result = spawnSync('git', ['init', '-q', gitTemplate]);
+    assert.equal(result.status, 0, result.stderr?.toString());
+  }
+  fs.cpSync(path.join(gitTemplate, '.git'), path.join(cwd, '.git'), { recursive: true });
+}
+function installFakeCodex(dir, behavior, mutable) {
+  if (mutable) return generateFakeCodex(dir, behavior);
+  if (!executableCache.has(behavior)) {
+    const cached = fs.mkdtempSync(path.join(cacheRoot, 'bin-'));
+    generateFakeCodex(cached, behavior);
+    const file = path.join(cached, 'codex'), original = fs.readFileSync(file, 'utf8');
+    const literal = JSON.stringify(path.join(cached, 'fake-codex-state.json'));
+    const source = original.replace(`const STATE_PATH = ${literal};`,
+      'const STATE_PATH = process.env.CODEX_FIXTURE_STATE_PATH;');
+    assert.notEqual(source, original);
+    assert.equal(source.replace('process.env.CODEX_FIXTURE_STATE_PATH', literal), original);
+    fs.writeFileSync(file, source);
+    executableCache.set(behavior, file);
+  }
+  fs.symlinkSync(executableCache.get(behavior), path.join(dir, 'codex'));
+}
 const clone = value => JSON.parse(JSON.stringify(value));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check) {
@@ -30,22 +61,32 @@ async function until(check) {
   throw new Error('Fixture did not reach the expected state');
 }
 
-function fixture(behavior, name = 'native-worker') {
-  const root = fs.mkdtempSync('/private/tmp/duet14-g-');
+function fixture(behavior, name = 'native-worker', { mutable = false, memoryStore = false, hostOnly = false } = {}) {
+  const root = fs.mkdtempSync(path.join(suiteRoot, 'native-'));
   roots.push(root);
   for (const part of ['bin', 'repo', 'home', 'normal']) fs.mkdirSync(`${root}/${part}`);
-  installFakeCodex(`${root}/bin`, behavior);
-  spawnSync('git', ['init', '-q', `${root}/repo`]);
+  if (!hostOnly) {
+    installFakeCodex(`${root}/bin`, behavior, mutable);
+    initGitRepo(`${root}/repo`);
+  }
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith('CODEX_') || key.startsWith('CLAUDE_')) delete env[key];
   Object.assign(env, { HOME: `${root}/home`, USERPROFILE: `${root}/home`, CODEX_HOME: `${root}/normal`,
     CODEX_SQLITE_HOME: `${root}/normal`, CODEX_COMPANION_NORMAL_HOME: `${root}/normal`, CODEX_COMPANION_NORMAL_SQLITE_HOME: `${root}/normal`,
     CODEX_COMPANION_HOME: `${root}/isolated`, CODEX_COMPANION_BIN: `${root}/bin/codex`,
-    CLAUDE_PLUGIN_DATA: `${root}/data`, CODEX_COMPANION_TEST_MODE: '1', CODEX_COMPANION_TEST_ROOT: root,
+    CLAUDE_PLUGIN_DATA: `${root}/data`, CODEX_COMPANION_TEST_MODE: '1', CODEX_COMPANION_TEST_ROOT: suiteRoot,
+    CODEX_FIXTURE_STATE_PATH: `${root}/bin/fake-codex-state.json`,
     CODEX_COMPANION_TEST_PROCESSES: `${root}/processes`, CODEX_COMPANION_BROKER_IDLE_SEC: '2' });
   const storeFile = `${root}/adapter-store.json`;
   fs.writeFileSync(storeFile, '{}');
-  const readStore = () => JSON.parse(fs.readFileSync(storeFile, 'utf8'));
+  // Pure host interleavings use a serialized in-memory store. Integration
+  // cases retain the disk store, including reload/persistence-gap captures.
+  let memory = {};
+  const readStore = () => memoryStore ? clone(memory) : JSON.parse(fs.readFileSync(storeFile, 'utf8'));
+  const setStore = data => {
+    if (memoryStore) memory = clone(data);
+    else fs.writeFileSync(storeFile, JSON.stringify(data));
+  };
   const jobs = () => {
     const directory = `${root}/isolated/duet/sessions/native-session`;
     return fs.existsSync(directory) ? fs.readdirSync(directory).filter(name => name.endsWith('.json')).map(name => {
@@ -74,10 +115,16 @@ function fixture(behavior, name = 'native-worker') {
     fs: { stat: async file => ({ kind: fs.statSync(file).isDirectory() ? 'dir' : 'file', realPath: fs.realpathSync(file) }),
       write: async (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); } },
     store: {
-      get: async key => readStore()[key],
-      keys: async () => Object.keys(readStore()),
-      delete: async key => { const data = readStore(); delete data[key]; fs.writeFileSync(storeFile, JSON.stringify(data)); },
-      set: async (key, value) => fs.writeFileSync(storeFile, JSON.stringify({ ...readStore(), [key]: value })),
+      get: async key => memoryStore ? (key in memory ? clone(memory[key]) : undefined) : readStore()[key],
+      keys: async () => Object.keys(memoryStore ? memory : readStore()),
+      delete: async key => {
+        if (memoryStore) delete memory[key];
+        else { const data = readStore(); delete data[key]; setStore(data); }
+      },
+      set: async (key, value) => {
+        if (memoryStore) memory[key] = clone(value);
+        else setStore({ ...readStore(), [key]: value });
+      },
     },
     model: new Proxy({}, { get() { modelCalls++; throw new Error('Forbidden model request'); } }),
     process: {
@@ -252,7 +299,7 @@ function fixture(behavior, name = 'native-worker') {
   }
   return { abort: () => controller.abort(), root, $, turn, reload, readStore, save, invoke, env, capture, jobs, advance, timers,
     withUsage: usage => { syntheticUsage = usage; },
-    setStore: data => fs.writeFileSync(storeFile, JSON.stringify(data)),
+    setStore,
     codexState: () => JSON.parse(fs.readFileSync(`${root}/bin/fake-codex-state.json`, 'utf8')),
     // Stop as a person would: after the early handle lookup has run.
     stopOnWait: (beforeStop = async () => {}) => { onWait = async () => { await advance(1500); await beforeStop(); controller.abort(); }; },
@@ -262,6 +309,7 @@ function fixture(behavior, name = 'native-worker') {
 test('real companion: dispatch, completion and reload follow-up reuse the Codex thread/cwd without a model', async () => {
   const f = fixture('slow-recovery-task', 'f7-x');
   f.env.CODEX_FIXTURE_TURN_GATE = `${f.root}/finish-turn`;
+  f.env.CODEX_COMPANION_LEASE_SEC = '1'; // Still observe three real owner renewals.
   const pending = f.turn('Perform the first fake assignment.', 1);
   // Gate completion on observed renewals, not a wall-clock sleep. Throughout
   // the quiet stream, the original task must remain the sole attached owner.
@@ -399,6 +447,7 @@ test('real companion: dispatch, completion and reload follow-up reuse the Codex 
     { toolCall: true, toolResult: originalResult });
   assertNamingResult(auto.capture.events.filter(e => e.event === 'tool.call').at(-1).result, false);
   assert.equal(autoFollowup.worker, spawnedName);
+  assert.equal(auto.capture.events.filter(e => e.event === 'agent.spawn').at(-1).input.name, spawnedName);
   assert.equal(auto.jobs().find(job => job.id === autoFollowup.jobId).threadId,
     auto.jobs().find(job => job.id === firstAuto.jobId).threadId);
   assert.equal(auto.capture.processes.filter(p => p.request.argv[2] === 'reserve-name').length, 2);
@@ -413,14 +462,18 @@ test('real companion: dispatch, completion and reload follow-up reuse the Codex 
   assert.equal(labeledSpawn.name, firstLabeled.worker);
   assert.equal(labeledSpawn.description, 'Native fake task');
   assertNamingResult(labeled.capture.events.find(e => e.event === 'tool.call').result, true);
-  const labeledFollowup = await labeled.turn('Continue through the assigned address.', 2, false,
-    { toolCall: true, toolResult: originalResult });
-  assert.equal(labeledFollowup.worker, firstLabeled.worker);
-  assert.equal(labeled.jobs().find(job => job.id === labeledFollowup.jobId).threadId,
-    labeled.jobs().find(job => job.id === firstLabeled.jobId).threadId);
-  assert.equal(labeled.capture.events.filter(e => e.event === 'agent.spawn').at(-1).input.name, firstLabeled.worker);
+  assert.equal(fs.realpathSync(auto.env.CODEX_COMPANION_BIN), fs.realpathSync(labeled.env.CODEX_COMPANION_BIN));
+  assert.notEqual(auto.env.CODEX_FIXTURE_STATE_PATH, labeled.env.CODEX_FIXTURE_STATE_PATH);
+  for (const separate of [auto, labeled]) {
+    const requests = fs.readFileSync(separate.env.CODEX_FIXTURE_STATE_PATH + '.requests.jsonl', 'utf8')
+      .trim().split('\n').map(line => JSON.parse(line));
+    assert.ok(requests.some(row => row.method === 'turn/start'));
+    assert.equal(separate.codexState().lastThreadStart.cwd, `${separate.root}/repo`);
+    assert.equal(separate.codexState().threads[0].cwd, `${separate.root}/repo`);
+  }
+  // Resuming the assigned pool name and leaving its result unchanged is the
+  // same binding path exercised by autoFollowup above.
   assert.equal(labeled.capture.processes.filter(p => p.request.argv[2] === 'reserve-name').length, 1);
-  assertNamingResult(labeled.capture.events.filter(e => e.event === 'tool.call').at(-1).result, false);
 
   const preferred = fixture('review-ok', 'Noether');
   const firstPreferred = await preferred.turn('Reserve the free pool name.', 1, false,
@@ -428,16 +481,10 @@ test('real companion: dispatch, completion and reload follow-up reuse the Codex 
   assert.equal(firstPreferred.worker, 'Noether');
   assert.equal(preferred.capture.events.find(e => e.event === 'agent.spawn').input.name, 'Noether');
   assertNamingResult(preferred.capture.events.find(e => e.event === 'tool.call').result, false);
-  const takenPreferred = await preferred.turn('Reserve the taken pool name.', 1, false,
-    { toolCall: true, toolResult: originalResult, agentId: 'native-taken' });
-  assert.ok(AGENT_NAMES.includes(takenPreferred.worker));
-  assert.notEqual(takenPreferred.worker, firstPreferred.worker);
-  assert.equal(preferred.capture.events.filter(e => e.event === 'agent.spawn').at(-1).input.name, takenPreferred.worker);
-  assertNamingResult(preferred.capture.events.filter(e => e.event === 'tool.call').at(-1).result, true);
   for (const reservation of preferred.capture.processes.filter(p => p.request.argv[2] === 'reserve-name')) {
     assert.equal(reservation.request.argv[reservation.request.argv.indexOf('--preferred') + 1], 'Noether');
   }
-  for (const [name, isPreferred, unchanged] of [['nOeThEr', true, false], ['nOeThEr-2', true, true],
+  for (const [name, isPreferred, unchanged] of [['Noether', true, false], ['nOeThEr', true, false], ['nOeThEr-2', true, true],
     ['Ada-10', true, true], ['', false, false], ['Noether-1', false, false], ['Noether-02', false, false]]) {
     let forwarded;
     const response = await preferred.invoke('tool.call', { tool: 'Agent', tool_use_id: 'pool-form',
@@ -491,19 +538,32 @@ test('real companion: dispatch, completion and reload follow-up reuse the Codex 
       return { exitCode: failure === 'exit' ? 1 : 0,
         stdout: failure === 'malformed' ? '{' : '{"name":"Ada"}', isStdoutTruncated: failure === 'truncated' };
     };
-    const report = await fallback.turn('Proceed after reservation failure.', 1, false, { agentId,
-      // A host discovery row may itself use the id as a fallback display name.
-      afterSpawn: async () => {
-        const list = fallback.$.agent.list;
-        fallback.$.agent.list = async () => (await list()).map(agent => ({ ...agent, name: agent.id }));
-      } });
-    assert.equal(attempts, 1);
-    assert.equal(fallback.capture.events.find(e => e.event === 'agent.spawn').input.name, undefined);
-    assert.equal(report.status, 'completed');
-    assert.ok(AGENT_NAMES.includes(report.worker));
-    assert.notEqual(report.worker, agentId);
-    assert.equal(fallback.jobs()[0].agentName, report.worker);
-    assert.equal(fallback.capture.processes.find(p => p.request.argv[2] === 'task').request.argv.includes('--agent-name'), false);
+    // All four reserve failures enter the same unchanged-call fallback. Run
+    // its companion journey once; retain every host failure and name shape.
+    if (failure === 'exit') {
+      const report = await fallback.turn('Proceed after reservation failure.', 1, false, { agentId,
+        // A host discovery row may itself use the id as a fallback display name.
+        afterSpawn: async () => {
+          const list = fallback.$.agent.list;
+          fallback.$.agent.list = async () => (await list()).map(agent => ({ ...agent, name: agent.id }));
+        } });
+      assert.equal(attempts, 1);
+      assert.equal(fallback.capture.events.find(e => e.event === 'agent.spawn').input.name, undefined);
+      assert.equal(report.status, 'completed');
+      assert.ok(AGENT_NAMES.includes(report.worker));
+      assert.notEqual(report.worker, agentId);
+      assert.equal(fallback.jobs()[0].agentName, report.worker);
+      assert.equal(fallback.capture.processes.find(p => p.request.argv[2] === 'task').request.argv.includes('--agent-name'), false);
+    } else {
+      let forwarded, calls = 0;
+      const input = { tool: 'Agent', tool_use_id: 'unnamed-failure', subagent_type: AGENT_TYPE,
+        description: 'Native fake task', prompt: 'Proceed after reservation failure.' };
+      const response = await fallback.invoke('tool.call', input, async e => { forwarded = e; calls++; return originalResult; });
+      assert.deepEqual(forwarded, input);
+      assert.equal(response, originalResult);
+      assert.equal(calls, 1);
+      assert.equal(attempts, 1);
+    }
     for (const name of ['f7-view', 'Noether']) {
       const input = { tool: 'Agent', tool_use_id: 'failed-reservation', subagent_type: AGENT_TYPE,
         name, description: 'Explicit description', prompt: 'Fixture.' };
@@ -754,7 +814,7 @@ test('real companion: question/answer stays on the job; abort interrupts fake Co
 
   // Gate thread creation before the adapter learns any handles. The host
   // rejects this aborted stream even though the signal handler wrote a line.
-  const startup = fixture('slow-task'), binary = startup.env.CODEX_COMPANION_BIN;
+  const startup = fixture('review-ok', 'native-worker', { mutable: true }), binary = startup.env.CODEX_COMPANION_BIN;
   const starting = `${startup.root}/starting`, release = `${startup.root}/release`;
   const source = fs.readFileSync(binary, 'utf8');
   const gated = source.replace('case "thread/start": {', `case "thread/start": {
@@ -843,7 +903,7 @@ function inspect(f, id) {
 }
 
 test('dispatch intent survives the response/persistence gap and nonce retries reserve only one job', async () => {
-  const f = fixture('slow-task');
+  const f = fixture('review-ok');
   const first = await f.turn('Dispatch exactly once.', 1);
   assert.equal(first.status, 'completed');
   const before = inspect(f, first.jobId).job;
@@ -854,6 +914,7 @@ test('dispatch intent survives the response/persistence gap and nonce retries re
   assert.equal(before.dispatchNonce, 'native-session:native-agent:turn-1');
   assert.equal(before.request.model, 'gpt-6-astra');
   assert.equal(before.request.effort, 'xhigh');
+  assert.equal(f.capture.processes.find(p => p.request.argv[2] === 'task').request.argv.includes('--effort'), false);
   assert.equal(before.request.serviceTier, null);
   // Lose the first response and all handles, preserving only the pre-spawn intent.
   const data = f.readStore(), state = Object.values(data)[0];
@@ -876,9 +937,9 @@ test('dispatch intent survives the response/persistence gap and nonce retries re
 });
 
 test('DUET first-line flags and fork carry captured instructions to the imported thread; invalid flags dispatch nothing', async t => {
-  const f = fixture('slow-task');
+  const f = fixture('review-ok');
   const cwd = `${f.root}/work tree`;
-  fs.mkdirSync(cwd); spawnSync('git', ['init', '-q', cwd]);
+  fs.mkdirSync(cwd); initGitRepo(cwd);
   const source = `${f.root}/home/.claude/projects/-repo/native-session.jsonl`;
   fs.mkdirSync(path.dirname(source), { recursive: true });
   fs.writeFileSync(source, JSON.stringify({ type: 'user', message: { content: 'Synthetic prior request.' } }) + '\n');
@@ -920,7 +981,7 @@ test('DUET first-line flags and fork carry captured instructions to the imported
     developerInstructions: runtime.lastThreadResume.developerInstructions, nativeReportMatchesC2: true }));
   f.save();
 
-  const invalid = fixture('slow-task');
+  const invalid = fixture('review-ok');
   const rejected = await invalid.turn('DUET: --approve-browser-origin https://example.test\nNever dispatch.', 1, false, { effort: 'high' });
   assert.equal(rejected.status, 'blocked');
   assert.ok(rejected.summary.includes('--model'));
@@ -963,10 +1024,11 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   const usage = { inputTokens: 12345, cachedInputTokens: 8000, outputTokens: 678, reasoningOutputTokens: 12, totalTokens: 13023 };
   invalid.withUsage(usage);
   const noticeCount = invalid.capture.notices.length;
-  const planned = await invalid.turn('DUET: --effort low\nContinue planning.', 8, false, { permissionMode: 'plan' });
+  const planned = await invalid.turn('DUET: --effort low\nContinue planning.', 8, false, { permissionMode: 'plan', effort: 'high' });
   assert.equal(planned.status, 'completed');
   assert.equal(setting(tasks().at(-1).request, '--sandbox'), 'read-only');
   assert.equal(setting(tasks().at(-1).request, '--effort'), 'low');
+  assert.equal(invalid.jobs().find(job => job.id === planned.jobId).request.effort, 'low');
   assert.deepEqual(planned.usage, usage);
   const notices = invalid.capture.notices.slice(noticeCount).filter(n => n.message.content[0].text.includes('12,345'));
   assert.equal(notices.length, 1);
@@ -994,8 +1056,8 @@ test('DUET first-line flags and fork carry captured instructions to the imported
 
   // Explicit effort is separate from the shell's effective low. Headers win;
   // max passes through; absence leaves the companion's default untouched.
-  for (const [effort, header, expected] of [[undefined, '', 'xhigh'], ['high', 'DUET: --effort low\n', 'low'], ['max', '', 'max']]) {
-    const effortFixture = fixture('slow-task');
+  for (const [effort, header, expected] of [['max', '', 'max']]) {
+    const effortFixture = fixture('review-ok');
     const completed = await effortFixture.turn(header + 'Check effort precedence.', 1, false, { effort, background: false });
     assert.equal(completed.status, 'completed');
     assert.equal(effortFixture.jobs()[0].request.effort, expected);
@@ -1003,7 +1065,7 @@ test('DUET first-line flags and fork carry captured instructions to the imported
     if (!effort) assert.equal(request.argv.includes('--effort'), false);
     else assert.equal(setting(request, '--effort'), expected);
   }
-  const symlinked = fixture('slow-task');
+  const symlinked = fixture('review-ok');
   fs.symlinkSync(`${symlinked.root}/repo`, `${symlinked.root}/linked`);
   symlinked.$.session.cwd = async () => `${symlinked.root}/linked`;
   assert.equal((await symlinked.turn('Start in a symlinked workspace.', 1)).status, 'completed');
@@ -1012,7 +1074,7 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   assert.equal(Object.values(symlinked.readStore()).find(s => s.agentId === 'native-agent').cwd, `${symlinked.root}/repo`);
   assert.equal(symlinked.codexState().threads.length, 1);
 
-  const planFirst = fixture('slow-task');
+  const planFirst = fixture('review-ok');
   const planBlocked = await planFirst.turn('DUET: --sandbox danger-full-access\nReject writable first launch.', 1, false, { permissionMode: 'plan' });
   assert.equal(planBlocked.blockers[0].code, 'native_plan_mode_read_only');
   assert.equal(planFirst.jobs().length, 0);
@@ -1027,7 +1089,7 @@ test('DUET first-line flags and fork carry captured instructions to the imported
     ['DUET: --sandbox workspace-write\n', false, false], ['', false, false],
     ['DUET: --sandbox workspace-write\n', true, false], ['', true, true],
   ]) {
-    const binding = fixture('slow-task');
+    const binding = fixture('review-ok');
     if (resume) assert.equal((await binding.turn('First run outside plan mode.', 1)).status, 'completed');
     const count = binding.jobs().length, set = binding.$.store.set;
     let injected = false;
@@ -1059,7 +1121,7 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   }
 
   // A reload can lose discovery and every in-memory binding before start.
-  const guardOnly = fixture('slow-task'), storeCalls = [];
+  const guardOnly = fixture('review-ok'), storeCalls = [];
   let hostReturned = false, guardModelCalls = 0;
   for (const method of ['get', 'set', 'keys', 'delete']) {
     const original = guardOnly.$.store[method];
@@ -1106,7 +1168,7 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   }
 
   for (const fault of ['node', 'spawn', 'intent']) {
-    const rejected = fixture('slow-task'), run = rejected.$.process.run, spawn = rejected.$.process.spawn, set = rejected.$.store.set;
+    const rejected = fixture('review-ok'), run = rejected.$.process.run, spawn = rejected.$.process.spawn, set = rejected.$.store.set;
     let injected = false;
     const fail = () => { injected = true; throw new Error('Definitive pre-launch failure'); };
     if (fault === 'node') rejected.$.process.run = async (argv, init) => !injected && argv[0] === 'node' ? fail() : run(argv, init);
@@ -1131,7 +1193,7 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   terminal.reload();
   assert.equal((await terminal.turn('Continue after the confirmed failure.', 2)).status, 'completed');
 
-  const overlap = fixture('slow-task'), now = overlap.$.clock.now;
+  const overlap = fixture('review-ok'), now = overlap.$.clock.now;
   let release, entered, paused = false;
   const gate = new Promise(resolve => { release = resolve; });
   const atGate = new Promise(resolve => { entered = resolve; });
@@ -1151,7 +1213,7 @@ test('DUET first-line flags and fork carry captured instructions to the imported
 
   // Model the companion's full-index nonce API, with an empty visible history.
   // Existing real-companion cases exercise the older CLI's flag fallback.
-  const history = fixture('slow-task');
+  const history = fixture('review-ok');
   const historical = await history.turn('Create the retained native job.', 1);
   const data = history.readStore(), oldState = Object.values(data).find(s => s.agentId === 'native-agent');
   for (const key of ['answer', 'answeredTurn', 'jobId', 'threadId', 'ownerId', 'worker', 'status', 'questionId', 'finishedAt']) delete oldState[key];
@@ -1167,8 +1229,11 @@ test('DUET first-line flags and fork carry captured instructions to the imported
     if (argv[2] !== 'status' || !argv.includes('--all')) return lookupRun(argv, init);
     const nonce = argv[argv.indexOf('--dispatch-nonce') + 1];
     fullLookup = argv.includes('--dispatch-nonce');
+    // Status now uses the bounded run path for the new dispatch too. Keep
+    // those new jobs in the simulated full index, beyond its retained history.
+    const jobs = [...indexedJobs, ...history.jobs().filter(job => !indexedJobs.some(indexed => indexed.id === job.id))];
     return { exitCode: 0, stdout: JSON.stringify({ running: [], latestFinished: null,
-      recent: fullLookup ? indexedJobs.filter(job => job.dispatchNonce === nonce) : indexedJobs.slice(-50) }), isStdoutTruncated: false };
+      recent: fullLookup ? jobs.filter(job => job.dispatchNonce === nonce) : indexedJobs.slice(-50) }), isStdoutTruncated: false };
   };
   const recovered = await history.turn('Continue beyond visible history.', 2);
   assert.equal(fullLookup, true);
@@ -1176,7 +1241,7 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   assert.equal(history.jobs().find(job => job.id === recovered.jobId).threadId,
     history.jobs().find(job => job.id === historical.jobId).threadId);
 
-  const outage = fixture('slow-task');
+  const outage = fixture('review-ok');
   await outage.invoke('classic.SubagentStart', { session_id: 'native-session', agent_id: 'native-agent', agent_type: AGENT_TYPE }, async () => ({}));
   outage.reload();
   outage.$.agent.list = async () => { throw new Error('Discovery unavailable'); };
@@ -1189,8 +1254,8 @@ test('DUET first-line flags and fork carry captured instructions to the imported
 
   // A complete-looking empty response establishes absence only on exit 0.
   for (const exitCode of [1, null, 0]) {
-    const lookup = fixture('slow-task'), run = lookup.$.process.run;
-    lookup.$.process.run = async (argv, init) => argv[2] === 'status'
+    const lookup = fixture('review-ok'), run = lookup.$.process.run;
+    lookup.$.process.run = async (argv, init) => argv[2] === 'status' && !lookup.jobs().length
       ? { exitCode, stdout: JSON.stringify({ running: [], recent: [], latestFinished: null }), isStdoutTruncated: false }
       : run(argv, init);
     assert.equal((await lookup.turn('DUET: --sandbox invalid\nReject before reservation.', 1)).status, 'blocked');
@@ -1205,7 +1270,7 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   // A validation error is insufficient when nonce reconciliation is unavailable
   // or says a matching job may exist. Neither case can admit a replacement.
   for (const ambiguous of [false, true]) {
-    const uncertain = fixture('slow-task'), run = uncertain.$.process.run;
+    const uncertain = fixture('review-ok'), run = uncertain.$.process.run;
     uncertain.$.process.run = async (argv, init) => {
       if (argv[2] !== 'status') return run(argv, init);
       if (!ambiguous) throw new Error('Fixture reconciliation unavailable');
@@ -1234,7 +1299,7 @@ async function nativeStability() {
   const spawnAgent = (f, id) => f.invoke('agent.spawn', { subagentType: AGENT_TYPE,
     tool_use_id: `spawn-${id}`, permissionMode: 'default', name: id }, async () => ({ agentId: id }));
   const host = () => {
-    const f = fixture('slow-task'), owner = deferred();
+    const f = fixture('review-ok', 'native-worker', { memoryStore: true, hostOnly: true }), owner = deferred();
     let job, launches = 0, consumed = 0, closed = 0;
     f.$.agent.list = async () => [{ id: 'native-agent', type: AGENT_TYPE }];
     f.$.ui = { invalidate() {}, log() {} };
@@ -1242,7 +1307,8 @@ async function nativeStability() {
       cwd: `${f.root}/repo`, incoming: { turnId: 'turn-1', text: 'First brief.' },
       notices: { turnId: 'turn-1', count: 0, started: true } } });
     f.$.process.run = async argv => argv[0] === 'node' ? { exitCode: 0, stdout: process.execPath }
-      : { exitCode: 0, stdout: JSON.stringify({ job }) };
+      : { exitCode: 0, stdout: JSON.stringify(argv[3] === '--all'
+        ? { running: [], recent: [], latestFinished: job } : { job }) };
     f.$.process.spawn = request => {
       const command = request.argv[2];
       const stream = (async function* () {
@@ -1327,7 +1393,7 @@ async function nativeStability() {
     const report = await step(f, 'native-agent', 'turn-1');
     failures.push({ mode, status: report.status, injected, logged: logs > 0, ...evidence() });
   }
-  const parallel = fixture('slow-task');
+  const parallel = fixture('review-ok', 'native-worker', { memoryStore: true, hostOnly: true });
   parallel.setStore(Object.fromEntries(Array.from({ length: 127 }, (_, i) => [
     `native:v2:active:${i}`, { v: 2, type: AGENT_TYPE, status: 'running' } ])));
   await Promise.all(['a', 'b'].map(id => spawnAgent(parallel, id)));
@@ -1335,7 +1401,7 @@ async function nativeStability() {
   const count = Object.keys(parallel.readStore()).filter(key => key.startsWith('native:v2:')).length;
   const refusedId = ['a', 'b'].find(id => !parallel.readStore()[`native:v2:native-session:${id}`]);
   const refusal = refusedId ? (await step(parallel, refusedId, `turn-${refusedId}`)).blockers[0].code : null;
-  const sized = fixture('slow-task'), set = sized.$.store.set;
+  const sized = fixture('review-ok', 'native-worker', { memoryStore: true, hostOnly: true }), set = sized.$.store.set;
   let failedWrites = 0;
   sized.$.store.set = async (key, value) => {
     if (Buffer.byteLength(JSON.stringify({ ...sized.readStore(), [key]: value })) > 4 * 1024 * 1024) {
@@ -1351,7 +1417,7 @@ async function nativeStability() {
   const admitted = ids.filter(id => sized.readStore()[`native:v2:native-session:${id}`]);
   const capacityRefusals = (await Promise.all(ids.filter(id => !admitted.includes(id))
     .map(id => step(sized, id, `turn-${id}`)))).filter(report => report.blockers?.[0]?.code === 'native_capacity').length;
-  const orphans = fixture('slow-task'), now = await orphans.$.clock.now();
+  const orphans = fixture('review-ok', 'native-worker', { memoryStore: true, hostOnly: true }), now = await orphans.$.clock.now();
   orphans.setStore({ ...Object.fromEntries(Array.from({ length: 512 }, (_, i) => [guard(`old-${i}`), { at: now - 8 * 86400000 }])),
     [guard('fresh')]: { at: now }, [guard('bound')]: { at: 1 },
     'native:v2:native-session:bound': { v: 2, status: 'running' } });
@@ -1367,11 +1433,208 @@ async function nativeStability() {
   await spawnAgent(live.f, 'new'); await start(live.f, 'new');
   orphanEvidence.live = !!live.f.readStore()[guard('native-agent')];
   live.owner.resolve(); await liveStep;
-  const guardSize = fixture('slow-task');
+  const guardSize = fixture('review-ok', 'native-worker', { memoryStore: true, hostOnly: true });
   guardSize.setStore({ [guard('fresh')]: { at: now, padding: 'x'.repeat(524288) } });
   await spawnAgent(guardSize, 'new'); await start(guardSize, 'new');
   const guardBudget = !guardSize.readStore()['native:v2:native-session:new']
     && (await step(guardSize, 'new', 'turn-new')).blockers[0].code === 'native_capacity';
+  // native-1: a stopped predecessor cannot pin its completed continuation.
+  {
+    const { f, owner } = host(); owner.resolve();
+    const first = await step(f, 'native-agent', 'turn-1');
+    const marker = { turnId: 'turn-1', at: now }, closed = 'native:closed:v1:native-session:native-agent';
+    const state = f.readStore()[key];
+    state.cancellation = { jobId: first.jobId, status: 'interrupted', confirmation: 'confirmed' };
+    f.setStore({ [key]: state, [closed]: marker });
+    await start(f, 'native-agent', 'Continue the stopped worker.', 'turn-2');
+    assert.equal((await step(f, 'native-agent', 'turn-2')).status, 'completed');
+    assert.equal(f.readStore()[key].cancellation, undefined);
+    assert.deepEqual(f.readStore()[closed], marker);
+    f.setStore({ ...f.readStore(), ...Object.fromEntries(Array.from({ length: 127 }, (_, i) => [
+      `native:v2:protected:${i}`, { v: 2, status: 'running' } ])) });
+    await spawnAgent(f, 'replacement'); await start(f, 'replacement');
+    assert.equal(f.readStore()[key], undefined);
+    assert.equal(f.readStore()['native:v2:native-session:replacement'].incoming.turnId, 'turn-replacement');
+  }
+  // native-2: the host expires an otherwise never-ending lookup, both while
+  // draining owner progress and while delivering its already-completed report.
+  for (const progressLine of [false, true]) {
+    const { f, owner, evidence } = host(), entered = deferred(), run = f.$.process.run;
+    const state = f.readStore()[key]; delete state.notices; f.setStore({ [key]: state });
+    f.progressLine = progressLine;
+    let held = false, activeLookups = 0, expired;
+    f.$.process.run = async (argv, init) => {
+      if (argv[2] === 'status') {
+        assert.ok(Number.isInteger(init.timeoutMs) && init.timeoutMs > 0 && init.timeoutMs <= 15000);
+        if (!held) {
+          held = true; activeLookups++;
+          return new Promise((resolve, reject) => {
+            expired = f.$.clock.after(init.timeoutMs, () => {
+              expired.cancel(); activeLookups--; reject(new Error('Fixture status lookup timed out'));
+            });
+            entered.resolve();
+          });
+        }
+      }
+      return run(argv, init);
+    };
+    const pending = step(f, 'native-agent', 'turn-1');
+    await until(() => evidence().launches === 1);
+    if (!progressLine) {
+      const early = [...f.timers].find(timer => timer.once && timer.ms === 1500);
+      f.timers.delete(early); void early.fn();
+    }
+    await entered.promise; owner.resolve();
+    if (!progressLine) await until(() => evidence().consumed === 1);
+    const deadline = [...f.timers].find(timer => timer.once && timer.ms === 15000);
+    assert.ok(deadline);
+    f.timers.delete(deadline); await deadline.fn();
+    assert.equal((await pending).status, 'completed');
+    assert.deepEqual({ activeLookups, timers: f.timers.size, ...evidence() },
+      { activeLookups: 0, timers: 0, launches: 1, consumed: 1, closed: 0 });
+  }
+  // D1: buffered progress shares one enrichment attempt for the entire flight,
+  // even when it fails before spending its budget. Required reads still run.
+  for (const timeout of [false, true]) {
+    const { f, owner, evidence } = host(), spawn = f.$.process.spawn, run = f.$.process.run;
+    const state = f.readStore()[key]; delete state.notices; f.setStore({ [key]: state });
+    let now = await f.$.clock.now(), draining = false, enrichmentCalls = 0, requiredCalls = 0;
+    f.$.clock.now = async () => now;
+    f.$.process.run = async (argv, init) => {
+      if (argv[2] === 'status') {
+        if (draining) {
+          enrichmentCalls++;
+          assert.ok(init.timeoutMs > 0 && init.timeoutMs <= 15000);
+          if (timeout) now += init.timeoutMs;
+          throw new Error('Fixture enrichment failure');
+        }
+        requiredCalls++;
+      }
+      return run(argv, init);
+    };
+    f.$.process.spawn = request => {
+      const child = spawn(request);
+      if (request.argv[2] !== 'task') return child;
+      const stream = (async function* () {
+        const output = []; for await (const chunk of child) output.push(chunk);
+        draining = true;
+        for (let i = 0; i < 5; i++) yield { stream: 'stdout', text: `[0] Buffered progress ${i}\n` };
+        for (const chunk of output) yield chunk;
+        draining = false;
+      })();
+      return Object.assign(stream, { result: child.result });
+    };
+    owner.resolve();
+    assert.equal((await step(f, 'native-agent', 'turn-1')).status, 'completed');
+    assert.deepEqual({ enrichmentCalls, requiredCalls, timers: f.timers.size, ...evidence() },
+      { enrichmentCalls: 1, requiredCalls: 2, timers: 0, launches: 1, consumed: 1, closed: 0 });
+  }
+  // native-3: cancellation can commit during prune. Rebase and capacity must
+  // use that commit, and a final capacity refusal must clear the spawn guard.
+  for (const full of [false, true]) {
+    const { f, owner } = host(); owner.resolve();
+    await step(f, 'native-agent', 'turn-1');
+    const state = f.readStore()[key]; state.cancellation = { status: 'unconfirmed' }; f.setStore({ [key]: state });
+    const entered = deferred(), release = deferred(), keys = f.$.store.keys, get = f.$.store.get, run = f.$.process.run;
+    let pruning = false, held = false;
+    f.$.store.keys = async () => { pruning = true; return keys(); };
+    f.$.store.get = async name => {
+      const value = await get(name);
+      if (pruning && !held && name === key) {
+        held = true; entered.resolve(); await release.promise;
+      }
+      return value;
+    };
+    f.$.process.run = async (argv, init) => {
+      const result = await run(argv, init);
+      if (argv[2] !== 'status') return result;
+      const value = JSON.parse(result.stdout);
+      if (value.job) Object.assign(value.job, { status: 'interrupted', interruptionConfirmed: true,
+        interruptionReason: full ? 'x'.repeat(524288) : 'owner_stopped' });
+      return { ...result, stdout: JSON.stringify(value) };
+    };
+    await spawnAgent(f, 'native-agent');
+    const admission = start(f, 'native-agent', 'Keep the cancellation.', 'turn-2');
+    await entered.promise;
+    await f.invoke('turn.complete', { agentId: 'native-agent', turnId: 'turn-1', isAborted: true }, async () => ({}));
+    const confirmed = f.readStore()[key].cancellation;
+    assert.equal(confirmed.confirmation, 'confirmed');
+    release.resolve(); await admission;
+    assert.deepEqual(f.readStore()[key].cancellation, confirmed);
+    assert.equal(f.readStore()[guard('native-agent')], undefined);
+    if (full) assert.equal((await step(f, 'native-agent', 'turn-2')).blockers[0].code, 'native_capacity');
+    else assert.equal(f.readStore()[key].incoming.turnId, 'turn-2');
+  }
+  // native-4: a completed spawn observation expires in this same module.
+  {
+    const f = fixture('review-ok', 'native-worker', { memoryStore: true, hostOnly: true });
+    await spawnAgent(f, 'orphan');
+    f.$.clock.now = async () => now + 2 * 86400000;
+    await spawnAgent(f, 'fresh'); await start(f, 'fresh');
+    assert.equal(f.readStore()[guard('orphan')], undefined);
+    assert.equal(f.readStore()['native:v2:native-session:orphan'], undefined);
+    assert.ok(f.readStore()['native:v2:native-session:fresh']);
+  }
+  // native-5: parseable JSON without an allowed status never answers the turn.
+  for (const status of [undefined, 'not-a-status']) {
+    const { f, owner } = host(), spawn = f.$.process.spawn;
+    f.$.process.spawn = request => {
+      const child = spawn(request);
+      if (request.argv[2] !== 'task') return child;
+      const stream = (async function* () {
+        for await (const chunk of child) yield { ...chunk, text: JSON.stringify({ ...JSON.parse(chunk.text), status }) + '\n' };
+      })();
+      return Object.assign(stream, { result: child.result });
+    };
+    owner.resolve();
+    const report = await step(f, 'native-agent', 'turn-1');
+    assert.equal(report.status, 'blocked');
+    assert.equal(report.blockers[0].code, 'native_adapter_error');
+    assert.equal(f.readStore()[key].answeredTurn, undefined);
+    assert.equal(f.readStore()[key].finishedAt, undefined);
+    assert.equal(f.timers.size, 0);
+  }
+  // D3: known recovery statuses preserve the companion's guidance while the
+  // native turn remains unanswered, both on owner output and a late answer.
+  for (const status of ['unknown', 'unreachable']) for (const lateAnswer of [false, true]) {
+    const { f, owner } = host(); owner.resolve();
+    let turnId = 'turn-1', answeredTurn;
+    if (lateAnswer) {
+      await step(f, 'native-agent', turnId);
+      const state = f.readStore()[key]; answeredTurn = state.answeredTurn;
+      Object.assign(state, { status: 'needs_answer', questionId: 'question-old',
+        answer: { status: 'needs_answer', jobId: state.jobId, question: { id: 'question-old' } } });
+      f.setStore({ [key]: state });
+      const run = f.$.process.run;
+      f.$.process.run = async (argv, init) => {
+        const result = await run(argv, init);
+        if (argv[2] !== 'status') return result;
+        const value = JSON.parse(result.stdout);
+        if (value.job) value.job.status = 'interrupted';
+        return { ...result, stdout: JSON.stringify(value) };
+      };
+      turnId = 'turn-2'; await start(f, 'native-agent', 'Late answer.', turnId);
+    }
+    const recovery = { status, jobId: 'task-1', summary: 'Fixture recovery',
+      blockers: [{ code: 'thread_busy', message: 'Fixture unresolved turn' }],
+      next: 'duet result task-1 --report', details: 'duet result task-1 --details' };
+    const spawn = f.$.process.spawn;
+    f.$.process.spawn = request => {
+      if (request.argv[2] === 'result') return Object.assign((async function* () {
+        yield { stream: 'stdout', text: JSON.stringify(recovery) + '\n' };
+      })(), { result: Promise.resolve({ code: 2 }) });
+      const child = spawn(request);
+      if (request.argv[2] !== 'task') return child;
+      return Object.assign((async function* () {
+        for await (const chunk of child) yield { ...chunk, text: JSON.stringify(recovery) + '\n' };
+      })(), { result: child.result });
+    };
+    assert.deepEqual(await step(f, 'native-agent', turnId), { ...recovery, status: 'blocked' });
+    assert.equal(f.readStore()[key].answeredTurn, answeredTurn);
+    assert.equal(f.readStore()[key].finishedAt, undefined);
+    assert.equal(f.readStore()[key].status, status);
+    assert.equal(f.timers.size, 0);
+  }
   return { races, failures, admission: { count, refusal }, size: { withinBudget: size <= 2 * 1024 * 1024, bytes: size,
     records: admitted.length, capacityRefusals, failedWrites },
     orphans: orphanEvidence, guardBudget };
@@ -1387,7 +1650,7 @@ test('store retention removes old finished handles, preserves parked questions, 
     size: { withinBudget: true, bytes: undefined, records: 7, capacityRefusals: 58, failedWrites: 0 },
     orphans: { old: 0, fresh: true, bound: true, pending: true, live: true }, guardBudget: true,
   });
-  const f = fixture('slow-task');
+  const f = fixture('review-ok');
   f.setStore({
     'native:v2:old:finished': { v: 2, type: AGENT_TYPE, session: 'old', agentId: 'finished', finishedAt: 1 },
     'native:closed:v1:old:finished': { at: 1 },
@@ -1428,7 +1691,7 @@ test('store retention removes old finished handles, preserves parked questions, 
     f.setStore(data); f.reload();
     return data;
   };
-  const history = fixture('slow-task');
+  const history = fixture('review-ok', 'native-worker', { memoryStore: true });
   seed(history, 128);
   assert.equal((await history.turn('Admit a worker despite retained history.', 1)).status, 'completed');
   assert.equal(tasks(history), 1);
@@ -1459,7 +1722,7 @@ test('store retention removes old finished handles, preserves parked questions, 
   assert.equal(history.capture.processes.length, before);
   assert.equal(history.readStore()[nativeKey], undefined);
 
-  const sized = fixture('slow-task'), largeHistory = seed(sized, 3, 'x'.repeat(250000));
+  const sized = fixture('review-ok', 'native-worker', { memoryStore: true }), largeHistory = seed(sized, 3, 'x'.repeat(250000));
   const protectedStates = {
     'native:v2:protected:active': { v: 2, type: AGENT_TYPE, status: 'running' },
     'native:v2:protected:parked': { v: 2, type: AGENT_TYPE, status: 'needs_answer', questionId: 'parked', finishedAt: 1 },
@@ -1477,7 +1740,7 @@ test('store retention removes old finished handles, preserves parked questions, 
   assert.ok(records(sized).reduce((size, key) => size + JSON.stringify(sized.readStore()[key]).length * 4, 0) <= 2 * 1024 * 1024);
 
   // Protected records count toward admission even with a stale finishedAt.
-  const full = fixture('slow-task');
+  const full = fixture('review-ok', 'native-worker', { memoryStore: true });
   full.setStore({ ...Object.fromEntries(Array.from({ length: 124 }, (_, i) => [
     `native:v2:active:${i}`, { v: 2, type: AGENT_TYPE, status: 'running' },
   ])), ...protectedStates });
@@ -1487,7 +1750,7 @@ test('store retention removes old finished handles, preserves parked questions, 
   for (const [key, state] of Object.entries(protectedStates)) assert.deepEqual(full.readStore()[key], state);
 
   // A legacy spawn gets a full observation window, restarted by a reload.
-  const unstarted = fixture('slow-task');
+  const unstarted = fixture('review-ok', 'native-worker', { memoryStore: true });
   unstarted.setStore({ ...Object.fromEntries(Array.from({ length: 127 }, (_, i) => [
     `native:v2:active:${i}`, { v: 2, type: AGENT_TYPE, status: 'running' },
   ])), 'native:v2:old:unstarted': { type: AGENT_TYPE, session: 'old', agentId: 'unstarted', permissionMode: 'default' } });
@@ -1503,7 +1766,7 @@ test('store retention removes old finished handles, preserves parked questions, 
   assert.equal(unstarted.readStore()['native:v2:old:unstarted'], undefined);
   assert.equal(records(unstarted).length, 128);
 
-  const oversized = fixture('slow-task');
+  const oversized = fixture('review-ok', 'native-worker', { memoryStore: true });
   oversized.setStore({ 'native:v2:active:large': { v: 2, type: AGENT_TYPE, status: 'running', padding: 'x'.repeat(524288) } });
   assert.equal((await oversized.turn('Refuse when protected data fills the size budget.', 1)).blockers[0].code, 'native_capacity');
   assert.equal(records(oversized).length, 1);
@@ -1525,7 +1788,7 @@ test('store retention removes old finished handles, preserves parked questions, 
   ]));
 
   // Exercise the actual cancel hook with an unconfirmed interrupt response.
-  const cancelled = fixture('slow-task'), cancelledKey = 'native:v2:native-session:stopped';
+  const cancelled = fixture('review-ok', 'native-worker', { memoryStore: true }), cancelledKey = 'native:v2:native-session:stopped';
   const runningJob = { id: 'unresolved-job', sessionId: 'native-session', status: 'running',
     dispatchNonce: 'unresolved-nonce', threadId: 'unresolved-thread', ownerId: 'owner', agentName: 'stopped' };
   cancelled.setStore({ ...activeRecords(127), [cancelledKey]: { v: 2, type: AGENT_TYPE,
@@ -1551,7 +1814,7 @@ test('store retention removes old finished handles, preserves parked questions, 
   // A terminal-looking label alone cannot override an unconfirmed cancellation.
   const endedEvidence = [];
   for (const evidence of ['closed', 'confirmed', 'completed', 'needs_input', 'blocked', 'expired']) {
-    const settled = fixture('slow-task'), state = clone(unresolved);
+    const settled = fixture('review-ok', 'native-worker', { memoryStore: true }), state = clone(unresolved);
     state.finishedAt = 1800000000000 - (evidence === 'expired' ? 7 * 24 * 60 * 60 * 1000 + 1 : 1000);
     if (evidence === 'confirmed') state.cancellation.confirmation = 'confirmed';
     if (['completed', 'needs_input', 'blocked'].includes(evidence)) state.status = evidence;
@@ -1563,7 +1826,7 @@ test('store retention removes old finished handles, preserves parked questions, 
 
   // A certain worker failure has finishedAt without a cancellation record or
   // closeTurn marker; it must still yield its history slot under pressure.
-  const failed = fixture('slow-task'), failedState = { ...unresolved, status: 'failed', finishedAt: 1800000000000 - 1000 };
+  const failed = fixture('review-ok', 'native-worker', { memoryStore: true }), failedState = { ...unresolved, status: 'failed', finishedAt: 1800000000000 - 1000 };
   delete failedState.cancellation;
   failed.setStore({ ...activeRecords(127), [cancelledKey]: failedState });
   await admit(failed, 'contender');
@@ -1572,7 +1835,7 @@ test('store retention removes old finished handles, preserves parked questions, 
 
   const pendingEvidence = [];
   for (const protection of ['memory', 'guard', 'expired-guard']) {
-    const pending = fixture('slow-task');
+    const pending = fixture('review-ok', 'native-worker', { memoryStore: true });
     seed(pending, 128);
     pending.$.session.id = async () => 'history';
     const set = pending.$.store.set;
@@ -1587,7 +1850,7 @@ test('store retention removes old finished handles, preserves parked questions, 
       secondKept: !!pending.readStore()['native:v2:history:1'], records: records(pending).length });
   }
 
-  const rejectedHistory = fixture('slow-task');
+  const rejectedHistory = fixture('review-ok', 'native-worker', { memoryStore: true });
   seed(rejectedHistory, 128);
   const largeReport = await rejectedHistory.turn('x'.repeat(65537), 1);
   const oversizedEvidence = { code: largeReport.blockers[0].code, oldestKept: !!rejectedHistory.readStore()['native:v2:history:0'],
@@ -1595,7 +1858,7 @@ test('store retention removes old finished handles, preserves parked questions, 
 
   const refusalEvidence = [];
   for (const code of ['native_message_too_large', 'native_capacity']) {
-    const healthy = fixture('slow-task'), guardKey = 'native:binding-failed:v1:native-session:native-agent';
+    const healthy = fixture('review-ok', 'native-worker', { memoryStore: true }), guardKey = 'native:binding-failed:v1:native-session:native-agent';
     const state = { v: 2, type: AGENT_TYPE, session: 'native-session', agentId: 'native-agent',
       cwd: `${healthy.root}/repo`, permissionMode: 'default', status: 'completed', finishedAt: 1800000000000,
       intent: { turnId: 'turn-1' }, answeredTurn: 'turn-1', answer: { status: 'completed' } };
@@ -1634,7 +1897,7 @@ test('store retention removes old finished handles, preserves parked questions, 
 });
 
 test('readiness attaches once to a user prompt per session; classic startup exports the session cwd without flags', async () => {
-  const f = fixture('slow-task');
+  const f = fixture('review-ok');
   const event = { session_id: 'native-session', cwd: `${f.root}/repo`, source: 'startup' };
   f.env.CLAUDE_ENV_FILE = `${f.root}/claude-env`;
   const child = spawnSync(process.execPath, [plugin + '/scripts/session-lifecycle-hook.mjs', 'SessionStart'],
@@ -1686,7 +1949,7 @@ test('readiness attaches once to a user prompt per session; classic startup expo
 
 test('first native turn stays model-free when discovery is missing or rejects and there is no stored binding', async () => {
   for (const missing of [true, false]) {
-    const f = fixture('slow-task');
+    const f = fixture('review-ok');
     if (missing) delete f.$.agent.list;
     else f.$.agent.list = async () => { throw new Error('Discovery unavailable'); };
     await f.invoke('classic.SubagentStart', { session_id: 'native-session', agent_id: 'native-agent', agent_type: AGENT_TYPE }, async () => ({}));
@@ -1748,5 +2011,8 @@ async function cleanupFixtures() {
 
 after(async () => {
   try { replayCaptures(); }
-  finally { await cleanupFixtures(); }
+  finally {
+    try { await cleanupFixtures(); }
+    finally { fs.rmSync(cacheRoot, { recursive: true, force: true }); }
+  }
 });

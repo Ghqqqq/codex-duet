@@ -243,12 +243,12 @@ function boundedText(value, budget) {
   }
   return text;
 }
-// Active companion statuses are consumed by drive; these can reach a native
-// answer. Detection below follows the native report's display-only contract.
-const REPORT_STATUSES = new Set(['completed', 'needs_input', 'needs_answer', 'blocked',
+// Active and unresolved recovery reports are consumed before native completion.
+const RECOVERY_STATUSES = ['unknown', 'unreachable'];
+const REPORT_STATUSES = new Set([...ACTIVE, ...RECOVERY_STATUSES, 'completed', 'needs_input', 'needs_answer', 'blocked',
   'failed', 'interrupted', 'cancelled', 'owner_stopped', 'ownership_moved']);
 const REPORT_FIELDS = new Set(['status', 'worker', 'jobId', 'summary', 'summaryTruncated', 'blockers',
-  'question', 'changedFiles', 'checks', 'assumptions', 'keyFindings', 'usage', 'next', 'details',
+  'question', 'changedFiles', 'checks', 'assumptions', 'keyFindings', 'usage', 'next', 'details', 'notice',
   'changedFilesOmitted', 'keyFindingsOmitted', 'assumptionsOmitted', 'blockersOmitted',
   'verificationOmitted', 'claimedVerificationOmitted', 'touchedFilesOmitted', 'preExistingChangesOmitted',
   'approvedBrowserOriginsOmitted', 'approvedComputerAppsOmitted']);
@@ -258,9 +258,13 @@ function reportMarkdown(props) {
   try { report = JSON.parse(props.text.trim()); } catch { return null; }
   if (!report || typeof report !== 'object' || Array.isArray(report)
     || Object.keys(report).some(key => !REPORT_FIELDS.has(key))
-    || !REPORT_STATUSES.has(report.status)
+    || !REPORT_STATUSES.has(report.status) || ACTIVE.includes(report.status) || RECOVERY_STATUSES.includes(report.status)
     || !(report.worker === null || typeof report.worker === 'string')
-    || !(report.next === null || (typeof report.next === 'string' && report.next.startsWith('SendMessage to ')))
+    || !(report.next === null || (typeof report.next === 'string' && (report.next.startsWith('SendMessage to ')
+      || (Array.isArray(report.blockers) && (report.next === nativeNext({}, report.status, report.blockers)
+        || report.blockers.some(blocker => ['native_capacity', 'native_binding_gone', 'native_message_too_large'].includes(blocker?.code)
+          && report.next === admissionBlocked(blocker.code, {}).next))))))
+    || !(report.notice === undefined || typeof report.notice === 'string')
     || !(report.details === null || (typeof report.details === 'string' && report.details.startsWith('duet result ')))
     || !((typeof report.jobId === 'string' && /^(task|review|job)-/.test(report.jobId))
       || (Array.isArray(report.blockers) && report.blockers.length > 0
@@ -290,6 +294,7 @@ function reportMarkdown(props) {
     .map(blocker => `${blocker.code}${typeof blocker.message === 'string' ? `: ${blocker.message}` : ''}`) : []);
   // Reserve the question and next action before trimming less urgent sections.
   const tail = [], question = typeof report.question === 'string' ? { text: report.question } : report.question;
+  if (report.notice) tail.push('', plain(report.notice));
   if (question) {
     const options = Array.isArray(question.options) ? question.options.filter(option => typeof option === 'string') : [];
     tail.push('', '**Question**');
@@ -408,7 +413,7 @@ async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = 
   const unstarted = value => !value.v && !value.intent && !value.incoming && !value.finishedAt;
   const seen = new Set(keys), guards = new Map();
   for (const key of unstartedSince.keys()) if (!seen.has(key)) unstartedSince.delete(key);
-  let count = 0, active = 0, size = 0;
+  let count = 0, active = 0, size = 0, keepSize = 0;
   // Spawn may publish only its guard before a host/store failure. Such orphans
   // still consume store space; reclaim them after ORPHAN_GUARD_MS.
   for (const key of keys) if (key.startsWith(BINDING_FAILED)) {
@@ -434,6 +439,7 @@ async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = 
       if (!unstartedSince.has(key)) unstartedSince.set(key, now);
     } else unstartedSince.delete(key);
     records.push({ key, state });
+    if (key === keepKey) keepSize = stateSize(state);
     count++; size += stateSize(state);
     if (!finished(state)) active++;
   }
@@ -493,7 +499,7 @@ async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = 
   for (const key of keys) if (key.startsWith(CLOSED) && !kept.has(key)) {
     if (now - ((await $.store.get(key))?.at ?? 0) > RETENTION_MS) await $.store.delete(key);
   }
-  return { count, active, size };
+  return { count, active, size, keepSize };
 }
 
 // Module-local promises serialize overlapping steps; persisted intents cover
@@ -561,7 +567,7 @@ async function companion($, state, args, input = '', progress) {
   const exit = await child.result;
   return parseReport(stdout, exit.code, stderr);
 }
-function parseReport(stdout, code, stderr = '') {
+function parseReport(stdout, code, stderr = '', lookup = false) {
   const flagRejected = text => Number.isInteger(code) && code !== 0
     && /(?:unknown|unsupported|unexpected|unrecognized|invalid).*--dispatch-nonce|--dispatch-nonce.*(?:unknown|unsupported|unexpected|unrecognized|not supported)/i.test(text);
   const line = stdout.trimEnd().split('\n').filter(line => line.startsWith('{')).at(-1);
@@ -573,13 +579,18 @@ function parseReport(stdout, code, stderr = '') {
   let report;
   try { report = JSON.parse(stdout.trim()); }
   catch { report = JSON.parse(line); }
-  if (report.status === 'error') {
+  if (report?.status === 'error') {
     const error = new Error(report.summary || report.error || 'Duet failed.');
     // The companion has exited unsuccessfully with a structured, jobless
     // error. Only an authoritative empty nonce lookup can prove no launch;
     // a lost pipe, absent JSON or signal without an exit code is insufficient.
     error.launchRejected = Number.isInteger(code) && code !== 0 && !report.jobId;
     error.nonceFlagRejected = !report.jobId && flagRejected(error.message);
+    throw error;
+  }
+  if (!lookup && (!report || typeof report !== 'object' || Array.isArray(report) || !REPORT_STATUSES.has(report.status))) {
+    const error = new Error('Duet returned an invalid report status; inspect the job with duet status.');
+    error.protocolError = true;
     throw error;
   }
   return report;
@@ -589,7 +600,7 @@ async function snapshot($, state, args, { requireSuccess = false, ...timing } = 
   const request = await command($, state, args, '', timing);
   const result = await $.process.run(request.argv, { cwd: request.cwd, timeoutMs: await processBudget($, timing) });
   if (result.isStdoutTruncated) throw new Error('Duet recovery response was truncated; inspect duet status.');
-  const report = parseReport(result.stdout, result.exitCode, result.stderr);
+  const report = parseReport(result.stdout, result.exitCode, result.stderr, args[0] === 'status');
   // Only an absence claim needs a successful lookup; terminal reports such as
   // an interrupted job's `result --report` legitimately exit nonzero.
   if (requireSuccess && result.exitCode !== 0) throw new Error('Duet recovery lookup did not exit successfully; inspect duet status before retrying.');
@@ -604,13 +615,13 @@ const progressError = ($, error) => {
 };
 // Ancillary work commits a patch of the latest binding, never its old snapshot.
 // The turn check also fences callbacks from an older module after a reload.
-const save = ($, state, { admit = false, fields, valid = () => true, close = false,
+const save = ($, state, { fields, valid = () => true, close = false,
   turnId = close ? state.intent?.turnId : bindingTurn(state) } = {}) => {
   const key = keyFor(state.session, state.agentId);
   return writeBinding(key, async () => {
     const current = await $.store.get(key);
     if (!valid()) return false;
-    if (!admit && current && bindingTurn(current) !== turnId) {
+    if (current && bindingTurn(current) !== turnId) {
       if (!fields && !close) throw new Error('Native binding changed before persistence; refusing stale ownership.');
       return false;
     }
@@ -629,7 +640,7 @@ const save = ($, state, { admit = false, fields, valid = () => true, close = fal
 };
 async function handles($, state, jobId, recovery = false, persist = true, { waitMs = 0, ...timing } = {}) {
   const args = ['status', jobId, '--json', ...(waitMs ? ['--wait', '--timeout-ms', String(waitMs), '--poll-interval-ms', '250'] : [])];
-  const { job } = recovery ? await snapshot($, state, args, timing) : await companion($, state, args);
+  const { job } = await snapshot($, state, args, timing);
   if (!job || job.sessionId !== state.session) throw new Error('Duet job is missing or belongs to another session.');
   if (state.intent?.kind === 'task' && job.dispatchNonce !== state.intent.nonce) throw new Error('Duet dispatch nonce does not match the native launch intent.');
   if (state.jobId === job.id && state.ownerId && state.ownerId !== job.ownerId) throw new Error('Duet job ownership changed; refusing to adopt another owner implicitly.');
@@ -641,7 +652,8 @@ async function handles($, state, jobId, recovery = false, persist = true, { wait
 }
 async function reconcile($, state, recovery = false, allowAbsent = false, { persist = true, ...timing } = {}) {
   const args = ['status', '--all', '--json'];
-  const lookup = flags => recovery ? snapshot($, state, flags, { ...timing, requireSuccess: allowAbsent }) : companion($, state, flags);
+  timing.deadline ??= await $.clock.now() + await processBudget($, timing);
+  const lookup = flags => snapshot($, state, flags, { ...timing, requireSuccess: allowAbsent });
   let status;
   try { status = await lookup([...args, '--dispatch-nonce', state.intent.nonce]); }
   catch (error) {
@@ -699,6 +711,9 @@ async function drive($, e, state, progress) {
         const current = await companion($, state, ['result', state.jobId, '--report']);
         if (current.jobId !== state.jobId) throw new Error('Duet report does not match the recorded job handle.');
         state.status = current.status;
+        // An unresolved recovery is not evidence that the old question ended.
+        // Preserve its recovery actions and let finalization keep it unanswered.
+        if (RECOVERY_STATUSES.includes(current.status)) return current;
         return { ...current, next: nativeNext(state, current.status),
           notice: 'The earlier question was already resolved or ended. Send a new brief to start new work.' };
       }
@@ -738,6 +753,7 @@ async function drive($, e, state, progress) {
       args = ['task', ...(state.threadId ? ['--thread', state.threadId] : ['--fresh', ...(state.name && state.name !== state.agentId ? ['--agent-name', state.name] : [])]), ...parsed.flags,
         '--dispatch-nonce', state.intent.nonce, '--timeout-sec', WAIT_TIMEOUT_SEC];
       delete state.jobId; delete state.ownerId; delete state.questionId; delete state.status;
+      delete state.cancellation;
     }
     // Persist intent BEFORE any spawn; retain no brief/answer in adapter state.
     delete state.incoming; delete state.answer; delete state.finishedAt;
@@ -774,7 +790,8 @@ async function drive($, e, state, progress) {
     await handles($, state, state.jobId);
   }
   if (report.status === 'needs_answer') await progress.line(`? Waiting for Claude: ${report.question?.text || report.summary}`);
-  return { ...report, next: report.blockers?.some(blocker => blocker.code === 'thread_busy') ? report.next : nativeNext(state, report.status, report.blockers) };
+  return { ...report, next: RECOVERY_STATUSES.includes(report.status) || report.blockers?.some(blocker => blocker.code === 'thread_busy')
+    ? report.next : nativeNext(state, report.status, report.blockers) };
 }
 async function cancel($, state, deadline) {
   let job;
@@ -871,6 +888,7 @@ async function stoppedReport($, state) {
   if (ACTIVE.includes(job.status)) return cancelledReport(state, state.status);
   const report = await snapshot($, state, ['result', job.id, '--report'], { deadline, timeoutMs: 500 });
   if (report.jobId !== job.id) throw new Error('Duet report does not match the recorded job handle.');
+  if (RECOVERY_STATUSES.includes(report.status)) return report;
   return { ...report, status: job.status, worker: job.agentName || null, jobId: job.id, next: nativeNext(state, job.status) };
 }
 
@@ -895,7 +913,8 @@ function observer() {
   };
 }
 function progressFor($, e, state, publish, currentFlight) {
-  let starting, busy = false, keepaliveInFlight = false, stopped = false, lastAt, lastStreamedAt, startedAt;
+  let starting, lookup, busy = false, keepaliveInFlight = false, stopped = false, lastAt, lastStreamedAt, startedAt;
+  let enrichmentDeadline, enrichmentFailed = false;
   let noticing = Promise.resolve();
   const feed = liveProgress.get(e.agentId);
   const notices = state.notices?.turnId === e.turnId ? state.notices : { turnId: e.turnId, count: 0 };
@@ -934,13 +953,22 @@ function progressFor($, e, state, publish, currentFlight) {
     return noticing;
   };
   const start = async () => {
-    if (!active() || notices.started || !state.intent) return;
+    if (!active() || notices.started || enrichmentFailed || !state.intent) return;
     if (!starting) starting = (async () => {
       // The CLI does not print a launch receipt. Resolve the durable nonce at
       // the first activity/heartbeat; never invent a handle or redispatch.
       const observed = { ...state };
-      const job = observed.jobId ? await handles($, observed, observed.jobId, false, false)
-        : await reconcile($, observed, false, false, { persist: false });
+      const now = await $.clock.now();
+      enrichmentDeadline ??= now + 15000;
+      if (!active()) return;
+      if (now >= enrichmentDeadline) { enrichmentFailed = true; return; }
+      // One flight budget covers nonce discovery and the subsequent job read;
+      // buffered owner lines must never each receive a fresh lookup budget.
+      const deadline = enrichmentDeadline;
+      lookup = observed.jobId ? handles($, observed, observed.jobId, false, false, { deadline })
+        : reconcile($, observed, false, false, { persist: false, deadline });
+      let job;
+      try { job = await lookup; } finally { lookup = null; }
       if (!active()) return;
       const fields = ['jobId', 'ownerId', 'threadId', 'worker'];
       for (const field of fields) state[field] = observed[field];
@@ -950,12 +978,17 @@ function progressFor($, e, state, publish, currentFlight) {
       if (!active()) return;
       notices.started = true;
       await persist();
-    })().finally(() => { starting = null; });
+    })().catch(error => { enrichmentFailed = true; throw error; }).finally(() => { starting = null; });
     await optional(() => starting);
   };
   return {
     start,
-    stop() { stopped = true; },
+    async stop() {
+      stopped = true;
+      // The host bounds and terminates this process. Join it before releasing
+      // the flight; late lookup results cannot publish or persist anything.
+      await optional(() => lookup);
+    },
     async usage(value) {
       if (!active() || !value || notices.usage || !['inputTokens', 'cachedInputTokens', 'outputTokens'].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0)) return;
       const count = number => String(number).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -1008,6 +1041,14 @@ export function register(on) {
   let registered = false;
   const announcing = new Map(), announced = new Set();
   const efforts = new Map(), spawning = new Map(), observedBindings = new Map(), refusals = new Map(), resumedSpawns = new Set();
+  const pendingBinding = (key, now) => {
+    if (dispatching.has(key) || [...spawning].some(([session, bindings]) =>
+      [...bindings].some(binding => binding.agentId && keyFor(session, binding.agentId) === key))) return true;
+    const observed = observedBindings.get(key);
+    if (observed && now - observed.at < ORPHAN_GUARD_MS) return true;
+    observedBindings.delete(key); resumedSpawns.delete(key);
+    return false;
+  };
   const restoreBinding = (key, state) => {
     const binding = observedBindings.get(key);
     if (binding) delete state.bindingPending;
@@ -1150,7 +1191,7 @@ export function register(on) {
         const key = keyFor(session, result.agentId);
         // Retain the observation before any store access can fail. start and
         // step run in separate dispatches, but share this module's bindings.
-        observedBindings.set(key, { ...observedBindings.get(key),
+        observedBindings.set(key, { ...observedBindings.get(key), at: await $.clock.now(),
           ...(e.permissionMode !== undefined ? { permissionMode: e.permissionMode } : {}),
           ...(!e.resume && effort ? { effort } : {}),
           // The explicit Agent name survives agent-list discovery failures.
@@ -1187,7 +1228,7 @@ export function register(on) {
     try {
       // Per-agent waits and recovery lookups stay outside the shared queue:
       // another agent's turn.start budget runs while it waits there.
-      let state, candidate, bindingFailed, base;
+      let state, candidate, bindingFailed;
       const refuse = async code => {
         refusals.set(key, { turnId: e.turnId, report: admissionBlocked(code, state || { agentId: e.agentId, name: agent.name }) });
         agentDisplays.delete(e.agentId);
@@ -1225,7 +1266,6 @@ export function register(on) {
           && !await recheck($, state).catch(() => false)) return;
         if (refusals.get(key)?.report.blockers[0].code === 'native_binding_gone') return await refuse('native_binding_gone');
         refusals.delete(key);
-        base = JSON.stringify(state ?? null);
         candidate = { ...(state || { type: AGENT_TYPE, session, agentId: e.agentId, name: (agent.name !== e.agentId && agent.name) || observedBindings.get(key)?.name,
           bindingPending: !observedBindings.has(key) }), turnId: e.turnId, incoming: { turnId: e.turnId, text: e.text } };
         bindingFailed = await $.store.get(bindingFailedKey(session, e.agentId));
@@ -1240,30 +1280,30 @@ export function register(on) {
         return true;
       })();
       if (prepared) await serializeAdmission(async () => {
-        // A late completion or cancellation of this agent's previous turn can
-        // save while this start waits; rebase onto the latest binding so its
-        // confirmation and size are neither undone nor misaccounted.
-        const latest = await $.store.get(key);
-        if (JSON.stringify(latest ?? null) !== base) {
-          if (state && !latest) return await refuse('native_binding_gone');
-          if (latest) {
-            candidate = { ...latest, turnId: e.turnId, incoming: candidate.incoming, v: latest.v ?? candidate.v, cwd: latest.cwd ?? candidate.cwd,
-              ...(candidate.bindingPending ? { bindingPending: true } : {}) };
-            delete candidate.finishedAt;
-            restoreBinding(key, candidate);
-          }
-          state = latest;
-        }
         const reserveSize = stateSize(candidate) - (state ? stateSize(state) : 0);
+        const now = await $.clock.now();
         const budget = await prune($, { reserveCount: state ? 0 : 1, reserveSize, keepKey: key,
-          pending: key => observedBindings.has(key) || resumedSpawns.has(key) });
-        const code = budget.count + Number(!state) > MAX_RECORDS || budget.size + reserveSize > MAX_STORE_SIZE
-          ? 'native_capacity' : !state && (resumedSpawns.has(key) || (!observedBindings.has(key) && !bindingFailed)) ? 'native_binding_gone' : null;
+          pending: key => pendingBinding(key, now) });
+        const code = await writeBinding(key, async () => {
+          // Pruning may await a cancellation writer. Only now take the final
+          // snapshot, rebase admission fields, and charge its actual byte delta.
+          const latest = await $.store.get(key);
+          if (state && !latest) return 'native_binding_gone';
+          const value = { ...(latest || candidate), turnId: e.turnId, incoming: candidate.incoming,
+            v: latest?.v ?? candidate.v, cwd: latest?.cwd ?? candidate.cwd,
+            ...(candidate.bindingPending ? { bindingPending: true } : {}) };
+          delete value.finishedAt;
+          restoreBinding(key, value);
+          if (budget.count + Number(!budget.keepSize) > MAX_RECORDS
+            || budget.size - budget.keepSize + stateSize(value) > MAX_STORE_SIZE) return 'native_capacity';
+          if (!latest && (resumedSpawns.has(key) || (!observedBindings.has(key) && !bindingFailed))) return 'native_binding_gone';
+          // One retry while holding the slot; never recursively acquire save.
+          try { await $.store.set(key, value); } catch { await $.store.set(key, value); }
+          state = value;
+          return null;
+        });
         if (code) return await refuse(code);
         resumedSpawns.delete(key);
-        state = candidate;
-        // One retry: the spawn-time guard still protects the binding meanwhile.
-        try { await save($, state, { admit: true }); } catch { await save($, state, { admit: true }); }
         if (!state.bindingPending) await $.store.delete(bindingFailedKey(session, e.agentId));
         observedBindings.delete(key);
       });
@@ -1328,6 +1368,10 @@ export function register(on) {
             stopping = true;
             report = await stoppedReport($, state) || report;
           }
+          if (RECOVERY_STATUSES.includes(report.status)) {
+            uncertain = true;
+            report = { ...report, status: 'blocked' };
+          }
           await progress.usage(report.usage);
         } catch (error) {
           const aborted = state.intent?.turnId === e.turnId && (next.signal?.aborted || error?.name === 'AbortError' || /process\.spawn\(.*\) aborted$/.test(error?.message || ''));
@@ -1338,8 +1382,8 @@ export function register(on) {
               : blocked('Stopped from /tasks before Duet recorded the job; run duet status --all before retrying.', state, 'native_stop_unconfirmed');
           }
           report ||= blocked(error?.message || 'Native adapter failed.', state);
-          uncertain = state.intent?.turnId === e.turnId && (!state.jobId || ACTIVE.includes(state.status));
-        } finally { progress.stop(); timer.cancel(); early.cancel(); }
+          uncertain ||= state.intent?.turnId === e.turnId && (error.protocolError || !state.jobId || ACTIVE.includes(state.status));
+        } finally { timer.cancel(); early.cancel(); await progress.stop(); }
         // A stopped turn closes only through closeTurn's evidence, and no turn
         // closes while its job still reads active.
         if (state.intent?.turnId === e.turnId && (ACTIVE.includes(state.status) || stopping)) {

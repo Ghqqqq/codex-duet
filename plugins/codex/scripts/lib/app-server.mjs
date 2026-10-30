@@ -17,6 +17,7 @@ import { isolatedCodexArgs, isolatedCodexEnv, resolveCodexBinary, resolveCodexRu
 import { stopOwnedProcessGroup } from "./process.mjs";
 import { isParentQuestion } from "./job-runtime.mjs";
 import { decideServerRequest, logServerRequest, normalizeBrowserOrigins, normalizeBundleIds } from "./server-requests.mjs";
+import { bestEffortDiagnostic } from "./tracked-jobs.mjs";
 
 const PLUGIN_MANIFEST_URL = new URL("../../.claude-plugin/plugin.json", import.meta.url);
 const PLUGIN_MANIFEST = JSON.parse(fs.readFileSync(PLUGIN_MANIFEST_URL, "utf8"));
@@ -508,7 +509,9 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
 export class CodexAppServerClient {
   static async connect(cwd, options = {}) {
     const timeoutMs = options.connectTimeoutMs ?? defaultConnectTimeoutMs(options.env ?? process.env);
-    options = { ...options, connectTimeoutMs: timeoutMs, connectDeadline: options.connectDeadline ?? Date.now() + timeoutMs };
+    const onRuntimeEvent = options.onRuntimeEvent;
+    options = { ...options, connectTimeoutMs: timeoutMs, connectDeadline: options.connectDeadline ?? Date.now() + timeoutMs,
+      onRuntimeEvent: onRuntimeEvent ? event => bestEffortDiagnostic(() => onRuntimeEvent(event)) : undefined };
     const timedOut = () => transportError("Codex initialize timed out.", "ETIMEDOUT");
     if (Date.now() >= options.connectDeadline) throw timedOut();
     if (options.signal?.aborted) throw new Error("Task interrupted before runtime connection.");
@@ -530,29 +533,36 @@ export class CodexAppServerClient {
     const client = brokerEndpoint
       ? new BrokerCodexAppServerClient(cwd, { ...options, brokerEndpoint })
       : new SpawnedCodexAppServerClient(cwd, options);
-    options.onClient?.(client);
-    options.onRuntimeEvent?.({ timing: { phase: "brokerConnectSpawn", durationMs: Date.now() - began } });
-    const initializeAt = Date.now();
-    let connectTimer;
     try {
-      const initialize = client.initialize();
-      await Promise.race([initialize, new Promise((_, reject) => {
-        connectTimer = setTimeout(() => reject(timedOut()), Math.max(1, options.connectDeadline - Date.now()));
-      })]);
+      options.onClient?.(client);
+      options.onRuntimeEvent?.({ timing: { phase: "brokerConnectSpawn", durationMs: Date.now() - began } });
+      const initializeAt = Date.now();
+      let connectTimer;
+      try {
+        const initialize = client.initialize();
+        await Promise.race([initialize, new Promise((_, reject) => {
+          connectTimer = setTimeout(() => reject(timedOut()), Math.max(1, options.connectDeadline - Date.now()));
+        })]);
+      } catch (error) {
+        client.handleExit(error);
+        await client.close().catch(() => {});
+        if (client.transport === "broker" && !options.signal?.aborted &&
+            ["BROKER_CONNECTION_CLOSED", "ECONNRESET", "EPIPE", "ENOENT", "ECONNREFUSED"].includes(error.code)) {
+          // initialize is the only RPC sent here. Retry a private spawn once,
+          // without killing/replacing another session's broker or replaying work.
+          options.onRuntimeEvent?.({ brokerStartupRetry: true });
+          return CodexAppServerClient.connect(cwd, { ...options, disableBroker: true });
+        }
+        throw error;
+      } finally { clearTimeout(connectTimer); }
+      client.startupTimings = { appServerInitialize: Date.now() - initializeAt };
+      options.onRuntimeEvent?.({ timing: { phase: client.transport === "broker" ? "brokerHandshake" : "appServerInitialize", durationMs: Date.now() - initializeAt } });
+      return client;
     } catch (error) {
-      client.handleExit(error);
+      // Ownership has not reached the caller, including failures in onClient
+      // or bookkeeping after initialize has succeeded.
       await client.close().catch(() => {});
-      if (client.transport === "broker" && !options.signal?.aborted &&
-          ["BROKER_CONNECTION_CLOSED", "ECONNRESET", "EPIPE", "ENOENT", "ECONNREFUSED"].includes(error.code)) {
-        // initialize is the only RPC sent here. Retry a private spawn once,
-        // without killing/replacing another session's broker or replaying work.
-        options.onRuntimeEvent?.({ brokerStartupRetry: true });
-        return CodexAppServerClient.connect(cwd, { ...options, disableBroker: true });
-      }
       throw error;
-    } finally { clearTimeout(connectTimer); }
-    client.startupTimings = { appServerInitialize: Date.now() - initializeAt };
-    options.onRuntimeEvent?.({ timing: { phase: client.transport === "broker" ? "brokerHandshake" : "appServerInitialize", durationMs: Date.now() - initializeAt } });
-    return client;
+    }
   }
 }

@@ -1,4 +1,5 @@
 import { itemActivity, planActivity } from "./activity.mjs";
+import { bestEffortDiagnostic } from "./tracked-jobs.mjs";
 /**
  * @typedef {import("./app-server-protocol").AppServerNotification} AppServerNotification
  * @typedef {import("./app-server-protocol").ReviewTarget} ReviewTarget
@@ -320,11 +321,13 @@ function emitProgress(onProgress, message, phase = null, extra = {}) {
   if (!onProgress || !message) {
     return;
   }
-  if (!phase && Object.keys(extra).length === 0) {
-    onProgress(message);
-    return;
-  }
-  onProgress({ message, phase, ...extra });
+  bestEffortDiagnostic(() => {
+    if (!phase && Object.keys(extra).length === 0) {
+      onProgress(message);
+      return;
+    }
+    onProgress({ message, phase, ...extra });
+  });
 }
 
 function emitLogEvent(onProgress, options = {}) {
@@ -592,13 +595,13 @@ function recordItem(state, item, lifecycle, threadId = null) {
       }
       if (lifecycle === "completed" && !state.safeProgress) {
         const sourceLabel = labelForThread(state, threadId);
-        emitLogEvent(state.onProgress, {
+        bestEffortDiagnostic(() => emitLogEvent(state.onProgress, {
           message: sourceLabel ? `Subagent ${sourceLabel}: ${shorten(item.text, 96)}` : `Assistant message captured: ${shorten(item.text, 96)}`,
           stderrMessage: null,
           phase: item.phase === "final_answer" ? "finalizing" : null,
           logTitle: sourceLabel ? `Subagent ${sourceLabel} message` : "Assistant message",
           logBody: item.text
-        });
+        }));
       }
     }
     return;
@@ -607,13 +610,13 @@ function recordItem(state, item, lifecycle, threadId = null) {
   if (item.type === "exitedReviewMode") {
     state.reviewText = item.review ?? "";
     if (lifecycle === "completed" && item.review) {
-      emitLogEvent(state.onProgress, {
+      bestEffortDiagnostic(() => emitLogEvent(state.onProgress, {
         message: "Review output captured.",
         stderrMessage: null,
         phase: "finalizing",
         logTitle: "Review output",
         logBody: item.review
-      });
+      }));
     }
     return;
   }
@@ -623,14 +626,14 @@ function recordItem(state, item, lifecycle, threadId = null) {
     state.reasoningSummary = mergeReasoningSections(state.reasoningSummary, nextSections);
     if (nextSections.length > 0 && !state.safeProgress) {
       const sourceLabel = labelForThread(state, threadId);
-      emitLogEvent(state.onProgress, {
+      bestEffortDiagnostic(() => emitLogEvent(state.onProgress, {
         message: sourceLabel
           ? `Subagent ${sourceLabel} reasoning: ${shorten(nextSections[0], 96)}`
           : `Reasoning summary captured: ${shorten(nextSections[0], 96)}`,
         stderrMessage: null,
         logTitle: sourceLabel ? `Subagent ${sourceLabel} reasoning summary` : "Reasoning summary",
         logBody: nextSections.map((section) => `- ${section}`).join("\n")
-      });
+      }));
     }
     return;
   }

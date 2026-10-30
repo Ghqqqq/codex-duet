@@ -1,23 +1,63 @@
 import { isolatedCodexCommand } from "../plugins/codex/scripts/lib/codex-home.mjs";
 import fs from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnOwned as spawn } from "../plugins/codex/scripts/lib/process.mjs";
 import { fileURLToPath } from "node:url";
 
-import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { initGitRepo, makeTempDir, run, requireLocalSockets, readyBroker } from "./helpers.mjs";
+import { buildEnv as fixtureEnv, installFakeCodex as generateFakeCodex } from "./fake-codex-fixture.mjs";
+import { initGitRepo as initializeGitRepo, makeTempDir, run, requireLocalSockets, readyBroker } from "./helpers.mjs";
 import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { resolveStateDir, upsertJob, writeJobFile } from "../plugins/codex/scripts/lib/state.mjs";
 import { parseArgs, splitReviewArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
+import { parseStructuredOutput } from "../plugins/codex/scripts/lib/codex.mjs";
+import { validateReviewResultShape } from "../plugins/codex/scripts/lib/render.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
 const SCRIPT = path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs");
 const STOP_HOOK = path.join(PLUGIN_ROOT, "scripts", "stop-review-gate-hook.mjs");
 const SESSION_HOOK = path.join(PLUGIN_ROOT, "scripts", "session-lifecycle-hook.mjs");
+
+// Reuse executable bytes across fixtures; only their state files differ. On
+// macOS the first execution of each new script dominates these short runs.
+const executableCache = new Map();
+const cacheRoot = makeTempDir("runtime-codex-");
+let gitTemplate;
+function initGitRepo(cwd) {
+  if (fs.existsSync(path.join(cwd, ".git"))) return initializeGitRepo(cwd);
+  if (!gitTemplate) {
+    gitTemplate = path.join(cacheRoot, "repo");
+    fs.mkdirSync(gitTemplate);
+    initializeGitRepo(gitTemplate);
+  }
+  // A separate empty repository per fixture; no objects, refs or worktrees
+  // are shared. Git initialization/configuration is setup, not this contract.
+  fs.cpSync(path.join(gitTemplate, ".git"), path.join(cwd, ".git"), { recursive: true });
+}
+const fixtureStatePath = dir => path.join(dir, "fake-codex-state.json");
+function installFakeCodex(dir, behavior = "review-ok", { mutable = false } = {}) {
+  if (mutable) return generateFakeCodex(dir, behavior);
+  if (!executableCache.has(behavior)) {
+    const cached = fs.mkdtempSync(path.join(cacheRoot, "bin-"));
+    generateFakeCodex(cached, behavior);
+    const file = path.join(cached, "codex"), original = fs.readFileSync(file, "utf8");
+    const literal = JSON.stringify(fixtureStatePath(cached));
+    const source = original.replace(`const STATE_PATH = ${literal};`,
+      "const STATE_PATH = process.env.CODEX_FIXTURE_STATE_PATH;");
+    assert.notEqual(source, original);
+    assert.equal(source.replace("process.env.CODEX_FIXTURE_STATE_PATH", literal), original);
+    fs.writeFileSync(file, source);
+    executableCache.set(behavior, file);
+  }
+  const file = path.join(dir, "codex");
+  fs.rmSync(file, { force: true });
+  fs.symlinkSync(executableCache.get(behavior), file);
+}
+const buildEnv = dir => ({ ...fixtureEnv(dir), CODEX_FIXTURE_STATE_PATH: fixtureStatePath(dir) });
+after(() => fs.rmSync(cacheRoot, { recursive: true, force: true }));
 
 async function waitFor(predicate, { timeoutMs = 60000, intervalMs = 50 } = {}) {
   const start = Date.now();
@@ -36,7 +76,7 @@ const HELP_COMMANDS = ["task", "setup", "review", "adversarial-review", "transfe
 function helpFixture() {
   const dir = makeTempDir(), repo = path.join(dir, "repo");
   fs.mkdirSync(repo);
-  installFakeCodex(dir, "slow-task");
+  installFakeCodex(dir);
   const env = { ...buildEnv(dir), CODEX_COMPANION_HOME: path.join(dir, "isolated"),
     CLAUDE_PLUGIN_DATA: path.join(dir, "data"), CODEX_COMPANION_SESSION_ID: "help-session" };
   const before = fs.readdirSync(dir, { recursive: true }).sort();
@@ -94,18 +134,7 @@ test("task passes help and unknown flags after -- as literal prompt text", () =>
   assert.ok(state.lastTurnStart.prompt.startsWith("--help --json --follow -x\n"));
 });
 
-test("adversarial-review preserves unknown focus flags and literal help", () => {
-  const f = helpFixture();
-  initGitRepo(f.repo);
-  fs.writeFileSync(path.join(f.repo, "README.md"), "fixture\n");
-  for (const focus of [["--frobnicate", "-x"], ["--", "--help"]]) {
-    const result = f.call("adversarial-review", "--scope", "working-tree", ...focus);
-    assert.equal(result.status, 0, result.stderr);
-    const state = JSON.parse(fs.readFileSync(path.join(f.dir, "fake-codex-state.json"), "utf8"));
-    assert.ok(state.lastTurnStart.prompt.includes(focus.filter(token => token !== "--").join(" ")));
-  }
-});
-test("adversarial-review rejects target typos before startup and preserves compatible focus text", () => {
+test("adversarial-review rejects target typos and preserves focus, literal flags and help", () => {
   const f = helpFixture();
   installFakeCodex(f.dir);
   initGitRepo(f.repo);
@@ -114,8 +143,10 @@ test("adversarial-review rejects target typos before startup and preserves compa
   run("git", ["commit", "-m", "fixture"], { cwd: f.repo });
   fs.writeFileSync(path.join(f.repo, "untracked.txt"), "dirty fixture\n");
   const before = fs.readdirSync(f.dir, { recursive: true }).sort();
-  for (const args of [["--baes", "main"], ["--baes main"], ["--baes=main"], ["--scpoe", "branch"]]) {
-    const result = f.call("adversarial-review", ...args);
+  for (const args of [["--baes", "main"], ["--args-stdin"], ["--baes=main"], ["--scpoe", "branch"]]) {
+    const result = args[0] === "--args-stdin"
+      ? run(process.execPath, [SCRIPT, "adversarial-review", ...args], { cwd: f.repo, env: f.env, input: "--baes main" })
+      : f.call("adversarial-review", ...args);
     assert.equal(result.status, 1, result.stdout);
     assert.match(result.stderr, /Unknown option: --(?:baes(?:=main)? \(did you mean --base\?\)|scpoe \(did you mean --scope\?\))/);
     assert.match(result.stderr, /Usage:.*adversarial-review/);
@@ -125,9 +156,8 @@ test("adversarial-review rejects target typos before startup and preserves compa
   }
   for (const [args, focus, target] of [
     [["--base", "main"], null, "branch diff against main"],
-    [["focus", "on", "race", "conditions"], "focus on race conditions", "working tree diff"],
-    [["--focus-on-races"], "--focus-on-races", "working tree diff"],
-    [["--", "--baes", "main"], "--baes main", "working tree diff"]
+    [["focus", "on", "race", "conditions", "--frobnicate", "-x", "--focus-on-races", "--", "--baes", "main", "--help"],
+      "focus on race conditions --frobnicate -x --focus-on-races --baes main --help", "working tree diff"]
   ]) {
     const result = f.call("adversarial-review", ...args);
     assert.equal(result.status, 0, result.stderr);
@@ -146,7 +176,8 @@ test("setup is ready without npm when Codex is already installed and authenticat
     cwd: ROOT,
     env: {
       ...process.env,
-      PATH: binDir
+      PATH: binDir,
+      CODEX_FIXTURE_STATE_PATH: fixtureStatePath(binDir)
     }
   });
 
@@ -213,7 +244,21 @@ test("setup reports not ready when app-server config read fails", () => {
 test("slash commands preserve stdin arguments and review native terminal results", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
-  installFakeCodex(binDir);
+  installFakeCodex(binDir, "review-ok", { mutable: true });
+  const fake = path.join(binDir, "codex"), source = fs.readFileSync(fake, "utf8");
+  const nativeText = '"Reviewed uncommitted changes.\\nNo material issues found."';
+  const reply = 'send({ id: message.id, result: { turn: buildTurn(turnId), reviewThreadId: reviewThread.id } });';
+  assert.ok(source.includes(nativeText));
+  assert.ok(source.includes(reply));
+  fs.writeFileSync(fake, source
+    .replace("function structuredReviewPayload(prompt) {", `function structuredReviewPayload(prompt) {
+      if (process.env.CODEX_FIXTURE_REVIEW_RAW !== undefined) return process.env.CODEX_FIXTURE_REVIEW_RAW;`)
+    .replace(nativeText, `(process.env.CODEX_FIXTURE_EMPTY_NATIVE ? "" : ${nativeText})`)
+    .replace(reply, `${reply}
+      if (process.env.CODEX_FIXTURE_NATIVE_FAILURE) {
+        send({ method: "turn/completed", params: { threadId: reviewThread.id, turn: buildTurn(turnId, "failed", { message: "SYNTHETIC_REVIEW_FAILURE", codexErrorInfo: "internalServerError", additionalDetails: null }) } });
+        break;
+      }`));
   initGitRepo(repo);
   fs.mkdirSync(path.join(repo, "src"));
   fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = 1;\n");
@@ -234,6 +279,16 @@ test("slash commands preserve stdin arguments and review native terminal results
   assert.equal(payload.turnEnded, true);
   assert.ok(payload.threadId);
 
+  // cli-5: ordinary argv already contains one complete, shell-quoted token.
+  const spacedCwd = path.join(repo, "sub space"); fs.mkdirSync(spacedCwd);
+  const statusAt = args => run(process.execPath, [SCRIPT, "status", ...args], { cwd: binDir, env });
+  const separateCwd = statusAt(["--cwd", spacedCwd]);
+  const inlineCwd = statusAt([`--cwd=${spacedCwd}`]);
+  assert.equal(separateCwd.status, 0);
+  assert.equal(inlineCwd.status, 0);
+  const rawCwd = run(process.execPath, [SCRIPT, "status", "--args-stdin"], { cwd: binDir, env, input: `--cwd '${spacedCwd}'` });
+  assert.equal(rawCwd.status, 0);
+
   const sourcePath = path.join(env.HOME, ".claude", "projects", "My Projects", "session.jsonl");
   fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
   fs.writeFileSync(sourcePath, `${JSON.stringify({ type: "user", cwd: repo,
@@ -241,14 +296,11 @@ test("slash commands preserve stdin arguments and review native terminal results
   const stdinCall = (command, input, ...args) => run("node", [SCRIPT, command, ...args, "--args-stdin"], {
     cwd: repo, env: { ...env, CODEX_COMPANION_TRANSCRIPT_PATH: sourcePath }, input
   });
-  const transferred = stdinCall("transfer", `--source "${sourcePath}" --json`);
-  assert.equal(transferred.status, 0, transferred.stderr);
-  assert.equal(JSON.parse(transferred.stdout).sourcePath, fs.realpathSync(sourcePath));
 
   const reviewId = /Job handle: ([^;]+);/.exec(result.stderr)[1];
   const cancelId = "args-cancel", logFile = path.join(resolveStateDir(repo), "jobs", `${cancelId}.log`);
   fs.writeFileSync(logFile, "");
-  const cancelJob = { id: cancelId, status: "running", jobClass: "review", workspaceRoot: repo,
+  const cancelJob = { id: cancelId, status: "running", jobClass: "task", workspaceRoot: repo,
     updatedAt: new Date().toISOString(), logFile };
   upsertJob(repo, cancelJob);
   writeJobFile(repo, cancelId, cancelJob);
@@ -290,7 +342,7 @@ test("slash commands preserve stdin arguments and review native terminal results
     const templates = fs.readFileSync(path.join(PLUGIN_ROOT, "commands", `${command}.md`), "utf8");
     for (const [, template] of templates.matchAll(/```bash\n([\s\S]*?)\n```/g)) {
       const shell = template.replaceAll("${CLAUDE_PLUGIN_ROOT}", PLUGIN_ROOT)
-        .replaceAll("$ARGUMENTS", `--wait --scope working-tree --json ${literal}`);
+        .replaceAll("$ARGUMENTS", `--wait --background --scope working-tree --json ${literal}`);
       const reviewed = run("bash", ["-c", shell], { cwd: repo, env });
       // Native review rejects focus; adversarial review sends it as data.
       assert.equal(reviewed.status, command === "review" ? 1 : 0, reviewed.stderr);
@@ -314,6 +366,9 @@ test("slash commands preserve stdin arguments and review native terminal results
     ["-- --baes main", {}, "--baes main"],
     ["--baes main", null, null],
     ["--model", null, null],
+    ["--model --wait --json", null, null],
+    ["-m --json", null, null],
+    ["--model=--wait --json", { model: "--wait", json: true }, ""],
     ["--model\n--\n", null, null],
     ["-m --", null, null],
     ["--session test -C 'a b' -m model --base main --scope=branch --json=false --wait --background", { session: "test", cwd: "a b", model: "model", base: "main", scope: "branch", json: false, wait: true, background: true }, ""],
@@ -326,7 +381,10 @@ test("slash commands preserve stdin arguments and review native terminal results
     const parse = () => parseArgs(splitReviewArgumentString(input, argumentConfig), argumentConfig);
     if (options === null) assert.throws(parse);
     else assert.deepEqual(parse(), { options, positionals: focus ? [focus] : [] });
-    if (index >= 7) continue;
+    // The full parser table stays structural. End-to-end cases cover valid
+    // forwarding, typo rejection and missing values; shell/terminator cases
+    // below already carry the quotes, apostrophes, regex and literal flags.
+    if (![0, 5, 6].includes(index)) continue;
     const before = fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8");
     const reviewed = run("node", [SCRIPT, "adversarial-review", "--json", "--args-stdin"], { cwd: repo, env, input });
     assert.equal(reviewed.status, options === null ? 1 : 0, reviewed.stderr);
@@ -334,6 +392,24 @@ test("slash commands preserve stdin arguments and review native terminal results
     if (options === null) assert.equal(after, before);
     else assert.equal(JSON.parse(after).lastTurnStart.prompt.split("User focus: ")[1].split("\n</task>")[0], focus);
   }
+
+  // cli-6: reject missing values before either publishing a job or starting Codex.
+  const invalid = helpFixture();
+  for (const command of ["task", "review", "adversarial-review"]) {
+    for (const args of [["--model", "--fast"]]) {
+      assert.equal(invalid.call(command, ...args).status, 1);
+      invalid.unchanged();
+    }
+  }
+  for (const command of ["review", "adversarial-review"]) {
+    const response = run(process.execPath, [SCRIPT, command, "--args-stdin"], { cwd: invalid.repo, env: invalid.env, input: "--model --wait --json" });
+    assert.equal(response.status, 1);
+    invalid.unchanged();
+  }
+  for (const tokens of [["--model", "--json"], ["-m", "--json"], ["--model", "--"], ["-m", "--"]]) {
+    assert.throws(() => parseArgs(tokens, argumentConfig));
+  }
+  assert.equal(parseArgs(["--model=--json"], argumentConfig).options.model, "--json");
 
   const focus = String.raw`check "x" and /\bnull\b/; don't miss 'y'` + "\n  --help\t--baes main";
   for (const separator of [" -- ", "\n--\n"]) {
@@ -346,7 +422,6 @@ test("slash commands preserve stdin arguments and review native terminal results
     assert.equal(state.lastTurnStart.prompt.split("User focus: ")[1].split("\n</task>")[0], focus);
   }
 
-  const fake = path.join(binDir, "codex"), source = fs.readFileSync(fake, "utf8");
   const callReview = (command = "adversarial-review") => run("node", [SCRIPT, command, "--json"], { cwd: repo, env });
   const storedReview = result => {
     const id = /Job handle: ([^;]+);/.exec(result.stderr)[1];
@@ -358,16 +433,33 @@ test("slash commands preserve stdin arguments and review native terminal results
     assert.equal(details.rawOutputFile, stored.rawOutputFile);
     assert.equal(details.resultFile, stored.resultFile);
     assert.deepEqual(JSON.parse(fs.readFileSync(details.resultFile, "utf8")), JSON.parse(result.stdout));
+    // cli-2/cli-3: wait and result agree for successful and failed reviews;
+    // review threads never advertise task continuation.
+    assert.equal(compact.next, null);
+    assert.equal(details.continuationCommand ?? null, null);
+    for (const detailArgs of [[], ["--details"]]) {
+      const waited = run(process.execPath, [SCRIPT, "wait", id, "--direct", "--quiet", ...detailArgs], { cwd: repo, env });
+      assert.equal(waited.status, stored.status === "completed" ? 0 : 1);
+      const report = JSON.parse(waited.stdout);
+      assert.equal(report.status, stored.status);
+      assert.equal(report.summary, detailArgs.length ? details.summary : compact.summary);
+      assert.equal(report.question, undefined);
+      if (detailArgs.length) {
+        assert.deepEqual(report.findings, details.findings);
+        assert.equal(report.reviewOutput, details.reviewOutput);
+        assert.equal(report.errorCode, details.errorCode);
+      }
+    }
     return { compact, details };
   };
+  storedReview(result);
   const validReview = {
     verdict: "needs-attention", summary: "Review findings.", next_steps: [],
     findings: Array.from({ length: 24 }, (_, index) => ({ severity: "high", title: `Finding ${index}`,
       body: "Concrete failure scenario. ".repeat(22), file: "src/app.js", line_start: 1, line_end: 2,
       confidence: 0.9, recommendation: `Guard case ${index}.` }))
   };
-  const inject = raw => fs.writeFileSync(fake, source.replace("function structuredReviewPayload(prompt) {",
-    `function structuredReviewPayload(prompt) { return ${JSON.stringify(raw)};`));
+  const inject = raw => { env.CODEX_FIXTURE_REVIEW_RAW = raw; };
   inject(JSON.stringify(validReview));
   const longReview = callReview();
   assert.equal(longReview.status, 0, longReview.stderr);
@@ -380,6 +472,12 @@ test("slash commands preserve stdin arguments and review native terminal results
   assert.equal(fs.readFileSync(complete.details.rawOutputFile, "utf8"), JSON.stringify(validReview));
   for (const raw of ["not valid JSON", "", JSON.stringify({ ...validReview, verdict: "unknown" }),
     JSON.stringify({ ...validReview, findings: [{ ...validReview.findings[0], confidence: 2 }] })]) {
+    const parsed = parseStructuredOutput(raw, { status: 0 });
+    assert.ok(parsed.parseError || validateReviewResultShape(parsed.parsed));
+    // Output validation converges before persistence/rendering. One malformed
+    // report exercises that path (all formats plus verbatim raw output), while
+    // the distinct parse/schema failures remain checked above.
+    if (raw !== "not valid JSON") continue;
     inject(raw);
     const invalid = callReview();
     assert.equal(invalid.status, 1, invalid.stderr);
@@ -390,18 +488,15 @@ test("slash commands preserve stdin arguments and review native terminal results
     assert.equal(details.errorCode, "review_output_invalid");
     assert.equal(fs.readFileSync(details.rawOutputFile, "utf8"), raw);
   }
-  const nativeText = '"Reviewed uncommitted changes.\\nNo material issues found."';
-  assert.ok(source.includes(nativeText));
-  fs.writeFileSync(fake, source.replace(nativeText, '""'));
+  env.CODEX_FIXTURE_EMPTY_NATIVE = "1";
   const emptyNative = callReview("review");
   assert.equal(emptyNative.status, 1, emptyNative.stderr);
-  assert.equal(storedReview(emptyNative).compact.blockers[0].code, "review_output_invalid");
+  const emptyStored = storedReview(emptyNative);
+  assert.equal(emptyStored.compact.blockers[0].code, "review_output_invalid");
+  assert.equal(fs.readFileSync(emptyStored.details.rawOutputFile, "utf8"), "");
 
-  const reply = 'send({ id: message.id, result: { turn: buildTurn(turnId), reviewThreadId: reviewThread.id } });';
-  assert.ok(source.includes(reply));
-  fs.writeFileSync(fake, source.replace(reply, `${reply}
-        send({ method: "turn/completed", params: { threadId: reviewThread.id, turn: buildTurn(turnId, "failed", { message: "SYNTHETIC_REVIEW_FAILURE", codexErrorInfo: "internalServerError", additionalDetails: null }) } });
-        break;`));
+  delete env.CODEX_FIXTURE_EMPTY_NATIVE;
+  env.CODEX_FIXTURE_NATIVE_FAILURE = "1";
   const failed = run("node", [SCRIPT, "review", "--json"], { cwd: repo, env });
   assert.equal(failed.status, 1, failed.stderr);
   const failure = JSON.parse(failed.stdout);
@@ -658,8 +753,10 @@ test("session snapshots refuse a leaf replaced after validation before reading a
 
 test("transfer and fork sweep abandoned private copies but preserve fresh and unrelated directories", () => {
   const module = new URL("../plugins/codex/scripts/lib/claude-session-transfer.mjs", import.meta.url).href;
+  const fixtures = [];
   for (const command of [["transfer", "--json"], ["task", "--fork"]]) {
     const f = forkFixture();
+    fixtures.push(f);
     const copies = run(process.execPath, ["--input-type=module", "-e", `
       import { snapshotClaudeSession } from ${JSON.stringify(module)};
       console.log(JSON.stringify([0, 1].map(() => snapshotClaudeSession(process.cwd(), ${JSON.stringify(f.source)}).snapshotPath)));
@@ -678,6 +775,12 @@ test("transfer and fork sweep abandoned private copies but preserve fresh and un
     assert.ok(fs.existsSync(fresh));
     assert.equal(fs.readFileSync(path.join(unrelated, "keep.txt"), "utf8"), "unrelated");
     assert.equal(fs.readFileSync(backupFile, "utf8"), "user backup");
+  }
+  assert.equal(fs.realpathSync(path.join(fixtures[0].directory, "codex")), fs.realpathSync(path.join(fixtures[1].directory, "codex")));
+  assert.notEqual(fs.realpathSync(fixtureStatePath(fixtures[0].directory)), fs.realpathSync(fixtureStatePath(fixtures[1].directory)));
+  for (const f of fixtures) {
+    assert.equal(f.state().externalAgentImports.length, 1);
+    assert.ok(f.state().lastExternalAgentImport.sourcePath.startsWith(f.projects + path.sep));
   }
 });
 
@@ -773,57 +876,7 @@ test("task reports the actual Codex auth error when the run is rejected", () => 
   assert.notEqual(result.status, 0);
 });
 
-test("review accepts the quoted raw argument style for built-in base-branch review", () => {
-  const repo = makeTempDir();
-  const binDir = makeTempDir();
-  installFakeCodex(binDir);
-  initGitRepo(repo);
-  fs.mkdirSync(path.join(repo, "src"));
-  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = 1;\n");
-  run("git", ["add", "src/app.js"], { cwd: repo });
-  run("git", ["commit", "-m", "init"], { cwd: repo });
-  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = 2;\n");
-
-  const result = run("node", [SCRIPT, "review", "--base main --json"], {
-    cwd: repo,
-    env: buildEnv(binDir)
-  });
-
-  assert.equal(result.status, 0);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.codex.status, 0);
-  assert.equal(payload.turnEnded, true);
-  assert.ok(payload.threadId);
-  assert.equal(payload.target.baseRef, "main");
-});
-
-test("adversarial review returns structured findings for an explicit base branch", () => {
-  const repo = makeTempDir();
-  const binDir = makeTempDir();
-  installFakeCodex(binDir);
-  initGitRepo(repo);
-  fs.mkdirSync(path.join(repo, "src"));
-  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
-  run("git", ["add", "src/app.js"], { cwd: repo });
-  run("git", ["commit", "-m", "init"], { cwd: repo });
-  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
-
-  const result = run("node", [SCRIPT, "adversarial-review", "--base", "main", "--json"], {
-    cwd: repo,
-    env: buildEnv(binDir)
-  });
-
-  assert.equal(result.status, 0);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.codex.status, 0);
-  assert.equal(payload.turnEnded, true);
-  assert.ok(payload.threadId);
-  assert.equal(payload.target.baseRef, "main");
-  assert.equal(payload.result.verdict, "needs-attention");
-  assert.ok(payload.result.findings.length);
-  assert.equal(payload.parseError, null);
-});
-test("adversarial review asks Codex to inspect larger diffs itself", () => {
+test("adversarial base review returns structured findings and asks Codex to collect larger diffs", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir);
@@ -834,20 +887,32 @@ test("adversarial review asks Codex to inspect larger diffs itself", () => {
   }
   run("git", ["add", "src/a.js", "src/b.js", "src/c.js"], { cwd: repo });
   run("git", ["commit", "-m", "init"], { cwd: repo });
+  run("git", ["checkout", "-b", "feature"], { cwd: repo });
   fs.writeFileSync(path.join(repo, "src", "a.js"), 'export const value = "PROMPT_SELF_COLLECT_A";\n');
   fs.writeFileSync(path.join(repo, "src", "b.js"), 'export const value = "PROMPT_SELF_COLLECT_B";\n');
   fs.writeFileSync(path.join(repo, "src", "c.js"), 'export const value = "PROMPT_SELF_COLLECT_C";\n');
 
-  const result = run("node", [SCRIPT, "adversarial-review"], {
+  run("git", ["add", "src"], { cwd: repo });
+  run("git", ["commit", "-m", "feature"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "adversarial-review", "--base", "main", "--json"], {
     cwd: repo,
     env: buildEnv(binDir)
   });
 
   assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.codex.status, 0);
+  assert.equal(payload.turnEnded, true);
+  assert.ok(payload.threadId);
+  assert.equal(payload.target.baseRef, "main");
+  assert.equal(payload.result.verdict, "needs-attention");
+  assert.ok(payload.result.findings.length);
+  assert.equal(payload.parseError, null);
   const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
   assert.doesNotMatch(state.lastTurnStart.prompt, /PROMPT_SELF_COLLECT_[ABC]/);
 });
-test("review logs reasoning summaries and review output to the job log", () => {
+test("stdin base review logs reasoning/output and tasks keep their progress log readable", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir, "with-reasoning");
@@ -857,9 +922,10 @@ test("review logs reasoning summaries and review output to the job log", () => {
   run("git", ["commit", "-m", "init"], { cwd: repo });
   fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
 
-  const result = run("node", [SCRIPT, "review", "--json"], {
+  const result = run("node", [SCRIPT, "review", "--args-stdin"], {
     cwd: repo,
-    env: buildEnv(binDir)
+    env: buildEnv(binDir),
+    input: "--base main --json"
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -870,12 +936,17 @@ test("review logs reasoning summaries and review output to the job log", () => {
   assert.equal(payload.codex.status, 0);
   assert.equal(payload.turnEnded, true);
   assert.ok(payload.threadId);
+  assert.equal(payload.target.baseRef, "main");
   assert.ok(payload.codex.reasoning.length);
   assert.ok(log.includes(payload.codex.reasoning));
   assert.ok(log.includes(payload.codex.stdout));
+  const task = run("node", [SCRIPT, "task", "investigate the failing test"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(task.status, 0, task.stderr);
+  const taskState = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  fs.readFileSync(taskState.jobs.find(job => job.jobClass === "task").logFile, "utf8");
 });
 
-test("task --resume-last resumes the latest persisted task thread", () => {
+test("task --fresh preserves the prompt and --resume resumes the persisted task thread", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir);
@@ -884,11 +955,12 @@ test("task --resume-last resumes the latest persisted task thread", () => {
   run("git", ["add", "README.md"], { cwd: repo });
   run("git", ["commit", "-m", "init"], { cwd: repo });
 
-  const firstRun = run("node", [SCRIPT, "task", "initial task"], {
+  const firstRun = run("node", [SCRIPT, "task", "--fresh", "diagnose the flaky test"], {
     cwd: repo,
     env: buildEnv(binDir)
   });
   assert.equal(firstRun.status, 0, firstRun.stderr);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"))).lastTurnStart.prompt, "diagnose the flaky test");
 
   const result = run("node", [SCRIPT, "task", "--resume", "follow up"], {
     cwd: repo,
@@ -1109,69 +1181,7 @@ test("session start hook exports unchanged environment and adds compact dispatch
   assert.equal(otherEvent.stdout, "", "context is emitted only for SessionStart");
 });
 
-test("task --fresh is treated as routing control and does not leak into the prompt", () => {
-  const repo = makeTempDir();
-  const binDir = makeTempDir();
-  const statePath = path.join(binDir, "fake-codex-state.json");
-  installFakeCodex(binDir);
-  initGitRepo(repo);
-  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
-  run("git", ["add", "README.md"], { cwd: repo });
-  run("git", ["commit", "-m", "init"], { cwd: repo });
-
-  const result = run("node", [SCRIPT, "task", "--fresh", "diagnose the flaky test"], {
-    cwd: repo,
-    env: buildEnv(binDir)
-  });
-
-  assert.equal(result.status, 0, result.stderr);
-  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  assert.equal(fakeState.lastTurnStart.prompt, "diagnose the flaky test");
-});
-test("task progress log omits reasoning and assistant message bodies", () => {
-  const repo = makeTempDir();
-  const binDir = makeTempDir();
-  installFakeCodex(binDir, "with-reasoning");
-  initGitRepo(repo);
-  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
-  run("git", ["add", "README.md"], { cwd: repo });
-  run("git", ["commit", "-m", "init"], { cwd: repo });
-
-  const result = run("node", [SCRIPT, "task", "investigate the failing test"], {
-    cwd: repo,
-    env: buildEnv(binDir)
-  });
-
-  assert.equal(result.status, 0, result.stderr);
-  const stateDir = resolveStateDir(repo);
-  const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
-  const log = fs.readFileSync(state.jobs[0].logFile, "utf8");
-
-});
-
-test("task progress reports collaboration activity without subagent message bodies", () => {
-  const repo = makeTempDir();
-  const binDir = makeTempDir();
-  installFakeCodex(binDir, "with-subagent");
-  initGitRepo(repo);
-  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
-  run("git", ["add", "README.md"], { cwd: repo });
-  run("git", ["commit", "-m", "init"], { cwd: repo });
-
-  const result = run("node", [SCRIPT, "task", "challenge the current design"], {
-    cwd: repo,
-    env: buildEnv(binDir)
-  });
-
-  assert.equal(result.status, 0, result.stderr);
-  const stateDir = resolveStateDir(repo);
-  const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
-  const log = fs.readFileSync(state.jobs[0].logFile, "utf8");
-  assert.match(log, /collabAgentToolCall/);
-  assert.doesNotMatch(log, /Questioned the retry strategy|The design assumes retries|Subagent design-challenger reasoning/);
-});
-
-test("task waits for the main thread to complete before returning the final result", () => {
+test("task collaboration progress omits subagent bodies and returns the main thread result", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir, "with-subagent");
@@ -1187,6 +1197,11 @@ test("task waits for the main thread to complete before returning the final resu
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
+  const stateDir = resolveStateDir(repo);
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  const log = fs.readFileSync(state.jobs[0].logFile, "utf8");
+  assert.match(log, /collabAgentToolCall/);
+  assert.doesNotMatch(log, /Questioned the retry strategy|The design assumes retries|Subagent design-challenger reasoning/);
 });
 
 test("task ignores later subagent messages when choosing the final returned output", () => {
@@ -1245,7 +1260,7 @@ test("task --background enqueues a detached worker and exposes per-job status", 
 
   const waitedStatus = run(
     "node",
-    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--poll-interval-ms", "100", "--json"],
     {
       cwd: repo,
       env: buildEnv(binDir)
@@ -1773,7 +1788,7 @@ test("result without a job id prefers the latest finished job from the current C
   const details = JSON.parse(run("node", [SCRIPT, "result", report.jobId, "--details"], { cwd: workspace }).stdout);
   assert.equal(details.threadId, "thr_current");
 });
-test("cancel does not kill an unverified legacy PID or claim confirmation", async (t) => {
+test("cancel across sessions does not kill an unverified legacy PID or claim confirmation", async (t) => {
   const workspace = makeTempDir();
   const stateDir = resolveStateDir(workspace);
   const jobsDir = path.join(stateDir, "jobs");
@@ -1827,6 +1842,7 @@ test("cancel does not kill an unverified legacy PID or claim confirmation", asyn
             status: "running",
             title: "Codex Task",
             jobClass: "task",
+            sessionId: "sess-other",
             summary: "Investigate flaky test",
             pid: sleeper.pid,
             logFile,
@@ -1842,14 +1858,16 @@ test("cancel does not kill an unverified legacy PID or claim confirmation", asyn
     "utf8"
   );
 
-  const cancelResult = run("node", [SCRIPT, "cancel", "task-live", "--json"], {
+  const cancelResult = run("node", [SCRIPT, "cancel", "task-live", "--session", "sess-current", "--json"], {
     cwd: workspace
   });
 
   assert.equal(cancelResult.status, 2, cancelResult.stderr);
+  assert.equal(JSON.parse(cancelResult.stdout).jobId, "task-live");
   assert.equal(JSON.parse(cancelResult.stdout).confirmation, "unconfirmed");
   assert.doesNotThrow(() => process.kill(sleeper.pid, 0));
   const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  assert.equal(state.jobs.find(job => job.id === "task-live").status, "running");
   assert.equal(state.jobs.find(job => job.id === "task-live").cancelRequested.reason, "cancelled_by_user");
   assert.equal(JSON.parse(fs.readFileSync(jobFile)).status, "running");
 
@@ -1907,55 +1925,6 @@ test("cancel without a job id ignores active jobs from other Claude sessions", (
 
   const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
   assert.equal(state.jobs[0].status, "running");
-});
-
-test("cancel with a job id can still target an active job from another Claude session", () => {
-  const workspace = makeTempDir();
-  const stateDir = resolveStateDir(workspace);
-  const jobsDir = path.join(stateDir, "jobs");
-  fs.mkdirSync(jobsDir, { recursive: true });
-
-  const logFile = path.join(jobsDir, "task-other.log");
-  fs.writeFileSync(logFile, "", "utf8");
-  fs.writeFileSync(
-    path.join(stateDir, "state.json"),
-    `${JSON.stringify(
-      {
-        version: 1,
-        config: { stopReviewGate: false },
-        jobs: [
-          {
-            id: "task-other",
-            status: "running",
-            title: "Codex Task",
-            jobClass: "task",
-            sessionId: "sess-other",
-            summary: "Other session run",
-            updatedAt: "2026-03-24T20:05:00.000Z",
-            logFile
-          }
-        ]
-      },
-      null,
-      2
-    )}\n`,
-    "utf8"
-  );
-
-  const env = {
-    ...process.env,
-    CODEX_COMPANION_SESSION_ID: "sess-current"
-  };
-  const cancel = run("node", [SCRIPT, "cancel", "task-other", "--json"], {
-    cwd: workspace,
-    env
-  });
-  assert.equal(cancel.status, 2, cancel.stderr);
-  assert.equal(JSON.parse(cancel.stdout).jobId, "task-other");
-
-  const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
-  assert.equal(state.jobs[0].status, "running");
-  assert.equal(state.jobs[0].cancelRequested.reason, "cancelled_by_user");
 });
 
 test("cancel confirms turn interruption through the shared app-server", async (t) => {

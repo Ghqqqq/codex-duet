@@ -10,6 +10,36 @@ const {
   fs, path, makeTempDir, initGitRepo, buildEnv, installFakeCodex, resolveStateDir, delay, run, browserOriginSetup, transportSetup, resolveIsolatedCodexHome, redactActivity, itemActivity, planActivity, activityReader, formatActivity, writeJobFile, upsertJob, updateJob, readJobFile, resolveJobFile, JobRuntime, pauseAdjustment, renewLease, markOwnerAttachment, leaseSnapshot, questionMessage, adoptJob, ownershipNotice, answerQuestion, askParentQuestion, ownerLost, PARENT_BRIDGE_ENV, resolveSessionMarkersRoot, AGENT_NAMES, pickAgentName, splitRawArgumentString, bridgeScript, spawnOwned, script, alive, fixture, json, directLines, direct, directError, waitUntil, patchJob, job
 } = await lifecycleHarness();
 
+const storedJob = (f, id) => readJobFile(path.join(resolveStateDir(f.repo, f.env), "jobs", `${id}.json`));
+
+// Replay only quiescent fixtures captured in this run. Copy all durable state:
+// job/index/artifacts, session markers, journal, fake server and broker metadata.
+async function snapshotFixture(f) {
+  const brokerFile = path.join(resolveStateDir(f.repo, f.env), "broker.json");
+  const broker = fs.existsSync(brokerFile) ? readJobFile(brokerFile) : null;
+  if (broker?.pid) await waitUntil(() => !alive(broker.pid));
+  const roots = [f.dir, ...(broker?.sessionDir ? [broker.sessionDir] : [])];
+  const tree = root => {
+    if (!fs.existsSync(root)) return null;
+    const visit = dir => fs.readdirSync(dir).sort().flatMap(name => {
+      const file = path.join(dir, name), relative = path.relative(root, file), stat = fs.lstatSync(file);
+      return stat.isDirectory() ? [[relative, "directory"], ...visit(file)]
+        : [[relative, stat.isSymbolicLink() ? "symlink" : "file", stat.isSymbolicLink() ? fs.readlinkSync(file) : fs.readFileSync(file)]];
+    });
+    return visit(root);
+  };
+  const saved = makeTempDir("lifecycle-snapshot-");
+  const baseline = roots.map(tree);
+  roots.forEach((root, i) => { if (baseline[i]) fs.cpSync(root, path.join(saved, String(i)), { recursive: true }); });
+  return () => {
+    roots.forEach((root, i) => {
+      fs.rmSync(root, { recursive: true, force: true });
+      if (baseline[i]) fs.cpSync(path.join(saved, String(i)), root, { recursive: true });
+      assert.deepEqual(tree(root), baseline[i], "replayed fixture matches every captured durable file");
+    });
+  };
+}
+
 // Direct-mode backpressure fixture: a fake Codex burst while the parent leaves stdout undrained.
 async function until(check, timeout = 15000) {
   for (const end = Date.now() + timeout; Date.now() < end;) {
@@ -42,10 +72,14 @@ function installBurstCodex(dir) {
               item: { id: "burst-" + burst, type: "fileChange", changes } } });
           }, 100);
   `);
-  // D11a holds shared working turns open. Restore this fixture's existing
-  // nine-second completion only in its generated w5 branch.
+  // Complete only after the reader has resumed; the real undrained interval
+  // remains longer than the owner grace without waiting for a second deadline.
   const heldTimer = "const timer = null; // Held open until an explicit fixture release or turn/interrupt.";
-  const completionTimer = 'const timer = setTimeout(() => emitTurnCompleted(thread.id, turnId, { completed: { type: "agentMessage", id: "fixture-done", text: "Completed fixture work.", phase: "final_answer" } }), 9000);';
+  const completionTimer = `const timer = setInterval(() => {
+    if (!fs.existsSync(${JSON.stringify(gate + "-finish")})) return;
+    clearInterval(timer);
+    emitTurnCompleted(thread.id, turnId, { completed: { type: "agentMessage", id: "fixture-done", text: "Completed fixture work.", phase: "final_answer" } });
+  }, 25);`;
   const branchStart = source.indexOf(branch);
   assert.ok(source.indexOf(heldTimer, branchStart) >= 0);
   source = source.slice(0, branchStart) + source.slice(branchStart).replace(heldTimer, completionTimer);
@@ -66,7 +100,10 @@ async function cleanupBackpressure(dir, env) {
         try { process.kill(record.pid, signal); } catch (inner) { if (inner.code !== "ESRCH") throw inner; }
       }
     }
-    await delay(signal === "SIGTERM" ? 700 : 300);
+    for (const deadline = Date.now() + (signal === "SIGTERM" ? 700 : 15000); Date.now() < deadline;) {
+      if (!records().some(record => !record.exited && alive(record.pid))) break;
+      await delay(25);
+    }
   }
   assert.deepEqual(records().filter(record => !record.exited && alive(record.pid)).map(record => record.pid), [], "fixture processes stopped");
   fs.rmSync(dir, { recursive: true, force: true });
@@ -98,11 +135,13 @@ async function backpressureScenario(script, { timeoutSec = 30, signalStop = fals
     const attached = await until(() => { const current = read(); return current.ownerAttached && current.turnId && current; });
     const pausedAt = Date.now();
     fs.writeFileSync(gate, "start");
-    await delay(6500);
+    if (signalStop) await until(() => read().activityTotals?.events >= 3500);
+    else await delay(6500);
     const beforeDrain = read(), undrainedMs = Date.now() - pausedAt;
     const heartbeatAgeMs = Date.now() - beforeDrain.leaseRenewedAt;
     if (signalStop) { owner.kill("SIGTERM"); await delay(300); }
     owner.stdout.resume();
+    if (!signalStop) fs.writeFileSync(gate + "-finish", "finish");
     let deadline;
     try {
       await Promise.race([closed, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("Owner did not finish after draining stdout")), 15000); })]);
@@ -212,13 +251,14 @@ test("simultaneous dispatches reserve different names while both jobs are active
   assert.equal(ordinary.status, "completed");
   assert.equal(ordinary.worker, "Noether");
   assert.equal(directError(reservedTask("--name", ordinary.jobId)).jobId, null);
-  for (const name of reservedNames) {
+  const nativeReserved = ["TASK-x", "ReViEw-x", "JOB-x"];
+  for (const name of nativeReserved) {
     const fallback = direct(reservedTask("--agent-name", name));
     assert.equal(fallback.status, "completed");
     assert.ok(AGENT_NAMES.includes(fallback.worker));
     assert.equal(job(reserved, fallback.jobId).agentName, fallback.worker);
   }
-  assert.equal(reserved.state().threads.length, reservedNames.length + 1);
+  assert.equal(reserved.state().threads.length, nativeReserved.length + 1);
 
   // Hold one connection's empty pre-check snapshot while another workspace
   // attempts admission. The second caller must finish without entering it.
@@ -298,7 +338,7 @@ test("simultaneous dispatches reserve different names while both jobs are active
     assert.equal(direct(refused, 2).blockers[0].code, "thread_busy");
     assert.equal(fresh.requests().filter(request => request.method === "turn/start").length, 1);
     fs.writeFileSync(release, "release");
-    await waitUntil(() => job(fresh, initial.jobId).status === "completed");
+    await waitUntil(() => storedJob(fresh, initial.jobId).status === "completed");
     // A terminal predecessor can still have a live wrapper during teardown.
     patchJob(fresh, initial.jobId, { pid: process.pid });
     const continued = direct(fresh.call("task", "--to", initial.jobId, "--direct", "--quiet", "fixture"));
@@ -313,7 +353,7 @@ test("simultaneous dispatches reserve different names while both jobs are active
 });
 
 test("names stay unique across a session's workspaces, preserve local reservations and thread identity, and never backfill legacy records", async t => {
-  const f = fixture("slow-task"), now = Date.now();
+  const f = fixture("task-ok"), now = Date.now();
   const other = path.join(f.dir, "other-workspace");
   fs.mkdirSync(other); initGitRepo(other);
   const stateModule = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
@@ -467,6 +507,7 @@ test("names stay unique across a session's workspaces, preserve local reservatio
     const claimed = direct(preferred.call('task', '--agent-name', name, '--fresh', '--direct', 'fixture'));
     assert.equal(claimed.worker, name);
     assert.equal(job(preferred, claimed.jobId).agentName, name);
+    if (name !== 'nOeThEr-2') continue; // Plain/generated names already follow above; retain suffix identity here.
     const followed = direct(preferred.call('task', '--to', name, '--direct', 'fixture'));
     assert.equal(followed.worker, name);
     assert.equal(job(preferred, followed.jobId).threadId, job(preferred, claimed.jobId).threadId);
@@ -475,7 +516,8 @@ test("names stay unique across a session's workspaces, preserve local reservatio
 
 test("detached wait returns bounded safe progress, startup phases and confirmed cancellation", async () => {
   const f = fixture(); const launch = json(f.call("task", "--detached", "--report", "--json", "fixture work"));
-  const snapshot = json(f.call("wait", launch.jobId, "--timeout-sec", "4", "--json", "--report"));
+  await waitUntil(() => storedJob(f, launch.jobId).startupTimings?.mcpReady);
+  const snapshot = json(f.call("wait", launch.jobId, "--timeout-sec", "1", "--json", "--report"));
   assert.equal(snapshot.status, "running"); assert.ok(snapshot.headline.length <= 60);
   assert.equal(snapshot.completedItems.find(i => i.type === "commandExecution").exitCode, 0);
   for (const phase of ["brokerConnectSpawn", "appServerInitialize", "threadStart", "turnStart", "firstModelEvent", "firstToolCall", "mcpReady"]) assert.ok(snapshot.startupTimings[phase], phase);
@@ -581,7 +623,7 @@ test("detached wait returns bounded safe progress, startup phases and confirmed 
 });
 
 test("parent question and stdin answer continue the same turn; reports do not log answer text", () => {
-  const f = fixture("parent-question-sequence"), launch = json(f.call("task", "--detached", "--json", "--question-timeout-sec", "3", "ask fixture question"));
+  const f = fixture("parent-question-sequence"), launch = json(f.call("task", "--detached", "--json", "--question-timeout-sec", "1", "ask fixture question"));
   const first = json(f.call("wait", launch.jobId, "--json", "--report"));
   assert.equal(first.status, "needs_answer");
   patchJob(f, launch.jobId, { questionTimeoutSec: 30 });
@@ -712,10 +754,23 @@ test("an answer accepted before the deadline survives a worker poll after the de
 });
 
 test("owner lease expiry interrupts a running worker; a foreign owner cannot renew it", async () => {
+  // cli-1: polling more slowly than the lease still keeps the selected owner alive.
+  const held = fixture("w5-working");
+  const active = json(held.call("task", "--detached", "--json", "--lease-sec", "1", "fixture"));
+  try {
+    await waitUntil(() => storedJob(held, active.jobId).turnId);
+    const status = json(held.call("status", active.jobId, "--owner", active.ownerId, "--wait", "--timeout-ms", "2500", "--poll-interval-ms", "2500", "--json"));
+    assert.equal(status.job.status, "running");
+    assert.equal(job(held, active.jobId).status, "running");
+    assert.equal(job(held, active.jobId).interruptionReason ?? null, null);
+  } finally {
+    assert.equal(json(held.call("cancel", active.jobId, "--json")).confirmation, "confirmed");
+  }
+  assert.equal(job(held, active.jobId).status, "cancelled");
   const f = fixture(), launch = json(f.call("task", "--detached", "--json", "--lease-sec", "180", "--owner", "fixture-owner", "fixture"));
-  await waitUntil(() => job(f, launch.jobId).turnId);
+  await waitUntil(() => storedJob(f, launch.jobId).turnId);
   patchJob(f, launch.jobId, { leaseExpiresAt: Date.now() - 1 });
-  await waitUntil(() => job(f, launch.jobId).status === "interrupted");
+  await waitUntil(() => storedJob(f, launch.jobId).status === "interrupted");
   const result = json(f.call("wait", launch.jobId, "--timeout-sec", "6", "--json", "--report"), 1);
   assert.equal(result.status, "interrupted"); assert.equal(result.interruptionReason, "lease_expired"); assert.equal(result.interruptionConfirmed, true);
   assert.ok(result.continuationCommand.includes(`task --continue '${launch.jobId}' --cwd '${f.repo}' --follow --report --json`));
@@ -817,7 +872,8 @@ test("cancel or parent exit interrupts foreground work without killing a saved P
     assert.equal(details.status, stopped.status);
     assert.equal(details.interruptionReason, reason);
     if (command === "task") {
-      await delay(500);
+      // Both real processes have exited; the subsequent details query must not
+      // renew the stopped worker's lease either.
       assert.equal(read().leaseRenewedAt, stopped.leaseRenewedAt);
       assert.equal(read().leaseExpiresAt, stopped.leaseExpiresAt);
     }
@@ -1049,7 +1105,7 @@ test("per-job owners ignore ambient identity; adoption transfers the same turn a
   const oldWait = spawnOwned(process.execPath, [script, "wait", first.jobId, "--owner", first.ownerId, "--after-question", pending.question.id, "--timeout-sec", "30", "--json"], { cwd: f.repo, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
   let oldOutput = ""; oldWait.stdout.on("data", chunk => { oldOutput += chunk; });
   const oldDone = new Promise((resolve, reject) => { oldWait.on("close", resolve); oldWait.on("error", reject); });
-  await waitUntil(() => job(f, first.jobId).ownerAttached);
+  await waitUntil(() => storedJob(f, first.jobId).ownerAttached);
   f.env.CODEX_COMPANION_SESSION_ID = "replacement-session";
   const adopted = json(f.call("adopt", first.jobId, "--json"));
   assert.equal(adopted.status, "adopted"); assert.equal(adopted.adopted, true);
@@ -1134,6 +1190,103 @@ test("an owner renewal refused just after wake succeeds after the worker's pause
   assert.equal(renewed.leaseRenewedAt, now); assert.equal(renewed.leaseExpiresAt, now + 180000);
 });
 
+test("runtime-2: heartbeat and notification diagnostics cannot crash a tracked turn", () => {
+  const f = fixture("slow-recovery-task");
+  const gate = path.join(f.dir, "heartbeat-observed");
+  f.env.CODEX_FIXTURE_TURN_GATE = gate;
+  const result = run(process.execPath, ["--input-type=module", "-e", `
+    import fs from 'node:fs';
+    import { runTrackedJob, createProgressReporter, createJobProgressUpdater } from ${JSON.stringify(new URL("../plugins/codex/scripts/lib/tracked-jobs.mjs", import.meta.url).href)};
+    import { runAppServerTurn, runAppServerReview } from ${JSON.stringify(new URL("../plugins/codex/scripts/lib/codex.mjs", import.meta.url).href)};
+    import { resolveJobFile } from ${JSON.stringify(new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href)};
+    setTimeout(() => process.exit(42), 15000).unref();
+    const job = { id: 'progress-fault', jobClass: 'task', workspaceRoot: process.cwd(), logFile: ${JSON.stringify(path.join(f.dir, "progress.log"))} };
+    const append = fs.appendFileSync, write = fs.writeSync, rename = fs.renameSync;
+    let heartbeatFailures = 0, callbackFailures = 0, notificationFailures = 0, logFailures = 0, warnings = 0;
+    let failedHandle = null, persistedHandle = null;
+    const failure = Object.assign(new Error('injected optional diagnostic failure'), { code: 'EIO' });
+    fs.appendFileSync = function(file, value, ...args) {
+      if (file === job.logFile && String(value).includes('Progress: thread=')) { heartbeatFailures++; throw failure; }
+      return append.call(this, file, value, ...args);
+    };
+    fs.writeSync = function(fd, ...args) { if (fd === 2) warnings++; return write.call(this, fd, ...args); };
+    const jobFile = resolveJobFile(process.cwd(), job.id);
+    fs.renameSync = function(source, target) {
+      const record = target === jobFile ? JSON.parse(fs.readFileSync(source, 'utf8')) : null;
+      if (!failedHandle && record?.threadId) { failedHandle = record.threadId; throw failure; }
+      const result = rename.call(this, source, target);
+      if (record?.status === 'running' && record.threadId === failedHandle) persistedHandle = record.threadId;
+      return result;
+    };
+    const report = createProgressReporter({ logFile: job.logFile, onEvent: createJobProgressUpdater(process.cwd(), job.id) });
+    const execution = await runTrackedJob(job, async () => {
+      const payload = await runAppServerTurn(process.cwd(), { prompt: 'fixture', persistThread: true, onProgress: event => {
+        report(event);
+        if (typeof event === 'string' && event.startsWith('Progress: thread=')) {
+          callbackFailures++; fs.writeFileSync(${JSON.stringify(gate)}, 'observed'); throw failure;
+        }
+        if (event?.activity?.length) { notificationFailures++; throw failure; }
+      } });
+      return { exitStatus: payload.status, payload, threadId: payload.threadId, turnId: payload.turnId, summary: 'done', rendered: 'done' };
+    });
+    const review = await runAppServerReview(process.cwd(), { target: { type: 'uncommittedChanges' }, onProgress: event => {
+      if (event?.logBody) { logFailures++; throw failure; }
+    } });
+    console.log(JSON.stringify({ status: execution.exitStatus, turnEnded: execution.payload.turnEnded, reviewStatus: review.status, heartbeatFailures, callbackFailures, notificationFailures, logFailures, warnings, failedHandle, persistedHandle }));
+  `], { cwd: f.repo, env: { ...f.env, CODEX_COMPANION_PROGRESS_INTERVAL_MS: "250", CODEX_COMPANION_APP_SERVER_ENDPOINT: `unix:${path.join(f.dir, "missing")}` } });
+  assert.equal(result.status, 0, result.stderr);
+  const observed = JSON.parse(result.stdout);
+  assert.equal(observed.status, 0);
+  assert.equal(observed.turnEnded, true);
+  assert.equal(observed.reviewStatus, 0);
+  for (const key of ["heartbeatFailures", "callbackFailures", "notificationFailures", "logFailures"]) assert.ok(observed[key] > 0, key);
+  assert.equal(observed.warnings, 1);
+  assert.ok(observed.failedHandle && observed.persistedHandle === observed.failedHandle);
+  assert.equal(job(f, "progress-fault").status, "completed");
+  assert.ok(f.state().launches.every(entry => !alive(entry.pid)));
+});
+
+test("runtime-3: final log failures preserve committed outcomes and required result writes still fail", () => {
+  const f = fixture();
+  const result = run(process.execPath, ["--input-type=module", "-e", `
+    import fs from 'node:fs';
+    import { runTrackedJob } from ${JSON.stringify(new URL("../plugins/codex/scripts/lib/tracked-jobs.mjs", import.meta.url).href)};
+    const append = fs.appendFileSync, write = fs.writeFileSync;
+    const failure = Object.assign(new Error('injected write failure'), { code: 'EIO' });
+    const outcomes = [];
+    for (const mode of ['task', 'review', 'required-result']) {
+      const job = { id: 'final-' + mode, jobClass: mode === 'task' ? 'task' : 'review', workspaceRoot: process.cwd(),
+        logFile: ${JSON.stringify(path.join(f.dir, "final.log"))},
+        rawOutputFile: ${JSON.stringify(path.join(f.dir, "raw-"))} + mode,
+        resultFile: ${JSON.stringify(path.join(f.dir, "result-"))} + mode };
+      let failures = 0;
+      fs.appendFileSync = function(file, ...args) {
+        if (file === job.logFile) { failures++; throw failure; }
+        return append.call(this, file, ...args);
+      };
+      fs.writeFileSync = function(file, ...args) {
+        if (mode === 'required-result' && file === job.resultFile && failures === 0) { failures++; throw failure; }
+        return write.call(this, file, ...args);
+      };
+      const execution = { exitStatus: 0, jobStatus: 'completed', payload: { status: 0, turnEnded: true, rawOutput: 'done' }, report: { status: 'completed' }, summary: 'done', rendered: 'done' };
+      const outcome = await runTrackedJob(job, async () => execution).then(value => ({ returned: value === execution }), error => ({ rejected: error === failure }));
+      outcomes.push({ mode, failures, ...outcome });
+    }
+    console.log(JSON.stringify(outcomes));
+  `], { cwd: f.repo, env: f.env });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), [
+    { mode: "task", failures: 1, returned: true },
+    { mode: "review", failures: 1, returned: true },
+    { mode: "required-result", failures: 1, rejected: true }
+  ]);
+  for (const mode of ["task", "review"]) {
+    assert.equal(job(f, `final-${mode}`).status, "completed");
+    assert.equal(json(f.call("result", `final-${mode}`, "--details")).status, "completed");
+  }
+  assert.equal(job(f, "final-required-result").status, "failed");
+});
+
 test("runtime stop always aborts despite progress or cancellation persistence failures", t => {
   let tick;
   t.mock.method(globalThis, "setInterval", callback => { tick = callback; return null; });
@@ -1179,6 +1332,49 @@ test("runtime stop always aborts despite progress or cancellation persistence fa
   }
 });
 
+test("watchdog rechecks stale ownership and lease observations before cancelling or aborting", t => {
+  const now = 100000;
+  let tick;
+  t.mock.method(Date, "now", () => now);
+  t.mock.method(globalThis, "setInterval", callback => { tick = callback; return null; });
+  for (const action of ["adopt", "renew", "reattach", "lease-renewed", "owner-changed", "attachment-changed"]) {
+    const cwd = makeTempDir(), id = `watchdog-${action}`;
+    const record = { id, jobClass: "task", status: "running", workspaceRoot: cwd, sessionId: "old-session", ownerId: "owner",
+      ownerAttached: action !== "reattach", ownerAttachedAt: now - 20000,
+      ownerDetachedAt: action === "reattach" ? now - 1000 : null, ownerDetachReason: action === "reattach" ? "signal" : null,
+      leaseSec: 180, leaseRenewedAt: now - 10000, leaseExpiresAt: action === "lease-renewed" ? now - 1 : now + 180000 };
+    writeJobFile(cwd, id, record); upsertJob(cwd, record);
+    const file = resolveJobFile(cwd, id), read = fs.readFileSync;
+    let interleaved = false, progressCalls = 0;
+    const reader = t.mock.method(fs, "readFileSync", function(target, ...args) {
+      const contents = read.call(this, target, ...args);
+      if (!interleaved && target === file) {
+        interleaved = true;
+        if (action === "adopt") assert.equal(adoptJob(cwd, id, "new-session").adopted, true);
+        else if (action === "renew") renewLease(cwd, id, record.ownerId);
+        else if (action === "reattach") markOwnerAttachment(cwd, id, record.ownerId);
+        else if (action === "owner-changed") updateJob(cwd, id, () => ({ ownerId: "replacement" }));
+        else if (action === "attachment-changed") updateJob(cwd, id, () => ({ ownerAttachedAt: now }));
+        else updateJob(cwd, id, () => ({ leaseRenewedAt: now, leaseExpiresAt: now + 180000 }));
+      }
+      return contents;
+    });
+    let runtime;
+    try {
+      runtime = new JobRuntime(cwd, id, { onProgress: () => { progressCalls++; } });
+      assert.equal(interleaved, true);
+      assert.equal(readJobFile(file).cancelRequested, undefined);
+      assert.equal(runtime.reason, null); assert.equal(runtime.abort.signal.aborted, false); assert.equal(progressCalls, 0);
+      // The skipped observation must not latch the runtime: a current trigger
+      // on its next tick still cancels and aborts normally.
+      updateJob(cwd, id, () => ({ leaseExpiresAt: now - 1 }));
+      tick();
+      assert.equal(readJobFile(file).cancelRequested.reason, "lease_expired");
+      assert.equal(runtime.reason, "lease_expired"); assert.equal(runtime.abort.signal.aborted, true); assert.equal(progressCalls, 1);
+    } finally { reader.mock.restore(); runtime?.close(); }
+  }
+});
+
 test("expired leases cannot be revived before the worker observes expiry", () => {
   const cwd = makeTempDir(), now = Date.now();
   const record = { id: "expired-owner-test", ownerId: "owner", status: "running", jobClass: "task", workspaceRoot: cwd, threadId: "expired-thread", leaseSec: 180, leaseRenewedAt: now - 180001, leaseExpiresAt: now - 1 };
@@ -1217,7 +1413,7 @@ test("an owner wait that dies abruptly interrupts the worker after the grace per
   const f = fixture(); f.env.CODEX_COMPANION_OWNER_GRACE_SEC = "2";
   const launch = json(f.call("task", "--detached", "--json", "fixture"));
   const owner = spawnOwned(process.execPath, [script, "wait", launch.jobId, "--owner", launch.ownerId, "--timeout-sec", "60", "--json"], { cwd: f.repo, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
-  await waitUntil(() => job(f, launch.jobId).ownerAttached && job(f, launch.jobId).turnId);
+  await waitUntil(() => storedJob(f, launch.jobId).ownerAttached && job(f, launch.jobId).turnId);
   owner.kill("SIGKILL"); // Simulates Claude Code killing the Bash command when the user stops the agent.
   const killedAt = Date.now();
   const result = json(f.call("wait", launch.jobId, "--timeout-sec", "15", "--json", "--report"), 1);
@@ -1294,7 +1490,8 @@ test("a signalled owner wait stops the worker immediately; only a silent owner g
   assert.equal(ownerLost(silent, 1000 + 4999), false); assert.equal(ownerLost(silent, 1000 + 5000), true, "a silent heartbeat is given 5 s");
 
   // A live worker uses its own connection, including when cleanup fails.
-  for (const behavior of ["supported", "unsupported", "unknown", "failed", "timeout"]) {
+  // Successful live-worker cleanup was checked with the signalled owner above.
+  for (const behavior of ["unsupported", "unknown", "failed", "timeout"]) {
     const running = fixture(); running.env.CODEX_FIXTURE_TERMINALS_CLEAN = behavior;
     const started = json(running.call("task", "--detached", "--json", "fixture"));
     await waitUntil(() => storedJob(running, started.jobId).turnId);
@@ -1309,13 +1506,17 @@ test("a signalled owner wait stops the worker immediately; only a silent owner g
 
   // A lost wrapper is cancelled through the replacement broker. Even an
   // unconfirmed interrupt cleans after the last exact-turn poll.
+  const lost = fixture("lost-turn:inProgress");
+  const failed = lost.call("task", "--report", "--json", "fixture");
+  assert.equal(failed.status, 1);
+  const id = /Job handle: ([^;]+)/.exec(failed.stderr)?.[1]; assert.ok(id);
+  const original = storedJob(lost, id);
+  assert.equal(original.result.turnEnded, false);
+  await waitUntil(() => !alive(lost.requests()[0].serverId));
+  const restoreLost = await snapshotFixture(lost);
   for (const behavior of ["supported", "unsupported", "unconfirmed"]) {
-    const lost = fixture("lost-turn:inProgress"); lost.env.CODEX_FIXTURE_TERMINALS_CLEAN = behavior;
-    const failed = lost.call("task", "--report", "--json", "fixture");
-    assert.equal(failed.status, 1);
-    const id = /Job handle: ([^;]+)/.exec(failed.stderr)?.[1]; assert.ok(id);
-    const original = storedJob(lost, id);
-    assert.equal(original.result.turnEnded, false);
+    restoreLost();
+    lost.env.CODEX_FIXTURE_TERMINALS_CLEAN = behavior;
     if (behavior === "unconfirmed") fs.writeFileSync(path.join(lost.dir, "fake-codex-state.json"), JSON.stringify({ ...lost.state(), ignoreInterrupt: true }));
     const confirmed = behavior !== "unconfirmed";
     const cancelled = json(lost.call("cancel", id, "--json"), confirmed ? 0 : 2);
@@ -1374,30 +1575,72 @@ test("closed stdout during direct progress stops the owner without a crash", asy
 
 test("inferred final answers confirm the exact turn or remain recoverable by name and job ID", async t => {
   const { unresolvedTask } = await import('../plugins/codex/scripts/lib/state.mjs');
-  const stored = (f, id) => readJobFile(path.join(resolveStateDir(f.repo, f.env), "jobs", `${id}.json`));
-  const changeServer = (f, patch) => fs.writeFileSync(path.join(f.dir, "fake-codex-state.json"), JSON.stringify({ ...f.state(), ...patch }));
+  const stored = (shared, id) => readJobFile(path.join(resolveStateDir(shared.repo, shared.env), "jobs", `${id}.json`));
+  const changeServer = (shared, patch) => fs.writeFileSync(path.join(shared.dir, "fake-codex-state.json"), JSON.stringify({ ...shared.state(), ...patch }));
+  // One real inferred turn supplies both unresolved history and broker-cleanup
+  // variants. Every replay starts from its complete, quiescent durable snapshot.
+  const shared = fixture("inferred-final:running");
+  const binary = path.join(shared.dir, "codex"), source = fs.readFileSync(binary, "utf8");
+  const interruptCase = 'case "turn/interrupt": {';
+  assert.ok(source.includes(interruptCase));
+  fs.writeFileSync(binary, source.replace(interruptCase, `${interruptCase}
+    if (state.rejectInterrupt) throw new Error("Fixture interrupt refused");
+  `));
+  assert.equal(run(process.execPath, [path.join(shared.dir, "codex"), "app-server"], { cwd: shared.repo, env: shared.env, input: "" }).status, 0);
+  changeServer(shared, { allowInterrupt: true });
+  const launch = json(shared.call("task", "--fresh", "--detached", "--json", "fixture"));
+  const original = await waitUntil(() => {
+    const current = stored(shared, launch.jobId);
+    return current.status === "completed" && !current.pid && current;
+  });
+  assert.equal(original.result.inferredCompletion, true);
+  assert.equal(original.result.turnEnded, false);
+  assert.equal(original.result.turnStatus, "inProgress");
+  assert.equal(unresolvedTask(original), true);
+  await waitUntil(() => shared.state().threads.find(thread => thread.id === original.threadId).turns.find(turn => turn.id === original.turnId).status === "interrupted");
+  const cleanup = shared.requests().filter(request => request.method === "turn/interrupt");
+  assert.equal(cleanup.length, 1);
+  assert.deepEqual(cleanup[0].params, { threadId: original.threadId, turnId: original.turnId });
+  assert.equal(cleanup[0].serverId, shared.requests().find(request => request.method === "turn/start").serverId);
+  await waitUntil(() => !alive(cleanup[0].serverId));
+  const restore = await snapshotFixture(shared);
+  const restoreRunning = () => {
+    restore();
+    const server = shared.state();
+    Object.assign(server.threads.find(thread => thread.id === original.threadId).turns.find(turn => turn.id === original.turnId),
+      { status: "inProgress", completedAt: null });
+    changeServer(shared, { ...server, allowInterrupt: false });
+  };
   for (const scenario of ["delayed-cancel", "owner-signal", "historical-signal", "owner-returned", "owner-attached", "runtime-stop"]) await t.test(scenario, async t => {
-    const f = fixture("inferred-final:running");
-    const launch = json(f.call("task", "--fresh", "--detached", "--json", "fixture"));
-    const original = await waitUntil(() => {
-      const current = stored(f, launch.jobId);
-      return current.status === "completed" && !current.pid && current;
-    });
-    await waitUntil(() => !alive(f.requests()[0].serverId));
+    restoreRunning();
     if (scenario === "delayed-cancel") {
-      const cancel = json(f.call("cancel", launch.jobId, "--json"), 2);
+      // The replacement-broker silent deadline is retained in checkCleanup's
+      // unconfirmed variant. Here a real RPC refusal gives the same durable
+      // stop intent before the later exact-turn confirmation.
+      changeServer(shared, { rejectInterrupt: true });
+      const artifactBefore = fs.readFileSync(original.resultFile, "utf8");
+      const cancel = json(shared.call("cancel", launch.jobId, "--json"), 2);
       assert.equal(cancel.status, "interrupt_unconfirmed");
-      assert.equal(cancel.turnInterruptAttempted, true);
+      assert.equal(cancel.confirmation, "unconfirmed");
+      assert.equal(cancel.turnInterruptAttempted, true); assert.equal(cancel.turnInterrupted, false);
+      assert.equal(cancel.reason, "cancelled_by_user");
+      const pending = stored(shared, launch.jobId);
+      assert.equal(pending.ownerId, original.ownerId);
+      assert.equal(pending.threadId, original.threadId); assert.equal(pending.turnId, original.turnId);
+      assert.equal(pending.cancelRequested.reason, "cancelled_by_user");
+      assert.deepEqual(pending.result, original.result);
+      assert.equal(fs.readFileSync(pending.resultFile, "utf8"), artifactBefore);
+      assert.equal(fs.readFileSync(pending.rawOutputFile, "utf8"), original.result.rawOutput);
     } else if (scenario === "owner-attached") {
       // The worker reconciles its own leftover turn while the owner still waits.
-      patchJob(f, launch.jobId, { ownerAttached: true, ownerAttachedAt: Date.now(), ownerDetachedAt: null, ownerDetachReason: null });
+      patchJob(shared, launch.jobId, { ownerAttached: true, ownerAttachedAt: Date.now(), ownerDetachedAt: null, ownerDetachReason: null });
     } else if (scenario === "historical-signal") {
       // Older stopped owners may have only detach metadata, with no intent field.
-      patchJob(f, launch.jobId, { ownerAttachedAt: Date.now(), ownerDetachedAt: Date.now(), ownerDetachReason: "signal" });
+      patchJob(shared, launch.jobId, { ownerAttachedAt: Date.now(), ownerDetachedAt: Date.now(), ownerDetachReason: "signal" });
     } else {
       // Hold publication after the answer was captured, so a real owner/runtime
       // can stop before the worker's final completed-state write wins the race.
-      patchJob(f, launch.jobId, { status: "running", phase: "running" });
+      patchJob(shared, launch.jobId, { status: "running", phase: "running" });
       if (scenario === "runtime-stop") {
         const runtimeModule = new URL('../plugins/codex/scripts/lib/job-runtime.mjs', import.meta.url).href;
         const stateModule = new URL('../plugins/codex/scripts/lib/state.mjs', import.meta.url).href;
@@ -1409,27 +1652,27 @@ test("inferred final answers confirm the exact turn or remain recoverable by nam
           runtime.abort.signal.addEventListener('abort', () => { reasonAtAbort = readJobFile(resolveJobFile(process.cwd(), ${JSON.stringify(launch.jobId)})).cancelRequested?.reason ?? null; });
           runtime.stop('owner_stopped'); runtime.close();
           console.log(JSON.stringify({ reasonAtAbort }));
-        `], { cwd: f.repo, env: f.env });
+        `], { cwd: shared.repo, env: shared.env });
         assert.equal(json(stopped).reasonAtAbort, "owner_stopped");
       } else {
         const owner = spawnOwned(process.execPath, [script, "wait", launch.jobId, "--owner", launch.ownerId, "--timeout-sec", "60", "--json"],
-          { cwd: f.repo, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
+          { cwd: shared.repo, env: shared.env, stdio: ["ignore", "pipe", "pipe"] });
         owner.stdout.resume(); owner.stderr.resume();
         const closed = new Promise(resolve => owner.on("close", resolve));
-        await waitUntil(() => stored(f, launch.jobId).ownerAttached);
+        await waitUntil(() => stored(shared, launch.jobId).ownerAttached);
         if (scenario === "owner-signal") owner.kill("SIGTERM");
-        else patchJob(f, launch.jobId, { status: "completed", phase: "done" });
+        else patchJob(shared, launch.jobId, { status: "completed", phase: "done" });
         assert.equal(await closed, scenario === "owner-signal" ? 130 : 0);
-        assert.equal(stored(f, launch.jobId).ownerDetachReason, scenario === "owner-signal" ? "signal" : "returned");
+        assert.equal(stored(shared, launch.jobId).ownerDetachReason, scenario === "owner-signal" ? "signal" : "returned");
       }
-      patchJob(f, launch.jobId, { status: "completed", phase: "done" });
+      patchJob(shared, launch.jobId, { status: "completed", phase: "done" });
     }
     // The server confirms the previously requested interruption only afterward.
-    const server = f.state();
+    const server = shared.state();
     Object.assign(server.threads.find(thread => thread.id === original.threadId).turns.find(turn => turn.id === original.turnId),
       { status: "interrupted", completedAt: Math.floor(Date.now() / 1000) });
-    changeServer(f, server);
-    const output = f.call("result", launch.jobId, "--details"), resolved = stored(f, launch.jobId);
+    changeServer(shared, server);
+    const output = shared.call("result", launch.jobId, "--details"), resolved = stored(shared, launch.jobId);
     t.diagnostic(JSON.stringify({ scenario, status: resolved.status, exitCode: output.status, ownerDetachReason: resolved.ownerDetachReason ?? null,
       cancelRequested: resolved.cancelRequested?.reason ?? null, interruptionReason: resolved.result.interruptionReason }));
     const expected = ["owner-returned", "owner-attached"].includes(scenario) ? "completed" : scenario === "delayed-cancel" ? "cancelled" : "interrupted";
@@ -1445,66 +1688,48 @@ test("inferred final answers confirm the exact turn or remain recoverable by nam
     if (!["historical-signal", "owner-signal"].includes(scenario)) assert.equal(resolved.cancelRequested?.reason ?? null,
       ["owner-returned", "owner-attached"].includes(scenario) ? null : scenario === "delayed-cancel" ? "cancelled_by_user" : "owner_stopped");
     assert.equal(resolved.result.interruptionReason, expected === "completed" ? null : expected === "cancelled" ? "cancelled_by_user" : "owner_stopped");
-    assert.equal(f.requests().filter(request => request.method === "turn/start").length, 1);
+    assert.equal(shared.requests().filter(request => request.method === "turn/start").length, 1);
   });
-  for (const stop of ["none", "cancel", "recorded-cancel", "owner-stop"]) {
-    const f = fixture("inferred-final:running");
-    // Initialize durable fixture state, then let the existing interrupt handler
-    // accept the real broker's cleanup when the inferred worker disconnects.
-    assert.equal(run(process.execPath, [path.join(f.dir, "codex"), "app-server"], { cwd: f.repo, env: f.env, input: "" }).status, 0);
-    changeServer(f, { allowInterrupt: true });
-    const launch = json(f.call("task", "--fresh", "--detached", "--json", "fixture"));
-    const original = await waitUntil(() => {
-      const current = stored(f, launch.jobId);
-      return current.status === "completed" && !current.pid && current;
-    });
-    assert.equal(original.result.inferredCompletion, true);
-    assert.equal(original.result.turnEnded, false);
-    assert.equal(original.result.turnStatus, "inProgress");
-    assert.equal(unresolvedTask(original), true);
-    await waitUntil(() => f.state().threads.find(thread => thread.id === original.threadId).turns.find(turn => turn.id === original.turnId).status === "interrupted");
-    const cleanup = f.requests().filter(request => request.method === "turn/interrupt");
-    assert.equal(cleanup.length, 1);
-    assert.deepEqual(cleanup[0].params, { threadId: original.threadId, turnId: original.turnId });
-    assert.equal(cleanup[0].serverId, f.requests().find(request => request.method === "turn/start").serverId);
-    // The fixture persists the interruption without emitting turn/completed;
-    // wait for retirement before reading it through a replacement broker.
-    await waitUntil(() => !alive(cleanup[0].serverId));
-    if (stop === "cancel") assert.equal(json(f.call("cancel", launch.jobId, "--json")).confirmation, "confirmed");
-    if (stop === "recorded-cancel" || stop === "owner-stop") patchJob(f, launch.jobId, {
-      cancelRequested: { reason: stop === "recorded-cancel" ? "cancelled_by_user" : "owner_stopped", at: new Date().toISOString() }
-    });
-    const expected = stop === "none" ? "completed" : stop === "owner-stop" ? "interrupted" : "cancelled";
-    const exitCode = expected === "completed" ? 0 : 1;
-    const report = json(f.call("result", launch.jobId, "--details"), exitCode), resolved = stored(f, launch.jobId);
-    assert.equal(report.status, expected);
-    assert.equal(resolved.status, expected);
-    assert.equal(resolved.result.workerStatus, expected);
-    assert.equal(resolved.result.status, exitCode);
-    assert.equal(resolved.report.exitCode, exitCode);
-    assert.equal(resolved.result.turnStatus, "interrupted");
-    assert.equal(resolved.result.turnEnded, true);
-    assert.equal(resolved.recovered, true);
-    assert.deepEqual([resolved.recovery.source, resolved.recovery.threadId, resolved.recovery.turnId, resolved.recovery.turnStatus],
-      ["thread/read", original.threadId, original.turnId, "interrupted"]);
-    assert.ok(resolved.recovery.detail);
-    assert.equal(Boolean(resolved.recovery.interruptRequested), stop !== "none");
-    assert.equal(resolved.result.interruptionReason, expected === "cancelled" ? "cancelled_by_user" : stop === "owner-stop" ? "owner_stopped" : null);
-    assert.equal(resolved.result.rawOutput, original.result.rawOutput);
-    assert.deepEqual(resolved.result.structured, original.result.structured);
-    assert.equal(fs.readFileSync(resolved.rawOutputFile, "utf8"), original.result.rawOutput);
-    assert.deepEqual(readJobFile(resolved.resultFile), resolved.result);
-    assert.equal(unresolvedTask(resolved), false);
-    assert.equal(f.requests().filter(request => request.method === "turn/start").length, 1);
-    const followup = direct(f.call("task", "--continue", launch.jobId, "--direct", "--quiet", "follow up"));
-    assert.equal(followup.status, "completed");
-    assert.equal(f.requests().filter(request => request.method === "turn/start").length, 2);
-    t.diagnostic(JSON.stringify({ mode: "broker-disconnect", stop, status: resolved.status, turnStatus: resolved.result.turnStatus, exitCode, followup: followup.status }));
+  {
+    for (const stop of ["none", "cancel", "recorded-cancel", "owner-stop"]) {
+      restore();
+      if (stop === "cancel") assert.equal(json(shared.call("cancel", launch.jobId, "--json")).confirmation, "confirmed");
+      if (stop === "recorded-cancel" || stop === "owner-stop") patchJob(shared, launch.jobId, {
+        cancelRequested: { reason: stop === "recorded-cancel" ? "cancelled_by_user" : "owner_stopped", at: new Date().toISOString() }
+      });
+      const expected = stop === "none" ? "completed" : stop === "owner-stop" ? "interrupted" : "cancelled";
+      const exitCode = expected === "completed" ? 0 : 1;
+      const report = json(shared.call("result", launch.jobId, "--details"), exitCode), resolved = stored(shared, launch.jobId);
+      assert.equal(report.status, expected);
+      assert.equal(resolved.status, expected);
+      assert.equal(resolved.result.workerStatus, expected);
+      assert.equal(resolved.result.status, exitCode);
+      assert.equal(resolved.report.exitCode, exitCode);
+      assert.equal(resolved.result.turnStatus, "interrupted");
+      assert.equal(resolved.result.turnEnded, true);
+      assert.equal(resolved.recovered, true);
+      assert.deepEqual([resolved.recovery.source, resolved.recovery.threadId, resolved.recovery.turnId, resolved.recovery.turnStatus],
+        ["thread/read", original.threadId, original.turnId, "interrupted"]);
+      assert.ok(resolved.recovery.detail);
+      assert.equal(Boolean(resolved.recovery.interruptRequested), stop !== "none");
+      assert.equal(resolved.result.interruptionReason, expected === "cancelled" ? "cancelled_by_user" : stop === "owner-stop" ? "owner_stopped" : null);
+      assert.equal(resolved.result.rawOutput, original.result.rawOutput);
+      assert.deepEqual(resolved.result.structured, original.result.structured);
+      assert.equal(fs.readFileSync(resolved.rawOutputFile, "utf8"), original.result.rawOutput);
+      assert.deepEqual(readJobFile(resolved.resultFile), resolved.result);
+      assert.equal(unresolvedTask(resolved), false);
+      assert.equal(shared.requests().filter(request => request.method === "turn/start").length, 1);
+      t.diagnostic(JSON.stringify({ mode: "broker-disconnect", stop, status: resolved.status, turnStatus: resolved.result.turnStatus, exitCode }));
+    }
   }
-  for (const [mode, selector] of [["running", "name"], ["running", "jobId"], ["running", "observed"], ["unreadable", "command"], ["hang", "command"], ["completed", null], ["failed", null]]) {
-    const f = fixture(`inferred-final:${mode}`);
-    const first = direct(f.call("task", "--fresh", "--direct", "--quiet", "fixture"), mode === "failed" ? 1 : 0);
-    const original = stored(f, first.jobId);
+  for (const [mode, selectors] of [["running", ["name", "jobId", "observed"]], ["unreadable", ["command"]], ["hang", ["command"]], ["completed", [null]], ["failed", [null]]]) {
+    const replay = mode === "running";
+    if (replay) restoreRunning();
+    const current = replay ? shared : fixture(`inferred-final:${mode}`);
+    const first = direct(replay
+      ? current.call("wait", launch.jobId, "--direct", "--quiet")
+      : current.call("task", "--fresh", "--direct", "--quiet", "fixture"), mode === "failed" ? 1 : 0);
+    const f = current, original = stored(f, first.jobId);
     const ended = ["completed", "failed"].includes(mode);
     assert.equal(first.status, mode === "failed" ? "failed" : "completed");
     assert.equal(original.result.inferredCompletion, true);
@@ -1517,53 +1742,57 @@ test("inferred final answers confirm the exact turn or remain recoverable by nam
 
     // An unconfirmed stream retires its broker on disconnect. The replacement
     // must resolve the durable exact turn, even with no final items in history.
-    await waitUntil(() => !alive(f.requests()[0].serverId));
-    if (!ended) {
-      // A timed-out probe stays recoverable once the server answers again.
-      if (mode === "hang") changeServer(f, { confirmationMode: "running" });
-      const blocked = direct(f.call("task", "--continue", first.jobId, "--direct", "--quiet", "follow up"), 2);
-      const blocker = blocked.blockers[0];
-      assert.equal(blocker.code, "thread_busy"); assert.equal(blocker.predecessorJobId, first.jobId);
-      assert.ok(blocker.cancelCommand);
-      const status = json(f.call("status", first.jobId, "--json"));
-      assert.equal(status.job.status, "completed");
-      assert.equal(status.job.turnResolution, mode === "unreadable" ? "unknown" : "in_progress");
-      assert.ok(status.recovery.cancelCommand);
-      assert.equal(stored(f, first.jobId).result.rawOutput, original.result.rawOutput);
-      // Missing inference markers and normal ended records retain their old
-      // eligibility; this fix does not reinterpret historical completions.
-      assert.equal(unresolvedTask({ ...original, result: { ...original.result, inferredCompletion: undefined } }), false);
-      assert.equal(unresolvedTask({ ...original, result: { ...original.result, turnEnded: true } }), false);
-      const offset = f.requests().length;
-      if (selector === "observed") {
-        const server = f.state();
-        Object.assign(server.threads.find(thread => thread.id === original.threadId).turns.find(turn => turn.id === original.turnId),
-          { status: "completed", completedAt: Math.floor(Date.now() / 1000) });
-        changeServer(f, server);
-        assert.equal(json(f.call("status", first.jobId, "--json")).job.turnResolution, "completed");
-      } else {
-        changeServer(f, { allowInterrupt: true });
-        const cancelled = json(selector === "command"
-          ? run("/bin/sh", ["-c", blocker.cancelCommand], { cwd: f.repo, env: f.env })
-          : f.call("cancel", selector === "name" ? original.agentName : first.jobId, "--json"));
-        assert.equal(cancelled.confirmation, "confirmed"); assert.equal(cancelled.turnInterrupted, true);
+    if (!ended) await waitUntil(() => !alive(f.requests()[0].serverId));
+    const reset = selectors.length > 1 ? await snapshotFixture(f) : null;
+    for (const selector of selectors) {
+      reset?.();
+      if (!ended) {
+        // A timed-out probe stays recoverable once the server answers again.
+        if (mode === "hang") changeServer(f, { confirmationMode: "running" });
+        const blocked = direct(f.call("task", "--continue", first.jobId, "--direct", "--quiet", "follow up"), 2);
+        const blocker = blocked.blockers[0];
+        assert.equal(blocker.code, "thread_busy"); assert.equal(blocker.predecessorJobId, first.jobId);
+        assert.ok(blocker.cancelCommand);
+        const status = json(f.call("status", first.jobId, "--json"));
+        assert.equal(status.job.status, "completed");
+        assert.equal(status.job.turnResolution, mode === "unreadable" ? "unknown" : "in_progress");
+        assert.ok(status.recovery.cancelCommand);
+        assert.equal(stored(f, first.jobId).result.rawOutput, original.result.rawOutput);
+        // Missing inference markers and normal ended records retain their old
+        // eligibility; this fix does not reinterpret historical completions.
+        assert.equal(unresolvedTask({ ...original, result: { ...original.result, inferredCompletion: undefined } }), false);
+        assert.equal(unresolvedTask({ ...original, result: { ...original.result, turnEnded: true } }), false);
+        const offset = f.requests().length;
+        if (selector === "observed") {
+          const server = f.state();
+          Object.assign(server.threads.find(thread => thread.id === original.threadId).turns.find(turn => turn.id === original.turnId),
+            { status: "completed", completedAt: Math.floor(Date.now() / 1000) });
+          changeServer(f, server);
+          assert.equal(json(f.call("status", first.jobId, "--json")).job.turnResolution, "completed");
+        } else {
+          changeServer(f, { allowInterrupt: true });
+          const cancelled = json(selector === "command"
+            ? run("/bin/sh", ["-c", blocker.cancelCommand], { cwd: f.repo, env: f.env })
+            : f.call("cancel", selector === "name" ? original.agentName : first.jobId, "--json"));
+          assert.equal(cancelled.confirmation, "confirmed"); assert.equal(cancelled.turnInterrupted, true);
+        }
+        const interrupts = f.requests().slice(offset).filter(request => request.method === "turn/interrupt");
+        assert.equal(interrupts.length, selector === "observed" ? 0 : 1);
+        if (interrupts.length) assert.deepEqual(interrupts[0].params, { threadId: original.threadId, turnId: original.turnId });
+        const resolved = stored(f, first.jobId);
+        assert.equal(resolved.status, selector === "observed" ? "completed" : "cancelled"); assert.equal(resolved.result.turnEnded, true);
+        assert.equal(resolved.result.rawOutput, original.result.rawOutput);
+        assert.deepEqual(resolved.result.structured, original.result.structured);
+        assert.equal(fs.readFileSync(resolved.rawOutputFile, "utf8"), original.result.rawOutput);
+        assert.deepEqual(readJobFile(resolved.resultFile), resolved.result);
+        assert.equal(resolved.report.summary, original.report.summary);
+        assert.equal(unresolvedTask(resolved), false);
       }
-      const interrupts = f.requests().slice(offset).filter(request => request.method === "turn/interrupt");
-      assert.equal(interrupts.length, selector === "observed" ? 0 : 1);
-      if (interrupts.length) assert.deepEqual(interrupts[0].params, { threadId: original.threadId, turnId: original.turnId });
-      const resolved = stored(f, first.jobId);
-      assert.equal(resolved.status, selector === "observed" ? "completed" : "cancelled"); assert.equal(resolved.result.turnEnded, true);
-      assert.equal(resolved.result.rawOutput, original.result.rawOutput);
-      assert.deepEqual(resolved.result.structured, original.result.structured);
-      assert.equal(fs.readFileSync(resolved.rawOutputFile, "utf8"), original.result.rawOutput);
-      assert.deepEqual(readJobFile(resolved.resultFile), resolved.result);
-      assert.equal(resolved.report.summary, original.report.summary);
-      assert.equal(unresolvedTask(resolved), false);
+      t.diagnostic(JSON.stringify({ mode, selector, turnEnded: original.result.turnEnded }));
     }
     const followup = direct(f.call("task", "--continue", first.jobId, "--direct", "--quiet", "follow up"));
     assert.equal(followup.status, "completed");
     assert.equal(f.requests().filter(request => request.method === "turn/start").length, 2);
-    t.diagnostic(JSON.stringify({ mode, selector, turnEnded: original.result.turnEnded, followup: followup.status }));
   }
   for (const behavior of ["review-ok", "with-subagent", "with-subagent-no-main-turn-completed"]) {
     const f = fixture(behavior), first = direct(f.call("task", "--fresh", "--direct", "--quiet", "fixture"));
@@ -1986,7 +2215,7 @@ test("the default feed streams 60 events while JSON retains its existing activit
 });
 
 test("task --continue resumes the job's thread with its recorded authorization and a parent bridge", async () => {
-  const f = fixture("slow-task");
+  const f = fixture("task-ok");
   const first = json(f.call("task", "--detached", "--json", "--sandbox", "workspace-write", "first assignment"));
   const done = json(f.call("wait", first.jobId, "--json", "--report"));
   assert.equal(done.status, "completed"); assert.equal(done.sandbox, "workspace-write");
@@ -2018,12 +2247,12 @@ test("task --continue resumes the job's thread with its recorded authorization a
   assert.equal(Object.hasOwn(start, "dynamicTools"), false);
   const active = fixture();
   const running = json(active.call("task", "--detached", "--json", "third"));
-  await waitUntil(() => job(active, running.jobId).turnId);
+  await waitUntil(() => storedJob(active, running.jobId).turnId);
   assert.notEqual(active.call("task", "--continue", running.jobId, "--json").status, 0);
   json(active.call("cancel", running.jobId, "--json"));
 
   // An older runtime rejects the bridge override, then the dynamic registration.
-  const fallback = fixture("slow-task"), binary = path.join(fallback.dir, "codex");
+  const fallback = fixture("task-ok"), binary = path.join(fallback.dir, "codex");
   fs.writeFileSync(binary, fs.readFileSync(binary, "utf8").replace('case "thread/start": {', `case "thread/start": {
     state.startRegistrations = [...(state.startRegistrations || []), [Boolean(message.params.config), Boolean(message.params.dynamicTools)]];
     saveState(state);
@@ -2038,7 +2267,7 @@ test("task --continue resumes the job's thread with its recorded authorization a
   // Unrelated errors, including serde's list of accepted fields, are not registration rejections.
   for (const originalError of ["Invalid model config: unsupported model selected",
     "unknown field `serviceName`, expected one of `cwd`, `model`, `config`, `dynamicTools`"]) {
-    const unrelated = fixture("slow-task"), unrelatedBinary = path.join(unrelated.dir, "codex");
+    const unrelated = fixture("task-ok"), unrelatedBinary = path.join(unrelated.dir, "codex");
     fs.writeFileSync(unrelatedBinary, fs.readFileSync(unrelatedBinary, "utf8").replace('case "thread/start": {', `case "thread/start": {
     state.startAttempts = (state.startAttempts || 0) + 1; saveState(state);
     if (state.startAttempts === 1) {

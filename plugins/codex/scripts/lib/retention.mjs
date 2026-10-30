@@ -258,6 +258,7 @@ function expired(job, cutoff, record = job, orphan = false) {
   return (!active(job) || oldOrphan) && !unresolvedTask({ ...job, ...record }) && Number.isFinite(timestamp) && timestamp < cutoff && !job.ownerAttached && !alive(job.pid);
 }
 function eligibleRecord(index, record, cutoff) {
+  if ([index, record].some(job => alive(job?.pid) || alive(job?.launcherPid))) return false;
   // A missing private record cannot establish that a queued/running launch
   // ended. Keep its remaining evidence unless the index proves quiescence.
   if (!record) return ["completed", "failed", "cancelled", "interrupted", "blocked", "needs_input", "error"].includes(index?.status)
@@ -625,23 +626,27 @@ export async function applyRetention(plan, { deleteThread } = {}) {
 export async function applyRetentionWithBroker(plan, { cwd = process.cwd(), env = process.env, broker } = {}) {
   let client = null, failure = null;
   try {
+    // Finish asynchronous connection setup before applyRetention's final
+    // synchronous reference/rollout check and the deletion request.
+    if (plan.threads?.length) {
+      try {
+        const session = broker === undefined ? await ensureBrokerSession(cwd, { env }) : broker;
+        if (!session?.endpoint) throw new Error("Retention broker is unavailable.");
+        const timeout = setTimeout(() => client?.close().catch(() => {}), 10000);
+        try {
+          client = await CodexAppServerClient.connect(cwd, {
+            env, brokerEndpoint: session.endpoint, reuseExistingBroker: true,
+            onClient(candidate) {
+              if (candidate.transport !== "broker") throw new Error("Retention requires the existing broker; private startup refused.");
+              client = candidate;
+            }
+          });
+        } finally { clearTimeout(timeout); }
+      } catch (error) { failure = error; }
+    }
     return await applyRetention(plan, { deleteThread: async threadId => {
       if (failure) throw failure;
       try {
-        if (!client) {
-          const session = broker === undefined ? await ensureBrokerSession(cwd, { env }) : broker;
-          if (!session?.endpoint) throw new Error("Retention broker is unavailable.");
-          const timeout = setTimeout(() => client?.close().catch(() => {}), 10000);
-          try {
-            client = await CodexAppServerClient.connect(cwd, {
-              env, brokerEndpoint: session.endpoint, reuseExistingBroker: true,
-              onClient(candidate) {
-                if (candidate.transport !== "broker") throw new Error("Retention requires the existing broker; private startup refused.");
-                client = candidate;
-              }
-            });
-          } finally { clearTimeout(timeout); }
-        }
         const timeout = setTimeout(() => client.close().catch(() => {}), 10000);
         try { return await client.request("thread/delete", { threadId }); }
         finally { clearTimeout(timeout); }

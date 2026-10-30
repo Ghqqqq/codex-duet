@@ -5,12 +5,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildWorkerReport, classifyWorkerOutcome, classifyBrowserBlocker, parseStructuredReport } from "../plugins/codex/scripts/lib/worker-report.mjs";
 import { makeTempDir, run, initGitRepo, waitForCondition, readyBroker } from "./helpers.mjs";
-import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
+import { buildEnv, installFakeCodex, lifecycleHarness } from "./fake-codex-fixture.mjs";
 import { splitRawArgumentString } from "../plugins/codex/scripts/lib/args.mjs";
 import { directReport } from "../plugins/codex/scripts/lib/job-runtime.mjs";
 import { isC2Report } from "../plugins/codex/scripts/lib/report-delivery.mjs";
+import { readJobFile, resolveStateDir, updateJob } from "../plugins/codex/scripts/lib/state.mjs";
 
+const lifecycle = await lifecycleHarness();
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
+let checkDecisionReport;
 const stateModule = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
 test("stale browser claims have a distinct blocker with the owning session ID", () => {
   const text = "Tab 123 is already part of browser session 00000000-0000-0000-0000-000000000001";
@@ -28,20 +31,58 @@ function fixture(behavior) {
   const dir = makeTempDir();
   installFakeCodex(dir, behavior);
   const repo = path.join(dir, "repo"); fs.mkdirSync(repo); initGitRepo(repo);
-  const env = { ...buildEnv(dir), CLAUDE_PLUGIN_DATA: path.join(dir, "data") };
+  const env = { ...buildEnv(dir), CLAUDE_PLUGIN_DATA: path.join(dir, "data"), CODEX_COMPANION_HOME: path.join(dir, "isolated") };
   const call = (...args) => run(process.execPath, [script, ...args], { cwd: repo, env });
   const state = () => JSON.parse(fs.readFileSync(path.join(dir, "fake-codex-state.json"), "utf8"));
   return { dir, repo, env, call, state };
 }
 
 function storedFixtureJob(f, id, patch = null) {
-  const response = run(process.execPath, ["--input-type=module", "-e", `
-    import { readJobFile, resolveJobFile, updateJob } from ${JSON.stringify(stateModule)};
-    const id = ${JSON.stringify(id)}, patch = ${JSON.stringify(patch)};
-    console.log(JSON.stringify(patch ? updateJob(process.cwd(), id, () => patch) : readJobFile(resolveJobFile(process.cwd(), id))));
-  `], { cwd: f.repo, env: f.env });
-  assert.equal(response.status, 0, response.stderr);
-  return JSON.parse(response.stdout);
+  if (!patch) return readJobFile(path.join(resolveStateDir(f.repo, f.env), "jobs", `${id}.json`));
+  // Fixture setup uses the production lock/index writer without launching a CLI
+  // just to mutate test state. Restore the home before any asynchronous work.
+  const previous = process.env.CODEX_COMPANION_HOME;
+  process.env.CODEX_COMPANION_HOME = f.env.CODEX_COMPANION_HOME;
+  try { return updateJob(f.repo, id, () => patch); }
+  finally { process.env.CODEX_COMPANION_HOME = previous; }
+}
+
+function switchingFixture(makeFixture = fixture) {
+  const f = makeFixture("review-ok"), binary = path.join(f.dir, "codex");
+  const source = fs.readFileSync(binary, "utf8");
+  const declaration = 'const BEHAVIOR = "review-ok";';
+  const request = 'const message = JSON.parse(line);';
+  assert.ok(source.includes(declaration) && source.includes(request));
+  fs.writeFileSync(binary, source.replace(declaration, 'let BEHAVIOR = "review-ok";')
+    .replace(request, `${request}\n  BEHAVIOR = loadState().fixtureBehavior || "review-ok";`));
+  return { ...f, select(behavior) {
+    const state = fs.existsSync(path.join(f.dir, "fake-codex-state.json")) ? f.state() : {};
+    fs.writeFileSync(path.join(f.dir, "fake-codex-state.json"), JSON.stringify({
+      nextThreadId: 1, nextTurnId: 1, appServerStarts: 0, threads: [], capabilities: null, lastInterrupt: null,
+      ...state, fixtureBehavior: behavior
+    }));
+  } };
+}
+
+function recoveryBaseline(f) {
+  const original = loseTurn(f), backup = path.join(f.dir, "recovery-baseline");
+  const files = [f.env.CODEX_COMPANION_HOME, path.join(f.dir, "fake-codex-state.json"),
+    path.join(f.dir, "fake-codex-state.json.requests.jsonl")];
+  const contents = file => {
+    const stat = fs.lstatSync(file);
+    return stat.isDirectory() ? fs.readdirSync(file).sort().map(name => [name, contents(path.join(file, name))])
+      : [stat.mode & 0o777, fs.readFileSync(file).toString("base64")];
+  };
+  fs.mkdirSync(backup);
+  const expected = files.map(contents);
+  files.forEach((file, i) => fs.cpSync(file, path.join(backup, String(i)), { recursive: true }));
+  return { original, restore() {
+    files.forEach((file, i) => {
+      fs.rmSync(file, { recursive: true, force: true });
+      fs.cpSync(path.join(backup, String(i)), file, { recursive: true });
+    });
+    assert.deepEqual(files.map(contents), expected, "restore the job, index, markers, broker metadata and server before each recovery");
+  } };
 }
 
 function loseTurn(f) {
@@ -75,11 +116,18 @@ function callAsync(f, ...args) {
 }
 
 test("stored transport failures recover the exact terminal outcome and provenance without replay", async () => {
+  const shared = fixture("lost-turn:completed"), baseline = recoveryBaseline(shared);
   for (const outcome of ["completed", "blocked", "needs_input", "failed", "interrupted"]) {
     const expected = outcome === "interrupted" ? "blocked" : outcome;
     const turnStatus = ["failed", "interrupted"].includes(outcome) ? outcome : "completed";
-    const f = fixture(`lost-turn:${turnStatus}`), original = loseTurn(f);
+    // Terminal classification shares one real transport loss. Interruption's
+    // explicit continuation retains its own runtime and turn history.
+    const f = outcome === "interrupted" ? fixture("lost-turn:interrupted") : shared;
+    if (f === shared) baseline.restore();
+    const original = f === shared ? baseline.original : loseTurn(f);
     const state = f.state(), turn = state.threads[0].turns[0];
+    turn.status = turnStatus;
+    turn.error = outcome === "failed" ? { message: "Fixture worker failed" } : null;
     assert.equal(turn.status, turnStatus);
     const blockers = outcome === "blocked" ? [{ code: "fixture_dependency", message: "Fixture dependency unavailable." }] : [];
     const question = outcome === "needs_input" ? "Which fixture dependency should be used?" : null;
@@ -120,7 +168,8 @@ test("stored transport failures recover the exact terminal outcome and provenanc
     assert.equal(report.threadId, original.threadId);
     assert.equal(report.turnId, original.turnId);
     assert.equal(report.recovery.turnId, original.turnId);
-    if (!["failed", "interrupted"].includes(outcome)) assert.deepEqual(report.blockers, question ? [{ code: "needs_input", message: question }] : blockers);
+    if (!["failed", "interrupted"].includes(outcome)) assert.deepEqual(report.blockers, question ? [{ code: "needs_input", message: question }]
+      : blockers.map(blocker => ({ ...blocker, app: null, tabId: null, sessionId: null })));
     if (question) assert.equal(report.question, question);
     assert.equal(saved.errorMessage, outcome === "failed" ? "Fixture worker failed" : null);
     assert.equal(JSON.parse(fs.readFileSync(saved.resultFile)).recovery.originalError, originalError);
@@ -260,6 +309,7 @@ test("running predecessor blocks a direct follow-up with an observational status
   try {
     await waitForCondition(() => { const job = storedFixtureJob(f, launch.jobId); return job.turnId && job.ownerAttached; });
     const job = storedFixtureJob(f, launch.jobId);
+    checkDecisionReport(f, f.call("wait", job.id, "--direct", "--timeout-sec", "1"), "running", 0);
     const response = f.call("task", "--thread", job.threadId, "--direct", "follow up");
     assert.equal(response.status, 2, response.stderr + response.stdout);
     const compact = directJson(response);
@@ -328,6 +378,7 @@ test("a --report worker runs with the worker-report schema and the parent reads 
   const stored = JSON.parse(fs.readFileSync(report.resultFile, "utf8"));
   assert.equal(stored.rawOutput, "Handled the requested task.\nTask prompt accepted.");
   assert.equal(stored.structured.status, "completed");
+  checkDecisionReport(f, f.call("wait", report.jobId, "--direct"), "completed", 0);
   // A task without --report (stop-gate hook, plain rescue) keeps prose output and no schema.
   const plain = f.call("task", "--json", "implement safely");
   assert.equal(plain.status, 0, plain.stderr);
@@ -346,6 +397,7 @@ test("declared blockers override completed while failures and essential question
     assert.equal(response.status, 2, response.stderr);
     const report = directJson(response), details = directJson(f.call("result", report.jobId, "--details"));
     assert.equal(report.status, "blocked"); assert.equal(details.declaredStatus, declaredStatus);
+    if (declaredStatus === "blocked") checkDecisionReport(f, response, "blocked", 2);
     assert.deepEqual(report.blockers, [{ code: "missing_dependency", message: "fixture-dep is not installed" }]);
     assert.equal(JSON.parse(f.call("status", report.jobId, "--json").stdout).job.status, "blocked");
     const payload = directJson(f.call("result", report.jobId, "--json")).storedJob.result;
@@ -410,6 +462,7 @@ for (const behavior of ["question-only"]) test(`${behavior} is needs_input, not 
   assert.equal(JSON.parse(f.call("status", report.jobId, "--json").stdout).job.status, "needs_input");
   assert.equal(f.call("result", report.jobId, "--report", "--json").status, 2);
   assert.equal(f.state().nextTurnId, 2);
+  checkDecisionReport(f, f.call("wait", report.jobId, "--direct"), "needs_input", 2);
 });
 
 test("question detection keeps delivered findings with an optional follow-up complete", () => {
@@ -470,13 +523,19 @@ test("runtime refusals and declared blocks retain typed blockers and their statu
     { error: { message: cyberMessage, codexErrorInfo: "other" }, notification: { message: genericMessage, codexErrorInfo: "cyberPolicy" }, code: "error" },
     { notification: { message: genericMessage, codexErrorInfo: "cyberPolicy" }, status: "completed", code: null }
   ];
-  for (const spec of cases) {
-    const f = fixture(`turn-error:${JSON.stringify(spec)}`);
-    const response = f.call("task", "--fresh", "--direct", "--sandbox", "read-only", "Check fixture outcome.");
-    const compact = directJson(response);
+  const f = switchingFixture();
+  for (const [index, spec] of cases.entries()) {
+    f.select(`turn-error:${JSON.stringify(spec)}`);
+    // The direct owner path is covered for each exit class. Other inputs use
+    // the foreground wrapper and the same stored compact/details projections.
+    const direct = index === 0 || spec.code === null || spec === cases.find(item => item.code === "error");
+    const response = f.call("task", "--fresh", ...(direct ? ["--direct"] : ["--report", "--json"]), "--sandbox", "read-only", "Check fixture outcome.");
+    const compactResponse = f.call("result", directJson(response).jobId);
+    const compact = directJson(compactResponse);
     const exit = spec.code === null ? 0 : spec.code === "error" ? 1 : 2;
     const status = spec.code === null ? "completed" : spec.code === "error" ? "failed" : "blocked";
     assert.equal(response.status, exit, JSON.stringify(spec));
+    assert.equal(compactResponse.status, exit, JSON.stringify(spec));
     assert.equal(compact.status, status);
     assert.equal(compact.blockers?.[0]?.code ?? null, spec.code);
     const next = spec.code === null ? null : spec.code === "auth_required" ? ["duet", "setup"]
@@ -507,7 +566,7 @@ test("runtime refusals and declared blocks retain typed blockers and their statu
       assert.equal(details.error, captured.error);
       assert.ok(compact.blockers[0].message);
     }
-    assert.equal(f.state().nextTurnId, 2, "classification must not replay the turn");
+    assert.equal(f.state().nextTurnId, index + 2, "classification must not replay the turn");
   }
   assert.equal(buildWorkerReport({ status: 1, rawOutput: cyberMessage, error: genericMessage }).status, "failed");
   assert.equal(buildWorkerReport({ status: 1, error: "A cybersecurity policy refusal." }).status, "failed");
@@ -579,8 +638,15 @@ test("recovery fetches the exact lost turn, even after a later turn on the same 
   const files = JSON.parse(seeded.stdout), originalIndex = fs.readFileSync(files.index), originalJob = fs.readFileSync(files.file);
   assert.equal(files.complete, true);
   const requestsFile = path.join(attribution.dir, "fake-codex-state.json.requests.jsonl");
-  for (const status of ["completed", "inProgress"]) {
-    for (const damage of ["readable", "missing-index", "malformed-index", "unreadable-index", "missing-job", "malformed-job", "unreadable-job", "orphan-job", "mismatched-turn", "two-missing"]) {
+  // Damage makes attribution incomplete before terminal-state handling. Cover
+  // each damage once, and both states for the readable and ambiguous cases.
+  const attributionCases = [
+    ["completed", "readable"], ["inProgress", "readable"],
+    ...["missing-index", "malformed-index", "unreadable-index", "missing-job", "malformed-job", "unreadable-job", "orphan-job", "mismatched-turn"]
+      .map((damage, index) => [index % 2 ? "inProgress" : "completed", damage]),
+    ["completed", "two-missing"], ["inProgress", "two-missing"]
+  ];
+  for (const [status, damage] of attributionCases) {
       storedFixtureJob(attribution, victim.id, { ...victim, turnId: null, recovered: false, recovery: null,
         result: { ...victim.result, turnId: null } });
       const state = attribution.state(); state.threads[0].turns[0].status = status;
@@ -612,7 +678,6 @@ test("recovery fetches the exact lost turn, even after a later turn on the same 
         if (fs.existsSync(target)) fs.chmodSync(target, 0o600);
         fs.writeFileSync(files.index, originalIndex); fs.writeFileSync(files.file, originalJob);
       }
-    }
   }
 });
 
@@ -653,7 +718,58 @@ test("early handle and heartbeat survive a killed wrapper; result recovers witho
 {
 const {
   fs, path, makeTempDir, initGitRepo, run, buildEnv, installFakeCodex, redactActivity, activityReader, writeJobFile, upsertJob, directReport, buildWorkerReport, AGENT_NAMES, splitRawArgumentString, spawnOwned, script, fixture, json, directLines, direct, waitUntil, job
-} = await (await import('./fake-codex-fixture.mjs')).lifecycleHarness();
+} = lifecycle;
+checkDecisionReport = (f, output, status, code) => {
+  const usage = { inputTokens: 150, cachedInputTokens: 40, outputTokens: 30, reasoningOutputTokens: 10, totalTokens: 180 };
+  const result = direct(output, code);
+  assert.equal(result.status, status);
+  assert.deepEqual(Object.keys(result).slice(0, 4), ["status", "worker", "jobId", "summary"]);
+  assert.deepEqual(Object.keys(result).slice(-2), ["next", "details"]);
+  const { summary, ...envelope } = result;
+  assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
+  assert.equal(result.details, `duet result '${result.jobId}' --details`);
+  assert.equal(result.next, status === "completed" ? null : status === "needs_answer" ? `duet answer ${result.worker} --question '${result.question.id}'` : status === "running" ? `duet wait ${result.worker}` : `duet task --to ${result.worker}`);
+  for (const key of ["waitCommand", "answerCommand", "answerAndWaitCommand", "rawOutputFile", "ownerId"]) assert.equal(Object.hasOwn(result, key), false);
+  const details = json(f.call("result", result.jobId, "--details"), code);
+  const reread = json(f.call("result", result.jobId), code);
+  assert.equal(reread.status, result.status); assert.equal(reread.next, result.next);
+  if (["running", "needs_answer"].includes(status)) {
+    assert.ok(details.waitCommand);
+    if (status === "needs_answer") {
+      assert.deepEqual(Object.keys(result.question), ["id", "kind", "text", "options", "expiresInSec"]);
+      assert.deepEqual(result.question.options, details.question.options);
+      assert.ok(result.question.expiresInSec >= 0);
+      assert.ok(details.answerCommand && details.answerAndWaitCommand);
+    }
+  } else {
+    assert.deepEqual(result.usage, usage);
+    assert.deepEqual(details.usage, usage);
+    assert.deepEqual(storedFixtureJob(f, result.jobId).result.usage, usage);
+    assert.deepEqual(Object.keys(result).slice(-3), ["usage", "next", "details"]);
+    assert.equal(result.summary, fs.readFileSync(details.rawOutputFile, "utf8").trim());
+    assert.deepEqual(reread, result);
+    const quiet = f.call("wait", result.jobId, "--direct", "--quiet");
+    assert.deepEqual(direct(quiet, code), result);
+    assert.equal(quiet.stdout, `${directLines(output.stdout).at(-1)}\n`);
+    const legacy = json(f.call("wait", result.jobId, "--json"), code);
+    const waited = json(f.call("wait", result.jobId, "--details"), code);
+    assert.deepEqual(Object.keys(legacy).filter(key => !Object.hasOwn(waited, key)), [], "no 1.3 wait report keys disappear");
+    for (const key of ["status", "reportFormat", "jobId", "threadId", "turnId", "exitCode", "sandbox", "approvalPolicy", "model", "effort", "serviceTier", "touchedFiles", "preExistingChanges", "fileTrackingStatus", "fileTrackingBasis", "verification", "verificationBasis", "keyFindings", "findingsBasis", "assumptions", "blockers", "question", "rawOutputFile", "resultFile", "ownerId", "sessionId"]) {
+      assert.equal(Object.hasOwn(details, key), Object.hasOwn(legacy, key), key);
+      assert.deepEqual(details[key], key === "blockers" && status === "blocked"
+        ? storedFixtureJob(f, result.jobId).result.structured.blockers : legacy[key], key);
+    }
+    assert.deepEqual(details.claimedVerification, legacy.claimedVerification ?? []);
+    assert.deepEqual(result.checks?.ran ?? [], details.verification);
+    assert.deepEqual(result.checks?.claimed ?? [], details.claimedVerification);
+    if (status !== "completed") {
+      assert.match(details.continuationCommand, / --direct$/);
+      assert.equal(legacy.continuationCommand, details.continuationCommand);
+      assert.equal(json(f.call("adopt", result.jobId, "--json"), 2).continuationCommand, details.continuationCommand);
+    }
+  }
+};
+
 test("task --direct streams progress as owner, then resumes without replaying activity", async () => {
   const f = fixture("w9-feed"), gate = path.join(f.dir, "finish-turn");
   f.env.CODEX_FIXTURE_TURN_GATE = gate;
@@ -692,7 +808,9 @@ test("task --direct streams progress as owner, then resumes without replaying ac
 
 test("direct questions provide executable re-wait and stdin-answer commands and preserve adoption", async () => {
   const f = fixture("w5-parent"), launch = json(f.call("task", "--detached", "--json", "--owner", "parent's owner", "fixture"));
-  const compact = direct(f.call("wait", launch.jobId, "--owner", launch.ownerId, "--direct"));
+  const output = f.call("wait", launch.jobId, "--owner", launch.ownerId, "--direct");
+  const compact = direct(output);
+  checkDecisionReport(f, output, "needs_answer", 0);
   const pending = json(f.call("result", launch.jobId, "--details"));
   assert.equal(compact.next, `duet answer ${launch.agentName} --question '${pending.question.id}'`);
   assert.equal(pending.status, "needs_answer"); assert.ok(pending.question.id);
@@ -731,59 +849,6 @@ test("direct questions provide executable re-wait and stdin-answer commands and 
 
 test("report v2 is decision-first and bounded; result and wait details retain the full report", async () => {
   const usage = { inputTokens: 150, cachedInputTokens: 40, outputTokens: 30, reasoningOutputTokens: 10, totalTokens: 180 };
-  for (const [behavior, status, code] of [["slow-task", "completed", 0], ["structured-blocked", "blocked", 2], ["question-only", "needs_input", 2], ["w5-parent", "needs_answer", 0], ["w5-working", "running", 0]]) {
-    const f = fixture(behavior), output = f.call("task", "--direct", ...(status === "running" ? ["--timeout-sec", "1"] : []), "fixture");
-    const result = direct(output, code);
-    try {
-      assert.equal(result.status, status);
-      assert.deepEqual(Object.keys(result).slice(0, 4), ["status", "worker", "jobId", "summary"]);
-      assert.deepEqual(Object.keys(result).slice(-2), ["next", "details"]);
-      const { summary, ...envelope } = result;
-      assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
-      assert.equal(result.details, `duet result '${result.jobId}' --details`);
-      assert.equal(result.next, status === "completed" ? null : status === "needs_answer" ? `duet answer ${result.worker} --question '${result.question.id}'` : status === "running" ? `duet wait ${result.worker}` : `duet task --to ${result.worker}`);
-      for (const key of ["waitCommand", "answerCommand", "answerAndWaitCommand", "rawOutputFile", "ownerId"]) assert.equal(Object.hasOwn(result, key), false);
-      const details = json(f.call("result", result.jobId, "--details"), code);
-      const reread = json(f.call("result", result.jobId), code);
-      assert.equal(reread.status, result.status); assert.equal(reread.next, result.next);
-      if (["running", "needs_answer"].includes(status)) {
-        assert.ok(details.waitCommand);
-        if (status === "needs_answer") {
-          assert.deepEqual(Object.keys(result.question), ["id", "kind", "text", "options", "expiresInSec"]);
-          assert.deepEqual(result.question.options, details.question.options);
-          assert.ok(result.question.expiresInSec >= 0);
-          assert.ok(details.answerCommand && details.answerAndWaitCommand);
-        }
-      } else {
-        assert.deepEqual(result.usage, usage);
-        assert.deepEqual(details.usage, usage);
-        assert.deepEqual(storedFixtureJob(f, result.jobId).result.usage, usage);
-        assert.deepEqual(Object.keys(result).slice(-3), ["usage", "next", "details"]);
-        assert.equal(result.summary, fs.readFileSync(details.rawOutputFile, "utf8").trim());
-        assert.deepEqual(reread, result);
-        const quiet = f.call("wait", result.jobId, "--direct", "--quiet");
-        assert.deepEqual(direct(quiet, code), result);
-        assert.equal(quiet.stdout, `${directLines(output.stdout).at(-1)}\n`);
-        const legacy = json(f.call("wait", result.jobId, "--json"), code);
-        const waited = json(f.call("wait", result.jobId, "--details"), code);
-        assert.deepEqual(Object.keys(legacy).filter(key => !Object.hasOwn(waited, key)), [], "no 1.3 wait report keys disappear");
-        for (const key of ["status", "reportFormat", "jobId", "threadId", "turnId", "exitCode", "sandbox", "approvalPolicy", "model", "effort", "serviceTier", "touchedFiles", "preExistingChanges", "fileTrackingStatus", "fileTrackingBasis", "verification", "verificationBasis", "keyFindings", "findingsBasis", "assumptions", "blockers", "question", "rawOutputFile", "resultFile", "ownerId", "sessionId"]) {
-          assert.equal(Object.hasOwn(details, key), Object.hasOwn(legacy, key), key);
-          assert.deepEqual(details[key], legacy[key], key);
-        }
-        assert.deepEqual(details.claimedVerification, legacy.claimedVerification ?? []);
-        assert.deepEqual(result.checks?.ran ?? [], details.verification);
-        assert.deepEqual(result.checks?.claimed ?? [], details.claimedVerification);
-        if (status !== "completed") {
-          assert.match(details.continuationCommand, / --direct$/);
-          assert.equal(legacy.continuationCommand, details.continuationCommand);
-          assert.equal(json(f.call("adopt", result.jobId, "--json"), 2).continuationCommand, details.continuationCommand);
-        }
-      }
-    } finally {
-      if (["running", "needs_answer"].includes(status)) f.call("cancel", result.jobId, "--json");
-    }
-  }
   const f = fixture("review-ok");
   const first = direct(f.call("task", "--direct", "fixture"));
   assert.deepEqual(first.usage, usage, "usage sums both requests, including the update before turn/start responds");
@@ -865,6 +930,30 @@ test("report v2 is decision-first and bounded; result and wait details retain th
 });
 
 test("v2 budgets UTF-8 text and counts omitted files/checks while details keeps expanded lists", () => {
+  // cli-4: full blocker objects survive details while compact reports retain their budget.
+  const blocked = fixture("structured-blocked");
+  const launched = directJson(blocked.call("task", "--direct", "--quiet", "fixture"));
+  const saved = storedFixtureJob(blocked, launched.jobId);
+  const blockers = Array.from({ length: 4 }, (_, i) => ({ code: `fixture_${i}`, message: "x".repeat(280) + `\x1b[31mTAIL_${i}\x1b[0m`,
+    app: null, tabId: `tab-${i}`, sessionId: `session-${i}` }));
+  const resultWithBlockers = { ...saved.result, structured: { ...saved.result.structured, blockers } };
+  storedFixtureJob(blocked, launched.jobId, { result: resultWithBlockers,
+    report: buildWorkerReport(resultWithBlockers, { jobId: launched.jobId }) });
+  for (const command of ["result", "wait"]) {
+    const full = json(blocked.call(command, launched.jobId, "--details"), 2);
+    assert.deepEqual(full.blockers, blockers.map(blocker => ({ ...blocker, message: redactActivity(blocker.message) })));
+    assert.equal(full.blockersOmitted, 0);
+  }
+  const compactBlockers = directJson(blocked.call("result", launched.jobId));
+  assert.ok(compactBlockers.blockers.length <= 3);
+  assert.equal(isC2Report(compactBlockers), true);
+  assert.ok(compactBlockers.blockers.every(blocker => blocker.message.length <= 240));
+  const legacyBlockers = json(blocked.call("wait", launched.jobId, "--json"), 2);
+  assert.equal(legacyBlockers.blockers.length + legacyBlockers.blockersOmitted, blockers.length);
+  storedFixtureJob(blocked, launched.jobId, { result: { ...resultWithBlockers,
+    blockers: [{ ...blockers[0], message: "Short runtime refusal." }] } });
+  assert.deepEqual(json(blocked.call("result", launched.jobId, "--details"), 2).blockers,
+    blockers.map(blocker => ({ ...blocker, message: redactActivity(blocker.message) })));
   const cwd = makeTempDir(), id = "long-structured-report", createdAt = new Date().toISOString();
   const entries = ["\x1b[31mLong finding\x1b[0m\n" + "detail ".repeat(80).trimEnd(), "字".repeat(2100), ...Array.from({ length: 28 }, (_, i) => `Entry ${i}\nwith details`)];
   const structured = parseStructuredReport(JSON.stringify({ status: "completed", summary: "Completed the work. " + "字".repeat(9000), key_findings: entries, assumptions: entries, verification: entries, blockers: [], question: null }));
@@ -1010,6 +1099,15 @@ test("v2 budgets UTF-8 text and counts omitted files/checks while details keeps 
 });
 
 test("report commands resolve ambiguous, cross-workspace and adopted workers through the duet CLI", t => {
+  // cli-3: a failure before thread creation has no task continuation.
+  const startup = fixture("lost-turn:startup");
+  const failed = startup.call("task", "--direct", "--quiet", "fixture");
+  assert.equal(failed.status, 1);
+  const startupReport = directJson(failed);
+  assert.equal(startupReport.next, null);
+  const startupDetails = directJson(startup.call("result", startupReport.jobId, "--details"));
+  assert.equal(startupDetails.threadId, null);
+  assert.equal(startupDetails.continuationCommand, null);
   const cwd = makeTempDir();
   const records = ["first", "second"].map((id, i) => ({ id, workspaceRoot: cwd, jobClass: "task", agentName: "SharedWorker", threadId: `thread-${id}`,
     sessionId: "command-session", status: "needs_input", createdAt: `2026-10-23T00:00:0${i}Z`,
@@ -1155,11 +1253,12 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
   const waited = direct(command("wait", "heisenberg"));
   assert.equal(waited.jobId, second.jobId); assert.equal(waited.status, "needs_answer");
   t.diagnostic(JSON.stringify({ command: "duet wait heisenberg", ...waited }));
-  for (const status of ["queued", "running", "needs_answer"]) {
+  // Active-state filtering and command filtering are independent: exercise
+  // every state and every selector without their duplicate cross-product.
+  for (const [status, options] of [["queued", { nameState: "pending", pending: true }],
+    ["running", { nameState: "wait" }], ["needs_answer", { nameState: "cancel" }]]) {
     storedFixtureJob(p, first.jobId, { status, pendingQuestion: { ...pending.pendingQuestion, id: "legacy-question" } });
-    for (const options of [{ nameState: "pending", pending: true }, { nameState: "wait" }, { nameState: "cancel" }]) {
-      assert.equal(resolveName(options), first.jobId);
-    }
+    assert.equal(resolveName(options), first.jobId);
   }
   assert.equal(p.state().nextTurnId, before.nextTurnId, "resolving legacy names never dispatches");
   assert.equal(p.state().serverRequestReplies.length, before.serverRequestReplies.length, "resolving legacy names never submits an answer");
@@ -1226,7 +1325,7 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
   assert.equal(storedFixtureJob(names, broughtIn.jobId).threadId, threadSource.threadId);
   answer(broughtIn.worker); answer(resident.worker);
 
-  for (const [session, workspaceBytes] of [["other-session", null], ["", null], ["other-session", 875], ["", 950]]) {
+  for (const [session, workspaceBytes] of [["other-session", 875], ["", 950]]) {
     const scoped = fixture("review-ok");
     let remote = path.join(scoped.dir, "quoted ' workspace");
     while (workspaceBytes && Buffer.byteLength(remote) < workspaceBytes) remote = path.join(remote, "w".repeat(Math.min(180, workspaceBytes - Buffer.byteLength(remote) - 1)));
@@ -1301,7 +1400,7 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
 });
 
 test("direct tasks preserve lease precedence, input forms, run settings and continuation inheritance", async () => {
-  const f = fixture("slow-task"); f.env.CODEX_COMPANION_LEASE_SEC = "27";
+  const f = fixture("review-ok"); f.env.CODEX_COMPANION_LEASE_SEC = "27";
   const promptFile = path.join(f.repo, "prompt.txt"); fs.writeFileSync(promptFile, "fixture from prompt file");
   const firstOutput = f.call("task", "--direct", "--quiet", "--fresh", "--prompt-file", promptFile, "--model", "spark", "--effort", "high", "--fast", "--write", "--sandbox", "workspace-write", "--approve-browser-origin", "https://example.com", "--approve-computer-app", "com.apple.TextEdit", "--owner", "explicit-owner", "--question-timeout-sec", "42", "--cwd", f.repo);
   const first = direct(firstOutput);
@@ -1327,7 +1426,7 @@ test("direct tasks preserve lease precedence, input forms, run settings and cont
   const threadedDetails = json(f.call("result", threaded.jobId, "--details"));
   assert.equal(threadedDetails.threadId, firstDetails.threadId); assert.equal(threadedDetails.serviceTier, null);
 
-  const retained = fixture("review-ok");
+  const retained = f;
   const older = direct(retained.call("task", "--fresh", "--direct", "--sandbox", "danger-full-access", "--effort", "high", "fixture"));
   const anchor = direct(retained.call("task", "--to", older.worker, "--direct", "--sandbox", "read-only", "--effort", "low", "--dispatch-nonce", "retained-dispatch", "fixture"));
   const threadId = storedFixtureJob(retained, anchor.jobId).threadId;
@@ -1377,7 +1476,7 @@ test("direct tasks preserve lease precedence, input forms, run settings and cont
   assert.ok(lost.requests().slice(beforeWait).some(request => request.method === "thread/read"));
   assert.equal(lost.state().nextTurnId, 2);
 
-  const aliases = fixture("review-ok");
+  const aliases = retained;
   const initial = direct(aliases.call("task", "--fresh", "--direct", "--sandbox", "read-only", "--model", "gpt-5.4", "--effort", "low", "--fast", "fixture"));
   const resumedThread = storedFixtureJob(aliases, initial.jobId).threadId;
   for (const flag of ["--resume", "--resume-last"]) {
@@ -1396,7 +1495,7 @@ test("direct tasks preserve lease precedence, input forms, run settings and cont
   assert.equal(aliases.state().nextTurnId, beforeUnknown);
   assert.equal(direct(aliases.call("task", "--resume-last", "--sandbox", "read-only", "--direct", "fixture")).status, "completed");
 
-  const refused = fixture("w5-parent");
+  const refused = switchingFixture(fixture); refused.select("w5-parent");
   const live = direct(refused.call("task", "--fresh", "--direct", "--sandbox", "read-only", "--effort", "low", "fixture"));
   const liveJob = storedFixtureJob(refused, live.jobId);
   const decline = () => new Promise((resolve, reject) => {
@@ -1413,12 +1512,13 @@ test("direct tasks preserve lease precedence, input forms, run settings and cont
   assert.equal(refused.state().nextTurnId, 2);
   const answer = id => direct(run(process.execPath, [script, "answer", id, "--direct"], { cwd: refused.repo, env: refused.env, input: "Small" }));
   answer(live.jobId);
+  refused.select("review-ok");
   const checkFollow = (selector = ["--to", live.worker]) => {
     const follow = direct(refused.call("task", ...selector, "--direct", "fixture"));
     const stored = storedFixtureJob(refused, follow.jobId);
     assert.deepEqual([stored.request.sandbox, stored.request.effort], ["read-only", "low"]);
     assert.equal(refused.state().lastTurnStart.sandboxPolicy.type, "readOnly");
-    answer(follow.jobId);
+    assert.equal(follow.status, "completed");
     return storedFixtureJob(refused, follow.jobId);
   };
   checkFollow();

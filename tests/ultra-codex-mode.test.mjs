@@ -56,6 +56,14 @@ test("ultra-codex mode is a per-session switch: on/off/status, the prompt remind
   const on = f.json(f.call("ultra-codex", "on", "--thorough", "--max-workers", "4", "--json"));
   assert.deepEqual([on.mode, on.scale, on.maxWorkers], ["on", "thorough", 4]);
   assert.ok(fs.existsSync(f.modeFile(SESSION)));
+  // cli-7: action-specific options are rejected without altering the mode.
+  for (const action of ["off", "status"]) {
+    for (const args of [["--quick"], ["--thorough=false"], ["--max-workers", "3"], ["--max-workers", "not-a-number"],
+      ...(action === "off" ? [["--for-command"], ["--for-command=false"]] : [])]) {
+      assert.equal(f.call("ultra-codex", action, ...args, "--json").status, 1);
+      assert.deepEqual(f.json(f.call("ultra-codex", "status", "--json")), on);
+    }
+  }
   assert.equal(fs.statSync(f.modeFile(SESSION)).mode & 0o777, 0o600);
   assert.equal(modeFile(other, SESSION, f.env), f.modeFile(SESSION));
   const shared = f.json(f.call("ultra-codex", "status", "--cwd", other, "--json"));

@@ -7,6 +7,21 @@ import { appendActivity } from "./activity.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 
+let diagnosticFailureReported = false;
+
+// Only optional diagnostics belong here; required job/result writes must fail.
+export function bestEffortDiagnostic(publish) {
+  try { publish(); }
+  catch {
+    if (diagnosticFailureReported) return;
+    diagnosticFailureReported = true;
+    // A fixed, synchronous note cannot leak payloads or emit an unhandled
+    // stream error if stderr is also unavailable.
+    try { fs.writeSync(2, "[codex] Optional progress/log output failed; execution continues.\n"); }
+    catch { /* Diagnostics must remain optional even when stderr fails. */ }
+  }
+}
+
 export function nowIso() {
   return new Date().toISOString();
 }
@@ -74,6 +89,7 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
   let lastPhase = null;
   let lastThreadId = null;
   let lastTurnId = null;
+  let pendingHandles = {};
 
   return (event) => {
     const normalized = normalizeProgressEvent(event);
@@ -88,13 +104,18 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
 
     if (normalized.threadId && normalized.threadId !== lastThreadId) {
       lastThreadId = normalized.threadId;
-      patch.threadId = normalized.threadId;
-      changed = true;
+      pendingHandles.threadId = normalized.threadId;
     }
 
     if (normalized.turnId && normalized.turnId !== lastTurnId) {
       lastTurnId = normalized.turnId;
-      patch.turnId = normalized.turnId;
+      pendingHandles.turnId = normalized.turnId;
+    }
+
+    // Keep recovery handles across failed diagnostic writes, including when
+    // later progress events do not repeat the thread/turn IDs.
+    if (Object.keys(pendingHandles).length) {
+      Object.assign(patch, pendingHandles);
       changed = true;
     }
 
@@ -109,6 +130,7 @@ export function createJobProgressUpdater(workspaceRoot, jobId) {
       ...(normalized.startupWarning ? { startupWarning: normalized.startupWarning } : {}),
       ...(normalized.item ? normalized.item.lifecycle === "completed" ? { currentItem: null, completedItems: [...(stored.completedItems ?? []), normalized.item].slice(-4) } : { currentItem: normalized.item } : {})
     }));
+    pendingHandles = {};
   };
 }
 
@@ -117,16 +139,19 @@ export function createProgressReporter({ stderr = false, logFile = null, onEvent
     return null;
   }
 
-  return (eventOrMessage) => {
+  return (eventOrMessage) => bestEffortDiagnostic(() => {
     const event = normalizeProgressEvent(eventOrMessage);
     onEvent?.(event);
     const stderrMessage = event.stderrMessage ?? event.message;
     if (stderr && stderrMessage) {
+      // Asynchronous stream errors (EPIPE) must not crash the worker either;
+      // a blocking writeSync could stall it behind a reader that stopped.
+      if (!process.stderr.listenerCount("error")) process.stderr.on("error", () => {});
       process.stderr.write(`[codex] ${stderrMessage}\n`);
     }
     appendLogLine(logFile, event.message);
     appendLogBlock(logFile, event.logTitle, event.logBody);
-  };
+  });
 }
 
 function readStoredJobOrNull(workspaceRoot, jobId) {
@@ -189,8 +214,10 @@ export async function runTrackedJob(job, runner, options = {}) {
       pid: null,
       completedAt
     });
-    if (job.jobClass === "task") appendLogLine(options.logFile ?? job.logFile ?? null, `Task ${completionStatus}. Final output stored separately.`);
-    else appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
+    bestEffortDiagnostic(() => {
+      if (job.jobClass === "task") appendLogLine(options.logFile ?? job.logFile ?? null, `Task ${completionStatus}. Final output stored separately.`);
+      else appendLogBlock(options.logFile ?? job.logFile ?? null, "Final output", execution.rendered);
+    });
     return execution;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

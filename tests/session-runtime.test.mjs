@@ -4,6 +4,7 @@ import { makeTempDir, run, readyBroker } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { getSessionRuntimeStatus } from "../plugins/codex/scripts/lib/codex.mjs";
+import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 test("empty runtime endpoint falls back to saved workspace broker without needing sockets", () => {
   const repo = makeTempDir();
@@ -42,6 +43,40 @@ test("SessionEnd cancels only its session's jobs and retains confirmation eviden
   assert.equal(result.status, "interrupted"); assert.equal(result.interruptionReason, "session_end"); assert.equal(result.interruptionConfirmed, true);
   assert.equal(job(f, foreign.jobId).status, "running");
   json(f.call("cancel", foreign.jobId, "--json"));
+});
+
+test("SessionEnd rechecks the session after adoption during its inventory", () => {
+  for (const destination of ["fixture-session", "replacement-session"]) {
+    const f = fixture(), id = "session-end-adoption", dir = resolveStateDir(f.repo, f.env);
+    const file = path.join(dir, "jobs", `${id}.json`), index = path.join(dir, "state.json"), preload = path.join(f.dir, "adopt-during-inventory.mjs");
+    const runtimeModule = new URL("../plugins/codex/scripts/lib/job-runtime.mjs", import.meta.url).href;
+    const record = { id, jobClass: "task", status: "running", workspaceRoot: f.repo, sessionId: "fixture-session", ownerId: "old-owner",
+      ownerAttached: false, leaseSec: 180, leaseExpiresAt: Date.now() + 180000, createdAt: new Date().toISOString() };
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(record)); fs.writeFileSync(index, JSON.stringify({ jobs: [record] }));
+    fs.writeFileSync(preload, `
+      import fs from "node:fs";
+      import { adoptJob } from ${JSON.stringify(runtimeModule)};
+      const read = fs.readFileSync;
+      Error.stackTraceLimit = 100;
+      let interleaved = false;
+      fs.readFileSync = function(file, ...args) {
+        const contents = read.call(this, file, ...args), stack = new Error().stack;
+        if (!interleaved && file === ${JSON.stringify(index)} && stack.includes("listSessionJobs") && !stack.includes("migrateUnderLock")) {
+          interleaved = true;
+          if (!adoptJob(${JSON.stringify(f.repo)}, ${JSON.stringify(id)}, ${JSON.stringify(destination)}).adopted) throw new Error("Adoption failed");
+        }
+        return contents;
+      };
+    `);
+    const ended = run(process.execPath, ["--import", preload, hook, "SessionEnd"], { cwd: f.repo, env: f.env, input: JSON.stringify({ session_id: "fixture-session", cwd: f.repo }) });
+    assert.equal(ended.status, 0, ended.stderr);
+    const current = JSON.parse(fs.readFileSync(file));
+    assert.equal(current.sessionId, destination); assert.notEqual(current.ownerId, record.ownerId);
+    assert.equal(current.status, "running");
+    if (destination === record.sessionId) assert.equal(current.cancelRequested?.reason, "session_end");
+    else assert.equal(current.cancelRequested, undefined);
+  }
 });
 
 test("legacy session-ID owners remain readable and session-scoped without implicit renewal", () => {

@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { makeTempDir, initGitRepo, run, requireLocalSockets, waitForCondition } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { resolveStateDir, resolveStateRoot, unresolvedTask } from "../plugins/codex/scripts/lib/state.mjs";
-import { addEntry, linkJournalJob, finishJournalJob, validateRun, showRun, closeRun } from "../plugins/codex/scripts/lib/run-journal.mjs";
+import { startRun, addEntry, linkJournalJob, finishJournalJob, validateRun, showRun, closeRun } from "../plugins/codex/scripts/lib/run-journal.mjs";
 import { planRetention, applyRetention, runAutomaticRetention } from "../plugins/codex/scripts/lib/retention.mjs";
 
 const cli = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
@@ -22,7 +22,7 @@ function fixture() {
   const state = resolveStateDir(cwd, env), runs = path.join(state, "runs");
   const call = (args, input, extra = {}) => run(process.execPath, [cli, ...args, "--cwd", cwd], { cwd, env: { ...env, ...extra }, input: typeof input === "string" ? input : input === undefined ? undefined : JSON.stringify(input) });
   const journal = (args, input) => call(["journal", ...args, "--json"], input);
-  const start = (goal = "Ship a durable journal", criteria = ["Recover after compaction"]) => json(journal(["start"], { goal, criteria })).runId;
+  const start = (goal = "Ship a durable journal", criteria = ["Recover after compaction"]) => startRun(cwd, SESSION, { goal, criteria }, env).runId;
   const file = runId => path.join(runs, runId, "journal.jsonl");
   const rows = runId => fs.readFileSync(file(runId), "utf8").trim().split("\n").map(line => JSON.parse(line));
   const stateRoot = resolveStateRoot(env), sessions = path.join(stateRoot, "run-sessions");
@@ -75,9 +75,9 @@ test("journal validation is read-only and passed close preserves state until ver
   assert.deepEqual(json(f.journal(["validate"])), { runId, ok: true, issues: [] });
   const rework = linked(f, runId, "job-rework"), replacement = linked(f, runId, "job-replacement");
   for (const next of [rework, replacement]) assert.equal(finishJournalJob(next, { status: "completed" }, f.env), true);
-  json(f.journal(["add", "verdict"], verdict(job.id, "REASSIGN")));
-  json(f.journal(["add", "verdict"], verdict(rework.id, "REWORK")));
-  json(f.journal(["add", "verdict"], verdict(replacement.id)));
+  addEntry(f.cwd, SESSION, "verdict", verdict(job.id, "REASSIGN"), undefined, f.env);
+  addEntry(f.cwd, SESSION, "verdict", verdict(rework.id, "REWORK"), undefined, f.env);
+  addEntry(f.cwd, SESSION, "verdict", verdict(replacement.id), undefined, f.env);
   const openRework = () => {
     const result = f.journal(["validate"]);
     assert.equal(result.status, 2, result.stderr);
@@ -92,19 +92,19 @@ test("journal validation is read-only and passed close preserves state until ver
     assert.deepEqual(snapshot(f.stateRoot), unchanged, "invalid resolution references must not append a verdict");
   }
   const resolves = [job.id, rework.id];
-  json(f.journal(["add", "verdict"], { ...verdict(replacement.id, "REWORK"), resolves }));
+  addEntry(f.cwd, SESSION, "verdict", { ...verdict(replacement.id, "REWORK"), resolves }, undefined, f.env);
   assert.deepEqual(openRework(), [...resolves, replacement.id], "only acceptance resolves rejections");
-  json(f.journal(["add", "verdict"], { ...verdict(replacement.id), resolves }));
-  assert.equal(json(f.journal(["validate"])).ok, true);
-  json(f.journal(["add", "verdict"], verdict(job.id, "REASSIGN")));
+  addEntry(f.cwd, SESSION, "verdict", { ...verdict(replacement.id), resolves }, undefined, f.env);
+  assert.equal(validateRun(f.cwd, SESSION, undefined, f.env).ok, true);
+  addEntry(f.cwd, SESSION, "verdict", verdict(job.id, "REASSIGN"), undefined, f.env);
   assert.deepEqual(openRework(), [job.id], "a later rejection reopens an explicitly resolved job");
-  json(f.journal(["add", "verdict"], { ...verdict(replacement.id, "ACCEPT_WITH_GLUE"), resolves }));
-  const view = json(f.journal(["show"]));
+  addEntry(f.cwd, SESSION, "verdict", { ...verdict(replacement.id, "ACCEPT_WITH_GLUE"), resolves }, undefined, f.env);
+  const view = showRun(f.cwd, SESSION, undefined, f.env);
   assert.deepEqual(view.jobs.map(job => job.latestVerdict.verdict), ["REASSIGN", "REWORK", "ACCEPT_WITH_GLUE"]);
   assert.deepEqual(view.jobs.at(-1).latestVerdict.resolves, resolves);
   assert.deepEqual(view.openItems, []);
-  assert.deepEqual(json(f.journal(["validate"])), { runId, ok: true, issues: [] });
-  assert.deepEqual(json(f.journal(["close"], { judgment: "passed", summary: "Now checked" })).openIssues, []);
+  assert.deepEqual(validateRun(f.cwd, SESSION, undefined, f.env), { runId, ok: true, issues: [] });
+  assert.deepEqual(closeRun(f.cwd, SESSION, { judgment: "passed", summary: "Now checked" }, undefined, f.env).openIssues, []);
   assert.equal(fs.existsSync(f.pointer), false);
 
   // Failed writes roll back exactly; interrupted tails stay read-only until
@@ -160,23 +160,23 @@ test("journal validation is read-only and passed close preserves state until ver
     assert.equal(fs.readFileSync(f.file(corrupt), "utf8"), damaged);
   }
   fs.writeFileSync(f.file(corrupt), clean);
-  json(f.journal(["close"], { judgment: "passed", summary: "Fixture restored" }));
+  closeRun(f.cwd, SESSION, { judgment: "passed", summary: "Fixture restored" }, undefined, f.env);
 
   const canonical = "K7: Recover  durable\njournal evidence across sessions. " + "Check the retained evidence. ".repeat(9);
   const criteria = [canonical, "K70: A separate criterion", "K8: Literal…", "K8: Literal… extended", "K9: First", "K9: Second", "S1: Session criterion", "R12: Review criterion", "ABCD2: Four letters", "S2: First", "S2: Second", "ABCDE3: Too long", "s1: Lowercase", "S3 No colon"];
   const matching = f.start("Canonical criterion matching", criteria);
   const displayed = f.call(["journal", "show"]).stdout.match(/K7:.*?…/)[0];
   // Duplicate declarations do not make a unique criterion ambiguous.
-  json(f.journal(["add", "criteria"], { criteria: [canonical] }));
+  addEntry(f.cwd, SESSION, "criteria", { criteria: [canonical] }, undefined, f.env);
   for (const criterion of [displayed, "K7", "K7:", canonical]) {
-    json(f.journal(["add", "verdict"], { ...verdict("alias-job"), criteria: [{ criterion, evidence: "Observed canonical evidence", result: "not_met" }] }));
+    addEntry(f.cwd, SESSION, "verdict", { ...verdict("alias-job"), criteria: [{ criterion, evidence: "Observed canonical evidence", result: "not_met" }] }, undefined, f.env);
     assert.equal(f.rows(matching).at(-1).criteria[0].criterion, canonical);
     const checked = JSON.parse(f.journal(["validate"]).stdout);
     assert.deepEqual(checked.issues.filter(issue => issue.kind === "unmet_criterion").map(issue => issue.criterion), [canonical]);
     assert.equal(checked.issues.some(issue => issue.kind === "unchecked_criterion" && issue.criterion === canonical), false);
   }
   for (const stableId of ["S1", "R12", "ABCD2"]) for (const criterion of [stableId, `${stableId}:`]) {
-    json(f.journal(["add", "verdict"], { ...verdict("alias-job"), criteria: [{ criterion, evidence: "Observed ID match", result: "met" }] }));
+    addEntry(f.cwd, SESSION, "verdict", { ...verdict("alias-job"), criteria: [{ criterion, evidence: "Observed ID match", result: "met" }] }, undefined, f.env);
     assert.equal(f.rows(matching).at(-1).criteria[0].criterion, criteria.find(text => text.startsWith(`${stableId}:`)));
   }
   const matched = snapshot(f.stateRoot);
@@ -192,10 +192,10 @@ test("journal validation is read-only and passed close preserves state until ver
     assert.equal(f.journal(["add", "verdict"], input).status, 1);
     assert.deepEqual(snapshot(f.stateRoot), matched);
   }
-  json(f.journal(["add", "verdict"], { ...verdict("alias-job"), criteria: criteria.map(criterion => ({ criterion, evidence: "Verified exact criterion", result: "met" })) }));
+  addEntry(f.cwd, SESSION, "verdict", { ...verdict("alias-job"), criteria: criteria.map(criterion => ({ criterion, evidence: "Verified exact criterion", result: "met" })) }, undefined, f.env);
   assert.deepEqual(f.rows(matching).at(-1).criteria.map(item => item.criterion), criteria);
-  assert.deepEqual(json(f.journal(["validate"])), { runId: matching, ok: true, issues: [] });
-  json(f.journal(["close"], { judgment: "passed", summary: "Aliases retain canonical criteria" }));
+  assert.deepEqual(validateRun(f.cwd, SESSION, undefined, f.env), { runId: matching, ok: true, issues: [] });
+  closeRun(f.cwd, SESSION, { judgment: "passed", summary: "Aliases retain canonical criteria" }, undefined, f.env);
 
   const changed = f.start("Changed requirements", ["Obsolete", "Negative"]);
   // A pre-fix journal may contain verdict-only criteria. Preserve its read and
@@ -214,20 +214,20 @@ test("journal validation is read-only and passed close preserves state until ver
   const unchecked = JSON.parse(f.journal(["validate"]).stdout);
   assert.deepEqual(unchecked.issues.map(issue => issue.kind), ["unmet_criterion", "unmet_criterion", "unchecked_criterion"]);
   const withdrawal = { criteria: ["Obsolete", "Negative", "Verdict-only"], reason: "Requirements changed" };
-  assert.equal(json(f.journal(["add", "withdraw"], withdrawal)).type, "criteria_withdrawn");
-  assert.deepEqual(json(f.journal(["validate"])), { runId: changed, ok: true, issues: [] });
-  const withdrawn = json(f.journal(["show"]));
+  assert.equal(addEntry(f.cwd, SESSION, "withdraw", withdrawal, undefined, f.env).type, "criteria_withdrawn");
+  assert.deepEqual(validateRun(f.cwd, SESSION, undefined, f.env), { runId: changed, ok: true, issues: [] });
+  const withdrawn = showRun(f.cwd, SESSION, undefined, f.env);
   assert.deepEqual(withdrawn.withdrawnCriteria, withdrawal.criteria.map(criterion => ({ criterion, reason: withdrawal.reason })));
   assert.ok(withdrawn.criterionResults.every(item => item.result === "withdrawn" && item.reason === withdrawal.reason));
   assert.equal(f.call(["journal", "show"]).status, 0);
-  json(f.journal(["add", "criteria"], { criteria: ["Obsolete", "Negative"] }));
+  addEntry(f.cwd, SESSION, "criteria", { criteria: ["Obsolete", "Negative"] }, undefined, f.env);
   const reactivated = f.journal(["validate"]);
   assert.equal(reactivated.status, 2);
   assert.deepEqual(JSON.parse(reactivated.stdout).issues.map(issue => [issue.kind, issue.criterion]), [["unmet_criterion", "Negative"], ["unchecked_criterion", "Obsolete"]]);
   assert.equal(f.journal(["close"], { judgment: "passed", summary: "Still required" }).status, 2);
-  json(f.journal(["add", "withdraw"], withdrawal));
+  addEntry(f.cwd, SESSION, "withdraw", withdrawal, undefined, f.env);
   assert.equal(f.rows(changed).filter(row => row.type === "criteria_withdrawn").length, 2, "reactivation preserves withdrawal history");
-  assert.deepEqual(json(f.journal(["close"], { judgment: "passed", summary: "Obsolete requirements withdrawn" })).openIssues, []);
+  assert.deepEqual(closeRun(f.cwd, SESSION, { judgment: "passed", summary: "Obsolete requirements withdrawn" }, undefined, f.env).openIssues, []);
 });
 
 function age(f, runId) {
@@ -254,7 +254,7 @@ function observe(f, job, patch) {
 }
 
 test("journal CLI round trip, latest verdict open items and atomic private storage", () => {
-  const f = fixture(), runId = f.start(), before = snapshot(f.runs);
+  const f = fixture(), runId = json(f.journal(["start"], { goal: "Ship a durable journal", criteria: ["Recover after compaction"] })).runId, before = snapshot(f.runs);
   const duplicate = f.journal(["start"], { goal: "Other", criteria: [] });
   assert.equal(duplicate.status, 1); assert.ok(duplicate.stderr.includes(runId)); assert.deepEqual(snapshot(f.runs), before);
   const job = linked(f, runId);
@@ -529,7 +529,10 @@ test("direct tasks link exact worker brief and one terminal compact report; unli
   assert.equal(jobRecord(none.jobId).request.run, "none"); assert.equal(jobRecord(none.jobId).runId, undefined);
   assert.deepEqual(snapshot(g.runs), beforeNone);
   const beforeInvalid = snapshot(g.stateRoot), runtime = fs.readFileSync(path.join(g.root, "fake-codex-state.json"), "utf8");
-  for (const runId of [oldRun, "run-unknown", "../escape", ""]) for (const follow of [[], ["--to", newest.jobId], ["--thread", jobRecord(newest.jobId).threadId], ["--continue", newest.jobId]]) {
+  // Run validation precedes selector dispatch. Exercise every invalid run and
+  // every selector once; their cross-product repeated the same rejection.
+  for (const [runId, follow] of [[oldRun, []], ["run-unknown", ["--to", newest.jobId]],
+    ["../escape", ["--thread", jobRecord(newest.jobId).threadId]], ["", ["--continue", newest.jobId]]]) {
     const rejected = g.call(["task", ...follow, "--run", runId, "--direct"], "Invalid run must not dispatch.");
     assert.equal(rejected.status, 1);
     if (runId === oldRun) {
@@ -546,7 +549,7 @@ test("direct tasks link exact worker brief and one terminal compact report; unli
     const root = path.join(path.dirname(h.stateRoot), "agent-names");
     return fs.existsSync(root) ? fs.readdirSync(root).flatMap(session => fs.readdirSync(path.join(root, session)).map(name => `${session}/${name}`)).sort() : [];
   };
-  for (const retrySelection of ["none", "open"]) {
+  {
     const h = fixture(); initGitRepo(h.cwd);
     const bin = path.join(h.root, "codex"), source = fs.readFileSync(bin, "utf8");
     // Availability is checked after --run validation and before reservation/link.
@@ -583,13 +586,16 @@ test("direct tasks link exact worker brief and one terminal compact report; unli
     assert.ok(records().every(job => !unresolvedTask(job)), "no phantom thread owner remains");
     assert.equal(h.rows(selectedRun).some(row => row.type === "job_started"), false);
     assert.equal(JSON.parse(fs.readFileSync(path.join(h.root, "fake-codex-state.json"))).nextTurnId, 2);
-    const retryRun = retrySelection === "none" ? "none" : h.start("Valid retry run", []);
-    const retry = json(h.call(["task", "--thread", threadId, "--run", retryRun, "--direct"], "Retry the same thread."));
-    assert.equal(retry.status, "completed");
-    const retried = records().find(job => job.id === retry.jobId);
-    assert.equal(retried.threadId, threadId); assert.equal(retried.runId, retryRun === "none" ? undefined : retryRun);
-    assert.ok(records().every(job => !unresolvedTask(job)));
-    assert.equal(JSON.parse(fs.readFileSync(path.join(h.root, "fake-codex-state.json"))).nextTurnId, 3);
+    // Both retry selections share the same proven reservation rollback.
+    for (const [index, retrySelection] of ["none", "open"].entries()) {
+      const retryRun = retrySelection === "none" ? "none" : h.start("Valid retry run", []);
+      const retry = json(h.call(["task", "--thread", threadId, "--run", retryRun, "--direct"], "Retry the same thread."));
+      assert.equal(retry.status, "completed");
+      const retried = records().find(job => job.id === retry.jobId);
+      assert.equal(retried.threadId, threadId); assert.equal(retried.runId, retryRun === "none" ? undefined : retryRun);
+      assert.ok(records().every(job => !unresolvedTask(job)));
+      assert.equal(JSON.parse(fs.readFileSync(path.join(h.root, "fake-codex-state.json"))).nextTurnId, index + 3);
+    }
   }
 
   const h = fixture(); initGitRepo(h.cwd);
@@ -689,7 +695,8 @@ test("persisted terminal observations skip journal locks and reads on status and
       return mkdir.call(this, dir, ...args);
     };
   `);
-  for (let i = 0; i < 3; i++) for (const args of [["status", job.id, "--json"], ["result", job.id, "--report", "--json"]]) {
+  // One status and one result suffice: both must bypass journal IO entirely.
+  for (const args of [["status", job.id, "--json"], ["result", job.id, "--report", "--json"]]) {
     json(run(process.execPath, [cli, ...args, "--cwd", other], { cwd: other, env: { ...f.env, NODE_OPTIONS: `--import=${preload}` } }));
   }
   assert.equal(fs.existsSync(accesses), false, "finished observations must not acquire the run lock or open the journal");
