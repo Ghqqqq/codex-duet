@@ -1,0 +1,158 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Duet ultra mode</title>
+<style>
+  :root {
+    --bg: #0d0f14; --panel: #151922; --panel2: #1a1f2b; --line: #262c3a;
+    --ink: #f3f1ec; --muted: #8f98a8; --claude: #e8805f; --codex: #48d6b4; --amber: #e9c46a;
+    --mono: "SF Mono", Menlo, ui-monospace, monospace;
+    --sans: "Avenir Next", "SF Pro Display", -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1280px; height: 628px; background: var(--bg); }
+  body {
+    position: relative; overflow: hidden; font-family: var(--sans); color: var(--ink);
+    background:
+      radial-gradient(560px 320px at 0% 0%, rgba(232,128,95,.12), transparent 70%),
+      radial-gradient(620px 340px at 100% 100%, rgba(72,214,180,.11), transparent 70%),
+      var(--bg);
+    padding: 34px 56px;
+  }
+  .head { display: flex; align-items: baseline; gap: 18px; }
+  .kicker { font: 600 11.5px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  h1 { font-size: 38px; font-weight: 700; letter-spacing: -.02em; }
+  h1 span { background: linear-gradient(90deg, var(--claude), var(--codex)); -webkit-background-clip: text; color: transparent; }
+  .cmd { font: 500 14px var(--mono); color: var(--muted); }
+  .sub { margin-top: 8px; font-size: 17px; color: var(--muted); }
+  .sub b { color: var(--ink); font-weight: 600; }
+
+  .main { margin-top: 24px; display: grid; grid-template-columns: 236px 1fr; gap: 58px; position: relative; }
+  .card { background: rgba(21,25,34,.94); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; position: relative; }
+  h2 { margin-top: 8px; font-size: 23px; font-weight: 700; letter-spacing: -.01em; }
+  .claude { border-color: rgba(232,128,95,.5); } .claude h2 { color: var(--claude); }
+  ol { list-style: none; padding: 0; margin-top: 12px; counter-reset: s; }
+  ol li { counter-increment: s; display: grid; grid-template-columns: 24px 1fr; gap: 9px; padding: 9px 0; border-top: 1px dashed var(--line); font-size: 14.5px; line-height: 1.32; }
+  ol li:first-child { border-top: 0; }
+  ol li::before { content: counter(s); font: 600 11.5px/21px var(--mono); text-align: center; width: 21px; height: 21px; border-radius: 50%; background: rgba(232,128,95,.15); color: var(--claude); }
+
+  .pipe { padding: 16px 18px 14px; }
+  .cols { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 22px; position: relative; }
+  .col { position: relative; }
+  .col + .col::before { content: "›"; position: absolute; left: -16px; top: -1px; font: 600 15px/1 var(--mono); color: var(--muted); }
+  .col .kicker { color: var(--ink); }
+  .col .cap { margin-top: 5px; font: 12px/1.3 var(--mono); color: var(--muted); height: 16px; }
+  .chips { margin-top: 10px; display: grid; gap: 7px; }
+  .chip { display: flex; align-items: center; gap: 7px; padding: 7px 9px; border-radius: 9px; background: var(--panel2); border: 1px solid var(--line); font: 12px/1.2 var(--mono); color: var(--muted); white-space: nowrap; }
+  .chip b { color: var(--ink); font-weight: 600; }
+  .chip.more { background: transparent; border-style: dashed; justify-content: center; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .t1 { border: 1.5px solid var(--codex); }            /* sol · medium */
+  .t2 { background: var(--codex); }                     /* sol · xhigh */
+  .t3 { background: var(--amber); box-shadow: 0 0 8px rgba(233,196,106,.6); } /* astra */
+  .matrix { margin-top: 10px; display: grid; grid-template-columns: 30px repeat(3, 1fr); gap: 4px; font: 10.5px/1 var(--mono); color: var(--muted); }
+  .matrix span { text-align: center; padding: 3px 0; }
+  .matrix i { height: 26px; border-radius: 6px; background: rgba(72,214,180,.16); border: 1px solid rgba(72,214,180,.35); }
+  .matrix i.hit { background: rgba(232,128,95,.22); border-color: rgba(232,128,95,.6); }
+  .flow { margin-top: 12px; padding-top: 11px; border-top: 1px dashed var(--line); display: flex; align-items: center; gap: 16px; font: 12px var(--mono); color: var(--muted); }
+  .flow .lg { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .flow .note { margin-left: auto; color: var(--ink); font-family: var(--sans); font-size: 13.5px; }
+
+  .bands { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-top: 22px; }
+  .band { border: 1px solid var(--line); border-radius: 14px; padding: 13px 16px; background: rgba(21,25,34,.8); font-size: 14px; line-height: 1.42; }
+  .band .kicker { margin-bottom: 7px; }
+  .band code { font: 500 12.5px var(--mono); background: var(--panel2); padding: 1px 5px; border-radius: 5px; }
+  .b1 { border-color: rgba(72,214,180,.35); } .b1 .kicker { color: var(--codex); }
+  .b2 { border-color: rgba(232,128,95,.4); } .b2 .kicker { color: var(--claude); }
+  .b3 { border-color: rgba(233,196,106,.35); } .b3 .kicker { color: var(--amber); }
+  .arrow { position: absolute; left: 236px; top: 96px; width: 58px; text-align: center; font: 600 11px/1 var(--mono); color: var(--muted); }
+</style>
+
+<div class="head">
+  <div>
+    <div class="kicker">orchestration mode</div>
+  </div>
+</div>
+<div class="head" style="margin-top:8px">
+  <h1><span>Ultra</span></h1>
+  <span class="cmd">/codex:ultra-codex [on] [--quick|--thorough] [--max-workers n|auto|unlimited]</span>
+</div>
+<p class="sub"><b>Broad work, fanned out the way native Ultracode does:</b> many narrow Codex workers, each result accepted before it moves on.</p>
+
+<div class="main">
+  <div class="card claude">
+    <div class="kicker">orchestrator</div>
+    <h2>Claude</h2>
+    <ol>
+      <li><span>Scout the work-list</span></li>
+      <li><span>Criteria + run journal</span></li>
+      <li><span>A brief per worker</span></li>
+      <li><span>Accept each result</span></li>
+      <li><span>Integrate + full suite</span></li>
+    </ol>
+  </div>
+
+  <div class="card pipe">
+    <div class="cols">
+      <div class="col">
+        <div class="kicker">understand</div><div class="cap">parallel readers</div>
+        <div class="chips">
+          <div class="chip"><span class="dot t1"></span><b>Ada</b> reader</div>
+          <div class="chip"><span class="dot t1"></span><b>Hopper</b> reader</div>
+          <div class="chip"><span class="dot t1"></span><b>Noether</b> reader</div>
+          <div class="chip more">+ per subsystem</div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="kicker">design</div><div class="cap">drafts → judges</div>
+        <div class="chips">
+          <div class="chip"><span class="dot t2"></span><b>Curie</b> draft</div>
+          <div class="chip"><span class="dot t2"></span><b>Bohr</b> draft</div>
+          <div class="chip"><span class="dot t3"></span><b>Lovelace</b> judge</div>
+          <div class="chip"><span class="dot t3"></span><b>Franklin</b> judge</div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="kicker">implement</div><div class="cap">disjoint owners</div>
+        <div class="chips">
+          <div class="chip"><span class="dot t2"></span><b>Turing</b> area A</div>
+          <div class="chip"><span class="dot t2"></span><b>Meitner</b> area B</div>
+          <div class="chip"><span class="dot t2"></span><b>Hilbert</b> area C</div>
+          <div class="chip more">+ one per area</div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="kicker">review</div><div class="cap">area × lens</div>
+        <div class="matrix">
+          <span></span><span>corr</span><span>sec</span><span>perf</span>
+          <span>A</span><i></i><i class="hit"></i><i></i>
+          <span>B</span><i></i><i></i><i></i>
+          <span>C</span><i class="hit"></i><i></i><i></i>
+        </div>
+        <div class="cap" style="margin-top:12px"><span style="color:var(--claude)">■</span> finding → verify</div>
+      </div>
+      <div class="col">
+        <div class="kicker">verify</div><div class="cap">refute each finding</div>
+        <div class="chips">
+          <div class="chip"><span class="dot t3"></span><b>Gauss</b> refuter</div>
+          <div class="chip"><span class="dot t3"></span><b>Kepler</b> refuter</div>
+          <div class="chip"><span class="dot t3"></span><b>Euler</b> refuter</div>
+          <div class="chip more">majority confirms</div>
+        </div>
+      </div>
+    </div>
+    <div class="flow">
+      <span class="lg"><span class="dot t1"></span>sol · medium</span>
+      <span class="lg"><span class="dot t2"></span>sol · xhigh</span>
+      <span class="lg"><span class="dot t3"></span>astra · xhigh/max</span>
+      <span class="note">Items advance as soon as they are accepted — no phase barriers.</span>
+    </div>
+  </div>
+
+  <div class="arrow">briefs<svg width="40" height="12" viewBox="0 0 40 12" style="display:block;margin:6px auto"><path d="M2 6h32M28 1l7 5-7 5" stroke="#e8805f" stroke-width="2" fill="none"/></svg><svg width="40" height="12" viewBox="0 0 40 12" style="display:block;margin:10px auto 6px"><path d="M38 6H6M12 1L5 6l7 5" stroke="#48d6b4" stroke-width="2" fill="none"/></svg>reports</div>
+</div>
+
+<div class="bands">
+  <div class="band b1"><div class="kicker">cap · like native</div><code>min(16, CPUs − 2)</code> workers in flight (16 on an 18-core Mac). Extra work queues; coverage is never capped.</div>
+  <div class="band b2"><div class="kicker">live debugging</div>After one failed live fix: two or more competing-hypothesis investigators plus a live diagnostic, before the next fix.</div>
+  <div class="band b3"><div class="kicker">acceptance</div>Every change gets a full diff read and rerun checks. Decision-driving findings need adversarial confirmation.</div>
+</div>

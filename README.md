@@ -11,6 +11,7 @@
   <a href="#install">Install</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#how-it-works">How it works</a> ·
+  <a href="#three-orchestration-modes">Modes</a> ·
   <a href="#features">Features</a> ·
   <a href="#documentation">Docs</a>
 </p>
@@ -110,6 +111,62 @@ Duet also ships its own dispatch and acceptance rules, so neither is required.
 
 Every command and flag: [docs/commands.md](docs/commands.md).
 
+## Three orchestration modes
+
+Pick the mode by the shape of the task. Claude always plans, writes the briefs
+and accepts the work; the modes differ in who does the work and how it is
+checked.
+
+| | [Ultra](docs/ultra-codex.md) | [Pair](docs/pair.md) | [Duel](docs/duel.md) |
+| --- | --- | --- | --- |
+| Best for | Broad work: audits, migrations, multi-module features | One bounded task: a fix, a feature slice | Contested designs, high-risk changes |
+| Who works | Many Codex workers in parallel | One Codex worker on one thread | One Claude subagent versus one Codex worker |
+| Models | `gpt-6.1-sol` by stage; Astra verifies and judges | `gpt-6-astra` · `xhigh` | `gpt-6-astra` · `xhigh` plus your session model |
+| Limit | min(16, CPUs − 2) workers in flight | Two rework rounds | Three rounds (`--rounds 1-3`) |
+| Claude quota | Orchestration only | Orchestration only | Also the Claude participant |
+
+Run a task once with `/codex:<mode> <task>`, keep the mode for the session with
+`on`, and clear it with `off`. One mode is active at a time, and
+`setup --default-mode ultra|pair|duel` starts every fresh session in one.
+
+### Ultra: fan out like native Ultracode
+
+<p align="center">
+  <img src="docs/assets/duet-mode-ultra.png" alt="Ultra mode: Claude plans and accepts while Codex workers fan out across understand, design, implement, review and verify, with sol and Astra tiers by stage" width="100%">
+</p>
+
+Claude splits the work-list and runs parallel readers, independent design
+drafts with judges, one implementer per disjoint area, an area × lens review
+matrix and adversarial refuters for each finding. Each item moves on as soon as
+its result is accepted. After one failed live fix, Claude fans out competing
+hypotheses and a live diagnostic instead of guessing again. `--quick` and
+`--thorough` set the depth; `--max-workers` changes the cap, which limits
+concurrency, never coverage.
+
+### Pair: one task, one executor
+
+<p align="center">
+  <img src="docs/assets/duet-mode-pair.png" alt="Pair mode: Claude writes the brief and accepts every diff; one Astra worker executes on one thread through an initial round and at most two rework rounds" width="100%">
+</p>
+
+Claude writes the criteria and a full brief, then one Astra worker does the task
+end to end on a single thread. Claude reads every diff and reruns the checks
+itself. At most two rework rounds follow the first delivery, and an optional
+read-only verifier can challenge a round. When the task outgrows one worker,
+Claude recommends ultra or duel; it never switches on its own.
+
+### Duel: two models challenge each other
+
+<p align="center">
+  <img src="docs/assets/duet-mode-duel.png" alt="Duel mode: a Claude subagent and an Astra worker, with Claude relaying and arbitrating between a build-versus-break flow and an independent-drafts flow over up to three rounds" width="100%">
+</p>
+
+For code and bugs, Codex builds and the Claude subagent tries to break it; each
+finding gets an answer before the next round. For design questions, both draft
+blind, review each other's draft, and Claude decides on the evidence. The
+parties never talk directly: Claude relays evidence, not transcripts, and no one
+accepts their own work. The Claude participant uses your Claude quota.
+
 ## Features
 
 ### Codex as a native subagent
@@ -158,22 +215,7 @@ status such as `✓ 21.1s` or `✗ exit 1`.
 </p>
 <p align="center"><sub>The codex-live pane, drawn by its own layout code from three real jobs on a small demo repository.</sub></p>
 
-### Orchestration modes and the run journal
-
-| Mode | Use it for |
-| --- | --- |
-| [Ultra](docs/ultra-codex.md) | Broad work: parallel readers, implementers and reviewers |
-| [Pair](docs/pair.md) | A bounded task: one Astra worker, Claude acceptance, up to two rework rounds |
-| [Duel](docs/duel.md) | Contested designs or high-risk changes: one Claude subagent versus one Astra worker, up to three rounds |
-
-One session mode is active at a time: `on` replaces it, named `off` clears only
-that mode, and a task without `on` runs once without changing it.
-`setup --default-mode` starts every fresh session in a saved mode. All modes share
-precise briefs, diff and evidence checks, and explicit acceptance verdicts.
-Ultra's default follows native Ultracode: min(16, CPU count − 2) workers in
-flight, with a minimum of one (16 on an 18-core Mac). `--max-workers` raises or
-lowers it; `unlimited` removes it. This advisory cap limits concurrency, never
-coverage; saved caps are retained.
+### Run journal
 
 Each run keeps a journal in the isolated home with the goal, criteria, briefs,
 reports, verdicts and decisions. Claude recovers it with `journal show` after

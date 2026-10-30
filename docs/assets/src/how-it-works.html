@@ -63,8 +63,8 @@
     <ol>
       <li><span>Scout; write <b>acceptance criteria</b></span></li>
       <li><span>Brief each worker precisely</span></li>
-      <li><span>Background Bash: <code>task --direct</code></span></li>
-      <li><span>Wake once; read <b>1 JSON line</b></span></li>
+      <li><span>Native agent: <code>codex:codex-native</code></span></li>
+      <li><span>Read the <b>compact report</b></span></li>
       <li><span>Criterion → evidence → <b>verdict</b></span></li>
       <li><span>Log it in the <b>run journal</b></span></li>
     </ol>
@@ -74,7 +74,7 @@
     <div class="kicker">runtime</div>
     <h2><span>Duet companion</span></h2>
     <div class="rows">
-      <div class="row"><b>owner + lease</b><span>Stop the Bash task → the turn stops</span></div>
+      <div class="row"><b>owner + lease</b><span>Stop it from <code>/tasks</code> → the turn stops</span></div>
       <div class="row"><b class="c">ask_parent</b><span>Codex asks; the answer resumes the <b>same</b> turn</span></div>
       <div class="row"><b>schema report</b><span>Findings, assumptions, claimed vs. captured checks</span></div>
       <div class="row"><b>file snapshot</b><span>Touched files, before vs. after</span></div>
@@ -94,7 +94,7 @@
   </div>
 
   <div class="arrow a1">brief<svg width="52" height="12" viewBox="0 0 52 12"><path d="M2 6h44M40 1l7 5-7 5" stroke="#e8805f" stroke-width="2" fill="none"/></svg></div>
-  <div class="arrow a2"><svg width="52" height="12" viewBox="0 0 52 12"><path d="M50 6H6M12 1L5 6l7 5" stroke="#48d6b4" stroke-width="2" fill="none"/></svg><div style="margin-top:6px">1 line</div></div>
+  <div class="arrow a2"><svg width="52" height="12" viewBox="0 0 52 12"><path d="M50 6H6M12 1L5 6l7 5" stroke="#48d6b4" stroke-width="2" fill="none"/></svg><div style="margin-top:6px">report</div></div>
   <div class="arrow a3">turn<svg width="52" height="12" viewBox="0 0 52 12"><path d="M2 6h44M40 1l7 5-7 5" stroke="#e8805f" stroke-width="2" fill="none"/></svg></div>
   <div class="arrow a4"><svg width="52" height="12" viewBox="0 0 52 12"><path d="M50 6H6M12 1L5 6l7 5" stroke="#48d6b4" stroke-width="2" fill="none"/></svg><div style="margin-top:6px">report</div></div>
 </div>

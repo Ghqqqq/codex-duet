@@ -1,0 +1,137 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Duet duel mode</title>
+<style>
+  :root {
+    --bg: #0d0f14; --panel: #151922; --panel2: #1a1f2b; --line: #262c3a;
+    --ink: #f3f1ec; --muted: #8f98a8; --claude: #e8805f; --codex: #48d6b4; --amber: #e9c46a;
+    --mono: "SF Mono", Menlo, ui-monospace, monospace;
+    --sans: "Avenir Next", "SF Pro Display", -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1280px; height: 628px; background: var(--bg); }
+  body {
+    position: relative; overflow: hidden; font-family: var(--sans); color: var(--ink);
+    background:
+      radial-gradient(560px 320px at 0% 0%, rgba(232,128,95,.12), transparent 70%),
+      radial-gradient(620px 340px at 100% 100%, rgba(72,214,180,.11), transparent 70%),
+      var(--bg);
+    padding: 34px 56px;
+  }
+  .kicker { font: 600 11.5px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  .head { display: flex; align-items: baseline; gap: 18px; margin-top: 8px; }
+  h1 { font-size: 38px; font-weight: 700; letter-spacing: -.02em; }
+  h1 span { background: linear-gradient(90deg, var(--claude), var(--codex)); -webkit-background-clip: text; color: transparent; }
+  .cmd { font: 500 14px var(--mono); color: var(--muted); }
+  .sub { margin-top: 8px; font-size: 17px; color: var(--muted); }
+  .sub b { color: var(--ink); font-weight: 600; }
+
+  .main { margin-top: 24px; display: grid; grid-template-columns: 236px 1fr 236px; gap: 58px; position: relative; }
+  .card { background: rgba(21,25,34,.94); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; position: relative; }
+  h2 { margin-top: 8px; font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
+  .claude { border-color: rgba(232,128,95,.5); } .claude h2 { color: var(--claude); }
+  .codex { border-color: rgba(72,214,180,.45); } .codex h2 { color: var(--codex); }
+  .role { display: inline-block; margin-top: 10px; font: 600 11.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; padding: 5px 9px; border-radius: 999px; }
+  .claude .role { color: var(--claude); background: rgba(232,128,95,.14); }
+  .codex .role { color: var(--codex); background: rgba(72,214,180,.14); }
+  ul { list-style: none; padding: 0; margin-top: 10px; }
+  li { display: grid; grid-template-columns: 16px 1fr; gap: 8px; padding: 8px 0; border-top: 1px dashed var(--line); font-size: 14px; line-height: 1.32; }
+  li:first-child { border-top: 0; }
+  li::before { content: "•"; font: 700 16px/19px var(--sans); text-align: center; }
+  .claude li::before { color: var(--claude); } .codex li::before { color: var(--codex); }
+
+  .arbiter { border-color: rgba(243,241,236,.18); padding: 16px 18px; }
+  .arbiter .top { display: flex; align-items: baseline; gap: 12px; }
+  .arbiter h2 { margin-top: 0; font-size: 19px; }
+  .arbiter h2 span { background: linear-gradient(90deg, var(--claude), var(--codex)); -webkit-background-clip: text; color: transparent; }
+  .flows { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .flow { background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; padding: 12px 13px; }
+  .flow .kicker { color: var(--ink); }
+  .flow .when { margin-top: 5px; font: 12px var(--mono); color: var(--muted); }
+  .steps { margin-top: 10px; display: grid; gap: 6px; }
+  .step { display: grid; grid-template-columns: 20px 1fr; gap: 8px; align-items: start; font-size: 13.5px; line-height: 1.3; }
+  .step i { font: 600 11px/19px var(--mono); font-style: normal; text-align: center; width: 19px; height: 19px; border-radius: 50%; background: rgba(243,241,236,.08); color: var(--muted); }
+  .step .c { color: var(--claude); } .step .x { color: var(--codex); }
+  .meter { margin-top: 12px; display: flex; align-items: center; gap: 8px; font: 12px var(--mono); color: var(--muted); }
+  .meter b { font-weight: 600; color: var(--ink); padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel2); }
+  .meter b.on { border-color: rgba(233,196,106,.6); color: var(--amber); }
+  .meter span { margin-left: 6px; }
+  .arrow { position: absolute; width: 58px; text-align: center; font: 600 11px/1 var(--mono); color: var(--muted); }
+  .arrow svg { display: block; margin: 6px auto; }
+
+  .bands { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 22px; }
+  .band { border: 1px solid var(--line); border-radius: 14px; padding: 13px 16px; background: rgba(21,25,34,.8); font-size: 14px; line-height: 1.42; }
+  .band .kicker { margin-bottom: 7px; }
+  .b1 { border-color: rgba(233,196,106,.35); } .b1 .kicker { color: var(--amber); }
+  .b2 { border-color: rgba(232,128,95,.4); } .b2 .kicker { color: var(--claude); }
+</style>
+
+<div class="kicker">orchestration mode</div>
+<div class="head">
+  <h1><span>Duel</span></h1>
+  <span class="cmd">/codex:duel [on] [--rounds 1-3] &lt;task&gt;</span>
+</div>
+<p class="sub"><b>Two models challenge each other:</b> a Claude subagent and an Astra worker. Claude relays, verifies and decides.</p>
+
+<div class="main">
+  <div class="card claude">
+    <div class="kicker">participant</div>
+    <h2>Claude subagent</h2>
+    <span class="role">breaker by default</span>
+    <ul>
+      <li><span>Inherits your session model</span></li>
+      <li><span>Attacks with reproductions</span></li>
+      <li><span>Read-only while breaking</span></li>
+    </ul>
+  </div>
+
+  <div class="card arbiter">
+    <div class="top"><div class="kicker">relay · arbiter</div><h2><span>Claude</span></h2></div>
+    <div class="flows">
+      <div class="flow">
+        <div class="kicker">build vs break</div>
+        <div class="when">implementation · bugs</div>
+        <div class="steps">
+          <div class="step"><i>1</i><span><span class="x">Codex</span> builds</span></div>
+          <div class="step"><i>2</i><span>Claude accepts the diff</span></div>
+          <div class="step"><i>3</i><span><span class="c">Breaker</span>: BLOCK or ALLOW</span></div>
+          <div class="step"><i>4</i><span>Builder answers each finding</span></div>
+          <div class="step"><i>5</i><span>Confirmed defects → next round</span></div>
+        </div>
+      </div>
+      <div class="flow">
+        <div class="kicker">independent drafts</div>
+        <div class="when">design · analysis</div>
+        <div class="steps">
+          <div class="step"><i>1</i><span>Both draft, blind</span></div>
+          <div class="step"><i>2</i><span>Each reviews the other</span></div>
+          <div class="step"><i>3</i><span>Disagreement table</span></div>
+          <div class="step"><i>4</i><span>Claude decides on evidence</span></div>
+          <div class="step"><i>5</i><span>Code changes → build vs break</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="meter"><b class="on">R1</b><b class="on">R2</b><b class="on">R3</b><span>total rounds, default 3, the first included</span></div>
+  </div>
+
+  <div class="card codex">
+    <div class="kicker">participant</div>
+    <h2>Codex</h2>
+    <span class="role">builder by default</span>
+    <ul>
+      <li><span>gpt-6-astra · xhigh</span></li>
+      <li><span>One thread, sandbox fixed by role</span></li>
+      <li><span>Writes only owned paths</span></li>
+    </ul>
+  </div>
+
+  <div class="arrow" style="left:236px;top:104px">relay<svg width="40" height="12" viewBox="0 0 40 12"><path d="M38 6H6M12 1L5 6l7 5" stroke="#e8805f" stroke-width="2" fill="none"/></svg></div>
+  <div class="arrow" style="left:236px;top:176px"><svg width="40" height="12" viewBox="0 0 40 12"><path d="M2 6h32M28 1l7 5-7 5" stroke="#e8805f" stroke-width="2" fill="none"/></svg>findings</div>
+  <div class="arrow" style="right:236px;top:104px">relay<svg width="40" height="12" viewBox="0 0 40 12"><path d="M2 6h32M28 1l7 5-7 5" stroke="#48d6b4" stroke-width="2" fill="none"/></svg></div>
+  <div class="arrow" style="right:236px;top:176px"><svg width="40" height="12" viewBox="0 0 40 12"><path d="M38 6H6M12 1L5 6l7 5" stroke="#48d6b4" stroke-width="2" fill="none"/></svg>diff</div>
+</div>
+
+<div class="bands">
+  <div class="band b1"><div class="kicker">relay only</div>The two parties never talk directly. Claude forwards evidence, not transcripts, and no one accepts their own work.</div>
+  <div class="band b2"><div class="kicker">cost</div>The Claude participant uses your Claude quota on top of Codex usage. Use duel for contested or high-risk work.</div>
+</div>
