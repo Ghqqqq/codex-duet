@@ -79,8 +79,9 @@ Use a job ID for an older turn, never “latest thread” for parallel work.
 
 `duet task --fork` explicitly imports the current Claude transcript into a new
 thread before running the stdin brief. It is labelled “imported Claude
-conversation (fidelity not verified)”; the default 20 MiB limit is set by
-`CODEX_COMPANION_IMPORT_MAX_BYTES`. `--source '<jsonl>'` overrides the source.
+conversation (fidelity not verified)”. Long sessions import only the post-compaction
+slice, bounded by `CODEX_COMPANION_FORK_BUDGET_BYTES` (default 2 MiB); see
+[direct mode](direct-mode.md). `--source '<jsonl>'` overrides the source.
 It cannot combine with `--to`, `--thread`, `--continue` or resume flags.
 
 Native agents take an optional first line `DUET: <flags>` (`--model`, `--effort`,

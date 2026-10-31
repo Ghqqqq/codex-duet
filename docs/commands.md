@@ -382,6 +382,15 @@ unavailable runtime cost none.
 
 ## Companion subcommands
 
+`duet models [--json] [--all]` lists the current account's Codex models,
+descriptions, supported/default efforts and context windows, followed by Duet's
+effective strong/effort/routine tiers and their sources. It prefers app-server
+`model/list`, falling back to the isolated model cache, and names the source.
+Hidden models require `--all`; unknown context windows are `null` in JSON.
+If neither source is available it exits nonzero and points to `/codex:setup`.
+The model-invocable `codex:models` skill explains tier selection, setup changes,
+one-off overrides and confirmation; see [configuration](configuration.md#default-worker-models).
+
 Use `duet <subcommand>` in a Claude session, or `plugins/codex/bin/duet` from the
 repository root. Run `duet task --help` for flags and side-effect-free examples.
 SessionStart supplies the session ID; `--session <id>` overrides it.
@@ -401,6 +410,7 @@ SessionStart supplies the session ID; `--session <id>` overrides it.
 | `duet status [worker]` | Observe jobs without renewing their lease |
 | `duet cancel <worker>` | Cancel and report whether interruption was confirmed |
 | `duet setup` | Runtime readiness and configuration |
+| `duet models [--json] [--all]` | Discover current account models and efforts, including hidden models with `--all`, and show effective tiers |
 | `duet ultra-codex [on\|off\|status]` | Ultra session controls; task text belongs in the slash command |
 | `duet pair [on\|off\|status]` | Pair session controls; one primary Codex thread |
 | `duet duel [on\|off\|status]` | Duel session controls; `on --rounds <n>` sets 1–3 total rounds |

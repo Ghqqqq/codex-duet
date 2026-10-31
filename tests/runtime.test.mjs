@@ -75,7 +75,7 @@ async function waitFor(predicate, { timeoutMs = 60000, intervalMs = 50 } = {}) {
   throw new Error("Timed out waiting for condition.");
 }
 
-const HELP_COMMANDS = ["task", "setup", "review", "adversarial-review", "transfer", "status", "result", "wait", "adopt", "answer", "cancel", "cleanup", "ultra-codex", "pair", "duel", "task-worker", "task-resume-candidate"];
+const HELP_COMMANDS = ["task", "setup", "models", "review", "adversarial-review", "transfer", "status", "result", "wait", "adopt", "answer", "cancel", "cleanup", "ultra-codex", "pair", "duel", "task-worker", "task-resume-candidate"];
 
 function helpFixture() {
   const dir = makeTempDir(), repo = path.join(dir, "repo");
@@ -89,6 +89,25 @@ function helpFixture() {
     unchanged: () => assert.deepEqual(fs.readdirSync(dir, { recursive: true }).sort(), before,
       "no runtime home, state/job file, marker, or fake Codex thread/startup record created") };
 }
+
+test("runtime help inventory lists every command and subcommand help is side-effect-free", () => {
+  const f = helpFixture();
+  const top = f.call("--help");
+  assert.equal(top.status, 0, top.stderr);
+  for (const command of HELP_COMMANDS) {
+    assert.ok(top.stdout.includes(`duet ${command}`), command);
+    for (const flag of ["--help", "-h"]) {
+      const result = f.call(command, "--not-an-option", flag);
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(result.stdout.includes(`Usage: duet ${command}`), result.stdout);
+      if (command === "models") {
+        assert.match(result.stdout, /--json/);
+        assert.match(result.stdout, /--all/);
+      }
+      f.unchanged();
+    }
+  }
+});
 
 test("help takes precedence over malformed task options without side effects", () => {
   const f = helpFixture();
@@ -614,7 +633,7 @@ test("transfer delegates the current Claude session directly to native import", 
   const fakeState = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
   assert.equal(fakeState.threads.length, 1);
   assert.equal(fakeState.threads[0].ephemeral, false);
-  assert.equal(fakeState.threads[0].name, "Native transfer");
+  assert.equal(fakeState.threads[0].name, null, "non-conversational title records are excluded from the slice");
   assert.notEqual(fakeState.lastExternalAgentImport.sourcePath, canonicalSourcePath);
   assert.equal(fs.existsSync(fakeState.lastExternalAgentImport.sourcePath), false);
   assert.deepEqual(
@@ -978,6 +997,9 @@ test("fork imports a private snapshot despite live appends and early completion,
   assert.ok(f.state().lastTurnStart.prompt.includes("Synthetic fork brief."));
   assert.equal(job.request.forked, true);
   assert.equal(job.request.forkSourceSha256, createHash("sha256").update(f.contents).digest("hex"));
+  assert.equal(job.request.forkSlice.fromCompactBoundary, false);
+  assert.equal(job.request.forkSlice.sourceBytes, Buffer.byteLength(f.contents));
+  assert.ok(job.request.forkSlice.slicedBytes <= 2 * 1024 * 1024);
   assert.equal(job.request.forkImportId, imported.importId);
   assert.equal(job.request.threadId, imported.threadId);
   assert.deepEqual([job.request.model, job.request.effort, job.request.sandbox, job.request.serviceTier], ["fixture-fork", "high", "read-only", "priority"]);
@@ -1013,6 +1035,44 @@ test("fork imports a private snapshot despite live appends and early completion,
   assert.equal(f.state().externalAgentImports.length, 2);
 });
 
+test("fork slices a 30 MiB source through the companion and records the original hash and bounded slice", t => {
+  const f = forkFixture(), budgetBytes = 4096;
+  f.env.CODEX_COMPANION_FORK_BUDGET_BYTES = String(budgetBytes);
+  const row = (type, uuid, parentUuid, extra = {}) => ({ type, uuid, parentUuid,
+    sessionId: "fork-contract", cwd: f.repo, ...extra });
+  const entries = [row("user", "old", null, { message: { content: "Pre-compaction conversation" } }),
+    row("system", "boundary", null, { subtype: "compact_boundary", logicalParentUuid: "old" }),
+    row("attachment", "attachment", "boundary"),
+    row("user", "summary", "attachment", { isCompactSummary: true, message: { content: "Synthetic compact summary" } })];
+  for (let i = 0; i < 60; i++) entries.push(row("user", `turn-${i}`, i ? `turn-${i - 1}` : "summary", { message: { content: `Turn ${i}: ${"x".repeat(1000)}` } }));
+  entries.push(row("assistant", "tool", "turn-59", { message: { content: [{ type: "tool_use", id: "call", name: "Synthetic", input: {} }] } }),
+    row("user", "result", "tool", { message: { content: [{ type: "tool_result", tool_use_id: "call", content: "x".repeat(1024 * 1024) }] },
+      toolUseResult: { stdout: "x".repeat(1024 * 1024) } }),
+    row("user", "latest", "result", { message: { content: "POST_COMPACTION_FACT_SENTINEL" } }));
+  const tail = entries.map(entry => JSON.stringify(entry)).join("\n") + "\n";
+  const padding = { type: "api-request-blob", data: "" };
+  padding.data = "x".repeat(30 * 1024 * 1024 - Buffer.byteLength(tail) - Buffer.byteLength(JSON.stringify(padding)) - 1);
+  const contents = JSON.stringify(padding) + "\n" + tail;
+  fs.writeFileSync(f.source, contents);
+  assert.equal(fs.statSync(f.source).size, 30 * 1024 * 1024);
+  const result = f.json(f.call("task", "--fork")), job = f.stored(result.jobId);
+  assert.equal(result.status, "completed");
+  assert.equal(job.request.forkSourceSha256, createHash("sha256").update(contents).digest("hex"));
+  const meta = job.request.forkSlice;
+  assert.equal(meta.sourceBytes, 30 * 1024 * 1024);
+  assert.equal(meta.fromCompactBoundary, true);
+  assert.equal(meta.tailCapped, true);
+  assert.equal(meta.trimmedToolResults, 2);
+  assert.ok(meta.slicedBytes <= budgetBytes);
+  const messages = f.state().lastExternalAgentImport.messages.map(message => message.text);
+  assert.equal(messages[0], "Synthetic compact summary");
+  assert.equal(messages.at(-1), "POST_COMPACTION_FACT_SENTINEL");
+  assert.ok(!messages.includes("Pre-compaction conversation"));
+  assert.equal(path.basename(f.state().lastExternalAgentImport.sourcePath), "fork-contract.jsonl");
+  assert.deepEqual(fs.readdirSync(f.projects), ["-repo"], "staged import was cleaned up");
+  t.diagnostic(JSON.stringify(meta));
+});
+
 test("fork rejects incompatible targets and oversized sources before import, and import failure never starts a turn", () => {
   const f = forkFixture("external-import-fails");
   const incompatible = f.call("task", "--fork", "--to", "UnknownWorker");
@@ -1020,11 +1080,11 @@ test("fork rejects incompatible targets and oversized sources before import, and
   assert.match(incompatible.stderr, /--fork.*--to/);
   assert.equal(f.state(), null);
   const descriptor = fs.openSync(f.source, "r+");
-  fs.ftruncateSync(descriptor, 20 * 1024 * 1024 + 1);
+  fs.ftruncateSync(descriptor, 128 * 1024 * 1024 + 1);
   fs.closeSync(descriptor);
   const oversized = f.call("task", "--fork");
   assert.equal(oversized.status, 1);
-  assert.match(oversized.stderr, /import limit/);
+  assert.match(oversized.stderr, /134217728-byte import limit/);
   assert.equal(f.state()?.externalAgentImports?.length ?? 0, 0);
   fs.writeFileSync(f.source, f.contents);
   f.env.CODEX_COMPANION_IMPORT_MAX_BYTES = String(Buffer.byteLength(f.contents) - 1);

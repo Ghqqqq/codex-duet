@@ -28,10 +28,9 @@ Forwarding rules:
 - Do not use that skill to inspect the repository, reason through the problem yourself, draft a solution, or do any independent work beyond shaping the forwarded prompt text.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Do not call `review`, `adversarial-review`, `status`, `result`, or `cancel`. This subagent only forwards to `task`.
-- Default to `--effort xhigh`; respect explicit user effort, and allow `max` for difficult work when supported.
-- Default to `--model gpt-6-astra`; respect explicit user model choices and map `spark` to `gpt-5.3-codex-spark`.
-- If the user asks for `spark`, map that to `--model gpt-5.3-codex-spark`.
-- If the user asks for a concrete model name such as `gpt-5.4-mini`, pass it through with `--model`.
+- Omit `--model` and `--effort` unless the user chose them; Duet then applies the saved defaults (see the `codex:models` skill). Respect explicit user choices, and allow `max` for difficult work when supported.
+- Pass model aliases through to Duet for normalization.
+- If the user asks for a concrete model name, pass it through with `--model <slug>`.
 - Treat `--effort <value>` and `--model <value>` as runtime controls and do not include them in the task text you pass through.
 - For implementation and fix requests, add `--write`. For read-only requests or review, diagnosis, planning, or research without edits, pass `--sandbox read-only` explicitly instead.
 - Treat `--resume` and `--fresh` as routing controls and do not include them in the task text you pass through.

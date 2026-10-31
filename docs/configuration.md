@@ -84,6 +84,12 @@ choice); `setup --list-browser-origins --json` includes the same. See
 
 ## Default worker models
 
+Discover the current account's model names with `duet models` (or `--json`),
+then choose using the returned descriptions and supported efforts. Add `--all`
+to include hidden models. Agents load the model-invocable `codex:models` skill
+when asked to check, compare or change worker models or efforts, or when a
+dispatch fails on an unknown model. Do not rely on remembered model names.
+
 Save worker defaults in `<isolated-home>/duet/config.toml`, alongside the sandbox
 and orchestration-mode preferences:
 
@@ -124,8 +130,11 @@ duet setup --default-model default --default-effort default --ultra-routine-mode
 
 Model names use the existing alias normalization (`spark` remains an alias for
 `gpt-5.3-codex-spark`), then must match `/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/`.
-Effort accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`;
-the selected model/runtime must support it. Models are not validated against
+Effort accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`, plus
+efforts listed by any model in Codex's isolated `models_cache.json` (including
+hidden models). Setup and hooks check the cache synchronously and never start
+a runtime. The static set applies when the cache is missing.
+The selected model/runtime must support the effort. Models are not validated against
 the account: a syntactically valid but unknown model fails at dispatch.
 
 The setup change returns a JSON report with `file`, `defaultModel`,
@@ -137,6 +146,18 @@ Mode reminders name the effective values. `duet ultra-codex status`,
 `duet pair status` and `duet duel status` show
 `models: worker <model>/<effort>, ultra routine <routineModel>`; their JSON has
 `models: { model, effort, routineModel }`.
+
+`duet models` prefers the official app-server `model/list` API and falls back to
+the isolated cache when the runtime or method is unavailable. It reports the
+source and fetch time. The JSON envelope is `{ source, fetchedAt, models, tiers }`;
+each model has `slug`, `displayName`, `description`, `efforts`, `defaultEffort`,
+`contextWindow`, `visibility` and `inUse` (`strong`, `routine`, or both).
+`tiers.strong`, `tiers.effort` and `tiers.routine` each contain `value` and
+`source` (`saved` or `built-in`). Fetch time is the retrieval time for the API
+or the cache's recorded fetch time. An unavailable context window is `null`
+(`unknown` in text); the pinned app-server schema does not expose it. Cache
+identity and account credentials are never included. If both sources are
+unavailable, the command exits nonzero with a `/codex:setup` hint.
 
 ## Default orchestration mode
 
@@ -370,7 +391,8 @@ use `--to` after the fork completes.
 | `CLAUDE_CONFIG_DIR` | Absolute Claude profile root for fallback instructions/rules, auto-memory exclusions, transcript discovery/validation and import staging/cleanup; missing, empty or relative values use `~/.claude` for these operations |
 | `CODEX_COMPANION_CLAUDE_MD=0` | Disable instruction capture/forwarding; use a fresh thread to opt out |
 | `CODEX_COMPANION_CONNECT_TIMEOUT_MS` | Positive integer deadline for starting and initializing the Codex runtime (broker startup and direct fallback included) for tasks, reviews and transfers; default 60,000 ms |
-| `CODEX_COMPANION_IMPORT_MAX_BYTES` | Positive integer import byte limit; default 20 MiB (20,971,520 bytes) |
+| `CODEX_COMPANION_IMPORT_MAX_BYTES` | Positive integer cap on the Claude transcript read for `--fork`; default 128 MiB |
+| `CODEX_COMPANION_FORK_BUDGET_BYTES` | Positive integer byte budget for the post-compaction slice a fork imports; default 2 MiB (about 175k tokens) |
 | `CODEX_COMPANION_SESSION_ID` | Session scope, exported by SessionStart; `--session <id>` overrides it |
 | `CODEX_COMPANION_TRANSCRIPT_PATH` | Current Claude JSONL transcript, exported by SessionStart; `--source` overrides it for imports |
 

@@ -239,7 +239,7 @@ stay available through `result --details`. → [Commands](docs/commands.md)
 
 | Setting | Default | Change it with |
 | --- | --- | --- |
-| Model · effort · speed | configured; built-in `gpt-6-astra` · `xhigh` · normal (ultra uses the configured routine model, default `gpt-6.1-sol`, or worker model by stage) | `setup --default-model …`, `--default-effort …`, `--ultra-routine-model …`; `--model`, `--effort`, `--fast` per call |
+| Model · effort · speed | configured; built-in `gpt-6-astra` · `xhigh` · normal (ultra uses the configured routine model, default `gpt-6.1-sol`, or worker model by stage) | `duet models` lists what your account offers; `setup --default-model …`, `--default-effort …`, `--ultra-routine-model …`; `--model`, `--effort`, `--fast` per call |
 | Orchestration mode in a fresh session | off | `setup --default-mode ultra\|pair\|duel` |
 | Codex sandbox | full access, like the Codex app's own full-access mode | `setup --default-sandbox …`, or `--sandbox` per call |
 | Browser | any site, no per-origin prompt | `setup --browser-approval ask` |

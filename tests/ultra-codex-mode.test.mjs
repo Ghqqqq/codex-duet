@@ -348,6 +348,10 @@ test("control invocations omit the protocol and the safe preamble requests a ver
 
 test("protocol versions track body edits and the checked-in first line matches", () => {
   const checkedIn = fs.readFileSync(PROTOCOL_PATH, "utf8");
+  assert.doesNotMatch(checkedIn, /gpt-\d/);
+  const dispatch = checkedIn.match(/^##[ \t]+Dispatch[ \t]*\r?\n([\s\S]*?)(?=^##[ \t]+|(?![\s\S]))/m)?.[1];
+  assert.ok(dispatch, "the protocol has a Dispatch section");
+  assert.match(dispatch.replace(/\s+/g, " "), /To check or change models, load the `codex:models` skill\./);
   assert.equal(checkedIn.split("\n")[0], `<!-- Ultra-codex protocol v${protocolVersion(checkedIn)} -->`);
   const body = "\n## Shared mechanics\nShared instruction.\n## Ultra mode\nUltra instruction.\n## Pair mode\nPair instruction.\n## Duel mode\nDuel instruction.\n";
   const version = protocolVersion(body), text = `<!-- Ultra-codex protocol v${version} -->\n${body}`;

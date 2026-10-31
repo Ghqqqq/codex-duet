@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { COMMAND_ALIASES, COMMAND_OPTIONS, DIRECT_OPTION_CONFLICTS } from "./lib/command-options.mjs";
-import { SANDBOX_MODES } from "./lib/setup-config.mjs";
+import { SANDBOX_MODES, isSupportedReasoningEffort, normalizeRequestedModel } from "./lib/setup-config.mjs";
 
 const launcher = fileURLToPath(new URL("../bin/duet", import.meta.url));
 const quote = value => `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -124,9 +124,10 @@ export function approveDuet(input, env = process.env) {
     } else if (schema.value.has(name)) {
       const value = inlineValue ?? args[++i];
       if (!value || value.startsWith("-") || !value.trim()) return {};
-      if (["to", "thread", "model", "continue"].includes(name) && !target(value)) return {};
+      if (["to", "thread", "continue"].includes(name) && !target(value)) return {};
+      if (name === "model" && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(normalizeRequestedModel(value))) return {};
       if (name === "session" && value !== input.session_id) return {};
-      if (name === "effort" && !["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value)) return {};
+      if (name === "effort" && !isSupportedReasoningEffort(value, env)) return {};
       if (name === "sandbox" && !SANDBOX_MODES.includes(value)) return {};
       if (name === "timeout-sec" && (!/^\d+$/.test(value) || +value < 1 || +value > 3600)) return {};
       if (["lease-sec", "question-timeout-sec"].includes(name) && (!/^\d+$/.test(value) || +value < 1 || +value > 86400)) return {};

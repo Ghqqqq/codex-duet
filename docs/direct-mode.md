@@ -273,8 +273,20 @@ native worker or `duet task --fork` with stdin to import the current Claude
 transcript (no thinking) into a new thread, then run the assignment.
 `--source '<jsonl>'` selects another allowed transcript. Imports are labelled
 “imported Claude conversation (fidelity not verified)”; fidelity has
-not been established. The default import limit is 20 MiB, configurable with
-`CODEX_COMPANION_IMPORT_MAX_BYTES`; oversized imports fail rather than truncate.
+not been established. Duet slices from the last main-conversation compact boundary
+(or the beginning if none exists), retaining user, assistant and system entries.
+Sidechains, non-conversational entries and thinking blocks are omitted. Tool output
+over 16 KiB is replaced with `[Duet: tool output trimmed for fork import, N bytes]`;
+oversized image blocks become `[Duet: image omitted for fork import]`. This includes
+images inside tool results and oversized auxiliary copies of tool output.
+
+The slice defaults to 2 MiB, configurable with `CODEX_COMPANION_FORK_BUDGET_BYTES`. A live import measured about 12 bytes per token, so 2 MiB is roughly 175k tokens on the forked worker's first turn; keep the budget below the chosen model's context window.
+If necessary, Duet keeps the compact boundary, its summary and the newest entries
+that fit, repairing parent links without rewriting conversation text. A budget too
+small for the boundary and summary fails with an actionable error. The source read
+cap is 128 MiB, configurable with `CODEX_COMPANION_IMPORT_MAX_BYTES`; sources above
+that cap fail before import. Job requests record slice statistics as `forkSlice`
+and the original source hash as `forkSourceSha256`.
 `--fork` cannot combine with `--to`, `--thread`, `--continue` or resume flags.
 Use `SendMessage` for native follow-ups or `--to` for Bash follow-ups after the fork.
 
@@ -286,9 +298,9 @@ conversation, and live-debugging investigators. Do not fork independent judges,
 refuters, reviewers, duel opponents or blind drafts, which must not inherit
 Claude's leanings; skip it for mechanical scans that only gain cost. Keep the
 brief's objective, owned paths, criteria and verification. A Codex fork shares
-no prompt cache with Claude, so its first turn reads the whole transcript;
+no prompt cache with Claude, so its first turn reads the imported slice;
 choose it for needed context, not context hygiene. If the import exceeds the
-limit, brief without `--fork`. See the
+source read cap, brief without `--fork`. See the
 [shared brief rules](../plugins/codex/prompts/ultra-codex-protocol.md#writing-a-brief-every-codex-assignment).
 
 ### Live view with codex-live

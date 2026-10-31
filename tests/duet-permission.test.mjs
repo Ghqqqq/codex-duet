@@ -142,6 +142,47 @@ test("PreToolUse permits only the single-command duet grammar with trusted sessi
   }
 });
 
+test("model slugs and cached efforts retain permission approval and delivery bindings", t => {
+  const root = makeTempDir("duet-permission-models-"), home = path.join(root, "isolated");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(home);
+  const cache = path.join(home, "models_cache.json");
+  fs.writeFileSync(cache, JSON.stringify({ models: [
+    { slug: "provider:fixture", supported_reasoning_levels: [{ effort: "ultra" }] }
+  ] }));
+  const env = { ...process.env, HOME: root, USERPROFILE: root, CLAUDE_CONFIG_DIR: "", CODEX_COMPANION_HOME: home, PATH: path.dirname(process.execPath) };
+  const body = "\nLiteral $(body); pipes | and \"quotes\"\nDUET_TASK";
+  const invoke = options => {
+    const command = `duet task ${options} <<'DUET_TASK'${body}`;
+    const result = run(process.execPath, [script], { env, input: JSON.stringify({
+      hook_event_name: "PreToolUse", tool_name: "Bash", permission_mode: "default",
+      session_id: "session-a", tool_use_id: "tool-a", cwd: root,
+      tool_input: { command, run_in_background: true }
+    }) });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  for (const [model, effort] of [
+    ["provider:fixture", "ultra"], ["provider:fixture", "high"], ["fixture", "ultra"],
+    ["spark", "ultra"], ["  SPARK  ", "ultra"], ["m".repeat(100), "ultra"]
+  ]) {
+    const options = `--model ${model.includes(" ") ? `'${model}'` : model} --effort ${effort}`;
+    assert.deepEqual(invoke(options), { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow",
+      updatedInput: { command: `${quotedLauncher} 'task' '--model' '${model}' '--effort' '${effort}' '--session' 'session-a' '--tool-use-id' 'tool-a' <<'DUET_TASK'${body}`,
+        run_in_background: true } } }, options);
+  }
+  for (const options of [
+    "--model provider:fixture --effort unlisted", "--model 'fixture model' --effort ultra",
+    "--model -fixture --effort ultra", "--model _fixture --effort ultra", "--model fixture/model --effort ultra",
+    `--model ${"m".repeat(101)} --effort ultra`,
+    ...["to", "thread", "continue"].map(flag => `--${flag} provider:fixture`)
+  ]) assert.deepEqual(invoke(options), {}, options);
+  assert.deepEqual(fs.readdirSync(home), ["models_cache.json"], "validation only reads the isolated model cache");
+  fs.rmSync(cache);
+  assert.deepEqual(invoke("--model provider:fixture --effort ultra"), {}, "uncached efforts are rejected");
+  assert.equal(invoke("--model provider:fixture --effort xhigh").hookSpecificOutput.permissionDecision, "allow");
+});
+
 test("harmless aliases and helper text never suppress the absolute launcher or delivery bindings", () => {
   const root = makeTempDir("duet14-first-context-shell-");
   const env = { ...process.env, HOME: root, CLAUDE_CONFIG_DIR: "", PATH: `${path.dirname(launcher)}:${process.env.PATH}`, CODEX_COMPANION_HOME: path.join(root, "isolated") };

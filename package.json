@@ -1,6 +1,6 @@
 {
   "name": "codex-duet",
-  "version": "1.4.10",
+  "version": "1.4.11",
   "private": true,
   "type": "module",
   "description": "Duet: delegate coding, research and review from Claude Code to parallel Codex workers.",

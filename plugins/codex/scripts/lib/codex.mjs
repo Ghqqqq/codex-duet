@@ -1491,7 +1491,7 @@ export async function importExternalAgentSession(cwd, options = {}) {
     sessionId: options.sessionId, explicitSource: options.explicitSource
   });
   try {
-    const sourceSha256 = sourceContentSha256(snapshot.snapshotPath);
+    const snapshotSha256 = sourceContentSha256(snapshot.snapshotPath);
     return await withDirectAppServer(cwd, async (client) => {
       emitProgress(options.onProgress, "Importing Claude session into Codex.", "transferring");
       let imported;
@@ -1506,7 +1506,7 @@ export async function importExternalAgentSession(cwd, options = {}) {
         }
         throw error;
       }
-      const threadId = importedThreadIdForSource(snapshot.snapshotPath, sourceSha256);
+      const threadId = importedThreadIdForSource(snapshot.snapshotPath, snapshotSha256);
       if (!threadId) {
         const stderr = cleanCodexStderr(client.stderr);
         throw new Error(
@@ -1516,7 +1516,8 @@ export async function importExternalAgentSession(cwd, options = {}) {
       emitProgress(options.onProgress, `Claude session imported (${threadId}).`, "completed", { threadId });
       return {
         threadId,
-        sourceSha256,
+        sourceSha256: snapshot.sourceSha256,
+        forkSlice: snapshot.forkSlice,
         importId: imported.importId,
         stderr: cleanCodexStderr(client.stderr)
       };

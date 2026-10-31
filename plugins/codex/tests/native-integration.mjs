@@ -3,6 +3,7 @@
 // Set UPDATE_NATIVE_CAPTURES=1 to also replace the tracked replay fixtures.
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -936,6 +937,46 @@ test('dispatch intent survives the response/persistence gap and nonce retries re
   f.save();
 });
 
+test('native DUET fork tail-caps a compacted SessionStart transcript without a transcript environment variable', async t => {
+  const f = fixture('review-ok'), budgetBytes = 4096;
+  f.env.CODEX_COMPANION_FORK_BUDGET_BYTES = String(budgetBytes);
+  const source = `${f.root}/home/.claude/projects/-repo/native-session.jsonl`;
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  const row = (type, uuid, parentUuid, extra = {}) => ({ type, uuid, parentUuid,
+    sessionId: 'native-session', cwd: `${f.root}/repo`, ...extra });
+  const entries = [row('user', 'before', null, { message: { content: 'PRE_BOUNDARY_NATIVE_TEXT' } }),
+    row('system', 'boundary', null, { subtype: 'compact_boundary', logicalParentUuid: 'before' }),
+    row('attachment', 'attachment', 'boundary'),
+    row('user', 'summary', 'attachment', { isCompactSummary: true, message: { content: 'Native compact summary' } })];
+  for (let index = 0; index < 60; index++) entries.push(row('user', `turn-${index}`, index ? `turn-${index - 1}` : 'summary',
+    { message: { content: `Older turn ${index}: ${'x'.repeat(512)}` } }));
+  entries.push(row('user', 'newest', 'turn-59', { message: { content: 'NEWEST_NATIVE_FACT' } }));
+  const contents = entries.map(entry => JSON.stringify(entry)).join('\n') + '\n';
+  fs.writeFileSync(source, contents);
+  const started = spawnSync(process.execPath, [plugin + '/scripts/session-lifecycle-hook.mjs', 'SessionStart'], {
+    cwd: `${f.root}/repo`, env: { ...f.env, CLAUDE_ENV_FILE: `${f.root}/claude-env` }, encoding: 'utf8',
+    input: JSON.stringify({ session_id: 'native-session', transcript_path: source, cwd: `${f.root}/repo`, source: 'startup' }),
+  });
+  assert.equal(started.status, 0, started.stderr);
+  assert.equal(f.env.CODEX_COMPANION_TRANSCRIPT_PATH, undefined);
+  const result = await f.turn('DUET: --fork\nUse the newest fact from the compacted conversation.', 1);
+  assert.equal(result.status, 'completed', result.summary);
+  const job = f.jobs().find(job => job.id === result.jobId), meta = job.request.forkSlice;
+  assert.equal(meta.fromCompactBoundary, true);
+  assert.equal(meta.tailCapped, true);
+  assert.ok(meta.slicedBytes <= budgetBytes);
+  assert.equal(meta.sourceBytes, Buffer.byteLength(contents));
+  assert.equal(job.request.forkSourceSha256, createHash('sha256').update(contents).digest('hex'));
+  const messages = f.codexState().lastExternalAgentImport.messages.map(message => message.text);
+  assert.equal(messages[0], 'Native compact summary');
+  assert.equal(messages.at(-1), 'NEWEST_NATIVE_FACT');
+  assert.ok(!messages.includes('PRE_BOUNDARY_NATIVE_TEXT'));
+  assert.equal(f.env.CODEX_COMPANION_TRANSCRIPT_PATH, undefined);
+  t.diagnostic(JSON.stringify(meta));
+  // This additional integration assertion does not add a replay scenario;
+  // keep the existing eight-capture hook replay suite intact.
+});
+
 test('DUET first-line flags and fork carry captured instructions to the imported thread; invalid flags dispatch nothing', async t => {
   const f = fixture('review-ok');
   const cwd = `${f.root}/work tree`;
@@ -972,6 +1013,9 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   assert.deepEqual(runtime.threads[0].visibleMessages.map(message => message.text), ['Synthetic prior request.']);
   const instructions = EXECUTOR_FRAMING + '\n\n### /captured/CLAUDE.md\nFORK_RULE_SENTINEL';
   assert.equal(job.request.forked, true);
+  assert.equal(job.request.forkSlice.fromCompactBoundary, false);
+  assert.equal(job.request.forkSlice.sourceBytes, fs.statSync(source).size);
+  assert.ok(job.request.forkSlice.slicedBytes <= 2 * 1024 * 1024);
   assert.equal(job.request.forkImportId, imported.importId);
   assert.equal(job.request.threadId, imported.threadId);
   assert.equal(runtime.lastThreadResume.threadId, imported.threadId);

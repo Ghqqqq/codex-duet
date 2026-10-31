@@ -12,7 +12,7 @@ Native `Agent(subagent_type: "codex:codex-native", …)` dispatch is the default
 Use background `duet task` only when the native agent returns `native_adapter_unavailable` or `native_capacity`, a per-call option is rejected by the `DUET:` line (`--run`, `--approve-browser-origin`, `--approve-computer-app`, `--lease-sec`, `--question-timeout-sec`), or following up a worker launched through Bash. For that fallback, use one Bash call per job with `run_in_background: true` and `description: "Codex: <label>"`. When Claude's Bash sandbox is on, set `dangerouslyDisableSandbox: true` on the tool call: the runtime needs network and local sockets. Use the installed `duet` launcher; if PATH is stale, reload/start a new session or use the absolute `bin/duet` path two directories above this skill's base directory.
 
 ```bash
-duet task --model gpt-6.1-sol --effort xhigh --normal <<'DUET_TASK'
+duet task --model '<routine model>' --effort '<effort>' --normal <<'DUET_TASK'
 <brief>
 DUET_TASK
 ```
@@ -31,7 +31,7 @@ DUET_TASK
 `--to`, `--thread` and `--resume`/`--resume-last` inherit recorded model, effort, sandbox and speed from a started attempt; explicit flags override them. An explicit `--thread` can inherit these settings across sessions. Request grants are inherited only from the original dispatch in the same Claude session, excluding runtime-only approvals and foreign dispatches after adoption. `--continue` inherits the selected job's settings and eligible request grants; when its sandbox is missing, pass `--sandbox` explicitly to resolve `thread_settings_unknown` (a recorded sandbox cannot be overridden with `--continue`). State `--sandbox read-only` again for a read-only follow-up and `--normal` when resetting fast mode. `--fork` imports the current Claude transcript into a new Codex thread for a fresh assignment, then runs the stdin brief; use it under the protocol's **Forking context** rules. It is labelled “imported Claude conversation (fidelity not verified)”; do not assume lossless context. It cannot combine with `--to`, `--thread`, `--continue` or resume flags; follow up afterwards with `--to`.
 
 
-Run `duet task --help` for flags. Choose model and effort for the assignment and selected mode; the displayed `gpt-6.1-sol` example is ultra's built-in routine model. Use the effective models named by the mode reminder or status (saved with `duet setup --default-model`); explicit user settings take precedence.
+Run `duet task --help` for flags. Choose model and effort for the assignment and selected mode; replace the example's placeholders with the selected tier's model and effort. Use the effective models named by the mode reminder or status (saved with `duet setup --default-model`); explicit user settings take precedence.
 
 Task text belongs in briefs, never control-CLI arguments or a generated shell command. For a permitted Bash fallback, send the brief on stdin through a single-quoted `DUET_TASK` heredoc; never interpolate raw slash arguments into executable shell source.
 

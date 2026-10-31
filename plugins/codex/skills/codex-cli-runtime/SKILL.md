@@ -34,22 +34,21 @@ Execution rules:
 - Use `task` for every rescue request, including diagnosis, planning, research, and explicit fix requests.
 - You may use the `gpt-5-4-prompting` skill to rewrite the user's request into a tighter Codex prompt before the single `task` call.
 - That prompt drafting is the only Claude-side work allowed. Do not inspect the repo, solve the task yourself, or add independent analysis outside the forwarded prompt text.
-- Default to `--effort xhigh`; respect explicit user effort, and allow `max` for difficult work when supported.
-- Default to `--model gpt-6-astra`; respect explicit user model choices and map `spark` to `gpt-5.3-codex-spark`.
-- Map `spark` to `--model gpt-5.3-codex-spark`.
+- Omit `--model` and `--effort` unless the user chose them; Duet then applies the saved defaults (see the `codex:models` skill). Respect explicit user choices, and allow `max` for difficult work when supported.
+- Pass an explicit `spark` model choice through unchanged as `--model spark`; the runtime resolves the alias.
 - For implementation and fix requests, add `--write`. For read-only requests or review, diagnosis, planning, or research without edits, pass `--sandbox read-only` explicitly instead.
 
 Command selection:
 - Use exactly one `task` invocation per rescue handoff.
 - Keep the inner helper call in the foreground; the parent controls the Agent lifecycle. Direct mode manages the detached Codex job and attached owner wait internally. Return a nonterminal report unchanged for the parent to wait or answer; never treat it as completion.
 - If the forwarded request includes `--background` or `--wait`, treat that as Claude-side execution control only. Strip it before calling `task`, and do not treat it as part of the natural-language task text.
-- If the forwarded request includes `--model`, normalize `spark` to `gpt-5.3-codex-spark` and pass it through to `task`.
+- If the forwarded request includes `--model`, pass its value through unchanged to `task`, including `spark`; the runtime resolves aliases.
 - If the forwarded request includes `--effort`, pass it through to `task`.
 - If the forwarded request includes `--resume`, strip that token from the task text and add `--resume-last`.
 - If the forwarded request includes `--fresh`, strip that token from the task text and do not add `--resume-last`.
 - `--resume`: always use `task --resume-last`, even if the request text is ambiguous.
 - `--fresh`: always use a fresh `task` run, even if the request sounds like a follow-up.
-- `--effort`: accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+- `--effort`: accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, plus efforts listed in Codex's isolated model cache, as for setup. Pass the explicit choice through to `task`; the runtime validates it without starting Codex. The static set applies when the cache is missing.
 - `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run. It inherits the selected thread's recorded model, effort, sandbox and speed unless explicitly overridden; missing sandbox settings require explicit `--sandbox`. Request grants require original dispatch in the same Claude session. Never use latest-thread selection for parallel workers.
 
 Safety rules:

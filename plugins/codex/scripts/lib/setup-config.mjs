@@ -5,6 +5,7 @@ import os from "node:os";
 import { acquireConfigLock, keyPath, maskTomlComments, statements, valueOf } from "./tool-config.mjs";
 import { normalizeBrowserOrigin, normalizeBrowserOrigins, normalizeBundleId, normalizeBundleIds } from "./server-requests.mjs";
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
+import { cachedReasoningEfforts } from "./models.mjs";
 import { BUILTIN_WORKER_DEFAULTS, MODE_NAMES } from "./ultra-codex-mode.mjs";
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -377,6 +378,9 @@ export function defaultModeSetup({ mode, env = process.env, dryRun = false } = {
 }
 
 export const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+export function isSupportedReasoningEffort(effort, env = process.env) {
+  return VALID_REASONING_EFFORTS.has(effort) || cachedReasoningEfforts(env).has(effort);
+}
 const MODEL_ALIASES = new Map([["spark", "gpt-5.3-codex-spark"]]);
 export function normalizeRequestedModel(model) {
   if (model == null) return null;
@@ -384,24 +388,24 @@ export function normalizeRequestedModel(model) {
   return normalized ? MODEL_ALIASES.get(normalized.toLowerCase()) ?? normalized : null;
 }
 const WORKER_DEFAULTS = { defaultModel: BUILTIN_WORKER_DEFAULTS.model, defaultEffort: BUILTIN_WORKER_DEFAULTS.effort, ultraRoutineModel: BUILTIN_WORKER_DEFAULTS.routineModel };
-function workerPreference(key, value) {
+function workerPreference(key, value, env) {
   if (typeof value !== "string") return null;
-  if (key === "defaultEffort") return VALID_REASONING_EFFORTS.has(value) ? value : null;
+  if (key === "defaultEffort") return isSupportedReasoningEffort(value, env) ? value : null;
   const model = normalizeRequestedModel(value);
   return model && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(model) ? model : null;
 }
-function savedWorkerDefaults(text) {
+function savedWorkerDefaults(text, env) {
   return Object.fromEntries(Object.entries(WORKER_DEFAULTS).map(([key, builtin]) => {
     let value;
-    try { value = workerPreference(key, readTomlField(text, [key])); } catch { /* use the built-in */ }
+    try { value = workerPreference(key, readTomlField(text, [key]), env); } catch { /* use the built-in */ }
     return [key, { value: value ?? builtin, source: value == null ? "built-in" : "saved" }];
   }));
 }
 function workerDefaultsSummary(env) {
   try {
     const { root, file } = duetConfig(env);
-    return savedWorkerDefaults(read(root, file));
-  } catch { return savedWorkerDefaults(""); }
+    return savedWorkerDefaults(read(root, file), env);
+  } catch { return savedWorkerDefaults("", env); }
 }
 // Preferences are advisory: missing, malformed or unreadable values never
 // prevent dispatch or hook context from falling back to the built-ins.
@@ -412,11 +416,11 @@ export function readWorkerDefaults(env = process.env) {
 /** @param {{ defaultModel?: string, defaultEffort?: string, ultraRoutineModel?: string, env?: NodeJS.ProcessEnv, dryRun?: boolean }} [options] */
 export function workerDefaultsSetup({ defaultModel, defaultEffort, ultraRoutineModel, env = process.env, dryRun = false } = {}) {
   const changes = Object.entries({ defaultModel, defaultEffort, ultraRoutineModel }).filter(([, value]) => value !== undefined).map(([key, value]) => {
-    const normalized = value === "default" ? undefined : workerPreference(key, value);
+    const normalized = value === "default" ? undefined : workerPreference(key, value, env);
     if (normalized === null) {
       const flag = key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
       throw new Error(key === "defaultEffort"
-        ? `--${flag} must be ${[...VALID_REASONING_EFFORTS].join(", ")}, or default.`
+        ? `--${flag} must be ${[...new Set([...VALID_REASONING_EFFORTS, ...cachedReasoningEfforts(env)])].join(", ")}, or default. Additional efforts require a supporting entry in Codex's isolated model cache; the static set applies when the cache is missing.`
         : `--${flag} must be a model name (1–100 letters, digits, dots, underscores, colons or hyphens, starting with a letter or digit), or default.`);
     }
     return [key, normalized];
@@ -424,7 +428,7 @@ export function workerDefaultsSetup({ defaultModel, defaultEffort, ultraRoutineM
   if (!changes.length) return workerDefaultsSummary(env);
   const { root, file } = duetConfig(env), before = read(root, file);
   const after = changes.reduce((text, [key, value]) => setTomlField(text, [key], value), before);
-  return { file, ...savedWorkerDefaults(after), ...apply(root, [{ file, before, after }], dryRun) };
+  return { file, ...savedWorkerDefaults(after, env), ...apply(root, [{ file, before, after }], dryRun) };
 }
 
 export function transportSetup({ mode = "status", env = process.env, dryRun = false } = {}) {

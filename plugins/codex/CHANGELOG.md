@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.4.11
+
+### Features
+
+- `duet models [--json] [--all]` discovers the current account's models through the official app-server API, with an isolated-cache fallback, and shows supported efforts, effective tiers and their sources. Setup and hooks accept additional efforts from Codex's cached model list without starting a runtime.
+- The model-invocable `codex:models` skill explains tier selection, shared mode/stage settings, discovery, saved defaults and one-off overrides. Orchestration and forwarding guidance now uses effective model settings instead of hardcoded model names.
+- The Bash fallback's permission hook accepts the same model slugs and efforts as setup and dispatch, including cache-listed efforts and colon slugs. Such fallback dispatches keep auto-approval and their report-delivery binding.
+- `--fork` works in long sessions. It imports what the main agent currently sees: entries from the last compact boundary onward, conversation entries only, with oversized tool output and images replaced by placeholders. The slice is capped to `CODEX_COMPANION_FORK_BUDGET_BYTES` (default 2 MiB, about 175k tokens) by keeping the summary and the newest turns, with the parent chain repaired. The source read cap (`CODEX_COMPANION_IMPORT_MAX_BYTES`) is now 128 MiB. Fork jobs record `forkSlice` metadata, and `forkSourceSha256` still hashes the original source.
+
+### Known limits
+
+- A slice keeps the compaction summary plus recent turns, so detail from before the last compaction is only as complete as that summary. Trimmed tool output appears as placeholders.
+- On Windows, the stale-import sweep cannot verify ownership (no POSIX uid), so copies left by a killed fork import are not removed automatically. Normal imports still clean up their own copies. This predates 1.4.11.
+
 ## 1.4.10
 
 ### Features
@@ -15,7 +29,7 @@
 
 - Models are not validated against the account; an unknown model fails at dispatch.
 - Malformed TOML in the Duet preference file is ignored when reading worker models, but a fresh dispatch still stops at the default-sandbox check. That check fails closed, as in 1.4.9; repair the file or rerun `duet setup`.
-- A fork of a transcript above the default 20 MiB import limit fails rather than truncates. Brief without `--fork` when the import exceeds the limit; long-session fork import is planned.
+- A fork of a transcript above the default 20 MiB import limit fails rather than truncates. Brief without `--fork` when the import exceeds the limit; long-session fork import is planned. (Resolved in 1.4.11: long sessions import a post-compaction slice.)
 
 ## 1.4.9
 

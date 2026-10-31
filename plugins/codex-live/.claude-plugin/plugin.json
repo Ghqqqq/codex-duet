@@ -1,6 +1,6 @@
 {
   "name": "codex-live",
-  "version": "1.4.10",
+  "version": "1.4.11",
   "description": "Read-only live pane for this Claude session's Duet Codex jobs.",
   "types": "./types/index.d.ts",
   "author": {

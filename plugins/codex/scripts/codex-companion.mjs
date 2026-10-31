@@ -6,7 +6,8 @@ import { UNREACHABLE_GUIDANCE } from "./lib/runtime-errors.mjs";
 import { getToolAvailability, syncToolConfig } from "./lib/tool-config.mjs";
 import { buildWorkerReport, parseStructuredReport, persistTaskArtifacts, taskArtifactPaths } from "./lib/worker-report.mjs";
 import { normalizeBrowserOrigins, normalizeBundleIds } from "./lib/server-requests.mjs";
-import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, defaultModeSetup, workerDefaultsSetup, readWorkerDefaults, normalizeRequestedModel, VALID_REASONING_EFFORTS, ensureBrowserApproval, ensureComputerUseApproval, ensureProjectDocs, projectDocsSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
+import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, defaultModeSetup, workerDefaultsSetup, readWorkerDefaults, normalizeRequestedModel, isSupportedReasoningEffort, ensureBrowserApproval, ensureComputerUseApproval, ensureProjectDocs, projectDocsSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
+import { listModels, renderModels } from "./lib/models.mjs";
 import { activityReader, formatActivity, redactActivity, snippet } from "./lib/activity.mjs";
 import { JobRuntime, ACTIVE, OWNER_GRACE_MS, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, continuationReport, fullReport, directReport, envelopeBytes, adoptJob, ownershipNotice } from "./lib/job-runtime.mjs";
 import { reserveAgentName, releaseAgentName } from "./lib/agent-names.mjs";
@@ -177,11 +178,14 @@ Read the brief only from stdin; implies --direct. Fresh unless --to/--thread/--c
   --fork  Import the current Claude transcript into a new thread, then run the stdin brief.
   --source <jsonl>  Override the transcript for --fork; import fidelity is not verified.
     --fork conflicts with to, thread, continue, resume and resume-last.
-    CODEX_COMPANION_IMPORT_MAX_BYTES caps imports (default 20 MiB); oversized imports fail.
+    CODEX_COMPANION_IMPORT_MAX_BYTES caps source reads (default 128 MiB); larger sources fail.
+    CODEX_COMPANION_FORK_BUDGET_BYTES sets the transcript slice budget (default 2 MiB).
   --no-claude-md  Disable automatic Claude instruction forwarding for a fresh thread.
     CODEX_COMPANION_CLAUDE_MD=0 also disables it. Existing threads retain their instructions.
-  --model, -m <model|spark>  Default gpt-6-astra; spark = gpt-5.3-codex-spark.
-  --effort <none|minimal|low|medium|high|xhigh|max>  Default xhigh.
+  --model, -m <model|spark>  Built-in gpt-6-astra, overridden by duet setup --default-model.
+    Explicit spark is resolved by the runtime.
+  --effort <effort>  Built-in xhigh, overridden by duet setup --default-effort.
+    Accepts none, minimal, low, medium, high, xhigh, max and efforts in the isolated model cache.
   --fast  Priority speed; --normal  Normal speed (fresh default); choose one.
   --cwd, -C <dir>  Workspace directory; --session <id>  Override the Claude session id.
   --run <id|none>  Override journal linkage for this dispatch only; follow-ups do not inherit it.
@@ -196,7 +200,7 @@ Read the brief only from stdin; implies --direct. Fresh unless --to/--thread/--c
   --question-timeout-sec <s>  Answer deadline (900); --timeout-sec <s>  Wait budget (3600; max 3600).
 Direct conflicts: follow, detached, background, json, feed-limit, min-interval-sec.
 Run each task/answer/wait as Bash(command: <shell below>, run_in_background: true, timeout: 600000).
-duet task --model gpt-6-astra --effort xhigh --normal <<'DUET_TASK'
+duet task --model '<model>' --effort '<effort>' --normal <<'DUET_TASK'
 <brief: objective, context, owned paths, constraints, acceptance criteria>
 DUET_TASK
 Parallel jobs: dispatch separate task calls; use disjoint owned paths or separate --cwd values.
@@ -221,6 +225,11 @@ Never parse output files, poll or run two waits for one job. Continue user-stopp
 Compatibility: node "$CODEX_COMPANION" <subcommand> still works. Its task accepts positional text,
 --prompt-file <file>, --report/--json, --follow (feed wait), --detached (return handles),
 --background (legacy launch), and --feed-limit <n> (60; 0 unlimited), outside direct mode.`,
+  models: `duet models lists models offered by the current Codex account.
+Usage: duet models [--json] [--all]
+Uses app-server model/list, falling back to the isolated model cache; reports the source.
+  --json  Model descriptions, efforts, context windows and effective tiers with sources.
+  --all  Include hidden models; --help, -h  Help without starting the runtime.`,
   setup: `duet setup reports invocation availability, selected runtime source and readiness.
 Usage: duet setup [options]
 Check isolated runtime readiness or change setup; --help, -h exits without changes.
@@ -389,9 +398,9 @@ function normalizeReasoningEffort(effort) {
   if (!normalized) {
     return null;
   }
-  if (!VALID_REASONING_EFFORTS.has(normalized)) {
+  if (!isSupportedReasoningEffort(normalized)) {
     throw new Error(
-      `Unsupported reasoning effort "${effort}". Use one of: none, minimal, low, medium, high, xhigh, max.`
+      `Unsupported reasoning effort "${effort}". Use none, minimal, low, medium, high, xhigh, max, or an effort listed in Codex's isolated model cache.`
     );
   }
   return normalized;
@@ -530,6 +539,20 @@ function computerUseSummary() {
 function projectDocsSummary() {
   try { return projectDocsSetup({ dryRun: true }); }
   catch (error) { return { error: error.message }; }
+}
+
+async function handleModels(argv) {
+  const { options, positionals } = parseCommandInput(argv, { booleanOptions: ["json", "all"] });
+  if (positionals.length) throw new Error("Usage: duet models [--json] [--all]");
+  const catalog = await listModels({ all: Boolean(options.all) });
+  const defaults = workerDefaultsSetup();
+  const tiers = { strong: defaults.defaultModel, effort: defaults.defaultEffort, routine: defaults.ultraRoutineModel };
+  const models = catalog.models.map(model => ({ ...model, inUse: [
+    ...(model.slug === tiers.strong.value ? ["strong"] : []),
+    ...(model.slug === tiers.routine.value ? ["routine"] : [])
+  ] }));
+  const report = { ...catalog, models, tiers };
+  outputCommandResult(report, renderModels(report), options.json);
 }
 
 async function handleSetup(argv) {
@@ -1305,6 +1328,7 @@ async function executeTransfer(cwd, options = {}) {
   return {
     payload,
     sourceSha256: result.sourceSha256,
+    forkSlice: result.forkSlice,
     importId: result.importId,
     rendered: renderTransferResult(payload)
   };
@@ -1666,13 +1690,14 @@ async function handleTask(argv) {
   let forkRequest = {};
   if (options.fork) {
     if (!prompt.trim()) throw new Error("Provide the task --fork brief on stdin.");
-    const { payload, sourceSha256, importId } = await executeTransfer(cwd, {
+    const { payload, sourceSha256, importId, forkSlice } = await executeTransfer(cwd, {
       source: options.source, sessionId: getCurrentClaudeSessionId(), env: forkSourceEnv
     });
     threadId = payload.threadId;
     forkRequest = {
       forked: true,
       forkSourceSha256: sourceSha256,
+      forkSlice,
       forkImportId: importId,
       forkLabel: "imported Claude conversation (fidelity not verified)"
     };
@@ -2914,6 +2939,9 @@ async function main() {
       break;
     case "setup":
       await handleSetup(argv);
+      break;
+    case "models":
+      await handleModels(argv);
       break;
     case "review":
       await handleReview(argv);

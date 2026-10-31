@@ -17,6 +17,13 @@ const snapshot = dir => fs.readdirSync(dir, { recursive: true }).sort().map(name
   const file = path.join(dir, name);
   return [name, fs.statSync(file).isFile() ? fs.readFileSync(file).toString("base64") : null];
 });
+function saveCachedUltra(f) {
+  fs.mkdirSync(f.env.CODEX_COMPANION_HOME, { recursive: true });
+  fs.writeFileSync(path.join(f.env.CODEX_COMPANION_HOME, "models_cache.json"), JSON.stringify({ models: [
+    { slug: "fixture-worker", supported_reasoning_levels: [{ effort: "ultra" }] }
+  ] }));
+  assert.equal(json(f.call("setup", "--default-effort", "ultra", "--json")).defaultEffort.value, "ultra");
+}
 
 test("worker defaults setup saves and resets each key, supports combined dry-runs, and preserves unrelated settings", () => {
   const f = fixture("task-ok"), file = preferenceFile(f), initial = snapshot(f.dir);
@@ -160,6 +167,36 @@ test("task uses saved worker defaults, explicit flags override, and follow-ups r
   assert.equal(override.turn.threadId, saved.turn.threadId);
   assert.equal(override.turn.model, "gpt-5.3-codex-spark");
   assert.equal(override.turn.effort, "max");
+});
+
+test("task accepts an explicit cached ultra effort and rejects an unlisted effort before runtime startup", () => {
+  const f = fixture("task-ok");
+  saveCachedUltra(f);
+  const rejected = direct(f.call("task", "--direct", "--effort", "unlisted", "fixture"), 1);
+  assert.equal(rejected.status, "error");
+  assert.match(rejected.summary, /Unsupported reasoning effort "unlisted"/);
+  assert.equal(fs.existsSync(path.join(f.dir, "fake-codex-state.json")), false, "effort validation does not start Codex");
+  const accepted = direct(f.call("task", "--direct", "--effort", "ultra", "fixture"));
+  assert.equal(accepted.status, "completed");
+  assert.equal(f.state().lastTurnStart.effort, "ultra");
+});
+
+test("a fresh task with no effort override dispatches the saved cached ultra effort", () => {
+  const f = fixture("task-ok");
+  saveCachedUltra(f);
+  const report = direct(f.call("task", "--direct", "fixture"));
+  assert.equal(report.status, "completed");
+  assert.equal(f.state().lastTurnStart.effort, "ultra");
+});
+
+test("SessionStart renders the saved cached ultra effort without a running Codex runtime", () => {
+  const f = fixture("task-ok");
+  saveCachedUltra(f);
+  const result = run(process.execPath, [hook, "SessionStart"], { cwd: f.repo,
+    env: { ...f.env, CODEX_COMPANION_BIN: path.join(f.dir, "missing-codex") }, input: JSON.stringify({ cwd: f.repo }) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /--effort ultra\b/);
+  assert.equal(fs.existsSync(path.join(f.dir, "fake-codex-state.json")), false, "the fixture Codex runtime was never started");
 });
 
 test("SessionStart interpolates worker defaults and malformed preferences promptly restore the built-in context", () => {

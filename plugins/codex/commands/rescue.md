@@ -44,8 +44,8 @@ Operating rules:
 - Preserve the Codex companion output as evidence. The parent may give a concise user-facing explanation and continue authorized integration or verification.
 - The wrapper's forwarding restriction does not restrict the parent Claude agent's planning, verification, or final response.
 - Do not ask the subagent to inspect files, monitor progress, poll `/codex:status`, fetch `/codex:result`, call `/codex:cancel`, summarize output, or do follow-up work of its own.
-- Default to `--effort xhigh`; respect explicit user effort, and allow `max` for difficult work when supported.
-- Default to `--model gpt-6-astra`; respect explicit user model choices. If they ask for `spark`, map it to `gpt-5.3-codex-spark`.
+- Omit `--model` and `--effort` unless the user chose them; Duet then applies the saved defaults (see the `codex:models` skill). Respect explicit user choices, and allow `max` for difficult work when supported.
+- Pass explicit model choices and aliases through to Duet for normalization.
 - Leave `--resume` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command.
 - If the helper reports that Codex is missing or unauthenticated, stop and tell the user to run `/codex:setup`.
 - If the user did not supply a request, ask what Codex should investigate or fix.
