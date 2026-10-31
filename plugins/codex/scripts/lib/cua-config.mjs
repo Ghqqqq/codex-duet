@@ -167,7 +167,7 @@ export function buildCuaConfig({ normal, isolated, env, source, cuaTemplate, cha
     NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS: "1000",
     NODE_REPL_NODE_MODULE_DIRS: modules,
     NODE_REPL_NODE_PATH: assets.node,
-    NODE_REPL_TRUSTED_CODE_PATHS: `${isolated}:${modules}`,
+    NODE_REPL_TRUSTED_CODE_PATHS: [isolated, modules].join(path.delimiter),
     NODE_REPL_TRUSTED_SERVICES: JSON.stringify({ browser: "@oai/browser-desktop/service" }),
     BROWSER_USE_AVAILABLE_BACKENDS: "chrome",
     BROWSER_USE_TINYSKY_ENABLED: "1",

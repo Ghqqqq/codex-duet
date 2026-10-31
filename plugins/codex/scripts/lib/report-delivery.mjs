@@ -15,7 +15,7 @@ const object = value => value !== null && typeof value === "object" && !Array.is
 const strings = value => Array.isArray(value) && value.every(item => typeof item === "string");
 const count = value => Number.isSafeInteger(value) && value >= 0;
 const nullableString = value => value === null || typeof value === "string";
-const fields = new Set(["status", "worker", "jobId", "summary", "summaryTruncated", "blockers", "question", "changedFiles", "changedFilesOmitted", "checks", "assumptions", "keyFindings", "usage", "next", "details"]);
+const fields = new Set(["status", "worker", "jobId", "summary", "summaryTruncated", "blockers", "question", "changedFiles", "changedFilesOmitted", "changedFilesShared", "changedFilesNote", "checks", "assumptions", "keyFindings", "usage", "next", "details"]);
 const usageFields = ["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens", "totalTokens"];
 const terminal = new Set(["completed", "needs_input", "blocked", "failed", "cancelled", "interrupted", "owner_stopped", "error"]);
 const noticeLimit = 5, graceMs = 10000;
@@ -203,6 +203,8 @@ export function isC2Report(value) {
   if ("summaryTruncated" in value && typeof value.summaryTruncated !== "boolean") return false;
   for (const key of ["changedFiles", "assumptions", "keyFindings"]) if (key in value && !strings(value[key])) return false;
   if ("changedFilesOmitted" in value && !count(value.changedFilesOmitted)) return false;
+  if ("changedFilesShared" in value && value.changedFilesShared !== true) return false;
+  if ("changedFilesNote" in value && (typeof value.changedFilesNote !== "string" || value.changedFilesNote.length > 600)) return false;
   if ("blockers" in value && (!Array.isArray(value.blockers) || !value.blockers.every(b => object(b) && typeof b.code === "string" && typeof b.message === "string"))) return false;
   if ("checks" in value && (!object(value.checks) || !strings(value.checks.ran) || !strings(value.checks.claimed) || !count(value.checks.omitted))) return false;
   if ("usage" in value && (!object(value.usage) || Object.keys(value.usage).length !== usageFields.length

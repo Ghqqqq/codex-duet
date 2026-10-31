@@ -2,10 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import { acquireConfigLock, keyPath, maskTomlComments, statements, valueOf } from "./tool-config.mjs";
 import { normalizeBrowserOrigin, normalizeBrowserOrigins, normalizeBundleId, normalizeBundleIds } from "./server-requests.mjs";
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
-import { cachedReasoningEfforts } from "./models.mjs";
+import { cachedReasoningEfforts, readModelCache } from "./models.mjs";
 import { BUILTIN_WORKER_DEFAULTS, MODE_NAMES } from "./ultra-codex-mode.mjs";
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -51,15 +52,22 @@ export function setTomlField(text, keys, value) {
   return `${text}${text.endsWith("\n") || !text ? "" : "\n"}\n[${section.map(k => JSON.stringify(k)).join(".")}]\n${line}`;
 }
 function safeFile(home, file) {
-  if (fs.existsSync(home) && fs.lstatSync(home).isSymbolicLink()) throw new Error("Configuration editing refuses symlinked paths.");
+  const inspect = name => {
+    let stat;
+    try { stat = fs.lstatSync(name); }
+    catch (error) { if (error.code === "ENOENT") return; throw error; }
+    if (stat.isSymbolicLink()) throw new Error("Configuration editing refuses symlinked paths.");
+    return stat;
+  };
+  let stat = inspect(home);
   const relative = path.relative(home, file);
   if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Configuration path escaped isolated home.");
   let current = home;
-  for (const part of relative.split(path.sep)) {
+  for (const part of relative.split(path.sep).filter(Boolean)) {
     current = path.join(current, part);
-    if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink()) throw new Error("Configuration editing refuses symlinked paths.");
+    stat = inspect(current);
   }
-  if (fs.existsSync(file) && fs.statSync(file).isFile() && fs.statSync(file).nlink > 1) throw new Error("Configuration editing refuses hard-linked files.");
+  if (stat?.isFile() && stat.nlink > 1) throw new Error("Configuration editing refuses hard-linked files.");
 }
 function read(home, file) { safeFile(home, file); try { return fs.readFileSync(file, "utf8"); } catch (e) { if (e.code === "ENOENT") return ""; throw e; } }
 function apply(home, edits, dryRun, { backup = true } = {}) {
@@ -202,7 +210,7 @@ export function computerUseApprovalPreference(env = process.env) {
 // keeps old provenance until removals commit, and adds new provenance before
 // grants commit. A failed/crashed pass therefore leaves either the old allowlist
 // or the intended one, with every mirrored app still identifiable on recovery.
-function applyComputerUseMirror(home, allowlist, preference, pending, dryRun) {
+function applyComputerUseMirror(home, allowlist, preference, pending, dryRun, platform) {
   const edits = [allowlist, preference], changed = edits.filter(e => e.before !== e.after), backups = [];
   const result = { changedFiles: changed.map(e => e.file), backups, dryRun };
   if (dryRun || !changed.length) return result;
@@ -217,9 +225,12 @@ function applyComputerUseMirror(home, allowlist, preference, pending, dryRun) {
       if (read(home, file) !== contents.get(file)) throw new Error("Configuration changed concurrently; retry setup.");
       fs.renameSync(temp, file);
       contents.set(file, after);
-      // Persist the rename as well as its contents before exposing a new grant.
-      const directory = fs.openSync(path.dirname(file), "r");
-      try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+      // Persist the rename before exposing a new grant where supported. Windows
+      // cannot fsync a read-only directory handle; the file is already synced.
+      if (platform !== "win32") {
+        const directory = fs.openSync(path.dirname(file), "r");
+        try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+      }
     } finally { fs.rmSync(temp, { force: true }); }
   };
   try {
@@ -248,8 +259,8 @@ function applyComputerUseMirror(home, allowlist, preference, pending, dryRun) {
 // (current − previously mirrored − revoked) ∪ (mirror ? user's always-allowed − revoked : ∅) ∪ allow.
 // Explicit and hand-written entries persist; mirrored ones follow the source;
 // everything else in the file (denied list, other tables) is left alone.
-/** @param {{ allow?: string[], revoke?: string[], approval?: string, env?: NodeJS.ProcessEnv, dryRun?: boolean }} [options] */
-export function computerUseSetup({ allow = [], revoke = [], approval, env = process.env, dryRun = false } = {}) {
+/** @param {{ allow?: string[], revoke?: string[], approval?: string, env?: NodeJS.ProcessEnv, dryRun?: boolean, platform?: NodeJS.Platform }} [options] */
+export function computerUseSetup({ allow = [], revoke = [], approval, env = process.env, dryRun = false, platform = process.platform } = {}) {
   if (approval !== undefined && !COMPUTER_USE_APPROVAL_MODES.includes(approval)) throw new Error("--computer-use-approval must be mirror or ask.");
   allow = normalizeBundleIds(allow); revoke = normalizeBundleIds(revoke);
   if (allow.some(a => revoke.includes(a))) throw new Error("Do not allow and revoke the same Computer Use app together.");
@@ -284,7 +295,7 @@ export function computerUseSetup({ allow = [], revoke = [], approval, env = proc
     pendingPreference = setTomlField(pendingPreference, [CU_MIRRORED], retained.length ? retained : undefined);
     pendingPreference = setTomlField(pendingPreference, [CU_PENDING], pending.length ? pending : undefined);
   }
-  const result = applyComputerUseMirror(home, { file, before, after }, { file: preference.file, before: preferenceBefore, after: preferenceAfter }, pendingPreference, dryRun);
+  const result = applyComputerUseMirror(home, { file, before, after }, { file: preference.file, before: preferenceBefore, after: preferenceAfter }, pendingPreference, dryRun, platform);
   return {
     file, preference: mode,
     allowed: validApps(allowed).map(app => ({ app, source: mirroredRecord.includes(app) ? "mirrored" : "explicit" })),
@@ -293,8 +304,8 @@ export function computerUseSetup({ allow = [], revoke = [], approval, env = proc
   };
 }
 // Before every task; an incomplete pass is reconciled using durable provenance.
-export function ensureComputerUseApproval({ env = process.env } = {}) {
-  const result = computerUseSetup({ env });
+export function ensureComputerUseApproval({ env = process.env, platform = process.platform } = {}) {
+  const result = computerUseSetup({ env, platform });
   return { computerUseApproval: result.preference, allowed: result.allowed.map(a => a.app), changedFiles: result.changedFiles, backups: result.backups };
 }
 // A per-call approval: the listed apps are allowed for exactly this thread while
@@ -377,6 +388,59 @@ export function defaultModeSetup({ mode, env = process.env, dryRun = false } = {
   return { file, defaultMode: savedDefaultMode(after), ...apply(root, [{ file, before, after }], dryRun) };
 }
 
+const DISPATCH_ROUTES = ["auto", "native", "bash"];
+function savedDispatch(text) {
+  const value = readTomlField(text, ["dispatch"]);
+  return DISPATCH_ROUTES.includes(value) ? value : "auto";
+}
+export function dispatchPreference(env = process.env) {
+  try {
+    const { root, file } = duetConfig(env);
+    return savedDispatch(read(root, file));
+  } catch { return "auto"; }
+}
+/** @param {{ route?: string, env?: NodeJS.ProcessEnv, dryRun?: boolean }} [options] */
+export function dispatchSetup({ route, env = process.env, dryRun = false } = {}) {
+  if (route !== undefined && route !== "default" && !DISPATCH_ROUTES.includes(route)) throw new Error("--dispatch must be auto, native, bash, or default.");
+  const { root, file } = duetConfig(env), before = read(root, file);
+  const after = route === undefined ? before : setTomlField(before, ["dispatch"], route === "default" ? undefined : route);
+  const result = { file, dispatch: savedDispatch(after), ...apply(root, [{ file, before, after }], dryRun) };
+  if (route !== undefined && !dryRun) nativeAvailability(true, env);
+  return result;
+}
+const NATIVE_UNAVAILABLE_TTL_MS = 24 * 60 * 60 * 1000;
+const nativeUnavailableFile = env => path.join(duetConfig(env).root, "native-unavailable.json");
+export function readNativeUnavailable(env = process.env) {
+  try {
+    const home = resolveIsolatedCodexHome(env), file = nativeUnavailableFile(env);
+    const marker = JSON.parse(read(home, file));
+    const at = marker?.unavailableAt ?? marker?.at;
+    if (typeof at !== "string" || !Number.isFinite(Date.parse(at)) || marker.reason !== "missing_turn_start") return null;
+    // File time anchors legacy future observations without extending expiry
+    // on each read after a clock rollback.
+    const observedAt = Math.min(Date.parse(at), fs.statSync(file).mtimeMs), now = Date.now();
+    if (observedAt - now > 5 * 60 * 1000 || now - observedAt >= NATIVE_UNAVAILABLE_TTL_MS) return null;
+    return { at: new Date(observedAt).toISOString(), reason: marker.reason };
+  } catch { return null; }
+}
+function nativeAvailability(available, env = process.env, observedAt = Date.now()) {
+  let temp;
+  try {
+    const home = resolveIsolatedCodexHome(env), file = nativeUnavailableFile(env);
+    safeFile(home, file);
+    if (available) { fs.rmSync(file, { force: true }); return; }
+    const at = new Date(Math.min(observedAt, Date.now())).toISOString();
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const marker = { at, reason: "missing_turn_start" };
+    temp = `${file}.${randomUUID()}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify(marker) + "\n", { flag: "wx", mode: 0o600 });
+    fs.renameSync(temp, file);
+  } catch { /* Advisory host observation must never prevent native dispatch. */ }
+  finally {
+    if (temp) try { fs.rmSync(temp, { force: true }); } catch { /* best effort */ }
+  }
+}
+
 export const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 export function isSupportedReasoningEffort(effort, env = process.env) {
   return VALID_REASONING_EFFORTS.has(effort) || cachedReasoningEfforts(env).has(effort);
@@ -415,6 +479,8 @@ export function readWorkerDefaults(env = process.env) {
 }
 /** @param {{ defaultModel?: string, defaultEffort?: string, ultraRoutineModel?: string, env?: NodeJS.ProcessEnv, dryRun?: boolean }} [options] */
 export function workerDefaultsSetup({ defaultModel, defaultEffort, ultraRoutineModel, env = process.env, dryRun = false } = {}) {
+  const warnings = [], catalog = readModelCache(env);
+  const cacheAgeMs = catalog?.fetchedAt ? Date.now() - Date.parse(catalog.fetchedAt) : null;
   const changes = Object.entries({ defaultModel, defaultEffort, ultraRoutineModel }).filter(([, value]) => value !== undefined).map(([key, value]) => {
     const normalized = value === "default" ? undefined : workerPreference(key, value, env);
     if (normalized === null) {
@@ -423,12 +489,21 @@ export function workerDefaultsSetup({ defaultModel, defaultEffort, ultraRoutineM
         ? `--${flag} must be ${[...new Set([...VALID_REASONING_EFFORTS, ...cachedReasoningEfforts(env)])].join(", ")}, or default. Additional efforts require a supporting entry in Codex's isolated model cache; the static set applies when the cache is missing.`
         : `--${flag} must be a model name (1–100 letters, digits, dots, underscores, colons or hyphens, starting with a letter or digit), or default.`);
     }
+    if (normalized !== undefined && key !== "defaultEffort") {
+      const flag = key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
+      if (catalog && !catalog.models.some(model => model.slug === normalized)) {
+        if (cacheAgeMs !== null && cacheAgeMs >= 0 && cacheAgeMs <= 24 * 3600000) throw new Error(`--${flag}: ${normalized} is not listed in Codex's isolated model cache. Run duet models to refresh the cache, then retry.`);
+        const age = cacheAgeMs === null ? "of unknown age (missing fetched_at)" : cacheAgeMs < 0 ? "of unknown age (future fetched_at)" : `${Math.floor(cacheAgeMs / 3600000)} hours old`;
+        warnings.push(`Warning: model ${normalized} is not listed in the isolated model cache, which is ${age}. Run duet models to refresh the cache and check available model names.`);
+      }
+      if (!catalog) warnings.push(`Warning: model ${normalized} could not be checked because the isolated model cache is unavailable. Run duet models to check available model names.`);
+    }
     return [key, normalized];
   });
   if (!changes.length) return workerDefaultsSummary(env);
   const { root, file } = duetConfig(env), before = read(root, file);
   const after = changes.reduce((text, [key, value]) => setTomlField(text, [key], value), before);
-  return { file, ...savedWorkerDefaults(after, env), ...apply(root, [{ file, before, after }], dryRun) };
+  return { file, ...savedWorkerDefaults(after, env), warnings, ...apply(root, [{ file, before, after }], dryRun) };
 }
 
 export function transportSetup({ mode = "status", env = process.env, dryRun = false } = {}) {
@@ -450,4 +525,12 @@ export function transportSetup({ mode = "status", env = process.env, dryRun = fa
   }
   const enabled = readTomlField(after, ["model_providers", provider, "supports_websockets"]);
   return { file, provider: /^[a-z0-9_-]{1,64}$/i.test(provider) ? provider : "custom", transport: enabled === false ? "http" : enabled === true ? "websocket" : "default", restartRequired: before !== after, ...apply(home, [{ file, before, after }], dryRun) };
+}
+
+// Function hooks use this host helper because their sandbox has no Node imports.
+if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const action = process.argv[2];
+  if (action === "dispatch-status") process.stdout.write(JSON.stringify({ dispatch: dispatchPreference(), nativeUnavailable: readNativeUnavailable() }) + "\n");
+  else if (action === "native-unavailable") nativeAvailability(false, process.env,
+    process.argv[3] === undefined ? undefined : Number(process.argv[3]));
 }

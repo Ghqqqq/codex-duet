@@ -17,6 +17,36 @@ const path = require("node:path");
 	const interruptibleTurns = new Map();
   const loadedThreads = new Set();
   const serverRequests = new Map();
+  const writerLocks = new Set();
+
+function loadThread(threadId) {
+  if (BEHAVIOR === "writer-lock") {
+    const directory = STATE_PATH + ".writer-locks";
+    fs.mkdirSync(directory, { recursive: true });
+    const file = path.join(directory, threadId + ".lock");
+    for (;;) {
+      try { fs.writeFileSync(file, String(process.pid), { flag: "wx" }); break; }
+      catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        const holder = Number(fs.readFileSync(file, "utf8"));
+        if (holder === process.pid) break;
+        try { process.kill(holder, 0); }
+        catch (error) { if (error.code !== "ESRCH") throw error; fs.rmSync(file, { force: true }); continue; }
+        throw Object.assign(new Error("thread " + threadId + " already has an active writer"), { rpcCode: -32600 });
+      }
+    }
+    writerLocks.add(file);
+  }
+  loadedThreads.add(threadId);
+}
+if (BEHAVIOR === "writer-lock") {
+  process.on("exit", () => {
+    for (const file of writerLocks) {
+      if (fs.existsSync(file) && fs.readFileSync(file, "utf8") === String(process.pid)) fs.rmSync(file);
+    }
+  });
+  process.on("SIGTERM", () => process.exit(0));
+}
 
 	function loadState() {
 	  if (!fs.existsSync(STATE_PATH)) {
@@ -468,7 +498,7 @@ async function handleLine(line) {
           throw new Error("thread/start.persistFullHistory requires experimentalApi capability");
         }
         const thread = nextThread(state, message.params.cwd, message.params.ephemeral);
-        loadedThreads.add(thread.id);
+        loadThread(thread.id);
         state.lastThreadStart = message.params;
         thread.sandbox = threadSandbox(message.params.sandbox);
         saveState(state);
@@ -478,6 +508,14 @@ async function handleLine(line) {
       }
 
       case "thread/name/set": {
+        if (BEHAVIOR === "before-turn-start" && !fs.existsSync(STATE_PATH + ".before-start")) {
+          fs.writeFileSync(STATE_PATH + ".before-start", "ready");
+          await new Promise(resolve => {
+            const timer = setInterval(() => {
+              if (fs.existsSync(STATE_PATH + ".release-start")) { clearInterval(timer); resolve(); }
+            }, 20);
+          });
+        }
         const thread = ensureThread(state, message.params.threadId);
         thread.name = message.params.name;
         thread.updatedAt = now();
@@ -504,7 +542,7 @@ async function handleLine(line) {
           throw new Error("thread/resume.persistFullHistory requires experimentalApi capability");
         }
         const thread = ensureThread(state, message.params.threadId);
-        loadedThreads.add(thread.id);
+        loadThread(thread.id);
         state.lastThreadResume = message.params;
         thread.sandbox = threadSandbox(message.params.sandbox);
         thread.updatedAt = now();
@@ -623,6 +661,24 @@ async function handleLine(line) {
       }
 
 	      case "turn/start": {
+        if (BEHAVIOR === "malformed-turn-start") {
+          process.stdout.write("{bad json\\n");
+          return;
+        }
+        if (BEHAVIOR === "reject-turn-start" && fs.existsSync(STATE_PATH + ".reject-start")) {
+          const error = JSON.parse(fs.readFileSync(STATE_PATH + ".reject-start", "utf8"));
+          send({ id: message.id, error });
+          return;
+        }
+        if (BEHAVIOR === "pending-turn-start" && !fs.existsSync(STATE_PATH + ".start-pending")) {
+          fs.writeFileSync(STATE_PATH + ".start-pending", "ready");
+          await new Promise(resolve => {
+            const timer = setInterval(() => {
+              if (fs.existsSync(STATE_PATH + ".release-start")) { clearInterval(timer); resolve(); }
+            }, 20);
+          });
+          Object.assign(state, loadState());
+        }
 	        const thread = ensureThread(state, message.params.threadId);
 	        const prompt = (message.params.input || [])
           .filter((item) => item.type === "text")
@@ -940,6 +996,12 @@ async function handleLine(line) {
             break;
           }
 
+          // Native fixtures inject events into the original slow-task branch below.
+          if (BEHAVIOR === "writer-lock" && prompt === "hold shared runtime") {
+            send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+            interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+            break;
+          }
 	        if (BEHAVIOR === "interruptible-slow-task") {
 	          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 	          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
@@ -1007,7 +1069,7 @@ async function handleLine(line) {
         break;
     }
   } catch (error) {
-    send({ id: message.id, error: { code: -32000, message: error.message } });
+    send({ id: message.id, error: { code: error.rpcCode ?? -32000, message: error.message } });
   }
 }
 `;

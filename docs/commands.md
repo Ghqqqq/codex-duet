@@ -17,9 +17,14 @@ ref; without that symbolic ref it checks `main`, `master`, then `trunk` (local,
 then remote). An explicit or detected base that does not resolve to a commit
 fails before a review starts.
 
+Both review commands accept `--model <model>` and `--effort <effort>` overrides.
+Omitted values use the saved worker defaults, built-in `gpt-6-astra` / `xhigh`,
+just like fresh tasks. See [worker models](configuration.md#default-worker-models).
+
 ```bash
 /codex:review
 /codex:review --base main
+/codex:review --effort high
 /codex:review --background
 ```
 
@@ -99,6 +104,10 @@ jobs are not backfilled with artifacts.
 Hands a one-off task to Codex through the `codex:codex-rescue` subagent: investigate
 a bug, try a fix, continue a previous Codex task, or take a cheaper pass with a
 smaller model. It supports `--background`, `--wait`, `--resume` and `--fresh`.
+The subagent is a Haiku forwarder: it passes the request verbatim after extracting
+routing and runtime flags, without rewriting, tightening or summarizing the
+prompt. Haiku is the forwarding model; Codex's model and effort come from explicit
+flags or the saved worker defaults (recorded settings on follow-ups).
 
 ```bash
 /codex:rescue investigate why the tests started failing
@@ -112,8 +121,12 @@ and worker effort (default `xhigh`) when no explicit user choice or flag
 overrides them; follow-ups retain recorded thread settings. See
 [Default worker models](configuration.md#default-worker-models).
 If you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`. For planned,
-parallel work Claude uses `codex:codex-native` from the first dispatch, without
-waiting for readiness. Background `duet task` is for `native_adapter_unavailable`,
+parallel work Claude honors the saved [worker dispatch](configuration.md#worker-dispatch)
+route: `bash` selects background `duet task` immediately, while `auto` prefers it
+for 24 hours after the last native-unavailable observation, or until
+`duet setup --dispatch` is run without `--dry-run`. Otherwise Claude
+uses `codex:codex-native` from the first dispatch, without waiting for readiness.
+Background `duet task` also handles `native_adapter_unavailable`,
 `native_capacity`, per-call options the `DUET:` line rejects, or follow-ups to
 Bash-launched workers; `codex:codex-worker` is the Haiku fallback when neither
 path is available. See [direct mode](direct-mode.md).
@@ -292,6 +305,13 @@ Its activity feed uses only the newest 500 events retained per job. Cumulative
 event totals remain available as `activityCount` in result details when no
 payload-specific count is present; see [activity retention](worker-lifecycle.md#fallback-and-compatibility-feed-mode).
 
+`duet status <worker>` shows the worker name, model, effort and sandbox, followed
+by recent structured activity: commands with exit status when known, file changes
+and message snippets. The job list includes worker names and model/effort.
+List status also prints input, cached-input, output and total token usage for
+the jobs shown, plus counts of jobs with and without usage. JSON exposes these
+as `usageTotals`; missing usage is counted rather than treated as zero.
+
 ### `/codex:result`
 
 Returns report v2: status, worker, jobId, summary, nonempty evidence, `next` and
@@ -304,6 +324,10 @@ without starting another turn.
 ### `/codex:cancel`
 
 Interrupts an active job and reports whether termination was confirmed.
+`/codex:cancel --all` (or `duet cancel --all`) cancels every active job of the
+current Claude session in this workspace and prints each job's outcome.
+Other sessions are untouched. `--all` cannot be combined with a worker argument;
+outside a Claude session, supply `--session <id>`.
 
 Transfer, status, result and cancel pass raw `$ARGUMENTS` unchanged through
 `--args-stdin` and a single-quoted heredoc, just as the review recipes do. The
@@ -324,6 +348,7 @@ same raw arguments on stdin; choose another delimiter if a line equals `DUET_ARG
 Checks whether Codex is installed, reachable and logged in. If Codex is missing
 and npm is available, it can offer to install Codex for you. It also runs the
 configuration actions described under [Configuration](configuration.md).
+For API-key authentication, use the [isolated login procedure](troubleshooting.md#sign-in-with-an-api-key).
 
 ```text
 duet setup --default-model <model|default> [--default-effort <effort|default>] [--ultra-routine-model <model|default>]
@@ -342,6 +367,9 @@ precedence, examples and validation limits, see
 fresh Claude sessions and `/clear` (default `off`); run it separately from other
 setup changes, with `--dry-run` to preview. See
 [default orchestration mode](configuration.md#default-orchestration-mode).
+`duet setup --dispatch auto|native|bash|default` selects Claude's dispatch
+guidance; run it separately from other setup changes. See
+[worker dispatch](configuration.md#worker-dispatch).
 For a desktop-managed CLI, setup includes `codex.warning` with code
 `desktop_managed_codex_runtime` and a message, also shown in human next steps.
 The warning can appear while `ready` is true and never changes the selected pin.
@@ -376,9 +404,14 @@ The gate reviews at most once per user turn. When Claude stops again after a gat
 block (`stop_hook_active`), the gate allows the stop with a note and does not
 re-review the follow-up changes; run `/codex:review --wait` for them. A review that
 fails, times out or returns an unexpected answer also allows the stop and shows
-its reason as a note; only explicit findings block. With the gate enabled, the
-first stop of each user turn costs one Codex review turn; follow-up stops and an
-unavailable runtime cost none.
+its reason as a note; only explicit findings block. The gate also allows the stop
+with a note, without running a review, when the Git working tree is clean
+(including no untracked files) or a writable Duet task is queued or running in
+the workspace, even from another session. Gate reviews use ephemeral threads
+and never become `--resume-last` targets. A `BLOCK` shows up to four lines of
+findings and the review job ID with `duet result <jobId>` for the full result.
+An eligible first stop costs one Codex review turn; skipped gates and follow-up
+stops cost none.
 
 ## Companion subcommands
 
@@ -395,6 +428,22 @@ Use `duet <subcommand>` in a Claude session, or `plugins/codex/bin/duet` from th
 repository root. Run `duet task --help` for flags and side-effect-free examples.
 SessionStart supplies the session ID; `--session <id>` overrides it.
 
+### Shared runtime
+
+`duet runtime status` inspects the current workspace without starting a broker
+or app-server. It shows the selected Codex binary, selection source and version,
+plus the saved broker's PID, alive/reachable state and endpoint, if present.
+It checks whether the broker's runtime identity matches the selected binary or
+is stale (unknown when it cannot compare); JSON also exposes `homeMatches`.
+Busy state is `unknown` in status; status does not establish that restart is safe.
+
+`duet runtime restart` asks the broker to retire only when idle. A busy broker
+refuses and lists the workspace's running workers, including other sessions;
+no worker is force-stopped. An unreachable or incompatible broker also refuses
+when safe shutdown cannot be confirmed. The command does not start a replacement:
+the next task starts a fresh broker. Both commands accept `--cwd <dir>` and
+`--json`.
+
 | Command | Use |
 | --- | --- |
 | `duet task` | Fresh assignment; brief only on stdin; implies `--direct` |
@@ -409,6 +458,9 @@ SessionStart supplies the session ID; `--session <id>` overrides it.
 | `duet result <worker> --details` | Full evidence, settings, handles and artifact paths |
 | `duet status [worker]` | Observe jobs without renewing their lease |
 | `duet cancel <worker>` | Cancel and report whether interruption was confirmed |
+| `duet cancel --all` | Cancel this Claude session's active jobs in the workspace, with per-job outcomes |
+| `duet runtime status` | Inspect the selected binary and saved workspace broker without starting a runtime |
+| `duet runtime restart` | Retire an idle broker; refuse while busy; start fresh on the next task |
 | `duet setup` | Runtime readiness and configuration |
 | `duet models [--json] [--all]` | Discover current account models and efforts, including hidden models with `--all`, and show effective tiers |
 | `duet ultra-codex [on\|off\|status]` | Ultra session controls; task text belongs in the slash command |
@@ -417,10 +469,16 @@ SessionStart supplies the session ID; `--session <id>` overrides it.
 | `duet cleanup --dry-run --json` / `duet cleanup --json` | Preview/apply retention with read-only inert workspace reporting; text output includes manual removal hints; `--days N` overrides the period |
 | `duet journal <start\|use\|add\|validate\|close\|show\|list>` | Criteria (including `add withdraw`), verdicts and decisions; `start --switch` selects a new run while leaving the old one open; `use <runId>` selects an existing open run for the session |
 
-Without an active run, journal add/close and task linking use the sole open run
-in the current workspace. Several open runs leave tasks unlinked and require
-`journal use <runId>` or `--run <id>` for add/close. See [run journal](run-journal.md)
+Without an active run, journal add/close use the sole open run in the current
+workspace. Automatic task linking uses it only if it belongs to the dispatching
+Claude session or has no recorded session. Several open runs leave tasks unlinked
+and require `journal use <runId>` or `--run <id>` for add/close. See [run journal](run-journal.md)
 for verdict criterion matching and cross-session `resolves`.
+
+`duet journal show` prints token totals for the run's linked jobs, including how
+many jobs had no usage, and exposes `usageTotals` in JSON. It uses saved reports
+or available job records; unknown usage remains unknown. See
+[run journal](run-journal.md#commands).
 
 Worker names are reserved within a Claude session, including on adoption and
 cross-session `--thread` follow-ups; collisions receive a different name. Every

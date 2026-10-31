@@ -70,6 +70,8 @@ const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 const EXTERNAL_AGENT_IMPORT_COMPLETED = "externalAgentConfig/import/completed";
 const EXTERNAL_AGENT_IMPORT_TIMEOUT_MS = 2 * 60 * 1000;
+const DEFAULT_ACCEPTANCE_TIMEOUT_MS = 2 * 60 * 1000;
+const DEFAULT_BROKER_WAIT_MS = 10 * 60 * 1000;
 // A dead admission holder may still have a broker turn/start awaiting acceptance.
 // Let it settle before reclaiming the lock and checking the server for that turn.
 const THREAD_ADMISSION_SETTLE_MS = 30_000;
@@ -158,8 +160,37 @@ export function approvalPolicyFor(options) {
 export function approvalPolicyLabel(policy) {
   return policy === FORWARDED_APPROVALS ? FORWARDED_APPROVALS_LABEL : typeof policy === "string" ? policy : "granular";
 }
+
+function forwardedProjectDocsConfig(cwd, options) {
+  if (!options.developerInstructions || !options.claudeMd?.projectDocPaths?.length) return {};
+  try {
+    const config = fs.readFileSync(path.join(resolveIsolatedCodexHome(), "config.toml"), "utf8");
+    const fallbacks = readTomlField(config, ["project_doc_fallback_filenames"]);
+    if (!Array.isArray(fallbacks) || fallbacks.length !== 1 || fallbacks[0] !== "CLAUDE.md") return {};
+    const forwarded = new Set(options.claudeMd.projectDocPaths.map(file => fs.realpathSync(file)));
+    let found = false;
+    // Check all ancestors conservatively: an omitted or different project's
+    // CLAUDE.md must still be available through Codex's own discovery.
+    for (let dir = fs.realpathSync(cwd);; dir = path.dirname(dir)) {
+      const projectConfig = path.join(dir, ".codex", "config.toml");
+      if (fs.statSync(projectConfig, { throwIfNoEntry: false })?.isFile() &&
+          readTomlField(fs.readFileSync(projectConfig, "utf8"), ["project_doc_fallback_filenames"]) !== undefined) return {};
+      const file = path.join(dir, "CLAUDE.md");
+      if (fs.statSync(file, { throwIfNoEntry: false })?.isFile()) {
+        if (!forwarded.has(fs.realpathSync(file))) return {};
+        found = true;
+      }
+      if (path.dirname(dir) === dir) break;
+    }
+    return found ? { project_doc_fallback_filenames: [] } : {};
+  } catch { return {}; } // Uncertain coverage keeps discovery enabled.
+}
+
 /** @returns {ThreadStartParams} */
 function buildThreadParams(cwd, options = {}) {
+  const config = { ...forwardedProjectDocsConfig(cwd, options),
+    ...(options.parentQuestions && options.parentBridge ? parentBridgeConfig(options.parentBridge) : {}),
+    ...(options.effort != null ? { model_reasoning_effort: options.effort } : {}) };
   return {
     cwd,
     model: options.model ?? null,
@@ -167,7 +198,8 @@ function buildThreadParams(cwd, options = {}) {
     sandbox: options.sandbox ?? "read-only",
     serviceName: SERVICE_NAME,
     ...(options.developerInstructions != null ? { developerInstructions: options.developerInstructions } : {}),
-    ...(options.parentQuestions ? options.parentBridge ? { config: parentBridgeConfig(options.parentBridge) } : { dynamicTools: [ASK_PARENT] } : {}),
+    ...(Object.keys(config).length ? { config } : {}),
+    ...(options.parentQuestions && !options.parentBridge ? { dynamicTools: [ASK_PARENT] } : {}),
     ephemeral: options.ephemeral ?? true
   };
 }
@@ -200,6 +232,8 @@ export function parentBridgeConfig(bridge) {
 
 /** @returns {ThreadResumeParams} */
 function buildResumeParams(threadId, cwd, options = {}) {
+  const config = { ...forwardedProjectDocsConfig(cwd, options),
+    ...(options.parentBridge ? parentBridgeConfig({ ...options.parentBridge, threadId }) : {}) };
   return {
     threadId,
     cwd,
@@ -207,7 +241,7 @@ function buildResumeParams(threadId, cwd, options = {}) {
     model: options.model ?? null,
     approvalPolicy: options.approvalPolicy ?? "never",
     sandbox: options.sandbox ?? "read-only",
-    ...(options.parentBridge ? { config: parentBridgeConfig({ ...options.parentBridge, threadId }) } : {})
+    ...(Object.keys(config).length ? { config } : {})
   };
 }
 
@@ -811,10 +845,10 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     if (backgroundTerminalsCleanup || state.completed) return;
     const turnId = state.turnId ?? client.serverRequestPolicy.turnId;
     if (turnId) {
-      try { void client.request("turn/interrupt", { threadId, turnId }).catch(() => {}); } catch { /* cleanup still reports a closed transport */ }
+      try { void client.request("turn/interrupt", { threadId: state.threadId, turnId }).catch(() => {}); } catch { /* cleanup still reports a closed transport */ }
       // Sending the interrupt precedes cleanup; its acknowledgement may never
       // arrive. Keep this client's connection open for the bounded cleanup.
-      backgroundTerminalsCleanup = cleanBackgroundTerminals(client, threadId).then(outcome => {
+      backgroundTerminalsCleanup = cleanBackgroundTerminals(client, state.threadId).then(outcome => {
         try { recordBackgroundTerminals(options.signal, outcome); } catch { /* recording cannot change the interruption outcome */ }
       });
     }
@@ -828,7 +862,7 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
     options.onTiming?.("turnStart", Date.now() - turnBegan);
     options.onResponse?.(response, state);
     state.turnId = response.turn?.id ?? null;
-    client.setServerRequestContext(threadId, state.turnId);
+    client.setServerRequestContext(state.threadId, state.turnId);
     if (state.turnId) {
       state.threadTurnIds.set(state.threadId, state.turnId);
       // The response can precede notifications (or they may be dropped).
@@ -857,11 +891,12 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       client.exitPromise.then(() => { throw client.exitError ?? new Error("Codex connection closed before turn completion; recover the recorded job."); })
     ]);
   } catch (error) {
-    if (connectionFailure(error, client)) {
+    const disconnected = connectionFailure(error, client);
+    if (disconnected || error.failureSource === "transport") {
       error.failureSource = "transport";
-      error.threadId = threadId;
+      error.threadId = state.threadId;
       error.turnId = state.turnId ?? client.serverRequestPolicy.turnId;
-      error.message = error.turnId ? "Connection to Codex closed while the turn was running."
+      if (disconnected) error.message = error.turnId ? "Connection to Codex closed while the turn was running."
         : "Connection to Codex closed while the turn was running or awaiting acceptance; its start reply was not received. Recover the recorded job before continuing.";
     }
     throw error;
@@ -881,6 +916,53 @@ function connectionFailure(error, client) {
     /^codex app-server (?:connection closed|client is closed)\.$/i.test(error.message);
 }
 
+const resumedThreads = new WeakMap();
+const turnStartRequests = new WeakSet();
+
+async function waitForSharedThread(cwd, fn, threadId, options) {
+  const value = Number(process.env.CODEX_COMPANION_BROKER_WAIT_MS);
+  const timeoutMs = Number.isSafeInteger(value) && value > 0 && value <= 2_147_483_647 ? value : DEFAULT_BROKER_WAIT_MS;
+  const deadline = Date.now() + timeoutMs;
+  const connectTimeoutMs = options.connectTimeoutMs ?? defaultConnectTimeoutMs(options.env ?? process.env);
+  const stopped = () => Object.assign(new Error("Task interrupted while waiting for the shared Codex runtime."), {
+    code: "BROKER_WAIT_ABORTED", threadId, turnStatus: "notStarted"
+  });
+  const expired = () => Object.assign(new Error(
+    `Codex thread ${threadId} is held by the workspace's shared runtime, which is busy with another turn. Retry after that turn finishes.`
+  ), { code: "BROKER_THREAD_BUSY", threadId, turnStatus: "notStarted" });
+  emitProgress(options.onProgress, "Thread is loaded in the shared Codex runtime; waiting for it to finish its current turn.", "starting");
+  for (let backoff = 1000; ; backoff = Math.min(backoff * 2, 6000)) {
+    if (options.signal?.aborted) throw stopped();
+    if (Date.now() >= deadline) throw expired();
+    await new Promise((resolve, reject) => {
+      const abort = () => { clearTimeout(timer); options.signal.removeEventListener("abort", abort); reject(stopped()); };
+      const timer = setTimeout(() => { options.signal?.removeEventListener("abort", abort); resolve(); }, Math.min(backoff, deadline - Date.now()));
+      options.signal?.addEventListener("abort", abort, { once: true });
+      if (options.signal?.aborted) abort();
+    });
+    if (options.signal?.aborted) throw stopped();
+    if (Date.now() >= deadline) throw expired();
+    let client = null;
+    try {
+      // Each retry gets a fresh connection budget within the total wait bound.
+      // Normal connection selection can replace a retired broker or go private.
+      client = await CodexAppServerClient.connect(cwd, { ...options, connectDeadline: Math.min(deadline, Date.now() + connectTimeoutMs) });
+      return await fn(client);
+    }
+    catch (error) {
+      // A submitted turn still has unbounded acceptance and normal recovery.
+      // Only a broker busy rejection proves that turn/start was not forwarded.
+      if (turnStartRequests.has(client) || error.turnId) throw error;
+      if (options.signal?.aborted) throw stopped();
+      if (!client && error.code === "ETIMEDOUT" && Date.now() >= deadline) throw expired();
+      if (error.rpcCode !== BROKER_BUSY_RPC_CODE && error.activeWriterThreadId !== threadId) throw error;
+    } finally {
+      // A sleeping waiter must not pin an abandoned broker or its writer lock.
+      await client?.close().catch(() => {});
+    }
+  }
+}
+
 async function withAppServer(cwd, fn, options = {}) {
   // The existing busy-broker fallback shares the original connection budget.
   options = { ...options, connectDeadline: options.connectDeadline ?? Date.now() + (options.connectTimeoutMs ?? defaultConnectTimeoutMs(options.env ?? process.env)) };
@@ -889,6 +971,7 @@ async function withAppServer(cwd, fn, options = {}) {
     client = await CodexAppServerClient.connect(cwd, options);
     const result = await fn(client);
     await client.close();
+    client = null;
     return result;
   } catch (error) {
     if (connectionFailure(error, client)) {
@@ -898,25 +981,33 @@ async function withAppServer(cwd, fn, options = {}) {
       }
     }
     const brokerRequested = client?.transport === "broker" || Boolean(process.env[BROKER_ENDPOINT_ENV]);
-    const shouldRetryDirect = !error.turnId && (
-      (client?.transport === "broker" && error?.rpcCode === BROKER_BUSY_RPC_CODE) ||
+    const brokerBusy = client?.transport === "broker" && error?.rpcCode === BROKER_BUSY_RPC_CODE;
+    const resumed = client && resumedThreads.get(client);
+    const brokerActiveWriter = client?.transport === "broker" && resumed && error.activeWriterThreadId === resumed.threadId;
+    const shouldRetry = !error.turnId && !turnStartRequests.has(client) && (
+      brokerBusy || brokerActiveWriter ||
       (brokerRequested && (error?.code === "ENOENT" || error?.code === "ECONNREFUSED")));
 
+    if (!shouldRetry) throw error;
     if (client) {
       await client.close().catch(() => {});
       client = null;
     }
-
-    if (!shouldRetryDirect) {
-      throw error;
+    if (brokerActiveWriter || (brokerBusy && resumed?.accepted)) {
+      return await waitForSharedThread(cwd, fn, resumed.threadId, options);
     }
 
     const directClient = await CodexAppServerClient.connect(cwd, { ...options, disableBroker: true });
     try {
       return await fn(directClient);
+    } catch (directError) {
+      if (!brokerBusy || !resumed || directError.activeWriterThreadId !== resumed.threadId) throw directError;
     } finally {
       await directClient.close();
     }
+    return await waitForSharedThread(cwd, fn, resumed.threadId, options);
+  } finally {
+    await client?.close().catch(() => {});
   }
 }
 
@@ -1036,21 +1127,68 @@ function parentRegistrationUnsupported(error, registration) {
   return [-32600, -32601, -32602].includes(error.rpcCode) && rejected.test(String(error.message ?? ""));
 }
 
+/**
+ * @template {"thread/start" | "thread/resume" | "turn/start"} M
+ * @param {Awaited<ReturnType<typeof CodexAppServerClient.connect>>} client
+ * @param {M} method
+ * @param {import("./app-server-protocol").AppServerRequestParams<M>} params
+ * @param {(() => void) | null} [onRejected]
+ */
+async function requestAcceptance(client, method, params, onRejected = null) {
+  // A shared broker may still hold this start before it reaches persisted
+  // history. Keep waiting so recovery cannot mistake that pending turn for
+  // one that never started and admit another turn on the same thread.
+  if (method === "turn/start") {
+    turnStartRequests.add(client);
+    try { return await client.request(method, params); }
+    catch (error) {
+      // Broker-wrapped transport failures are not runtime rejection replies.
+      if (error.rpcCode !== undefined && error.failureSource !== "transport" && !connectionFailure(error, client)
+        && !/^Failed to parse codex app-server JSONL:/.test(error.message)) {
+        onRejected?.();
+        turnStartRequests.delete(client);
+      }
+      throw error;
+    }
+  }
+  const value = Number(process.env.CODEX_COMPANION_ACCEPTANCE_TIMEOUT_MS);
+  const timeoutMs = Number.isSafeInteger(value) && value > 0 && value <= 2_147_483_647 ? value : DEFAULT_ACCEPTANCE_TIMEOUT_MS;
+  try { return await client.request(method, params, { timeoutMs }); }
+  catch (error) {
+    if (error.code === "ETIMEDOUT") {
+      error.message = `Codex ${method} acceptance timed out. Retry the task or rerun \`/codex:setup\`.`;
+    }
+    throw error;
+  }
+}
+
 async function startThread(client, cwd, options = {}) {
   let response;
+  const fallbackParams = buildThreadParams(cwd, { ...options, parentBridge: null });
+  const start = async params => {
+    try { return await requestAcceptance(client, "thread/start", params); }
+    catch (error) {
+      if (!params.config || !parentRegistrationUnsupported(error, "bridge")) throw error;
+      delete params.config;
+      return requestAcceptance(client, "thread/start", params);
+    }
+  };
   if (options.parentQuestions && options.parentBridge) {
-    try { response = await client.request("thread/start", buildThreadParams(cwd, options)); }
+    try { response = await requestAcceptance(client, "thread/start", buildThreadParams(cwd, options)); }
     catch (error) {
       if (!parentRegistrationUnsupported(error, "bridge")) throw error;
+      // Older runtimes reject the whole config field, including doc/effort overrides.
+      delete fallbackParams.config;
       emitProgress(options.onProgress, "Parent question bridge unavailable in this runtime; retrying with the dynamic tool.", "starting");
     }
   }
   if (!response) {
-    try { response = await client.request("thread/start", buildThreadParams(cwd, { ...options, parentBridge: null })); }
+    try { response = await start(fallbackParams); }
     catch (error) {
       if (!options.parentQuestions || !parentRegistrationUnsupported(error, "dynamic")) throw error;
       emitProgress(options.onProgress, "Parent questions unavailable in this runtime; final needs_input fallback remains enabled.", "starting");
-      response = await client.request("thread/start", buildThreadParams(cwd, { ...options, parentQuestions: false }));
+      delete fallbackParams.dynamicTools;
+      response = await start(fallbackParams);
     }
   }
   const threadId = response.thread.id;
@@ -1071,11 +1209,26 @@ async function startThread(client, cwd, options = {}) {
 }
 
 async function resumeThread(client, threadId, cwd, options = {}) {
-  try { return await client.request("thread/resume", buildResumeParams(threadId, cwd, options)); }
+  const previous = resumedThreads.get(client);
+  const attempt = { threadId, accepted: previous?.threadId === threadId && previous.accepted };
+  resumedThreads.set(client, attempt);
+  const resume = async params => {
+    try {
+      const response = await requestAcceptance(client, "thread/resume", params);
+      attempt.accepted = true;
+      return response;
+    } catch (error) {
+      if (error.rpcCode === -32600 && /already has an active writer/.test(error.message)) error.activeWriterThreadId = threadId;
+      throw error;
+    }
+  };
+  const params = buildResumeParams(threadId, cwd, options);
+  try { return await resume(params); }
   catch (error) {
-    if (!options.parentBridge || !parentRegistrationUnsupported(error, "bridge")) throw error;
-    emitProgress(options.onProgress, "Parent questions unavailable on this resumed thread; final needs_input fallback remains enabled.", "starting");
-    return client.request("thread/resume", buildResumeParams(threadId, cwd, { ...options, parentBridge: null }));
+    if (!params.config || !parentRegistrationUnsupported(error, "bridge")) throw error;
+    if (options.parentBridge) emitProgress(options.onProgress, "Parent questions unavailable on this resumed thread; final needs_input fallback remains enabled.", "starting");
+    delete params.config;
+    return resume(params);
   }
 }
 
@@ -1428,6 +1581,7 @@ export async function runAppServerReview(cwd, options = {}) {
     emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
     const thread = await startThread(client, cwd, {
       model: options.model,
+      effort: options.effort,
       sandbox: "read-only",
       ephemeral: true,
       threadName: options.threadName
@@ -1550,7 +1704,7 @@ export async function runAppServerTurn(cwd, options = {}) {
   };
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+    throw Object.assign(new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`."), { turnStatus: "notStarted" });
   }
 
   const serverRequestBlockers = [];
@@ -1569,7 +1723,9 @@ export async function runAppServerTurn(cwd, options = {}) {
     }
   };
   const approvalPolicy = approvalPolicyFor(options);
+  let taskClient = null;
   return withAppServer(cwd, async (client) => {
+    taskClient = client;
     // A busy broker can retry this callback with a private client. Each
     // attempt owns its approval closure and grants, including late answers.
     let releaseComputerApps = () => {};
@@ -1597,6 +1753,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
       const response = await resumeThread(client, options.resumeThreadId, executionCwd, {
         developerInstructions: options.developerInstructions,
+        claudeMd: options.claudeMd,
         model: options.model,
         sandbox: options.sandbox,
         approvalPolicy,
@@ -1611,6 +1768,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
       const response = await startThread(client, executionCwd, {
         developerInstructions: options.developerInstructions,
+        claudeMd: options.claudeMd,
         model: options.model,
         sandbox: options.sandbox,
         approvalPolicy,
@@ -1680,11 +1838,12 @@ export async function runAppServerTurn(cwd, options = {}) {
         const active = [...new Set([...response.thread.turns.filter(turn => turn.status === "inProgress").map(turn => turn.id), ...recordedTurns(recorded)])];
         // Fresh threads publish their live job before submitting the first
         // turn. A terminal wrapper still exiting must not block a continuation.
-        // A wrapper that crashed moments ago, before recording a turn or any
-        // outcome, may still have its turn/start awaiting acceptance.
-        const settling = job => !job.turnId && ACTIVE.has(job.status) &&
+        // Legacy wrappers have no submission record; retain their settle window.
+        // New wrappers record a pending start before sending it to any runtime.
+        const settling = job => job.turnSubmission === undefined && !job.turnId && ACTIVE.has(job.status) &&
           Date.now() - Date.parse(job.startedAt ?? job.createdAt) < THREAD_ADMISSION_SETTLE_MS;
-        if (active.length || recorded.some(job => (ACTIVE.has(job.status) && processAlive(job.pid)) || settling(job))) return busy(active);
+        const pending = job => !job.turnId && job.turnSubmission && unresolvedTask(job);
+        if (active.length || recorded.some(job => (ACTIVE.has(job.status) && processAlive(job.pid)) || settling(job) || pending(job))) return busy(active);
       }
       releaseStaleTaskComputerGrants(threadId);
       if (approvedComputerApps.length) {
@@ -1694,8 +1853,12 @@ export async function runAppServerTurn(cwd, options = {}) {
       turnState = await captureTurn(
         client,
         threadId,
-        () =>
-          client.request("turn/start", {
+        () => {
+          // This is required state, not best-effort progress: a lost reply must
+          // never make a submitted turn look like one that was never sent.
+          if (options.jobId) updateJob(cwd, options.jobId, () => ({ threadId,
+            turnSubmission: { at: new Date().toISOString(), transport: client.transport, threadId } }));
+          return requestAcceptance(client, "turn/start", {
             threadId,
             input: buildTurnInput(prompt),
             model: options.model ?? null,
@@ -1704,7 +1867,10 @@ export async function runAppServerTurn(cwd, options = {}) {
             outputSchema: options.outputSchema ?? null,
             approvalPolicy,
             ...(options.explicitSandbox ? { sandboxPolicy: turnPolicy } : {})
-          }),
+          }, () => {
+            if (options.jobId) updateJob(cwd, options.jobId, () => ({ turnSubmission: null }));
+          });
+        },
         { onProgress: options.onProgress, safeProgress: true, onTiming, signal: options.signal,
           onStarted: turnId => {
             if (!turnId) throw new Error("Codex did not return a turn handle; recover this job before continuing.");
@@ -1757,14 +1923,30 @@ export async function runAppServerTurn(cwd, options = {}) {
     onParentQuestion: options.onParentQuestion,
     signal: options.signal,
     connectTimeoutMs: options.connectTimeoutMs,
+    onProgress: options.onProgress,
     onRuntimeEvent: runtimeEvent,
     onServerRequestLog
+  }).catch(error => {
+    // A missing handle is insufficient: a submitted turn/start can outlive
+    // its lost reply. Preserve the request tracker's stronger evidence.
+    if (!error.turnId && !turnStartRequests.has(taskClient)) error.turnStatus = "notStarted";
+    if (error.turnStatus !== "notStarted" || !["BROKER_THREAD_BUSY", "BROKER_WAIT_ABORTED"].includes(error.code)) throw error;
+    // Broker wait outcomes use the normal task-result path so busy blockers
+    // retain their retry commands.
+    const quote = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
+    const recoveryCommand = options.jobId ? `duet task --to ${quote(options.jobId)} --cwd ${quote(options.executionCwd ?? cwd)} --sandbox ${quote(options.sandbox ?? "read-only")}` : null;
+    return { status: error.code === "BROKER_THREAD_BUSY" ? 0 : 1,
+      threadId: error.threadId, turnId: null, turnStatus: "notStarted", turnEnded: true,
+      finalMessage: error.message, error: { message: error.message },
+      blockers: error.code === "BROKER_THREAD_BUSY" ? [{ code: "thread_busy", message: error.message, ...(recoveryCommand ? { recoveryCommand } : {}) }] : [],
+      startupTimings, startupWarning };
   });
 }
 
 // Recovery is read-only: never resume a thread or submit another turn.
 export async function readAppServerTurn(cwd, job, { admittingJobId = null, env = process.env, deadline = null, privateWhenBusy = false } = {}) {
   let { threadId, turnId } = job;
+  if (!turnId && job.turnSubmission === null) return { threadId, turnId: null, turnStatus: "notStarted" };
   const abort = new AbortController();
   let client;
   const timeout = setTimeout(() => {
@@ -1795,14 +1977,21 @@ export async function readAppServerTurn(cwd, job, { admittingJobId = null, env =
       if (response.thread?.id !== threadId || !Array.isArray(response.thread.turns)) return null;
       const inventory = recordedThreadJobs(threadId);
       if (!inventory.complete) return null;
-      const owned = new Set(inventory.jobs.filter(candidate => candidate.id !== job.id || candidate.workspaceRoot !== job.workspaceRoot).map(candidate => candidate.turnId).filter(Boolean));
+      // Recovered jobs written before turn handles were published keep theirs in recovery.
+      const owned = new Set(inventory.jobs.filter(candidate => candidate.id !== job.id || candidate.workspaceRoot !== job.workspaceRoot)
+        .map(candidate => candidate.turnId ?? (candidate.recovered ? candidate.recovery?.turnId : null)).filter(Boolean));
       const unclaimed = response.thread.turns.filter(turn => !owned.has(turn.id));
       // Null timestamps, multiple turns, or overlapping wrapper start windows
       // cannot establish provenance, regardless of whether a turn has ended.
       if (turnInJobStartWindow(job, 0) === null || unclaimed.some(turn => !Number.isFinite(turn.startedAt))) return null;
       const candidates = unclaimed.filter(turn => turnInJobStartWindow(job, turn.startedAt));
       if (candidates.length > 1) return null;
-      if (!candidates.length) return { threadId, turnId: null, turnStatus: "notStarted" };
+      if (!candidates.length) {
+        // No runtime's history can exclude a request still awaiting acceptance.
+        // Only legacy records retain empty-read inference.
+        if (job.turnSubmission) return null;
+        return { threadId, turnId: null, turnStatus: "notStarted" };
+      }
       if (!uniqueTurnAttribution(job, candidates[0], inventory, admittingJobId)) return null;
       turnId = candidates[0].id;
     }
@@ -1815,6 +2004,7 @@ function appServerTurnResult(response, threadId, turnId) {
     if (!turn) return null;
     const items = turn.items ?? [];
     const fileChanges = items.filter(item => item.type === "fileChange");
+    const codexErrorInfo = normalizeCodexErrorInfo(turn.error?.codexErrorInfo);
     return {
       status: turn.status === "completed" ? 0 : 1,
       turnStatus: turn.status,
@@ -1825,6 +2015,8 @@ function appServerTurnResult(response, threadId, turnId) {
       turnId: turn.id,
       finalMessage: items.filter(item => item.type === "agentMessage").at(-1)?.text ?? "",
       error: turn.error,
+      ...(codexErrorInfo !== null ? { codexErrorInfo } : {}),
+      blockers: dedupeBlockers(items.flatMap(toolCallBlockers)),
       stderr: turn.error?.message ?? "",
       reasoningSummary: items.filter(item => item.type === "reasoning").flatMap(item => extractReasoningSections(item.summary)),
       touchedFiles: collectTouchedFiles(fileChanges),

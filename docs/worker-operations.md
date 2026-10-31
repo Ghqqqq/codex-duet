@@ -1,7 +1,10 @@
 # Isolated workers in unattended workflows
 
 Use `Agent(subagent_type: "codex:codex-native")` by default from the first dispatch,
-without waiting for readiness. Background `duet task` is for
+without waiting for readiness, subject to the [saved dispatch route](configuration.md#worker-dispatch).
+Background `duet task` is also selected by `--dispatch bash` or, in `auto`,
+for 24 hours after the last native-unavailable observation, or until
+`duet setup --dispatch` is run without `--dry-run`; otherwise it is for
 `native_adapter_unavailable`, `native_capacity`, per-call options the `DUET:` line
 rejects, or follow-ups to Bash-launched workers. Supply objective, owned paths, constraints
 and acceptance criteria with the [brief template](../plugins/codex/prompts/ultra-codex-protocol.md#writing-a-brief-every-codex-assignment).
@@ -25,9 +28,10 @@ DUET_TASK
 
 Use stdin only, single-quoted arguments and `DUET_TASK`/`DUET_ANSWER` heredocs
 whose delimiters do not occur as complete lines in the text. The permission hook
-recognizes a narrow grammar; double quotes, pipes, compound commands, sandbox
-bypass and unsupported flags fall back to normal permissions. Investigators add
-`--sandbox read-only`; other checkouts use `--cwd '<dir>'`. A task's requested
+approves eligible commands whether or not the Bash call sets
+`dangerouslyDisableSandbox: true`. It recognizes a narrow grammar; double quotes,
+pipes, compound commands and flags outside its allowlist use normal permissions.
+Investigators add `--sandbox read-only`; other checkouts use `--cwd '<dir>'`. A task's requested
 subdirectory is used for both thread start and resume, while broker/job state stays
 at the repository root. Parallel writers need
 disjoint OWNED PATHS or separate worktrees.
@@ -409,8 +413,8 @@ not proof that every server is ready; null means unobserved. Progress and final
 reports include a WebSocket retry/fallback warning when observed on stderr.
 `setup --transport http|websocket|status` is an explicit offline action; it preserves
 the selected named ChatGPT provider block, takes a timestamped backup before writes,
-and does not change defaults or claim a measured speedup. Restart after an actual
-configuration change, once other live work has finished.
+and does not change defaults or claim a measured speedup. Run `duet runtime restart`
+after an actual configuration change, once other live work has finished.
 
 ## Sandbox and permissions
 
@@ -536,11 +540,10 @@ config file. Repeated runs are no-ops. A new config has no prior file to back up
 The lock waits for a bounded interval and reclaims dead owners; setup and sync
 recheck content before replacement. Manual stale sync-lock removal is unnecessary.
 
-Portable sections:
+Portable sections for the default `chrome` profile:
 
 - Local marketplaces (source/source_type or local source table and path).
-- Only the `enabled` flag for `browser@openai-bundled`, `chrome@openai-bundled`,
-  `computer-use@openai-bundled`, and `unified-computer-use@openai-bundled`.
+- Only the `enabled` flag for `browser@openai-bundled` and `chrome@openai-bundled`.
 - `mcp_servers.node_repl`: safe executable/path args, enabled/startup/tool timeout
   fields and exactly the following env names. Other env keys appear in `skipped`
   without their values:
@@ -555,18 +558,21 @@ BROWSER_USE_AVAILABLE_BACKENDS
 BROWSER_USE_TINYSKY_ENABLED
 NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER
 NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME
-NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE
 BROWSER_USE_CODEX_APP_BUILD_FLAVOR
 BROWSER_USE_CODEX_APP_VERSION
 NODE_REPL_TRUSTED_SERVICES
-SKY_CUA_SERVICE_PATH
 CODEX_CLI_PATH
 ```
 
-CODEX_HOME is rewritten to the isolated home. The colon-separated trusted code
-paths include that home and preserve the app modules and normal plugin cache.
-NODE_REPL_TRUSTED_SERVICES JSON and executable paths remain unchanged. These are
-shared code sources; sync neither copies nor modifies their files. The config
+The `chrome` profile excludes both computer-use plugins and the desktop env keys
+`NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE` and `SKY_CUA_SERVICE_PATH`.
+`CODEX_HOME` is rewritten to the isolated home. Trusted code paths use the
+platform path delimiter (`:` on macOS/Linux, `;` on Windows), include that home
+and preserve the app modules and normal plugin cache.
+When imported, `BROWSER_USE_AVAILABLE_BACKENDS` is forced to `chrome`, and
+`NODE_REPL_TRUSTED_SERVICES` JSON is narrowed to its string-valued `browser` entry
+(otherwise skipped). Executable paths remain unchanged. These are shared code
+sources; sync neither copies nor modifies their files. The config
 reader supports ordinary quoted/bare dotted keys, basic/literal strings,
 booleans, integers, arrays and inline tables for selected settings; unsupported
 selected syntax fails closed. Unrelated configuration text is preserved.
@@ -577,8 +583,10 @@ executable check for enabled `cua_repl`. A missing/non-executable command makes
 `tools.cuaRepl` missing and adds `tools.cuaReplReason`; other configured backends
 can still provide browser/computer availability. Other assets, extension
 connectivity and live tools are not probed. Core `setup.ready` can remain true
-without optional CUA tools. Restart the Claude session/shared Codex runtime
-after a sync to load the configuration.
+without optional CUA tools. After a sync, run `duet runtime restart` when
+other workers have finished to reload configuration on the next task; restart
+Claude when switching to a different isolated home. A changed Codex binary needs
+no restart: new work uses a private runtime, and an idle stale broker is retired automatically.
 
 ### Codex App profile
 
@@ -706,8 +714,11 @@ and the [troubleshooting guide](troubleshooting.md#troubleshooting).
 (`schemas/worker-report.schema.json`): `status` (`completed`/`needs_input`/`blocked`),
 `summary`, `key_findings`, `assumptions`, `verification`, `blockers`, `question`.
 The helper preserves the declarations in the result artifact and merges them
-with captured evidence. A runtime refusal forces `blocked`; a `completed` answer
-that is only a plan or question becomes `needs_input`.
+with captured evidence. A runtime refusal forces `blocked`. Structured reports
+use the declared `status`, except that nonempty `blockers` force `blocked`, a
+nonempty `question` without blockers forces `needs_input`, and an unfinished-work
+opening changes `completed` to `needs_input`. Broader plan-or-question prose
+heuristics apply only to unstructured answers.
 
 The default direct/result view is report v2: `status`, `worker`, `jobId`,
 `summary` (8000-character cap with `summaryTruncated`), then nonempty `blockers`,
@@ -740,6 +751,13 @@ from the compact report; the full commands remain in `--details`.
 handles when available, settings, file-tracking basis, artifact paths,
 `verification`, `claimedVerification`, `touchedFiles`, `preExistingChanges`,
 `claudeMd` forwarding metadata and compatibility recovery commands.
+
+When another writable job overlapped in the same workspace, file tracking cannot
+attribute every edit to one worker. Reports with changed files add
+`changedFilesShared: true` and `changedFilesNote: "changedFiles may include other workers' edits."`;
+`--details` also includes `changedFilesSharedWith` with the overlapping worker/job
+identifiers. Check the actual diff against owned paths before accepting it.
+
 For reviews, details also include the complete stored review text/findings and
 raw/result artifact paths; compact review summaries retain the 8,000-character cap.
 `reportFormat: "structured"` marks parsed worker declarations; older/interrupted
@@ -762,9 +780,10 @@ Concurrent edits can appear in the comparison; a snapshot cannot prove which
 worker caused them. An edit reverted before the final snapshot is visible only
 if the server emitted a file-change event.
 The progress log excludes model message/reasoning bodies, command arguments and tool outputs.
-The full final text is in `<job-id>.output.txt`; the raw result, command events
-and reasoning summaries are in `<job-id>.result.json`. Progress/messages are in
-`<job-id>.log`. These live beside the job record in the isolated home,
+For structured reports, `<job-id>.output.txt` holds the summary; for unstructured
+responses, it holds the final text. Parsed worker declarations, the raw result,
+command events and reasoning summaries are in `<job-id>.result.json`.
+Progress/messages are in `<job-id>.log`. These live beside the job record in the isolated home,
 `<isolated-home>/duet/state/<workspace-slug>-<hash>/jobs/`
 (`~/.claude/codex-isolated/duet/state/…` by default; directories `0700`, job/result JSON
 files `0600`, logs and `broker.json` follow the process umask), the same place for a terminal, a Claude session and the SessionEnd
@@ -870,5 +889,5 @@ the following are possibilities, not confirmed causes:
    use the tool's documented timeout option if available; do not assume extending
    a REPL timeout fixes a missing connection.
 4. Confirm setup's configuration/executable tool status, the saved node_repl startup errors,
-   and network/socket access outside Claude's Bash sandbox. Reload/restart the
-   relevant runtime after configuration changes.
+   and network/socket access outside Claude's Bash sandbox. Run `duet runtime restart`
+   after configuration changes once other workers have finished.

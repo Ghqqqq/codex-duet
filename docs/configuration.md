@@ -57,8 +57,10 @@ to **Codex Computer Use.app**. Setup does not grant OS permissions or run live t
 `tools.cuaReplReason` when it cannot launch. Other assets and extension connections
 remain unprobed. Missing optional CUA tools do not by themselves make core
 runtime/invocation/authentication readiness (`ready`) false.
-After changing tool/browser configuration, restart the Claude session/shared
-Codex runtime when other workers have finished.
+After tool/browser configuration changes, run `duet runtime restart` when
+other workers have finished to reload configuration on the next task. Restart
+Claude when switching to a different isolated home. A changed Codex binary is
+handled automatically; see [runtime selection](#runtime-selection).
 
 The sandbox default is stored in `<isolated-home>/duet/config.toml` and is
 `danger-full-access` until you lower it. An explicit `task --sandbox <mode>` wins
@@ -134,8 +136,15 @@ Effort accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`, plu
 efforts listed by any model in Codex's isolated `models_cache.json` (including
 hidden models). Setup and hooks check the cache synchronously and never start
 a runtime. The static set applies when the cache is missing.
-The selected model/runtime must support the effort. Models are not validated against
-the account: a syntactically valid but unknown model fails at dispatch.
+The selected model/runtime must support the effort. `--default-model` and
+`--ultra-routine-model` must also appear in the isolated model cache when it is
+available; hidden models count. When the cache was fetched within the last
+24 hours, an unknown name is refused before any write, with a hint to refresh
+the cache through `duet models` and retry. With an older cache, or without a
+usable cache, a syntactically valid name is accepted with a warning. Codex
+refreshes the cache whenever it starts a runtime, so `duet models` also
+refreshes it; `duet models --all` includes hidden models. Cache validation does
+not prove that a later dispatch will succeed.
 
 The setup change returns a JSON report with `file`, `defaultModel`,
 `defaultEffort` and `ultraRoutineModel`, showing each effective value and its
@@ -158,6 +167,26 @@ or the cache's recorded fetch time. An unavailable context window is `null`
 (`unknown` in text); the pinned app-server schema does not expose it. Cache
 identity and account credentials are never included. If both sources are
 unavailable, the command exits nonzero with a `/codex:setup` hint.
+
+## Worker dispatch
+
+`duet setup --dispatch auto|native|bash|default` changes the guidance Claude
+receives about dispatching workers. Run it separately from other setup changes;
+`--dry-run` previews the change. The saved `dispatch` key lives in
+`<isolated-home>/duet/config.toml`; `duet setup --json` reports the effective route.
+
+| Route | Guidance |
+| --- | --- |
+| `auto` (built-in default) | Start with the native agent; prefer background Bash after a recent native-unavailable observation. |
+| `native` | Always advertise native dispatch, even with a recorded unavailable observation. |
+| `bash` | Use background `duet task` through `codex:native-fallback` from the first dispatch. |
+| `default` | Remove the saved route and restore `auto`. |
+
+Duet records an unavailable observation when the host never delivers the native
+turn start. `auto` honors it for 24 hours after the last observation, or until
+`duet setup --dispatch` is run without `--dry-run`. These settings change guidance
+rather than disable a tool: explicit native calls remain possible. See the
+[dispatch recipe](direct-mode.md#native-subagent-default).
 
 ## Default orchestration mode
 
@@ -281,7 +310,8 @@ Switches the isolated home between the WebSocket and HTTP ChatGPT provider. Use
 
 ## Other Codex settings
 
-Model and effort for non-worker operations can be set in
+Model and effort defaults for direct Codex CLI sessions through
+`codex-isolated.mjs`, without explicit CLI overrides, can be set in
 `~/.claude/codex-isolated/config.toml` or a trusted project's `.codex/config.toml`,
 for example:
 
@@ -290,6 +320,10 @@ model = "gpt-5.4-mini"
 model_reasoning_effort = "high"
 ```
 
+`/codex:review` and adversarial reviews pass the saved
+[worker defaults](#default-worker-models) or built-ins explicitly unless overridden
+on the call; these `config.toml` model settings do not apply to them.
+
 See the [Codex configuration reference](https://developers.openai.com/codex/config-reference).
 
 
@@ -297,8 +331,9 @@ See the [Codex configuration reference](https://developers.openai.com/codex/conf
 
 The isolated home may contain `runtime.json` with an absolute `codexBinary` path;
 `CODEX_COMPANION_BIN` overrides it; otherwise `codex` on PATH is used. A binary
-change affects newly started runtimes; an existing workspace broker keeps its
-executable until it exits (after 60 s idle by default) or is restarted.
+change is detected automatically: new work bypasses a stale workspace broker
+and uses a private runtime. An idle stale broker is asked to retire; a busy one
+keeps serving its active work. No Claude restart is needed for a binary change.
 Setup reports `codex.warning.code: "desktop_managed_codex_runtime"` when the
 selected executable or its resolved symlink target is under
 `~/.codex/plugins/.plugin-appserver/` or
@@ -307,8 +342,7 @@ app-servers launched from these managed CLIs; a ChatGPT desktop auto-update was
 one observed cause of interrupted turns. Pin a stable CLI, such as an installed
 npm `@openai/codex` binary, with `CODEX_COMPANION_BIN` or `runtime.json`'s
 `codexBinary`. Setup includes the warning even when the CLI is available; it
-does not change the pin or make `ready` false. Finish or cancel active work
-before restarting an existing broker to use a changed pin.
+does not change the pin or make `ready` false.
 
 If a pinned runtime is missing or unusable, setup may probe PATH's `codex` to
 enrich its repair guidance, but it still reports the broken pin. These optional
@@ -373,6 +407,12 @@ rejected; use a fresh task. These opt-outs do not disable Codex's own AGENTS.md
 loading or its CLAUDE.md project fallback. `duet setup --project-docs agents-only`
 removes Duet's exact `project_doc_fallback_filenames = ["CLAUDE.md"]` default
 from the isolated config; custom lists remain unchanged.
+When forwarding covers every project CLAUDE.md on the worker's path and no
+`.codex/config.toml` on that path sets `project_doc_fallback_filenames`, the thread
+disables that default fallback to avoid duplicate delivery. On runtimes that
+reject per-thread config, the compatibility retry drops the override, so Codex's
+own CLAUDE.md fallback stays on and project instructions can arrive twice; see
+[delivery to workers](claude-md.md#delivery-to-workers).
 
 `duet task --fork` imports the current Claude transcript into a new Codex thread,
 then runs the stdin brief. The recorded label is “imported Claude conversation

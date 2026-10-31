@@ -54,6 +54,8 @@ Check that the chosen model supports the chosen effort.
 
 Put `DUET: --model <slug> --effort <effort>` on the first line of that native
 dispatch's prompt. This overrides that dispatch only; it does not save defaults.
+For the Bash fallback, use `duet task --model <slug> --effort <effort> ...`
+in background Bash as described in the `codex:native-fallback` skill.
 Follow-ups retain recorded settings unless explicitly overridden.
 
 ## Confirm

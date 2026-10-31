@@ -342,7 +342,6 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       cwd: this.cwd,
       env,
       stdio: ["pipe", "pipe", "pipe"],
-      shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
       windowsHide: true,
       detached: process.platform !== "win32"
     });
@@ -464,18 +463,30 @@ class BrokerCodexAppServerClient extends AppServerClientBase {
       this.socket.on("end", () => this.handleExit(this.closed ? null : brokerClosedError()));
     });
 
-    const identity = await this.request("initialize", {
+    const runtimeIdentity = resolveCodexRuntimeIdentity(this.options.env ?? process.env);
+    const initializeParams = {
       clientInfo: this.options.clientInfo ?? DEFAULT_CLIENT_INFO,
-      capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES
-    });
+      capabilities: this.options.capabilities ?? DEFAULT_CAPABILITIES,
+      codexCompanionRuntime: runtimeIdentity
+    };
+    const identity = await this.request("initialize", initializeParams);
     this.options.onRuntimeEvent?.({ startupTimings: identity.startupTimings ?? {}, startupWarning: identity.startupWarning ?? null });
     if (identity.codexCompanionHome !== resolveIsolatedCodexHome(this.options.env ?? process.env)) {
       this.socket.destroy();
       throw new Error("Codex broker isolation identity does not match the requested home. Restart the Claude session.");
     }
-    if (identity.codexCompanionRuntime !== resolveCodexRuntimeIdentity(this.options.env ?? process.env)) {
+    if (identity.codexCompanionRuntime !== runtimeIdentity) {
+      const controls = /** @type {typeof identity & { codexCompanionBrokerControls?: string[] }} */ (identity).codexCompanionBrokerControls;
+      if (Array.isArray(controls) && controls.includes("shutdownIfIdle")) {
+        try {
+          // Only advertised broker controls stay out of the Codex app-server.
+          await this.request(/** @type {any} */ ("broker/shutdownIfIdle"), {
+            runtimeIdentity: identity.codexCompanionRuntime
+          }, { timeoutMs: Math.max(1, Math.min(1000, (this.options.connectDeadline ?? Infinity) - Date.now())) });
+        } catch { /* Unavailable or busy brokers can still be bypassed privately. */ }
+      }
       this.socket.destroy();
-      throw new Error("Codex broker runtime has changed. Restart the Claude session to use the selected executable.");
+      throw Object.assign(new Error("Codex broker runtime has changed; retrying with the selected executable."), { code: "BROKER_RUNTIME_CHANGED" });
     }
     this.notify("initialized", {});
   }
@@ -547,9 +558,9 @@ export class CodexAppServerClient {
         client.handleExit(error);
         await client.close().catch(() => {});
         if (client.transport === "broker" && !options.signal?.aborted &&
-            ["BROKER_CONNECTION_CLOSED", "ECONNRESET", "EPIPE", "ENOENT", "ECONNREFUSED"].includes(error.code)) {
-          // initialize is the only RPC sent here. Retry a private spawn once,
-          // without killing/replacing another session's broker or replaying work.
+            ["BROKER_CONNECTION_CLOSED", "BROKER_RUNTIME_CHANGED", "ECONNRESET", "EPIPE", "ENOENT", "ECONNREFUSED"].includes(error.code)) {
+          // Only handshake/control RPCs were sent. Retry a private spawn once
+          // without replaying work or stopping another session's busy broker.
           options.onRuntimeEvent?.({ brokerStartupRetry: true });
           return CodexAppServerClient.connect(cwd, { ...options, disableBroker: true });
         }

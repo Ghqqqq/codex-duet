@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 
 import { isProbablyText } from "./fs.mjs";
 import { formatCommandFailure, runCommand } from "./process.mjs";
@@ -133,17 +134,27 @@ export function getCurrentBranch(cwd) {
   return gitChecked(cwd, ["branch", "--show-current"]).stdout.trim() || "HEAD";
 }
 
-export function getWorkingTreeState(cwd) {
-  cwd = getRepoRoot(cwd);
-  const staged = gitChecked(cwd, ["diff", "--cached", "--name-only", "-z"]).stdout.split("\0").filter(Boolean);
-  const unstaged = gitChecked(cwd, ["diff", "--name-only", "-z"]).stdout.split("\0").filter(Boolean);
-  const untracked = gitChecked(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]).stdout.split("\0").filter(Boolean);
+export function getWorkingTreeState(cwd, timeoutMs) {
+  const deadline = timeoutMs === undefined ? Infinity : performance.now() + timeoutMs;
+  const options = { get timeoutMs() {
+    if (deadline === Infinity) return undefined;
+    const remaining = Math.floor(deadline - performance.now());
+    if (remaining <= 0) throw Object.assign(new Error("Git working tree check timed out."), { code: "ETIMEDOUT" });
+    return remaining;
+  } };
+  cwd = gitChecked(cwd, ["rev-parse", "--show-toplevel"], options).stdout.replace(/\n$/, "");
+  const staged = gitChecked(cwd, ["diff", "--cached", "--name-only", "-z"], options).stdout.split("\0").filter(Boolean);
+  const unstaged = gitChecked(cwd, ["diff", "--name-only", "-z"], options).stdout.split("\0").filter(Boolean);
+  const untracked = gitChecked(cwd, ["ls-files", "--others", "--exclude-standard", "-z"], options).stdout.split("\0").filter(Boolean);
+  // Diff/ls-files omit untracked-only submodule changes; status includes their
+  // submodule flags even when these file lists are empty.
+  const status = gitChecked(cwd, ["status", "--porcelain=v2", "-z", "--no-show-stash", "--untracked-files=normal", "--ignore-submodules=none"], options).stdout;
 
   return {
     staged,
     unstaged,
     untracked,
-    isDirty: staged.length > 0 || unstaged.length > 0 || untracked.length > 0
+    isDirty: status.length > 0 || collectDirtySubmodules(cwd, status, options).length > 0
   };
 }
 
@@ -154,6 +165,12 @@ export function resolveReviewTarget(cwd, options = {}) {
   const baseRef = options.base ?? null;
   const state = getWorkingTreeState(cwd);
   const supportedScopes = new Set(["auto", "working-tree", "branch"]);
+
+  if (!supportedScopes.has(requestedScope)) {
+    throw new Error(
+      `Unsupported review scope "${requestedScope}". Use one of: auto, working-tree, branch, or pass --base <ref>.`
+    );
+  }
 
   if (baseRef) {
     validateReviewBase(cwd, baseRef);
@@ -171,12 +188,6 @@ export function resolveReviewTarget(cwd, options = {}) {
       label: "working tree diff",
       explicit: true
     };
-  }
-
-  if (!supportedScopes.has(requestedScope)) {
-    throw new Error(
-      `Unsupported review scope "${requestedScope}". Use one of: auto, working-tree, branch, or pass --base <ref>.`
-    );
   }
 
   if (requestedScope === "branch") {
@@ -318,9 +329,59 @@ function formatUntrackedFile(cwd, relativePath, budget) {
   return content;
 }
 
+function collectDirtySubmodules(cwd, rootStatus, options = {}) {
+  const root = fs.realpathSync(cwd), submodules = new Set(), visited = new Set();
+  /** @type {{ cwd: string, prefix: string, ancestors: string[], status?: string }[]} */
+  const pending = [{ cwd: root, prefix: "", ancestors: [], status: rootStatus }];
+  // Porcelain v2 has fixed metadata fields before the literal path, which may
+  // itself contain spaces or newlines. Rename records also carry an old path.
+  const pathFields = { "1": 8, "2": 9, "u": 10 };
+  while (pending.length) {
+    const current = pending.pop();
+    if (visited.has(current.cwd)) continue;
+    visited.add(current.cwd);
+    const status = current.status ?? gitChecked(current.cwd, ["status", "--porcelain=v2", "-z", "--no-show-stash", "--untracked-files=normal", "--ignore-submodules=none"], options).stdout;
+    const relativePath = file => current.prefix ? `${current.prefix}/${file}` : file;
+    if (status.length && current.prefix) {
+      for (const ancestor of [...current.ancestors, current.prefix]) submodules.add(ancestor);
+    }
+    const entries = status.split("\0");
+    for (let index = 0; index < entries.length; index++) {
+      const fields = entries[index].split(" "), pathField = pathFields[fields[0]];
+      if (pathField && fields[2]?.startsWith("S")) submodules.add(relativePath(fields.slice(pathField).join(" ")));
+      if (fields[0] === "2") index++;
+    }
+
+    // A parent's ignore override does not reach deeper modules. Enumerate even
+    // clean gitlinks and inspect each initialized checkout with its own override.
+    // Stay local: never initialize/fetch modules, revisit roots, or leave this tree.
+    const indexEntries = gitChecked(current.cwd, ["ls-files", "--stage", "-z"], options).stdout.split("\0");
+    for (const entry of indexEntries) {
+      if (!entry.startsWith("160000 ")) continue;
+      const file = entry.slice(entry.indexOf("\t") + 1), directory = path.resolve(current.cwd, file);
+      let resolved;
+      try {
+        if (!fs.lstatSync(directory).isDirectory()) continue;
+        fs.lstatSync(path.join(directory, ".git"));
+        resolved = fs.realpathSync(directory);
+      } catch (error) {
+        if (["ENOENT", "ENOTDIR"].includes(error.code)) continue;
+        throw error;
+      }
+      const relative = path.relative(root, resolved);
+      if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        throw new Error("Review submodule path escaped the repository; inspect it manually.");
+      }
+      pending.push({ cwd: resolved, prefix: relativePath(file), ancestors: [...current.ancestors, current.prefix].filter(Boolean) });
+    }
+  }
+  return [...submodules].sort();
+}
+
 function collectWorkingTreeContext(cwd, state, options = {}) {
   const includeDiff = options.includeDiff !== false;
-  const entries = gitChecked(cwd, ["status", "--short", "--untracked-files=all", "-z"]).stdout.split("\0").filter(Boolean);
+  const submodules = options.submodules ?? [];
+  const entries = gitChecked(cwd, ["status", "--short", "--untracked-files=all", "--ignore-submodules=none", "-z"]).stdout.split("\0").filter(Boolean);
   const statusLines = [];
   for (let index = 0; index < entries.length; index++) {
     const entry = entries[index], code = entry.slice(0, 2), file = JSON.stringify(entry.slice(3));
@@ -328,14 +389,14 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
     statusLines.push(`${code} ${/[RC]/.test(code) ? `${JSON.stringify(entries[++index])} -> ` : ""}${file}`);
   }
   const status = statusLines.join("\n");
-  const changedFiles = listUniqueFiles(state.staged, state.unstaged, state.untracked);
+  const changedFiles = listUniqueFiles(state.staged, state.unstaged, state.untracked, submodules);
   const budget = { bytes: 0, files: 0, omitted: [] };
   const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file, budget)).filter(Boolean).join("\n\n");
 
   let parts;
   if (includeDiff) {
-    const stagedDiff = gitChecked(cwd, ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
-    const unstagedDiff = gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
+    const stagedDiff = gitChecked(cwd, ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff", "--ignore-submodules=none"]).stdout;
+    const unstagedDiff = gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", "--ignore-submodules=none"]).stdout;
     parts = [
       formatSection("Git Status", status),
       formatSection("Staged Diff", stagedDiff),
@@ -343,8 +404,8 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
       formatSection("Untracked Files", untrackedBody)
     ];
   } else {
-    const stagedStat = gitChecked(cwd, ["diff", "--shortstat", "--cached"]).stdout.trim();
-    const unstagedStat = gitChecked(cwd, ["diff", "--shortstat"]).stdout.trim();
+    const stagedStat = gitChecked(cwd, ["diff", "--shortstat", "--cached", "--ignore-submodules=none"]).stdout.trim();
+    const unstagedStat = gitChecked(cwd, ["diff", "--shortstat", "--ignore-submodules=none"]).stdout.trim();
     parts = [
       formatSection("Git Status", status),
       formatSection("Staged Diff Stat", stagedStat),
@@ -357,15 +418,21 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
     parts.push(formatSection("Untracked Omission Manifest", budget.omitted.map(entry =>
       `- ${JSON.stringify(entry.path)}: ${entry.size ?? "unknown"} bytes (${entry.reason})`).join("\n")));
   }
+  if (submodules.length) {
+    parts.push(formatSection("Submodule Omission Manifest", submodules.map(file =>
+      `- ${JSON.stringify(file)}: submodule contents not inlined; inspect its status, diffs, and untracked files.`).join("\n")));
+  }
 
   return {
     mode: "working-tree",
-    summary: `Reviewing ${state.staged.length} staged, ${state.unstaged.length} unstaged, and ${state.untracked.length} untracked file(s).`,
+    summary: `Reviewing ${state.staged.length} staged, ${state.unstaged.length} unstaged, and ${state.untracked.length} untracked file(s)${submodules.length
+      ? ` and ${submodules.length} dirty submodule(s): ${submodules.map(file => JSON.stringify(file)).join(", ")}` : ""}.`,
     content: parts.join("\n"),
     changedFiles,
     untrackedInlineBytes: budget.bytes,
     untrackedInlineFiles: budget.files,
-    omittedUntracked: budget.omitted
+    omittedUntracked: budget.omitted,
+    omittedSubmodules: submodules
   };
 }
 
@@ -373,9 +440,9 @@ function collectBranchContext(cwd, baseRef, options = {}) {
   const includeDiff = options.includeDiff !== false;
   const comparison = options.comparison ?? buildBranchComparison(cwd, baseRef);
   const currentBranch = getCurrentBranch(cwd);
-  const changedFiles = gitChecked(cwd, ["diff", "--name-only", "-z", comparison.commitRange]).stdout.split("\0").filter(Boolean);
+  const changedFiles = gitChecked(cwd, ["diff", "--name-only", "-z", "--ignore-submodules=none", comparison.commitRange]).stdout.split("\0").filter(Boolean);
   const logOutput = gitChecked(cwd, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
-  const diffStat = gitChecked(cwd, ["diff", "--stat", comparison.commitRange]).stdout.trim();
+  const diffStat = gitChecked(cwd, ["diff", "--stat", "--ignore-submodules=none", comparison.commitRange]).stdout.trim();
 
   return {
     mode: "branch",
@@ -386,7 +453,7 @@ function collectBranchContext(cwd, baseRef, options = {}) {
           formatSection("Diff Stat", diffStat),
           formatSection(
             "Branch Diff",
-            gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange]).stdout
+            gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", "--ignore-submodules=none", comparison.commitRange]).stdout
           )
         ].join("\n")
       : [
@@ -418,25 +485,27 @@ export function collectReviewContext(cwd, target, options = {}) {
 
   if (target.mode === "working-tree") {
     const state = getWorkingTreeState(repoRoot);
+    const submodules = collectDirtySubmodules(repoRoot);
     diffBytes = measureCombinedGitOutputBytes(
       repoRoot,
       [
-        ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"],
-        ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]
+        ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff", "--ignore-submodules=none"],
+        ["diff", "--binary", "--no-ext-diff", "--submodule=diff", "--ignore-submodules=none"]
       ],
       maxInlineDiffBytes
     );
-    includeDiff =
-      options.includeDiff ??
+    // A parent diff cannot include a submodule's untracked files. Always ask
+    // the reviewer to inspect changed submodules rather than imply completeness.
+    includeDiff = submodules.length === 0 && (options.includeDiff ??
       (listUniqueFiles(state.staged, state.unstaged, state.untracked).length <= maxInlineFiles &&
-        diffBytes <= maxInlineDiffBytes);
-    details = collectWorkingTreeContext(repoRoot, state, { includeDiff });
+        diffBytes <= maxInlineDiffBytes));
+    details = collectWorkingTreeContext(repoRoot, state, { includeDiff, submodules });
   } else {
     const comparison = buildBranchComparison(repoRoot, target.baseRef);
-    const fileCount = gitChecked(repoRoot, ["diff", "--name-only", "-z", comparison.commitRange]).stdout.split("\0").filter(Boolean).length;
+    const fileCount = gitChecked(repoRoot, ["diff", "--name-only", "-z", "--ignore-submodules=none", comparison.commitRange]).stdout.split("\0").filter(Boolean).length;
     diffBytes = measureGitOutputBytes(
       repoRoot,
-      ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange],
+      ["diff", "--binary", "--no-ext-diff", "--submodule=diff", "--ignore-submodules=none", comparison.commitRange],
       maxInlineDiffBytes
     );
     includeDiff = options.includeDiff ?? (fileCount <= maxInlineFiles && diffBytes <= maxInlineDiffBytes);
@@ -453,6 +522,8 @@ export function collectReviewContext(cwd, target, options = {}) {
     inputMode: includeDiff ? "inline-diff" : "self-collect",
     collectionGuidance: buildAdversarialCollectionGuidance({ includeDiff }) + (details.omittedUntracked?.length
       ? " Read the omitted regular files listed in the Untracked Omission Manifest yourself with read-only commands before finalizing findings; do not follow symlinks outside the repository. Report any files you could not inspect."
+      : "") + (details.omittedSubmodules?.length
+      ? " Inspect the parent gitlink diff and every submodule in the Submodule Omission Manifest with read-only git -C <submodule> status --short --untracked-files=all --ignore-submodules=none, git -C <submodule> diff --ignore-submodules=none, and git -C <submodule> diff --cached --ignore-submodules=none. Read its untracked files and inspect changed nested submodules. Pass each listed path as one literal argument; do not follow symlinks outside the repository. Report anything you could not inspect."
       : ""),
     ...details
   };

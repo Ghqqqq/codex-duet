@@ -113,11 +113,12 @@ export function uniqueTurnAttribution(job, turn, inventory = recordedThreadJobs(
   if (!inventory.complete || turnInJobStartWindow(job, turn.startedAt) !== true) return false;
   return !inventory.jobs.some(candidate => {
     if (candidate.id === job.id && candidate.workspaceRoot === job.workspaceRoot) return false;
-    if (candidate.turnId) return candidate.turnId === turn.id;
+    const turnId = candidate.turnId ?? (candidate.recovered ? candidate.recovery?.turnId : null);
+    if (turnId) return turnId === turn.id;
     // The caller may be recovering its predecessor before attempting admission;
     // that particular invocation has not submitted any turn yet.
     if (candidate.id === admittingJobId && candidate.workspaceRoot === job.workspaceRoot) return false;
-    if (candidate.recovery?.turnStatus === "notStarted" || candidate.result?.blockers?.some(blocker =>
+    if ([candidate.recovery?.turnStatus, candidate.result?.turnStatus].includes("notStarted") || candidate.result?.blockers?.some(blocker =>
       ["thread_busy", "thread_settings_unknown"].includes(blocker.code))) return false;
     return turnInJobStartWindow(candidate, turn.startedAt) !== false;
   });
@@ -128,7 +129,8 @@ export function recordFinishedJob(job) {
     const report = job.report ?? buildWorkerReport(job.result ?? { status: 1, error: job.errorMessage ?? "No stored result." }, { jobId: job.id, rawOutputFile: job.rawOutputFile, resultFile: job.resultFile });
     if (finishJournalJob(job, fullReport({ ...report, status: job.status, ...leaseExpiryReport(job) }, job))) {
       // The journal lock has been released before acquiring the job-state lock.
-      updateJob(job.workspaceRoot, job.id, () => ({ journalFinishedStatus: job.status }));
+      updateJob(job.workspaceRoot, job.id, current => current.status === job.status && current.recovered === job.recovered && current.completedAt === job.completedAt
+        ? { journalFinishedStatus: job.status } : null);
     }
   } catch { /* terminal journaling never changes the job outcome */ }
 }
@@ -204,6 +206,11 @@ export function fullReport(payload, job = {}) {
     ...(job.request?.settingsInheritance ? { settingsInheritance: job.request.settingsInheritance } : {}),
     ...(payload.activityCount === undefined && (job.activityTotals || job.activity) ? { activityCount: job.activityTotals?.events ?? job.activity.length } : {}),
     ...(job.agentName ? { agentName: job.agentName } : {}) };
+  if (report.changedFilesShared || job.result?.changedFilesShared) Object.assign(report, {
+    changedFilesShared: true,
+    changedFilesNote: report.changedFilesNote ?? job.result?.changedFilesNote,
+    changedFilesSharedWith: report.changedFilesSharedWith ?? job.result?.changedFilesSharedWith ?? []
+  });
   // Older stored reports may predate status normalization. Project their
   // decision without rewriting the record or overriding failure states.
   const structured = job.result?.structured;
@@ -260,7 +267,7 @@ export function fullReport(payload, job = {}) {
     for (const [target, values] of [
       ["touchedFiles", job.result?.touchedFiles],
       ["preExistingChanges", job.result?.preExistingChanges],
-      ["verification", job.result?.commandExecutions?.map(c => `${c.command ?? "command"}: exit ${c.exitCode ?? "unknown"}, ${c.status ?? "unknown"}`)]
+      ["verification", job.result?.commandExecutions?.map(capturedCheckText)]
     ]) {
       if (!Array.isArray(values)) continue;
       report[target] = values.slice(0, DETAILS_LIST_LIMIT).map(value => redactActivity(value).slice(0, 2000));
@@ -282,10 +289,13 @@ export function fullReport(payload, job = {}) {
       if (text.length > DIRECT_SUMMARY_LIMIT) report.summaryTruncated = true;
     }
   }
+  const failed = job.result?.commandExecutions?.filter(capturedCheckFailed).length ?? 0;
+  if (failed) report.checks = { ...report.checks, failed };
   return report;
 }
 const DIRECT_SUMMARY_LIMIT = 8000;
 const DETAILS_LIST_LIMIT = 500;
+const DIRECT_CHECK_LIMIT = 64;
 // Keep the UTF-16 limit without cutting an astral character in half.
 function truncate(text, limit) {
   const end = text.charCodeAt(limit - 1), next = text.charCodeAt(limit);
@@ -295,6 +305,20 @@ function truncate(text, limit) {
 const duetTarget = value => /^[\w.-]+$/.test(value) ? value : quote(value);
 export const envelopeBytes = ({ summary, ...envelope }) => Buffer.byteLength(JSON.stringify(envelope));
 const brief = value => truncate(redactActivity(value).replace(/\s+/g, " ").trim(), 240);
+const capturedCheckText = c => `${c.command ?? "command"}: exit ${c.exitCode ?? "unknown"}, ${c.status ?? "unknown"}`;
+const capturedCheckFailed = c => (typeof c.exitCode === "number" && c.exitCode !== 0) || c.status === "failed";
+const checkSuffix = /: exit (-?\d+|unknown), (\S+)$/;
+const checkCommand = /(?:^|[\s/;&|])(?:(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|lint|build|type-?check)\b|node\s+--test\b|(?:pytest|tsc|eslint|jest|vitest)\b|go\s+test\b|cargo\s+(?:test|build)\b|make\s+(?:test|lint|build|type-?check)\b)/i;
+function checkPriority(text) {
+  const suffix = checkSuffix.exec(text);
+  const failed = suffix && capturedCheckFailed({ exitCode: suffix[1] === "unknown" ? null : Number(suffix[1]), status: suffix[2] });
+  return (failed ? 2 : 0) + (checkCommand.test(suffix ? text.slice(0, suffix.index) : text) ? 1 : 0);
+}
+function briefCheck(value) {
+  const text = redactActivity(value).replace(/\s+/g, " ").trim();
+  const suffix = checkSuffix.exec(text)?.[0] ?? "";
+  return text.length > 240 && suffix ? `${truncate(text, 239 - suffix.length)}…${suffix}` : truncate(text, 240);
+}
 const blockerIdentifiers = ["app", "tabId", "sessionId", "predecessorJobId", "predecessorStatus", "method", "kind", "server", "origin"];
 const compactQuestion = question => ({ id: question.id ?? null, kind: question.kind ?? "question", text: redactActivity(question.text),
   options: (question.options ?? []).map(redactActivity),
@@ -303,7 +327,7 @@ const compactQuestion = question => ({ id: question.id ?? null, kind: question.k
 
 // Budget serialized UTF-8, not JS character counts: escaping and multibyte text
 // both count. Details always retains the unabridged report behind this view.
-function fitDirectEnvelope(report) {
+function fitDirectEnvelope(report, checkPriorities) {
   const lists = [
     [report, "keyFindings"], [report, "assumptions"],
     [report.checks, "ran"], [report.checks, "claimed"], [report, "changedFiles"],
@@ -314,7 +338,13 @@ function fitDirectEnvelope(report) {
     const candidates = lists.filter(([object, key, min = 0]) => object?.[key]?.length > min);
     if (!candidates.length) break;
     const [object, key] = candidates.sort(([a, ak], [b, bk]) => Buffer.byteLength(JSON.stringify(b[bk])) - Buffer.byteLength(JSON.stringify(a[ak])))[0];
-    object[key].pop();
+    if (object === report.checks && key === "ran") {
+      // Lowest priority first; ties drop the earliest command. Splicing keeps
+      // surviving checks chronological without changing other lists' order.
+      const index = checkPriorities.reduce((lowest, priority, i) => priority < checkPriorities[lowest] ? i : lowest, 0);
+      object[key].splice(index, 1);
+      checkPriorities.splice(index, 1);
+    } else object[key].pop();
     if (key === "changedFiles") report.changedFilesOmitted = (report.changedFilesOmitted ?? 0) + 1;
     else if (key === "options") object.optionsOmitted = (object.optionsOmitted ?? 0) + 1;
     else if (object === report.checks) report.checks.omitted += 1;
@@ -372,9 +402,23 @@ export function directReport(payload, job = {}, env = process.env) {
     report.changedFiles = (full.touchedFiles ?? []).map(brief);
     report.changedFilesOmitted = full.touchedFilesOmitted ?? 0;
   }
-  if (full.verification?.length || full.claimedVerification?.length) {
-    report.checks = { ran: (full.verification ?? []).map(brief), claimed: (full.claimedVerification ?? []).map(brief),
-      omitted: Math.max(0, (job.result?.commandExecutions?.length ?? 0) - (full.verification?.length ?? 0))
+  if (full.changedFilesShared) Object.assign(report, { changedFilesShared: true, changedFilesNote: full.changedFilesNote });
+  // Rank all captured commands before applying either text or list budgets;
+  // the details view's independent caps must not hide a late failed check.
+  const ran = job.result?.commandExecutions?.map(capturedCheckText) ?? full.verification ?? [];
+  const selectedChecks = ran.map((text, index) => ({ text, index, priority: checkPriority(text) }));
+  if (selectedChecks.length > DIRECT_CHECK_LIMIT) {
+    // Select once, before briefing or envelope fitting. This bounds repeated
+    // JSON work regardless of how many command events the turn captured.
+    selectedChecks.sort((a, b) => b.priority - a.priority || b.index - a.index);
+    selectedChecks.length = DIRECT_CHECK_LIMIT;
+    selectedChecks.sort((a, b) => a.index - b.index);
+  }
+  const checkPriorities = selectedChecks.map(check => check.priority);
+  if (ran.length || full.claimedVerification?.length || full.checks?.failed) {
+    report.checks = { ran: selectedChecks.map(check => briefCheck(check.text)), claimed: (full.claimedVerification ?? []).map(brief),
+      ...(full.checks?.failed ? { failed: full.checks.failed } : {}),
+      omitted: ran.length - selectedChecks.length
         + Math.max(0, (job.result?.structured?.verification?.length ?? 0) - (full.claimedVerification?.length ?? 0))
         + (job.result?.structured?.verificationOmitted ?? 0) };
   }
@@ -405,7 +449,7 @@ export function directReport(payload, job = {}, env = process.env) {
     });
     report.next = nextCommand(command);
   }
-  fitDirectEnvelope(report);
+  fitDirectEnvelope(report, checkPriorities);
   // Long workspace paths can exceed the fixed-field budget even after text
   // fitting. Exact IDs resolve across stored workspaces without a cwd hint.
   if (cwdOption && jobId && envelopeBytes(report) > 2000) {

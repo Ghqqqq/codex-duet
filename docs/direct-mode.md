@@ -14,8 +14,16 @@ another Codex worker review the retry logic in src/net/.
 
 ### Native subagent (default)
 
-Claude uses `Agent(subagent_type: "codex:codex-native", prompt: "<brief>")`
-by default from the first dispatch, without waiting for a readiness notice.
+With the default `duet setup --dispatch auto`, Claude uses
+`Agent(subagent_type: "codex:codex-native", prompt: "<brief>")` from the first
+dispatch, without waiting for a readiness notice, unless a recent native-unavailable
+observation selects Bash guidance. `--dispatch bash` selects background
+`duet task` immediately; `native` keeps native guidance and `default` resets to
+`auto`. An observation records a missing native turn start and is honored for
+24 hours after the last observation, or until `duet setup --dispatch` is run
+without `--dry-run`. Explicit native calls remain possible with any route. See
+[worker dispatch](configuration.md#worker-dispatch).
+
 The function hook runs Codex and returns its report through the native agent
 completion. An optional first prompt line sets Codex options:
 
@@ -103,13 +111,17 @@ unconfirmed, and use background `duet task` if it persists. See [troubleshooting
 
 Use `duet task --help` for task flags; help starts no job. The installed plugin
 adds `bin/` to PATH, and SessionStart supplies the session ID and the Bash
-recipe, framed as a fallback to native dispatch from the first assignment.
-SessionStart names `codex:codex-native` without waiting for registration evidence;
+recipe according to the saved [worker dispatch](configuration.md#worker-dispatch)
+route: `bash` selects Bash immediately, while `auto` prefers it for 24 hours after
+the last native-unavailable observation, or until `duet setup --dispatch` is run
+without `--dry-run`. Otherwise SessionStart names
+`codex:codex-native` without waiting for registration evidence;
 an unavailable adapter reports its fallback condition. After registration the adapter adds a
 `codex:native-dispatch` system-prompt section (`prompt.compose`, session scope)
-to every request that offers the Agent tool. That section asks for native dispatch first:
+to every request that offers the Agent tool when native guidance is selected.
+That section asks for native dispatch first:
 browser work and Computer Use run natively, with unapproved apps arriving as
-approval questions. Background-Bash `duet task` is only for `native_adapter_unavailable`
+approval questions. Background-Bash `duet task` also handles `native_adapter_unavailable`
 or `native_capacity`, per-call overrides the `DUET:` line rejects (`--run`, `--approve-browser-origin`,
 `--approve-computer-app`, `--lease-sec`, `--question-timeout-sec`) and follow-ups
 to Bash-launched workers. Because the system prompt is rebuilt for every request,
@@ -132,8 +144,9 @@ DUET_TASK
 
 The brief goes only on stdin. Use single-quoted `DUET_TASK`/`DUET_ANSWER`
 heredocs with delimiters absent as complete lines from the text, and single-quote
-dynamic arguments. The permission hook auto-approves only its narrow grammar:
-double quotes, pipes, compound commands, sandbox bypass and flags outside its
+dynamic arguments. The permission hook approves eligible commands whether or not
+the Bash call sets `dangerouslyDisableSandbox: true`. It auto-approves only its
+narrow grammar: double quotes, pipes, compound commands and flags outside its
 allowlist go through normal permissions. Read-only workers add `--sandbox
 read-only`; another checkout adds `--cwd '<dir>'`. Parallel writers need disjoint
 OWNED PATHS or separate worktrees.
@@ -162,8 +175,9 @@ the session with no live attached owner wait. Lookup failures leave the prompt
 unchanged. See [unreported endings and limits](worker-lifecycle.md#unreported-endings).
 
 `--run <id|none>` chooses journal linkage for this dispatch only. Omit it to
-use the session's active run, falling back to the sole open workspace run when
-none is active; several open runs leave the task unlinked. Use `journal use
+use the session's active run, falling back to the sole open workspace run only
+if it belongs to the dispatching Claude session or has no recorded session.
+Otherwise, or with several open runs, the task stays unlinked. Use `journal use
 <runId>` to select one for the session, `--run none` to skip linking, or
 `--run <id>` to select an open run across workspaces in the same isolated home.
 Invalid or closed runs fail before
@@ -172,7 +186,8 @@ a worker starts. Follow-ups do not inherit this choice. See [run journal](run-jo
 Report v2 starts with `status`, `worker`, `jobId`, `summary`. The summary is capped
 at 8000 characters (`summaryTruncated` when cut); the rest fits within 2000 bytes.
 Nonempty fields include `blockers`, `question`, `changedFiles`, `checks.ran`
-(captured commands), `checks.claimed` (Codex's account), `assumptions`,
+(captured commands), `checks.claimed` (Codex's account), `checks.failed` (the
+number of failed captured commands, only when nonzero; also in `--details`), `assumptions`,
 `keyFindings`, then optional `usage` with integer `inputTokens`,
 `cachedInputTokens`, `outputTokens`, `reasoningOutputTokens` and `totalTokens`
 for this turn only (omitted when unknown). `next` suggests an action or is null.
@@ -420,7 +435,7 @@ lease otherwise.
 | Browser | unrestricted: any website, no per-origin prompt (`approval_mode = "never_ask"` is mirrored into the isolated browser runtime before every task); network access stays on in every sandbox mode | `setup --browser-approval ask` restores the runtime's ordinary origin checks (saved in `duet/config.toml`); `setup --browser-approval never-ask` returns to the default |
 | Computer Use apps | `mirror`: apps the user marked "always allow" in their Codex app (`~/.codex/computer-use/config.toml`, read-only) are copied into the isolated runtime's approval file before every task; any other app is asked of the parent during the task | `setup --computer-use-approval ask` stops the sync; `setup --allow-computer-app`/`--revoke-computer-app <bundle id>` adjust individual apps; `task --approve-computer-app <bundle id>` pre-approves one app for one call |
 | Claude instructions | Loaded CLAUDE.md/rules forwarded; approximate scan if unavailable | `--no-claude-md`, `CODEX_COMPANION_CLAUDE_MD=0` |
-| Codex project discovery | `CLAUDE.md` where no `AGENTS.md` exists | `duet setup --project-docs agents-only` |
+| Codex project discovery | `CLAUDE.md` where no `AGENTS.md` exists, unless [already forwarded](claude-md.md#delivery-to-workers) | `duet setup --project-docs agents-only` |
 
 For model and effort, explicit user choices win; dispatch uses explicit flags,
 then recorded follow-up settings, then saved defaults, then built-ins. Mode

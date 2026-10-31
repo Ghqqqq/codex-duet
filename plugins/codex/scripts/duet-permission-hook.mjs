@@ -11,6 +11,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { COMMAND_ALIASES, COMMAND_OPTIONS, DIRECT_OPTION_CONFLICTS } from "./lib/command-options.mjs";
 import { SANDBOX_MODES, isSupportedReasoningEffort, normalizeRequestedModel } from "./lib/setup-config.mjs";
+import { readHookInput } from "./lib/fs.mjs";
 
 const launcher = fileURLToPath(new URL("../bin/duet", import.meta.url));
 const quote = value => `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -78,8 +79,8 @@ export function approveDuet(input, env = process.env) {
   if (!executable) return {};
   const argumentsHeader = header.slice(executable.length).replace(/^[ \t]+/, "");
   // Recognize our own fully quoted absolute rewrite on a repeated hook call.
-  if (!/^(?:task|answer|wait|result|status|cancel)(?=[ \t]|$)/.test(argumentsHeader)
-      && !(executable !== "duet" && /^'(?:task|answer|wait|result|status|cancel)'(?=[ \t]|$)/.test(argumentsHeader))) return {};
+  if (!/^(?:task|answer|wait|result|status|cancel|runtime)(?=[ \t]|$)/.test(argumentsHeader)
+      && !(executable !== "duet" && /^'(?:task|answer|wait|result|status|cancel|runtime)'(?=[ \t]|$)/.test(argumentsHeader))) return {};
   if (heredoc) {
     if (newline < 0) return {};
     const lines = command.slice(newline + 1).split("\n");
@@ -134,7 +135,10 @@ export function approveDuet(input, env = process.env) {
       flags.set(name, value);
     } else return {};
   }
-  const needsTarget = ["answer", "wait", "cancel"].includes(verb) || (verb === "result" && !flags.has("thread"));
+  const cancelAll = verb === "cancel" && flags.get("all");
+  if (cancelAll && positionals.length) return {};
+  if (verb === "runtime" && !flags.has("help") && (positionals.length !== 1 || !["status", "restart"].includes(positionals[0]))) return {};
+  const needsTarget = ["answer", "wait"].includes(verb) || (verb === "cancel" && !cancelAll) || (verb === "result" && !flags.has("thread"));
   if (positionals.length > (verb === "task" ? 0 : 1) || (needsTarget && !flags.has("help") && positionals.length !== 1)) return {};
   if ((flags.has("fast") && flags.has("normal")) || ["to", "thread", "fresh"].filter(key => flags.has(key)).length > 1) return {};
   if (flags.get("fork") && ["to", "thread", "continue", "resume", "resume-last"].some(key => flags.has(key))) return {};
@@ -151,6 +155,6 @@ export function approveDuet(input, env = process.env) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   let result = {};
-  try { result = approveDuet(JSON.parse(fs.readFileSync(0, "utf8"))); } catch { /* Abstain on malformed hook input. */ }
+  try { result = approveDuet(JSON.parse(await readHookInput())); } catch { /* Abstain on malformed hook input. */ }
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }

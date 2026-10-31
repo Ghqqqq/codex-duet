@@ -48,15 +48,20 @@ export function jobState(job: CodexLiveJob): { word: string; color: ThemeKey } {
   }
 }
 
-export function jobRowColor(job: CodexLiveJob): ThemeKey {
-  return jobState(job).color;
+function staleJob(job: CodexLiveJob | CodexLiveSession): boolean {
+  return job.detailsUnavailable || 'turns' in job && job.turns.some(turn => turn.detailsUnavailable);
+}
+
+export function jobRowColor(job: CodexLiveJob | CodexLiveSession): ThemeKey {
+  return staleJob(job) ? 'warning' : jobState(job).color;
 }
 
 export function jobRow(job: CodexLiveJob | CodexLiveSession, selected: boolean, columns: number, now: number, isNew = false) {
   const selector = fit(`${selected ? '❯' : ' '} `, columns);
   const { word } = jobState(job);
   const { active } = jobLifecycle(job);
-  const glyph = attention(job) === 'blocked' ? '!' : ({ Running: '⏺', Queued: '…', 'Question for Claude': '?', 'Waiting for Claude': '?', Done: '✓', Failed: '✗',
+  const stale = staleJob(job);
+  const glyph = stale ? '⚠' : attention(job) === 'blocked' ? '!' : ({ Running: '⏺', Queued: '…', 'Question for Claude': '?', 'Waiting for Claude': '?', Done: '✓', Failed: '✗',
     Stopped: '■', 'Outcome unknown': '!' } as Record<string, string>)[word] ?? '·';
   const bullet = fit(`${glyph} `, Math.max(0, columns - width(selector)));
   const available = Math.max(0, columns - width(selector + bullet));
@@ -68,7 +73,8 @@ export function jobRow(job: CodexLiveJob | CodexLiveSession, selected: boolean, 
   const quietMinutes = active ? Math.floor((now - Date.parse(job.lastActivityAt ?? '')) / 60_000) : 0;
   const quiet = quietMinutes >= 1 ? `${quietMinutes}m` : '';
   // Keep the quiet age after dropping its word, then sacrifice turn count.
-  const choices = quiet ? [`${count}${age} · quiet ${quiet}`, `${count}${age} · ${quiet}`, `${age} · ${quiet}`, age]
+  const choices = stale ? [`${count}${age} · stale`, `${age} · stale`, ' stale']
+    : quiet ? [`${count}${age} · quiet ${quiet}`, `${count}${age} · ${quiet}`, `${age} · ${quiet}`, age]
     : [`${count}${age}`, age];
   const meta = fit(choices.find(text => width(text) <= metaColumns) ?? age, metaColumns);
   const labelColumns = contentColumns - width(meta);
@@ -95,8 +101,10 @@ export type FeedItem = {
 
 function failed(event: CodexLiveEvent): boolean {
   return ['failed', 'error'].includes(event.status ?? '') ||
-    event.type === 'commandExecution' && event.exitCode !== undefined && event.exitCode !== 0;
+    event.type === 'commandExecution' && event.exitCode != null && event.exitCode !== 0;
 }
+
+function unknownExit(event: CodexLiveEvent): boolean { return event.type === 'commandExecution' && event.exitCode == null; }
 
 function inProgress(event: CodexLiveEvent): boolean {
   return event.lifecycle === 'started' || ['inProgress', 'running', 'queued'].includes(event.status ?? '');
@@ -109,14 +117,15 @@ export function toolResult(event: CodexLiveEvent, now: number, job?: CodexLiveJo
   if (inProgress(event) && job?.unresolved) return { text: 'Unresolved', color: 'warning' };
   if (inProgress(event) && job && !jobLifecycle(job).active) return { text: 'Interrupted', color: 'inactive' };
   const duration = event.durationMs === undefined ? '' : ` (${(Math.max(0, event.durationMs) / 1000).toFixed(1)}s)`;
-  if (failed(event)) return { text: `${event.type === 'commandExecution' && event.exitCode !== undefined && event.exitCode !== 0
+  if (failed(event)) return { text: `${event.type === 'commandExecution' && event.exitCode != null && event.exitCode !== 0
     ? `Error: exit ${event.exitCode}` : 'Error'}${duration}`, color: 'error' };
   if (inProgress(event)) {
     const start = Date.parse(event.at ?? '');
     const age = Number.isFinite(start) ? ` (${Math.max(0, Math.floor((now - start) / 1000))}s)` : '';
     return { text: `Running…${age}`, color: 'subtle' };
   }
-  return { text: `Done${event.type === 'commandExecution' && event.exitCode === undefined ? '' : duration}`, color: 'subtle' };
+  if (unknownExit(event)) return { text: 'Done · exit unknown', color: 'warning' };
+  return { text: `Done${duration}`, color: 'subtle' };
 }
 
 // Display-only path handling. No filesystem reads or resolution are needed.
@@ -154,7 +163,8 @@ export function fileResult(event: CodexLiveEvent): string {
 }
 
 export function eventItem(event: CodexLiveEvent, job: CodexLiveJob, now: number): FeedItem {
-  const color = cancelled(event) || inProgress(event) && !jobLifecycle(job).active ? 'inactive' : failed(event) ? 'error' : inProgress(event) ? 'inactive' : 'success';
+  const color = cancelled(event) || inProgress(event) && !jobLifecycle(job).active ? 'inactive' : failed(event) ? 'error'
+    : inProgress(event) ? 'inactive' : unknownExit(event) ? 'warning' : 'success';
   const base: FeedItem = { key: `event-${event.seq}`, title: '', color, results: [] };
   switch (event.type) {
     case 'agentMessage': return { ...base, color: 'text', markdown: event.body ?? event.text ?? '' };
@@ -223,6 +233,8 @@ export function feedItems(job: CodexLiveJob | CodexLiveSession, now: number): Fe
     if (turn.id === ownerId && jobLifecycle(turn).active && turn.question) items.push({ key: 'pending-question', title: 'Question for Claude', color: 'warning',
       results: [{ text: turn.question.text, color: 'subtle' },
         ...turn.question.options.map((option, i): ResultLine => ({ text: `${i + 1}. ${option}`, color: 'subtle' }))] });
+    if (jobLifecycle(turn).finished && turn.status === 'needs_input' && turn.terminalQuestion) items.push({
+      key: 'terminal-question', title: 'Question', color: 'warning', results: [{ text: turn.terminalQuestion, color: 'subtle' }] });
     if (detailed && turn.detailsLoaded === false && !turn.detailsUnavailable) items.push({ key: 'loading', title: 'Loading transcript…', color: 'subtle', results: [] });
     return turn.threadId?.trim() ? items.map(item => ({ ...item, key: turnKey(item.key, turn.id) })) : items;
   })];

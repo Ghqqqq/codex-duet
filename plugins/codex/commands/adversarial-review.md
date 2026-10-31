@@ -19,8 +19,9 @@ Core constraint:
 - Keep the framing focused on whether the current approach is the right one, what assumptions it depends on, and where the design could fail under real-world conditions.
 
 Execution mode rules:
-- If the raw arguments include `--wait`, do not ask. Run in the foreground.
-- If the raw arguments include `--background`, do not ask. Run in a Claude background task.
+- If the raw arguments include `--wait` before any `--` separator, do not ask. Run in the foreground.
+- If the raw arguments include `--background` before any `--` separator, do not ask. Run in a Claude background task.
+- Everything after `--` is literal focus text, including `--wait` and `--background`; those occurrences do not select an execution mode.
 - Otherwise, estimate the review size before asking:
   - For working-tree review, start with `git status --short --untracked-files=all`.
   - For working-tree review, also inspect both `git diff --shortstat --cached` and `git diff --shortstat`.
@@ -35,6 +36,7 @@ Execution mode rules:
   - `Run in background`
 
 Argument handling:
+- `--model <model>` and `--effort <effort>` override the saved worker defaults; omitted values use those defaults.
 - Pass the raw `$ARGUMENTS` unchanged through the single-quoted heredoc below, without shell expansion. Do not split, reorder, unquote or rewrite the arguments; the companion parses them deterministically.
 - If an argument line is exactly `DUET_ARGS`, choose a delimiter absent from the arguments and change both heredoc delimiters together.
 - Do not strip `--wait` or `--background` yourself.

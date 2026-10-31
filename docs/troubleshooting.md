@@ -11,6 +11,34 @@ task --help`. `/codex:setup` reports the resolved launcher path and availability
 SessionStart supplies the session ID and dispatch guidance; do not construct a
 second runtime or submit a replacement for a job that may already exist.
 
+**Setup reports an unsupported command or app-server method.** Duet requires a
+Codex CLI that provides `app-server`; the tested version is **0.146.0**, recorded
+in [.codex-version](../.codex-version). Finish or cancel running jobs before
+changing runtimes. To install that version with npm:
+
+```bash
+npm install -g @openai/codex@0.146.0
+codex --version
+codex app-server --help
+```
+
+Check setup's selected runtime source: a stale `CODEX_COMPANION_BIN` or
+`<isolated-home>/runtime.json` pin takes precedence over PATH. Point
+`CODEX_COMPANION_BIN` at the absolute path of the installed executable, or set
+`runtime.json`'s `codexBinary` to that path, then run `duet runtime restart` when
+workers have finished and rerun `/codex:setup`. See [runtime selection](configuration.md#runtime-selection).
+
+**Reload shared runtime configuration.** Run `duet runtime status` to see the
+selected binary, its source/version and the saved workspace broker's PID,
+alive/reachable state, endpoint and matching/stale runtime identity. It starts
+no broker or app-server; busy state is unknown. After tool, browser or transport
+changes, run `duet runtime restart`: only an idle broker retires, and the next
+task starts a fresh one. A busy broker refuses and reports the running workspace
+workers; wait for them to finish rather than force-stopping it. Safe shutdown
+also requires a reachable broker with the supported idle-shutdown control.
+Both commands accept `--cwd <dir>` and `--json`. Restart Claude when changing
+the isolated home; that is separate from restarting its workspace broker.
+
 **Native agent unavailable.** `Agent(subagent_type: "codex:codex-native")` needs
 the supported function-hook module. Native dispatch is the default from the first
 assignment; the readiness notice is informational. If the model fallback runs,
@@ -19,6 +47,10 @@ can mean an older plugin build is still in memory, hooks were not loaded, or the
 native hook failed. Run `/reload-plugins`, check `duet status` before retrying
 because dispatch is unconfirmed, and use background `duet task` if it persists.
 Do not treat the fallback as zero Claude usage.
+With `setup --dispatch auto`, a missing native turn start is remembered for
+24 hours after the last observation, or until `duet setup --dispatch` is run
+without `--dry-run`, so later guidance prefers Bash; `native` always advertises
+native dispatch, and `bash` selects Bash immediately. See [worker dispatch](configuration.md#worker-dispatch).
 
 **`native_capacity` or `native_binding_gone`.** Ordinary finished bindings are
 evicted oldest-first to admit work within the 128-record and 2 MiB budgets;
@@ -170,6 +202,85 @@ Do not resubmit blindly; that starts a new turn.
 
 More: [worker operations](worker-operations.md) and
 [worker lifecycle](worker-lifecycle.md).
+
+## Sign in with an API key
+
+`/codex:setup` checks the isolated home's authentication and prints an isolated
+wrapper command when login is needed. To use an API key instead of ChatGPT
+browser login, keep that command's absolute wrapper path and `--home` value,
+and use `login --with-api-key`. With `OPENAI_API_KEY` already set in your terminal:
+
+```bash
+printenv OPENAI_API_KEY | node '/absolute/path/plugins/codex/scripts/codex-isolated.mjs' --home '/absolute/path/to/isolated-home' login --with-api-key
+duet setup --json
+```
+
+The wrapper directs authentication, SQLite and logs to the isolated home;
+plain `codex login` does not select Duet's isolated home. Setup reports an API-key
+account as `loggedIn: true`, `authMethod: "apiKey"`, `verified: false` with
+`API key configured (unverified)`: it recognizes the configuration, without
+testing the key against the service. An unreachable auth probe is not a reason
+to sign in again.
+
+## Roll back a plugin release
+
+Finish or cancel all Duet jobs before switching versions, including jobs in other
+sessions and workspaces. Inspect `duet status --all` in each workspace, ask the
+owning sessions to stop their work as needed, then use `duet runtime restart`
+to retire idle brokers. Keep a backup of the isolated home before downgrading.
+
+Use Claude Code's plugin manager to uninstall `codex@duet` and the optional
+`codex-live@duet`, and remove the current `duet` marketplace entry. In a separate
+clone of `Ghqqqq/codex-duet`, find the earlier version's release commit; releases
+are commits on `main`, not tags. For example, `git log --oneline --grep '1\.4\.11'`
+finds candidates for 1.4.11. Check the chosen commit out in a separate directory
+and confirm its version in `.claude-plugin/marketplace.json`. Register that
+checkout as a local marketplace, then install from it:
+
+```text
+/plugin marketplace add /absolute/path/to/previous-duet-checkout
+/plugin install codex@duet
+/plugin install codex-live@duet
+/reload-plugins
+/codex:setup
+```
+
+Skip `codex-live` if unused. Keep the same `CODEX_COMPANION_HOME` and Codex binary
+pin. Replacing the plugin leaves authentication, Codex threads, tool/approval
+settings and Duet job/journal artifacts in that home. For rollback from 1.4.12
+to 1.4.11, the isolated-home paths, job index version 1 and orchestration mode
+schema 2 are unchanged; the new dispatch preference/observation has no effect in
+1.4.11. This is not a reverse migration for arbitrary older releases: mode state
+has no downgrade migration, and older plugins may not understand newer settings
+or report fields. See [state compatibility](state-and-retention.md#orchestration-mode-state).
+
+## Uninstall and remove retained data
+
+Uninstalling the plugins leaves the isolated Codex home (authentication,
+threads, tool settings and logs) and Duet state on disk. The default home is
+`~/.claude/codex-isolated`, overridden by `CODEX_COMPANION_HOME`; Duet's job
+records, results and journals are under `<isolated-home>/duet/state/`.
+
+Before uninstalling, run `duet status --all` in each workspace with jobs and
+`duet cancel <jobId>` for each active job; confirm interruption before removing
+state. Log out of the isolated home through the installed wrapper, using the
+same absolute wrapper path and home printed by setup's login command:
+
+```bash
+node '/absolute/path/plugins/codex/scripts/codex-isolated.mjs' --home '/absolute/path/to/isolated-home' logout
+```
+
+Then uninstall `codex@duet` (and `codex-live@duet` if installed) through Claude
+Code's plugin manager. Once jobs and idle brokers have exited, remove the
+isolated-home directory to delete its credentials, threads and Duet data.
+Earlier releases may also have left `~/.claude/plugins/data/codex-duet/state/`,
+`~/.claude/plugins/data/codex-codex-isolated-local/state/`,
+`CLAUDE_PLUGIN_DATA/state` or `$TMPDIR/codex-companion-isolated/`; remove those
+legacy state directories if present and no longer needed. See
+[state and migration paths](state-and-retention.md#job-state-and-migration).
+Remove any optional [Duet CLAUDE.md policy](claude-md.md) you pasted, and reload
+plugins or restart Claude Code. The ordinary `~/.codex` home is separate and
+should be kept.
 
 ## Known limitations
 

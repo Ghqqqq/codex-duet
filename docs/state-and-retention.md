@@ -117,9 +117,10 @@ saved rounds. Same-mode `on` retains a known `since`; activation after off or
 replacement uses fresh defaults and a new timestamp. Resume and compaction
 preserve the active record and options.
 
-SessionEnd, `/clear` and fresh SessionStart clear the record; SessionStart for
-`resume`/`compact` preserves it. Stale mode records older than 30 days are pruned
-at SessionStart in both global and legacy locations. This fixed lifecycle is
+SessionEnd keeps the record for resume or compaction of the same session.
+Fresh SessionStart and `/clear` reset it and apply the saved default mode;
+SessionStart for `resume`/`compact` preserves it. Stale mode records older than
+30 days are pruned at SessionStart in both global and legacy locations. This fixed lifecycle is
 separate from configurable job retention. Mode changes do not cancel workers;
 conflicting writes must settle before new work. The cap and round limits are
 advisory protocol rules, not runtime scheduling or counters. Sixteen native

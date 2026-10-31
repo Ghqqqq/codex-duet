@@ -332,12 +332,39 @@ function listAt(stateDir, env) {
   }).sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.runId.localeCompare(a.runId));
 }
 export function listRuns(cwd, env = process.env) { return listAt(resolveStateDir(cwd, env), env); }
+export function summarizeUsage(jobs) {
+  const keys = ["inputTokens", "cachedInputTokens", "outputTokens", "totalTokens"];
+  const totals = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0, jobsWithUsage: 0, jobsWithoutUsage: 0 };
+  for (const job of jobs) {
+    const usage = job?.usage ?? job?.report?.usage ?? job?.result?.usage;
+    if (!usage || !keys.every(key => Number.isSafeInteger(usage[key]) && usage[key] >= 0)) { totals.jobsWithoutUsage++; continue; }
+    for (const key of keys) totals[key] += usage[key];
+    totals.jobsWithUsage++;
+  }
+  return totals;
+}
+export function renderUsageTotals(totals) {
+  const tokens = totals.jobsWithUsage ? `input ${totals.inputTokens}, cached ${totals.cachedInputTokens}, output ${totals.outputTokens}, total ${totals.totalTokens}` : "unknown";
+  return `Usage totals: ${tokens} (${totals.jobsWithUsage} job(s) with usage; ${totals.jobsWithoutUsage} job(s) without usage).`;
+}
 export function showRun(cwd, sessionId, runId, env = process.env) {
   const selected = target(resolveStateDir(cwd, env), sessionId, runId, env, true), stateDir = selected.stateDir;
   runId = selected.runId;
-  return viewAt(stateDir, runId, entries(stateDir, runId, env), env);
+  const reports = new Map();
+  const view = viewAt(stateDir, runId, entries(stateDir, runId, env), env, reports);
+  const usage = view.jobs.map(job => {
+    try {
+      if (reports.has(job.report)) return JSON.parse(reports.get(job.report));
+      const jobStateDir = job.workspaceRoot ? resolveStateDirForRoot(job.workspaceRoot, env) : stateDir;
+      directory(path.join(jobStateDir, "jobs"), env);
+      const live = JSON.parse(read(path.join(jobStateDir, "jobs", `${id(job.jobId, "jobId")}.json`)));
+      if (live.runId === runId && (live.runStateDir ?? jobStateDir) === stateDir) return live;
+    } catch { /* usage is unknown when the record or saved report is unavailable */ }
+    return {};
+  });
+  return { ...view, usageTotals: summarizeUsage(usage) };
 }
-function viewAt(stateDir, runId, rows, env) {
+function viewAt(stateDir, runId, rows, env, reports) {
   const jobs = new Map(), criteria = [...rows[0].criteria], decisions = [];
   const withdrawn = new Map();
   const started = new Set(), finished = new Set(), liveStatus = new Map();
@@ -422,7 +449,7 @@ function viewAt(stateDir, runId, rows, env) {
       nextAction: "Review the findings and verify a correction before recording acceptance; obtain user consent before continuing a stopped job."
     });
     if (finished.has(jobId)) {
-      const problem = reportProblem(runDir(stateDir, runId), job.report, env);
+      const problem = reportProblem(runDir(stateDir, runId), job.report, env, reports);
       if (problem) issues.push({ kind: "missing_artifact", jobId, detail: problem,
         nextAction: "Inspect the retained job result and recover its report copy if available; otherwise explain the missing evidence and close blocked or abandoned." });
     }
@@ -444,13 +471,15 @@ function viewAt(stateDir, runId, rows, env) {
         : criterionResults.get(criterion) ?? { criterion, result: "unchecked", evidence: null }), issues,
     state: closed ? "closed" : "open", closed };
 }
-function reportProblem(dir, report, env) {
+function reportProblem(dir, report, env, reports) {
   if (typeof report !== "string" || !report.trim()) return "Finished job has no report path.";
   const file = path.resolve(dir, report), relative = path.relative(dir, file);
   if (path.isAbsolute(report) || !relative || relative === ".." || relative.startsWith(`..${path.sep}`)) return "Finished job report path is outside the run directory.";
   try {
     directory(path.dirname(file), env);
-    if (!read(file).trim()) return `Report artifact is empty: ${report}`;
+    const text = read(file);
+    if (!text.trim()) return `Report artifact is empty: ${report}`;
+    reports?.set(report, text);
   } catch { return `Report artifact is missing, unreadable or not a regular file: ${report}`; }
   return null;
 }
@@ -467,6 +496,7 @@ export function renderRun(view) {
   const lines = [`Run ${view.runId} (${view.state}${view.closed ? `: ${view.closed.judgment}` : ""}): ${short(view.goal, 240)}`, `Files: ${view.directory}`, "Criteria:",
     ...view.criterionResults.map((item, index) => `  ${index + 1}. ${short(item.criterion)} — ${item.result}${item.reason ? `; reason: ${short(item.reason)}` : ""}${item.evidence ? `; evidence: ${short(item.evidence)}` : ""}`), "Jobs:",
     ...view.jobs.map(job => `  ${job.agentName ?? "worker"} ${job.jobId} thread=${job.threadId ?? "?"} ${job.status} verdict=${job.latestVerdict?.verdict ?? "none"}; brief=${job.brief ?? "?"} report=${job.report ?? "pending"}`),
+    ...(view.usageTotals ? [renderUsageTotals(view.usageTotals)] : []),
     "Decisions:", ...view.decisions.map(item => `  ${short(item.summary)}; basis: ${short(item.basis)}${item.risk ? `; risk: ${short(item.risk)}` : ""}`),
     "Open:", ...(view.issues.length ? view.issues.map(renderIssue) : ["  none"]),
     ...(view.closed ? [`Close: ${short(view.closed.summary)}; open risks: ${(view.closed.openRisks ?? []).map(item => short(item)).join("; ") || "none"}`] : [])];
@@ -480,7 +510,7 @@ export function activeRunContext(cwd, sessionId, env = process.env) {
 // Automatic linkage is best effort (storage failures and an ambiguous choice
 // among several open runs leave the job unlinked); explicit linkage must
 // succeed before dispatch.
-// Callers persist runId on the ordinary record for terminal observers.
+// Callers persist runId for terminal observers, or journalWarning for diagnostics.
 export function linkJournalJob(job, brief, env = process.env) {
   const requested = job.request?.run;
   if (requested === "none") return null;
@@ -508,7 +538,10 @@ export function linkJournalJob(job, brief, env = process.env) {
     }
     const stateDir = resolveStateDir(cwd, env);
     // Avoid creating journal state for tasks with no pointer or workspace runs.
-    if (!activePointer(job.sessionId, env)) directory(runsDir(stateDir), env);
+    if (!activePointer(job.sessionId, env)) {
+      try { directory(runsDir(stateDir), env); }
+      catch (error) { if (error.code === "ENOENT") return null; throw error; }
+    }
     // Match start/use/close lock ordering, and read streams only under their
     // workspace lock. Selection cannot race another start or session switch.
     return locked(sessionsDir(env), env, () => {
@@ -526,12 +559,18 @@ export function linkJournalJob(job, brief, env = process.env) {
       }
       return locked(stateDir, env, () => {
         const run = singleOpenRun(stateDir, env);
-        return run ? link(run, entries(stateDir, run.runId, env)) : null;
+        if (!run) return null;
+        const rows = entries(stateDir, run.runId, env);
+        return rows[0].sessionId == null || rows[0].sessionId === job.sessionId ? link(run, rows) : null;
       });
     }, true);
-  } catch (error) { if (explicit) throw error; return null; }
+  } catch (error) {
+    if (explicit) throw error;
+    const code = /^[A-Z][A-Z0-9_]{0,63}$/.test(error?.code ?? "") ? ` (${error.code})` : "";
+    return { journalWarning: `Automatic journal linkage failed${code}; task continues without a run.` };
+  }
 }
-export function finishJournalJob(job, report, env = process.env) {
+export function finishJournalJob(job, report, env = process.env, { rollback = false } = {}) {
   if (!job.runId || job.jobClass !== "task" || ["queued", "running"].includes(job.status)) return false;
   try {
     const stateDir = runStateDirectory(job.runStateDir ?? resolveStateDirForRoot(job.workspaceRoot, env), env);
@@ -540,6 +579,22 @@ export function finishJournalJob(job, report, env = process.env) {
       // Check AND append under the existing interprocess state lock. Every
       // observer shares this gate; report publication precedes the event.
       if (!rows.some(row => row.type === "job_started" && row.jobId === jobId)) return false;
+      // Recovery may have replaced the observer's terminal snapshot before it
+      // acquired this lock. Compare status and turn identity; wrapper and stored
+      // result/report details can legitimately differ during finalization.
+      // Dispatch rollback deliberately finishes a still-queued reservation
+      // before removing it; only that caller bypasses the freshness check.
+      if (!rollback) {
+        const jobStateDir = resolveStateDirForRoot(job.workspaceRoot, env);
+        try {
+          directory(path.join(jobStateDir, "jobs"), env);
+          const current = JSON.parse(read(path.join(jobStateDir, "jobs", `${jobId}.json`)));
+          if (["queued", "running"].includes(current.status) || current.status !== job.status || (current.turnId ?? null) !== (job.turnId ?? null)) return false;
+        } catch (error) {
+          // A retained journal may outlive its ordinary job record.
+          if (error.code !== "ENOENT") throw error;
+        }
+      }
       const finishes = rows.filter(row => row.type === "job_finished" && row.jobId === jobId);
       if (finishes.some(row => row.status === job.status)) return true;
       const relative = `jobs/${jobId}${finishes.length ? `.${id(job.status, "status")}` : ""}.report.json`;

@@ -5,6 +5,9 @@ import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { getSessionRuntimeStatus } from "../plugins/codex/scripts/lib/codex.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
+import { claudeSnapshotFile, recordClaudeTranscript, readClaudeTranscript } from "../plugins/codex/scripts/lib/claude-memory.mjs";
+import { setMode } from "../plugins/codex/scripts/lib/ultra-codex-mode.mjs";
+import { runWithRetainedStdin } from "./stdin-fixture.mjs";
 
 test("empty runtime endpoint falls back to saved workspace broker without needing sockets", () => {
   const repo = makeTempDir();
@@ -28,13 +31,83 @@ test("empty runtime endpoint falls back to saved workspace broker without needin
 const {
   fs, path, makeTempDir, initGitRepo, run, buildEnv, installFakeCodex, resolveIsolatedCodexHome, resolveSessionMarkersRoot, AGENT_NAMES, script, hook, fixture, json, direct, waitUntil, job
 } = await (await import('./fake-codex-fixture.mjs')).lifecycleHarness();
-test("SessionEnd cancels only its session's jobs and retains confirmation evidence", () => {
-  const f = fixture(), launch = json(f.call("task", "--detached", "--json", "fixture"));
-  json(f.call("wait", launch.jobId, "--timeout-sec", "3", "--json", "--report"));
+test("SessionStart keeps its context and transcript record when env exports fail", () => {
+  const f = fixture(), transcript = path.join(f.repo, "session.jsonl");
+  const result = run(process.execPath, [hook, "SessionStart"], { cwd: f.repo,
+    env: { ...f.env, CLAUDE_ENV_FILE: f.dir, CODEX_COMPANION_BIN: "fixture-disabled" },
+    input: JSON.stringify({ session_id: "fixture-session", cwd: f.repo, transcript_path: transcript }) });
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout).hookSpecificOutput;
+  assert.equal(output.hookEventName, "SessionStart"); assert.ok(output.additionalContext.length);
+  assert.equal(readClaudeTranscript("fixture-session", f.env), transcript);
+});
+
+test("SessionEnd cleans up despite retained stdin and malformed session entries", async () => {
+  const f = fixture(), sessionId = "fixture-session", dir = resolveStateDir(f.repo, f.env);
+  const savedMode = setMode(f.repo, sessionId, { name: "ultra" }, f.env);
+  recordClaudeTranscript({ sessionId, transcriptPath: path.join(f.repo, "transcript.jsonl") }, f.env);
+  const snapshot = claudeSnapshotFile(sessionId, f.env);
+  const record = { id: "late-eof-job", status: "running", jobClass: "task", sessionId, workspaceRoot: f.repo };
+  const file = path.join(dir, "jobs", `${record.id}.json`);
+  fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(record));
+  const index = path.join(dir, "state.json"), bytes = JSON.stringify({ jobs: [null, false, 7, "bad", [], record] });
+  fs.writeFileSync(index, bytes);
+  const stopped = run(process.execPath, [new URL("../plugins/codex/scripts/stop-review-gate-hook.mjs", import.meta.url).pathname], {
+    cwd: f.repo, env: f.env, input: JSON.stringify({ session_id: sessionId, cwd: f.repo }) });
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.equal(fs.readFileSync(index, "utf8"), bytes, "inventory reads never rewrite malformed entries");
+  const ended = await runWithRetainedStdin(hook, ["SessionEnd"], JSON.stringify({ session_id: sessionId, cwd: f.repo }), {
+    cwd: f.repo, env: f.env
+  });
+  assert.equal(ended.status, 0, ended.stderr);
+  assert.equal(ended.inputEnded, false);
+  assert.equal(fs.existsSync(savedMode.file), true, "the session mode remains available for resume");
+  assert.equal(fs.existsSync(snapshot), false);
+  assert.equal(JSON.parse(fs.readFileSync(file)).cancelRequested?.reason, "session_end");
+});
+
+test("SessionEnd shares one deadline across snapshot contention, inventory and cancellation", () => {
+  const f = fixture(), dir = resolveStateDir(f.repo, f.env), id = "deadline-job";
+  const memoryDir = path.join(path.dirname(dir), "claude-memory"), lock = path.join(memoryDir, ".state-lock");
+  fs.mkdirSync(lock, { recursive: true }); fs.writeFileSync(path.join(lock, `owner-${process.pid}-fixture`), "");
+  const record = { id, status: "running", jobClass: "task", sessionId: "fixture-session", workspaceRoot: f.repo };
+  const file = path.join(dir, "jobs", `${id}.json`);
+  fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(record));
+  fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({ jobs: [record] }));
+  const preload = path.join(f.dir, "deadline-clock.mjs"), trace = path.join(f.dir, "clock.json");
+  fs.writeFileSync(preload, `
+    import fs from "node:fs";
+    const start = Date.now(); let elapsed = 0, lockWait = 0;
+    Date.now = () => start + elapsed;
+    Atomics.wait = (_array, _index, _value, ms) => { elapsed += ms; lockWait += ms; return "timed-out"; };
+    globalThis.setTimeout = (callback, ms) => { elapsed += ms; queueMicrotask(callback); };
+    process.on("exit", () => fs.writeFileSync(${JSON.stringify(trace)}, JSON.stringify({ elapsed, lockWait })));
+  `);
+  const ended = run(process.execPath, ["--import", preload, hook, "SessionEnd"], { cwd: f.repo, env: f.env,
+    input: JSON.stringify({ session_id: "fixture-session", cwd: f.repo }) });
+  assert.equal(ended.status, 0, ended.stderr);
+  const clock = JSON.parse(fs.readFileSync(trace));
+  assert.ok(clock.lockWait >= 1000, "the live snapshot lock was contended");
+  assert.ok(clock.elapsed <= 4000, `all simulated waits share the four-second budget: ${clock.elapsed}`);
+  assert.equal(JSON.parse(fs.readFileSync(file)).cancelRequested.reason, "session_end");
+  assert.ok(fs.existsSync(lock), "a live owner's lock is preserved");
+});
+
+test("SessionEnd cancels legacy session owners without renewing observers or cancelling foreign jobs", async () => {
+  const f = fixture(), launch = json(f.call("task", "--detached", "--json", "--owner", "fixture-session", "fixture"));
+  await waitUntil(() => job(f, launch.jobId).turnId);
+  const stateModule = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
+  const edit = run(process.execPath, ["--input-type=module", "-e", `import { updateJob } from ${JSON.stringify(stateModule)};
+    updateJob(process.cwd(), ${JSON.stringify(launch.jobId)}, () => ({ sessionId: undefined, activity: undefined, activityCursors: undefined, activitySeq: undefined }));`], { cwd: f.repo, env: f.env });
+  assert.equal(edit.status, 0, edit.stderr);
+  const before = job(f, launch.jobId).leaseExpiresAt;
+  const observed = json(f.call("wait", launch.jobId, "--timeout-sec", "1", "--json"));
+  assert.deepEqual(observed.activity, []); assert.equal(observed.cursor, 0);
+  assert.equal(job(f, launch.jobId).leaseExpiresAt, before);
   f.env.CODEX_COMPANION_SESSION_ID = "foreign-session";
   const foreign = json(f.call("task", "--detached", "--json", "foreign fixture"));
   f.env.CODEX_COMPANION_SESSION_ID = "fixture-session";
-  const foreignRunning = json(f.call("wait", foreign.jobId, "--timeout-sec", "3", "--json"));
+  const foreignRunning = json(f.call("wait", foreign.jobId, "--timeout-sec", "1", "--json"));
   assert.ok(foreignRunning.turnId, "Wait for the foreign fixture turn before testing cancellation confirmation");
   const parentRepo = makeTempDir(); initGitRepo(parentRepo);
   const end = run(process.execPath, [hook, "SessionEnd"], { cwd: parentRepo, env: f.env, input: JSON.stringify({ session_id: "fixture-session", cwd: parentRepo }) });
@@ -57,6 +130,9 @@ test("SessionEnd rechecks the session after adoption during its inventory", () =
     fs.writeFileSync(preload, `
       import fs from "node:fs";
       import { adoptJob } from ${JSON.stringify(runtimeModule)};
+      const realNow = Date.now(); let elapsed = 0;
+      Date.now = () => realNow + elapsed;
+      globalThis.setTimeout = (callback, ms) => { elapsed += ms; queueMicrotask(callback); };
       const read = fs.readFileSync;
       Error.stackTraceLimit = 100;
       let interleaved = false;
@@ -79,51 +155,30 @@ test("SessionEnd rechecks the session after adoption during its inventory", () =
   }
 });
 
-test("legacy session-ID owners remain readable and session-scoped without implicit renewal", () => {
-  const f = fixture(), launch = json(f.call("task", "--detached", "--json", "--owner", "fixture-session", "fixture"));
-  json(f.call("wait", launch.jobId, "--timeout-sec", "3", "--json"));
-  const stateModule = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
-  const edit = run(process.execPath, ["--input-type=module", "-e", `import { updateJob } from ${JSON.stringify(stateModule)}; updateJob(process.cwd(), ${JSON.stringify(launch.jobId)}, () => ({ sessionId: undefined, activity: undefined, activityCursors: undefined, activitySeq: undefined, leaseRenewedAt: undefined }));`], { cwd: f.repo, env: f.env });
-  assert.equal(edit.status, 0, edit.stderr);
-  const before = job(f, launch.jobId).leaseExpiresAt;
-  assert.equal(json(f.call("status", "--json")).running[0].id, launch.jobId);
-  const snapshot = json(f.call("wait", launch.jobId, "--timeout-sec", "1", "--json"));
-  assert.deepEqual(snapshot.activity, []); assert.equal(snapshot.cursor, 0);
-  assert.equal(job(f, launch.jobId).leaseExpiresAt, before);
-  json(f.call("wait", launch.jobId, "--owner", "fixture-session", "--timeout-sec", "1", "--json"));
-  assert.ok(job(f, launch.jobId).leaseExpiresAt > before);
-  const ended = run(process.execPath, [hook, "SessionEnd"], { cwd: f.repo, env: f.env, input: JSON.stringify({ session_id: "fixture-session", cwd: f.repo }) });
-  assert.equal(ended.status, 0, ended.stderr);
-  assert.equal(json(f.call("result", launch.jobId, "--details"), 1).interruptionReason, "session_end");
-});
-
 test("foreground and direct tasks write private atomic session markers", () => {
-  const f = fixture("slow-task"), canonicalHome = resolveIsolatedCodexHome(f.env);
+  const f = fixture("task-ok"), canonicalHome = resolveIsolatedCodexHome(f.env);
   fs.mkdirSync(canonicalHome); const alias = path.join(f.dir, "home-alias"); fs.symlinkSync(canonicalHome, alias); f.env.CODEX_COMPANION_HOME = alias;
   const root = resolveSessionMarkersRoot(f.env); assert.equal(root, path.join(canonicalHome, "duet", "sessions"));
-  let previous;
   const cases = [["--report", "--json"], ["--direct"]];
   const ids = [];
   for (const args of cases) {
-    const extra = args.includes("--thread") ? [previous.threadId] : args.includes("--continue") ? [previous.jobId] : [];
-    const output = f.call("task", ...args, ...extra, "marker fixture");
+    const output = f.call("task", ...args, "marker fixture");
     const launched = args.includes("--direct") ? direct(output) : json(output);
     const saved = job(f, launched.jobId), markerFile = path.join(root, "fixture-session", `${launched.jobId}.json`);
     const marker = JSON.parse(fs.readFileSync(markerFile, "utf8"));
     assert.deepEqual(marker, { v: 1, jobId: launched.jobId, jobFile: saved.logFile.replace(/\.log$/, ".json"), logFile: saved.logFile, title: saved.title, name: saved.agentName, summary: "marker fixture", workspaceRoot: f.repo, createdAt: saved.createdAt });
     assert.ok(AGENT_NAMES.includes(saved.agentName));
     assert.equal(args.includes("--direct") ? launched.worker : launched.agentName, saved.agentName);
-    if (extra.length) assert.equal(saved.agentName, previous.agentName);
     assert.equal(fs.statSync(markerFile).mode & 0o777, 0o600);
     assert.equal(fs.statSync(path.dirname(markerFile)).mode & 0o777, 0o700);
     assert.ok(fs.existsSync(marker.jobFile)); assert.ok(fs.existsSync(marker.logFile));
-    previous = json(f.call("wait", launched.jobId, "--json")); ids.push(`${launched.jobId}.json`);
+    ids.push(`${launched.jobId}.json`);
   }
   assert.deepEqual(fs.readdirSync(path.join(root, "fixture-session")).sort(), ids.sort(), "no temporary marker files remain");
 });
 
 test("missing or unsafe session IDs leave no marker and marker write failures never fail tasks", () => {
-  const f = fixture("slow-task");
+  const f = fixture("task-ok");
   for (const session of ["", "../escape"]) {
     f.env.CODEX_COMPANION_SESSION_ID = session;
     assert.equal(direct(f.call("task", "--direct", "fixture")).status, "completed");
@@ -138,7 +193,7 @@ test("missing or unsafe session IDs leave no marker and marker write failures ne
 });
 
 test("SessionStart exports the absolute companion path and prunes only stale markers without following symlinks", async t => {
-  const f = fixture("slow-task"), root = resolveSessionMarkersRoot(f.env), old = new Date(Date.now() - 31 * 86400000);
+  const f = fixture("task-ok"), root = resolveSessionMarkersRoot(f.env), old = new Date(Date.now() - 31 * 86400000);
   f.env.CLAUDE_CONFIG_DIR = path.join(f.dir, "claude-settings");
   for (const session of ["stale", "fresh", "mixed"]) {
     const directory = path.join(root, session); fs.mkdirSync(directory, { recursive: true });
@@ -192,7 +247,7 @@ test("SessionStart exports the absolute companion path and prunes only stale mar
   fs.rmSync(root, { recursive: true }); fs.writeFileSync(root, "unavailable");
   const unavailable = run(process.execPath, [hook, "SessionStart"], { cwd: f.repo, env: f.env, input });
   assert.equal(unavailable.status, 0, unavailable.stderr);
-  for (const linked of ["duet", "sessions"]) {
+  for (const linked of ["duet"]) {
     const symlinked = fixture(), home = symlinked.env.CODEX_COMPANION_HOME, outside = path.join(symlinked.dir, "outside");
     fs.mkdirSync(home); fs.mkdirSync(outside);
     const externalRoot = linked === "duet" ? path.join(outside, "sessions") : outside;

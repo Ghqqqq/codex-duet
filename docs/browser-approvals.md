@@ -29,6 +29,16 @@ checks; existing persistent origin grants/denials still apply. Neither option
 changes download, upload or history approval settings, origin lists, or session
 files. Merges preserve other TOML text, use a private timestamped backup and an
 atomic write, and are idempotent. Dry-run makes no files or runtime calls.
+
+`ask` does not forward a browser-origin prompt to Claude like a Computer Use
+app request. If the browser runtime needs an MCP origin elicitation that Duet
+does not support, Duet returns a nonpersistent `cancel` and reports
+`approval_unsupported` / `blocked`. Existing origin grants can still allow access;
+with the user's explicit consent, the parent can persist one using
+`setup --allow-browser-origin <origin>`. The task's `--approve-browser-origin`
+flag covers only the separate network-command approval described below, not
+browser MCP prompts.
+
 `setup --json` and `setup --list-browser-origins --json` expose
 `browserOrigins.approval` as `never-ask`, `ask` (key absent), or `custom` (another
 existing value), and `browserOrigins.preference` as the saved choice (`never-ask`
@@ -37,8 +47,9 @@ unless the user chose `ask`). Workers never run setup.
 The parent verified the installed browser service's `approval_mode`/`never_ask`
 constants on 2026-10-16; this release uses that supplied evidence. Fixture tests
 verify serialization, backups and removal. They do not establish live browser
-behavior, bypass managed policies, or grant OS permissions. Reconnect/restart
-the runtime after changing browser preferences when other live work has ended.
+behavior, bypass managed policies, or grant OS permissions. Run
+`duet runtime restart` after changing browser preferences when other live work
+has ended; the next task loads the preferences in a fresh broker.
 
 ## Per-origin persistence
 
@@ -82,8 +93,9 @@ Changed filenames/backups are reported, including repaired thread
 files. Symlinks, hard links and unsupported inline/selected TOML fail clearly.
 Multi-file repair is not a cross-file transaction; if an external writer races,
 inspect the reported/error context and retry. Setup does not open a browser,
-copy credentials, or change managed browser/network policy. Restart/reconnect
-when needed to refresh a runtime's cached preferences, after other live work ends.
+copy credentials, or change managed browser/network policy. Run
+`duet runtime restart` when needed to refresh cached preferences, after other
+live work ends.
 
 ## Source evidence
 

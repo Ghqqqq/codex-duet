@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { makeTempDir, run } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { installCuaFixture } from "./cua-config-fixture.mjs";
-import { getToolAvailability, readToolConfig, syncToolConfig, NODE_REPL_ENV_KEYS } from "../plugins/codex/scripts/lib/tool-config.mjs";
-import { projectDocsSetup, readTomlField } from "../plugins/codex/scripts/lib/setup-config.mjs";
+import { acquireConfigLock, getToolAvailability, readToolConfig, syncToolConfig, NODE_REPL_ENV_KEYS } from "../plugins/codex/scripts/lib/tool-config.mjs";
+import { projectDocsSetup, readTomlField, workerDefaultsSetup } from "../plugins/codex/scripts/lib/setup-config.mjs";
 
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
 function fixture() {
@@ -44,7 +44,7 @@ startup_timeout_sec = 120
 bearer_token = "DO-NOT-COPY"
 [mcp_servers.node_repl.env]
 CODEX_HOME = "${env.CODEX_HOME}"
-NODE_REPL_TRUSTED_CODE_PATHS = "${env.CODEX_HOME}:${env.CODEX_HOME}/plugins/cache/openai-bundled:/app/modules"
+NODE_REPL_TRUSTED_CODE_PATHS = "${[env.CODEX_HOME, `${env.CODEX_HOME}/plugins/cache/openai-bundled`, "/app/modules"].join(path.delimiter)}"
 NODE_REPL_TRUSTED_SERVICES = '{"browser":"${env.CODEX_HOME}/plugins/cache/browser/service.mjs","sky":"@oai/sky/service"}'
 ${NODE_REPL_ENV_KEYS.filter(k => !["CODEX_HOME", "NODE_REPL_TRUSTED_CODE_PATHS", "NODE_REPL_TRUSTED_SERVICES"].includes(k)).map(k => `${k} = "/fixture/${k}"`).join("\n")}
 OPENAI_API_KEY = "DO-NOT-COPY"
@@ -62,7 +62,7 @@ test("tool sync uses exact env/plugin allowlists, preserves code sources and bac
   const before = 'model = "private-model"\n# preserve this comment\n[projects."/repo"]\ntrust_level = "trusted"\n';
   fs.writeFileSync(f.destination, before);
   const preview = syncToolConfig({ env: f.env, dryRun: true });
-  assert.equal(preview.added.length, 8);
+  assert.equal(preview.added.length, 6);
   assert.equal(fs.readFileSync(f.destination, "utf8"), before);
   assert.equal(fs.readdirSync(f.env.CODEX_COMPANION_HOME).length, 1);
   const result = syncToolConfig({ env: f.env });
@@ -72,21 +72,39 @@ test("tool sync uses exact env/plugin allowlists, preserves code sources and bac
   assert.doesNotMatch(after, /DO-NOT-COPY|unlisted|keep-source-model/);
   const config = readToolConfig(after);
   const replEnv = config.mcp_servers.node_repl.env;
-  assert.deepEqual(Object.keys(replEnv).sort(), [...NODE_REPL_ENV_KEYS].sort());
+  assert.deepEqual(Object.keys(replEnv).sort(), NODE_REPL_ENV_KEYS.filter(k => !["SKY_CUA_SERVICE_PATH", "NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE"].includes(k)).sort());
   assert.equal(replEnv.CODEX_HOME, f.env.CODEX_COMPANION_HOME);
-  assert.equal(replEnv.NODE_REPL_TRUSTED_CODE_PATHS, `${f.env.CODEX_COMPANION_HOME}:${f.env.CODEX_HOME}/plugins/cache/openai-bundled:/app/modules`);
-  assert.equal(JSON.parse(replEnv.NODE_REPL_TRUSTED_SERVICES).browser, `${f.env.CODEX_HOME}/plugins/cache/browser/service.mjs`);
+  assert.equal(replEnv.NODE_REPL_TRUSTED_CODE_PATHS, [f.env.CODEX_COMPANION_HOME, `${f.env.CODEX_HOME}/plugins/cache/openai-bundled`, "/app/modules"].join(path.delimiter));
+  assert.deepEqual(JSON.parse(replEnv.NODE_REPL_TRUSTED_SERVICES), { browser: `${f.env.CODEX_HOME}/plugins/cache/browser/service.mjs` });
+  assert.equal(replEnv.BROWSER_USE_AVAILABLE_BACKENDS, "chrome");
   assert.equal(replEnv.CODEX_CLI_PATH, "/fixture/CODEX_CLI_PATH");
   assert.equal(config.marketplaces["openai-bundled"].source_type, "local");
   assert.equal(config.plugins["chrome@openai-bundled"].enabled, false);
+  assert.deepEqual(Object.keys(config.plugins).sort(), ["browser@openai-bundled", "chrome@openai-bundled"]);
+  assert.deepEqual(result.surfaces, ["browser"]);
+  assert.deepEqual(result.backends, ["chrome"]);
+  assert.ok(result.skipped.includes("plugins.computer-use@openai-bundled: excluded by chrome profile"));
   assert.ok(result.skipped.some(s => s.includes("OPENAI_API_KEY")));
   assert.doesNotMatch(JSON.stringify(result), /DO-NOT-COPY/);
   const again = syncToolConfig({ env: f.env });
   assert.equal(again.changed, false);
-  assert.equal(again.present.length, 7);
+  assert.equal(again.present.length, 5);
   assert.equal(again.backup, null);
   assert.equal(fs.readFileSync(f.destination, "utf8"), after);
   assert.equal(getToolAvailability(f.env).browser, "available");
+  assert.equal(getToolAvailability(f.env).computerUse, "missing");
+
+  // The app profile still imports every legacy plugin and allowlisted env key.
+  const template = installCuaFixture(f.base).template;
+  fs.writeFileSync(template, JSON.stringify({ mcpServers: { cua_repl: config.mcp_servers.cua_repl } }));
+  const appEnv = { ...f.env, CODEX_COMPANION_HOME: path.join(f.base, "app-isolated") };
+  const app = readToolConfig(syncToolConfig({ env: appEnv, profile: "codex-app", cuaTemplate: template, dryRun: true }).append);
+  assert.equal(app.plugins["computer-use@openai-bundled"].enabled, true);
+  assert.equal(app.plugins["unified-computer-use@openai-bundled"].enabled, true);
+  const expectedEnv = { ...readToolConfig(f.config).mcp_servers.node_repl.env, CODEX_HOME: appEnv.CODEX_COMPANION_HOME,
+    NODE_REPL_TRUSTED_CODE_PATHS: [appEnv.CODEX_COMPANION_HOME, `${f.env.CODEX_HOME}/plugins/cache/openai-bundled`, "/app/modules"].join(path.delimiter) };
+  delete expectedEnv.OPENAI_API_KEY; delete expectedEnv.UNKNOWN_PATH;
+  assert.deepEqual({ ...app.mcp_servers.node_repl.env }, expectedEnv);
 
   // Pause each real writer at its final content read. The other writer must
   // fail without committing, then a retry must preserve both settings.
@@ -140,6 +158,42 @@ test("tool sync uses exact env/plugin allowlists, preserves code sources and bac
   assert.equal(syncToolConfig(options).changed, false);
 });
 
+test("setup tolerates a config lock disappearing during path safety checks and retains link refusals", (t) => {
+  const f = fixture(), file = path.join(f.env.CODEX_COMPANION_HOME, "duet", "config.toml");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, '# Keep existing preferences.\ndefaultEffort = "high"\n');
+  const release = acquireConfigLock(file), lstat = fs.lstatSync;
+  let removed = false;
+  t.mock.method(fs, "lstatSync", function (name, ...args) {
+    if (name === `${file}.duet-lock` && !removed) {
+      removed = true;
+      release();
+    }
+    return lstat.call(this, name, ...args);
+  });
+  try {
+    const result = workerDefaultsSetup({ env: f.env, defaultModel: "gpt-6.1-sol" });
+    assert.deepEqual(result.changedFiles, [file]);
+  } finally {
+    t.mock.restoreAll();
+    release();
+  }
+  assert.equal(removed, true, "release the competing writer's lock at the safety inspection");
+  const saved = fs.readFileSync(file, "utf8");
+  assert.equal(readTomlField(saved, ["defaultModel"]), "gpt-6.1-sol");
+  assert.equal(readTomlField(saved, ["defaultEffort"]), "high");
+  assert.equal(fs.existsSync(`${file}.duet-lock`), false);
+
+  for (const link of ["symlink", "hard-link"]) {
+    fs.unlinkSync(file);
+    if (link === "symlink") fs.symlinkSync(f.source, file);
+    else fs.linkSync(f.source, file);
+    assert.throws(() => workerDefaultsSetup({ env: f.env, defaultModel: "another-model" }),
+      link === "symlink" ? /refuses symlinked paths/ : /refuses hard-linked files/);
+    assert.equal(fs.readFileSync(f.source, "utf8"), f.config);
+  }
+});
+
 test("reference-style preexisting tables including separate env table are a byte-exact no-op", () => {
   const f = fixture();
   fs.mkdirSync(f.env.CODEX_COMPANION_HOME);
@@ -168,10 +222,25 @@ test("unsupported selected TOML fails safely; availability reports unknown or mi
   const f = fixture();
   assert.equal(getToolAvailability(f.env).browser, "missing");
   fs.mkdirSync(f.env.CODEX_COMPANION_HOME);
-  fs.writeFileSync(f.destination, '[mcp_servers.node_repl]\ncommand = """unsupported"""\n');
+  fs.writeFileSync(f.destination, '[mcp_servers.node_repl]\ncommand = """DO-NOT-COPY\\q"""\n');
   assert.equal(getToolAvailability(f.env).browser, "unknown");
   assert.throws(() => syncToolConfig({ env: f.env }), /Unsupported/);
   assert.equal(fs.readdirSync(f.env.CODEX_COMPANION_HOME).length, 1);
+});
+
+test("trusted code lists use the platform delimiter without splitting Windows drive letters", () => {
+  const f = fixture(), delimiter = path.delimiter;
+  const codePaths = [f.env.CODEX_HOME, "C:\\plugins\\cache", "D:\\app\\modules"];
+  fs.writeFileSync(f.source, f.config.replace(/^NODE_REPL_TRUSTED_CODE_PATHS = .*$/m,
+    `NODE_REPL_TRUSTED_CODE_PATHS = ${JSON.stringify(codePaths.join(";"))}`));
+  try {
+    path.delimiter = ";";
+    const config = readToolConfig(syncToolConfig({ env: f.env, dryRun: true }).append);
+    assert.equal(config.mcp_servers.node_repl.env.NODE_REPL_TRUSTED_CODE_PATHS,
+      [f.env.CODEX_COMPANION_HOME, ...codePaths.slice(1)].join(";"));
+    assert.equal(config.mcp_servers.cua_repl.env.NODE_REPL_TRUSTED_CODE_PATHS,
+      [f.env.CODEX_COMPANION_HOME, path.join(f.base, "Relocated ChatGPT.app/Contents/Resources/cua_node/lib/node_modules")].join(";"));
+  } finally { path.delimiter = delimiter; }
 });
 
 test("setup dry-run is offline; setup JSON reports configured availability", () => {

@@ -119,7 +119,8 @@ omissions are counted. Cleared attention has no special protection. Polling hydr
 single candidate view and reuses it for state publication; a concurrent pane
 interaction triggers one extra composition from the latest view state in the same
 update, preserving the interaction without delaying new jobs or status updates.
-Full parsed job data stays in the private poll cache for selection. A rejected
+Selected parsed details stay in the private poll cache; when their full projections
+exceed its 8 MiB budget, the cache keeps the pane's bounded transcript instead. A rejected
 state update shows `Pane update failed · <reason>` in the pinned footer until a
 successful write and logs the failure at debug level.
 
@@ -182,8 +183,9 @@ The explicit slash command returns only the required `Codex pane opened.`
 acknowledgement. The pane uses only Box, Text and Button on terminal, desktop, VS Code and mobile.
 
 Polling runs every second, or every five seconds with no active jobs and no open
-pane. Immutable markers are read once; job JSON is read only after its mtime
-changes. Finished jobs are stat-checked every ten seconds for recovery rewrites.
+pane. Immutable markers are read once while present; job JSON is read after its mtime
+changes or when selection needs details discarded from the private cache.
+Unchanged selected details are reused. Finished jobs are stat-checked every ten seconds for recovery rewrites.
 Failed marker/job reads retry after five seconds, without consuming the marker
 or mtime. A failed read keeps the last good view and a pinned
 `⚠ stale · last update <age> ago` warning. Reload-time marker failures also keep

@@ -105,17 +105,19 @@ export function readClaudeSnapshot(sessionId, env = process.env) {
   } catch { return null; }
 }
 
-export function deleteClaudeSnapshot(sessionId, env = process.env) {
+export function deleteClaudeSnapshot(sessionId, env = process.env, { deadline = Infinity, lockTimeoutMs = 1000 } = {}) {
+  if (Date.now() >= deadline) return false;
   const file = claudeSnapshotFile(sessionId, env);
   if (!file) return false;
   try {
     const directory = requireSnapshotDirectory(env);
     return withJournalLock(directory, () => {
+      if (Date.now() >= deadline) return false;
       requireSnapshotDirectory(env);
       if (!fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) return false;
       fs.unlinkSync(file);
       return true;
-    }, { lockTimeoutMs: 1000 });
+    }, { lockTimeoutMs: Math.min(lockTimeoutMs, Math.max(0, deadline - Date.now())) });
   } catch (error) { if (error.code === "ENOENT") return false; throw error; }
 }
 
@@ -166,7 +168,7 @@ const autoMemory = (file, config) => /[\\/]\.claude[\\/](?:projects[\\/].*[\\/]m
 // Deliberately approximate, never a second implementation of Claude's loader.
 // Do not follow symlinks/imports out of the containing tree or read auto memory.
 export function scanClaudeInstructions(cwd, env = process.env) {
-  const files = [], seen = new Set();
+  const files = [], seen = new Set(), omittedPaths = [];
   const managed = process.platform === "darwin" ? "/Library/Application Support/ClaudeCode" : process.platform === "win32" ? path.join(env.ProgramFiles || "C:\\Program Files", "ClaudeCode") : "/etc/claude-code";
   const user = resolveClaudeConfigRoot(env);
   const ancestors = [];
@@ -191,9 +193,8 @@ export function scanClaudeInstructions(cwd, env = process.env) {
       } catch { /* No readable memory inventory at this location. */ }
     }
   }
-  let bytes = 0, bounded = false, visited = 0;
+  let bytes = 0, bounded = false, visited = 0, omittedCount = 0, omittedSize = 0;
   function add(candidate, kind, root = path.dirname(candidate), parent, depth = 0, rule = false, logical = candidate) {
-    if (files.length >= 256 || bytes >= 1000000) { bounded = true; return; }
     try {
       const file = fs.realpathSync(candidate), tree = fs.realpathSync(root);
       if (!inside(tree, file) || seen.has(file) || autoMemory(logical, user) || autoMemory(file, user)
@@ -201,13 +202,40 @@ export function scanClaudeInstructions(cwd, env = process.env) {
           || [...memoryRoots].some(memory => inside(memory, file))) return;
       const stat = fs.statSync(file);
       if (!stat.isFile() || stat.size > 4 * 1024 * 1024) return;
-      const raw = fs.readFileSync(file, "utf8"), frontmatter = /^(?:\uFEFF)?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(raw);
-      if (rule && frontmatter && /^\s*paths\s*:/m.test(frontmatter[1])) return;
+      const exhausted = files.length >= 256 || bytes >= 1000000;
+      let raw = "";
+      if (exhausted) {
+        // Omission accounting needs eligibility, not the remaining contents.
+        // Rules only need a small prefix to exclude paths: frontmatter.
+        if (rule) {
+          const descriptor = fs.openSync(file, "r");
+          try {
+            const prefix = Buffer.alloc(4096);
+            const length = fs.readSync(descriptor, prefix, 0, prefix.length, 0);
+            raw = prefix.toString("utf8", 0, length);
+          } finally { fs.closeSync(descriptor); }
+        }
+      } else raw = fs.readFileSync(file, "utf8");
+      const frontmatter = /^(?:\uFEFF)?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(raw);
+      const ruleHeader = frontmatter?.[1] ?? (exhausted ? /^(?:\uFEFF)?---\r?\n([\s\S]*)/.exec(raw)?.[1] : null);
+      if (rule && ruleHeader && /^\s*paths\s*:/m.test(ruleHeader)) return;
+      // Validate and deduplicate even after collection stops so only eligible
+      // instruction files contribute to the bounded omission inventory.
+      seen.add(file);
+      if (exhausted) {
+        bounded = true; omittedCount++;
+        const pathSize = JSON.stringify(file).length;
+        if (file.length <= 4096 && omittedPaths.length < 256 && omittedSize + pathSize <= 1000000) {
+          omittedPaths.push(file); omittedSize += pathSize;
+        }
+        return;
+      }
       const content = raw.slice(frontmatter?.[0].length ?? 0).replace(/<!--[\s\S]*?-->/g, "");
-      files.push({ path: file, kind, content, parent }); seen.add(file); bytes += content.length;
-      if (depth >= 4) return;
+      files.push({ path: file, kind, content, parent }); bytes += content.length;
+      if (depth >= 4 || files.length >= 256 || bytes >= 1000000) return;
       const imports = content.replace(/^\s*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\s*\1[^\n]*$/gm, "").replace(/`+[^`]*`+/g, "");
       for (const match of imports.matchAll(/(?:^|\s)@([^\s<>"'`]+)/g)) {
+        if (files.length >= 256 || bytes >= 1000000) break;
         const target = match[1];
         // No expansion of ~, absolute imports, or directory traversal outside
         // the original importing file's tree, even through a symlink.
@@ -247,7 +275,10 @@ export function scanClaudeInstructions(cwd, env = process.env) {
     add(path.join(dir, "CLAUDE.local.md"), "local", root);
   }
   const inventory = instructionInventory(files);
-  return snapshotOf({ sessionId: null, cwd: path.resolve(cwd), ...inventory, complete: false, bounded });
+  return snapshotOf({ sessionId: null, cwd: path.resolve(cwd), ...inventory, complete: false,
+    bounded: bounded || inventory.bounded,
+    omittedCount: inventory.omittedCount + omittedCount,
+    omittedPaths: [...inventory.omittedPaths, ...omittedPaths].slice(0, 256) });
 }
 
 export function renderClaudeInstructions(snapshot) {
@@ -268,7 +299,8 @@ export function renderClaudeInstructions(snapshot) {
   let count = 0, text = EXECUTOR_FRAMING;
   while (count < entries.length && text.length + blocks[count].length + omissions(count + 1).length <= INSTRUCTION_LIMIT) text += blocks[count++];
   text += omissions(count);
-  return { developerInstructions: text, omittedPaths: [...entries.slice(count).map(entry => entry.path), ...snapshot.omittedPaths], omittedCount: entries.length - count + snapshot.omittedCount };
+  return { developerInstructions: text, omittedPaths: [...entries.slice(count).map(entry => entry.path), ...snapshot.omittedPaths], omittedCount: entries.length - count + snapshot.omittedCount,
+    projectDocPaths: entries.slice(0, count).filter(entry => entry.tier === "project" && path.basename(entry.path) === "CLAUDE.md").map(entry => entry.path) };
 }
 
 function requireSessionCwd(value, source) {
@@ -300,11 +332,12 @@ export function prepareClaudeInstructions({ sessionId, cwd, sessionCwd, previous
   return { developerInstructions: rendered.developerInstructions,
     claudeMd: { version: 1, source: approximate ? "scan" : "capture", approximate, complete: snapshot.complete && rendered.omittedCount === 0,
       snapshotHash: capture?.hash ?? snapshot.hash, renderedHash: hash(rendered.developerInstructions), capturedAt: snapshot.capturedAt,
+      projectDocPaths: rendered.projectDocPaths,
       sessionCwd: snapshot.cwd, sessionCwdSource, bounded: snapshot.bounded, omittedPaths: rendered.omittedPaths, omittedCount: rendered.omittedCount,
       ...(approximate ? { note: FALLBACK_NOTE } : {}) } };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv[2] === "capture") {
+if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv[2] === "capture") {
   try {
     let raw = "";
     process.stdin.setEncoding("utf8");

@@ -95,6 +95,37 @@ export function ensureStateDir(cwd) {
 function isDirectory(candidate) {
   try { return fs.statSync(candidate).isDirectory(); } catch { return false; }
 }
+// POSIX imports must be owned by this uid and never world-writable or symlinked.
+// Home-based state also supports umask 002; shared temp state forbids group write.
+function trustedLegacyPath(candidate, kind, rule = "strict") {
+  if (process.platform === "win32") return kind === "directory" ? isDirectory(candidate) : fs.existsSync(candidate);
+  try {
+    const stat = fs.lstatSync(candidate);
+    return stat.uid === process.getuid() && (stat.mode & (rule === "home" ? 0o002 : 0o022)) === 0 &&
+      (kind === "directory" ? stat.isDirectory() : stat.isFile());
+  } catch { return false; }
+}
+function legacyWorkspaceRule(dir) {
+  if (typeof dir !== "string") return null;
+  return legacyStateSources().find(source => source.root === path.dirname(dir))?.rule ?? null;
+}
+function trustedLegacyWorkspace(dir) {
+  const rule = legacyWorkspaceRule(dir);
+  return rule !== null && trustedLegacyPath(dir, "directory", rule);
+}
+
+// Private state APIs historically allow safe custom handles. The legacy trust
+// boundary below additionally requires the task/review/job generator's shape.
+const safeJobId = id => typeof id === "string" && /^[A-Za-z0-9_-]+$/.test(id);
+// Unchanged since the first release: base36 clock and up to six random digits
+// (Math.random() can produce zero, hence an empty suffix is valid).
+const legacyJobId = id => typeof id === "string" && /^(?:task|review|job)-[a-z0-9]+-[a-z0-9]{0,6}$/.test(id);
+function jobPath(stateDir, id, suffix = ".json") {
+  if (!safeJobId(id)) throw new Error("Invalid Duet job ID.");
+  const directory = path.resolve(stateDir, JOBS_DIR_NAME), file = path.resolve(directory, `${id}${suffix}`);
+  if (path.dirname(file) !== directory) throw new Error("Invalid Duet job ID: path leaves the jobs directory.");
+  return file;
+}
 function within(parent, child) {
   const relative = path.relative(parent, child);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
@@ -108,28 +139,37 @@ function processAlive(pid) {
   catch (error) { return error.code !== "ESRCH"; }
 }
 
-// Roots used by earlier releases, newest layout first. Only existing directories
-// are returned; in test mode only directories inside the test root.
-export function legacyStateRoots(env = process.env) {
+// Preserve the source's permission rule for every descendant read, including
+// pending jobs and later imports. A home source inside the temp root stays strict.
+function legacyStateSources(env = process.env) {
   const home = env.HOME || env.USERPROFILE || os.homedir();
   const pluginData = path.join(home, ".claude", "plugins", "data");
+  const tempRoot = path.join(env.TMPDIR ? path.resolve(env.TMPDIR) : os.tmpdir(), "codex-companion-isolated");
+  const canonicalTempRoot = canonical(tempRoot);
   const candidates = [
     env.CLAUDE_PLUGIN_DATA ? path.join(env.CLAUDE_PLUGIN_DATA, "state") : null,
     path.join(pluginData, "codex-duet", "state"),
     path.join(pluginData, "codex-codex-isolated-local", "state"),
-    path.join(env.TMPDIR ? path.resolve(env.TMPDIR) : os.tmpdir(), "codex-companion-isolated")
+    tempRoot
   ].filter(Boolean);
   const current = resolveStateRoot(env);
   const testRoot = env.CODEX_COMPANION_TEST_MODE === "1" ? canonical(env.CODEX_COMPANION_TEST_ROOT || "") : null;
   const roots = [];
   for (const candidate of candidates) {
-    if (!isDirectory(candidate)) continue;
     const resolved = canonical(candidate);
-    if (roots.includes(resolved) || within(current, resolved) || within(resolved, current)) continue;
+    const rule = within(canonicalTempRoot, resolved) ? "strict" : "home";
+    if (!trustedLegacyPath(candidate, "directory", rule)) continue;
+    if (roots.some(source => source.root === resolved) || within(current, resolved) || within(resolved, current)) continue;
     if (testRoot && !within(testRoot, resolved)) continue;
-    roots.push(resolved);
+    roots.push({ root: resolved, rule });
   }
   return roots;
+}
+
+// Roots used by earlier releases, newest layout first. Only existing directories
+// are returned; in test mode only directories inside the test root.
+export function legacyStateRoots(env = process.env) {
+  return legacyStateSources(env).map(source => source.root);
 }
 
 function readState(stateFile, { strict = false } = {}) {
@@ -148,7 +188,7 @@ function readState(stateFile, { strict = false } = {}) {
         ...defaultState().config,
         ...(parsed.config ?? {})
       },
-      jobs: Array.isArray(parsed.jobs) ? parsed.jobs : []
+      jobs: Array.isArray(parsed.jobs) ? parsed.jobs.filter(job => job !== null && typeof job === "object" && !Array.isArray(job) && safeJobId(job.id)) : []
     };
   } catch (cause) {
     if (strict && cause.code !== "ENOENT") {
@@ -315,10 +355,10 @@ function taskProcessAlive(pid) {
 
 export function unresolvedTask(current) {
   if (!current || current.jobClass !== "task" || current.recovered || taskProcessAlive(current.pid)) return false;
-  if (!current.result) return current.status !== "cancelled";
+  if (!current.result) return current.status !== "cancelled" || Boolean(current.turnSubmission);
   // A stopped job whose interrupt was never confirmed may still own its turn.
   if (["interrupted", "cancelled"].includes(current.status)) {
-    return Boolean(current.turnId) && current.result.turnEnded === false && current.result.interruptionConfirmed !== true;
+    return Boolean(current.turnId || current.turnSubmission) && current.result.turnEnded === false && current.result.interruptionConfirmed !== true;
   }
   const result = current.result;
   if (current.status === "completed" && result.inferredCompletion === true) {
@@ -346,10 +386,10 @@ export function startedThreadSettings(job) {
 
 // The visible history retains its old count limit; extra thread anchors are
 // available to inheritance and admission, not added to status listings.
-export function visibleJobs(jobs, recordForJob = job => job) {
+export function visibleJobs(jobs, recordForJob = job => job, protectedId = null) {
   let historyCount = 0;
   return [...jobs]
-    .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
+    .sort((left, right) => Number(right.id === protectedId) - Number(left.id === protectedId) || String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
     .filter(job => isActiveStatus(job.status) || unresolvedTask(recordForJob(job)) || historyCount++ < MAX_JOBS);
 }
 
@@ -373,8 +413,10 @@ function readPruneRecord(file) {
   }
 }
 
-function pruneJobs(jobs, stateDir, imports = new Map()) {
-  const ordered = [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+function pruneJobs(jobs, stateDir, imports = new Map(), protectedId = null) {
+  // A clock correction cannot evict the job being published. Give it one of
+  // the existing visible-history slots, without changing either retention cap.
+  const ordered = [...jobs].sort((left, right) => Number(right.id === protectedId) - Number(left.id === protectedId) || String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
   const finished = ordered.filter(job => !isActiveStatus(job.status));
   // These jobs fit the visible history even if none are unresolved. No private
   // record can change membership, so cursor/lease writes need no payload scan.
@@ -398,10 +440,10 @@ function pruneJobs(jobs, stateDir, imports = new Map()) {
   const records = new Map();
   const recordFor = job => {
     if (job.jobClass !== "task") return job;
-    if (!records.has(job.id)) records.set(job.id, { ...job, ...(imports.get(job.id)?.file ?? readPruneRecord(path.join(stateDir, JOBS_DIR_NAME, `${job.id}.json`))) });
+    if (!records.has(job.id)) records.set(job.id, { ...job, ...(imports.get(job.id)?.file ?? readPruneRecord(jobPath(stateDir, job.id))) });
     return records.get(job.id);
   };
-  const visible = new Set(visibleJobs(jobs, recordFor).map(job => job.id));
+  const visible = new Set(visibleJobs(ordered, recordFor, protectedId).map(job => job.id));
   const threads = new Map();
   // Match inheritance's job order: an old job's cursor/lease update must not
   // displace the later turn that recorded the thread's current settings. A
@@ -464,21 +506,38 @@ const updatedAtOf = (...records) => records.reduce((latest, record) => {
 // Every job a directory knows: index entries plus private job files (a file
 // may briefly exist before its index entry does).
 function readWorkspaceRecords(dir, onlyId = null) {
-  const state = readState(path.join(dir, STATE_FILE_NAME));
+  const rule = legacyWorkspaceRule(dir);
+  if (rule === null) return { config: {}, records: new Map() };
+  const indexFile = path.join(dir, STATE_FILE_NAME);
+  const state = trustedLegacyPath(indexFile, "file", rule) ? readState(indexFile) : defaultState();
   const records = new Map();
   for (const job of state.jobs) {
-    if (typeof job?.id === "string" && (onlyId === null || job.id === onlyId)) records.set(job.id, { id: job.id, index: job, file: null });
+    if (legacyJobId(job.id) && (onlyId === null || job.id === onlyId)) records.set(job.id, { id: job.id, index: job, file: null });
   }
+  const jobsDir = path.join(dir, JOBS_DIR_NAME);
+  // An untrusted jobs directory cannot provide private records, including a
+  // private file reached through an untrusted or symlinked directory.
+  if (fs.lstatSync(jobsDir, { throwIfNoEntry: false }) && !trustedLegacyPath(jobsDir, "directory", rule)) return { config: state.config, records: new Map() };
   let names = [];
   if (onlyId !== null) names = [`${onlyId}.json`];
   else { try { names = fs.readdirSync(path.join(dir, JOBS_DIR_NAME)); } catch (error) { if (error.code !== "ENOENT") throw error; } }
   for (const name of names) {
     const match = /^(.+)\.json$/.exec(name);
-    if (!match || name.endsWith(".result.json")) continue;
-    const record = readJsonOrNull(path.join(dir, JOBS_DIR_NAME, name));
+    if (!match || !legacyJobId(match[1])) continue;
+    const id = match[1], file = jobPath(dir, id);
+    if (!trustedLegacyPath(file, "file", rule)) {
+      // Index-only jobs remain supported; an existing unsafe private record
+      // must never be served via the otherwise trusted index entry.
+      if (fs.lstatSync(file, { throwIfNoEntry: false })) records.delete(id);
+      continue;
+    }
+    const record = readJsonOrNull(file);
     if (!record || typeof record !== "object" || Array.isArray(record)) continue;
-    const id = match[1], entry = records.get(id) ?? { id, index: null, file: null };
-    entry.file = { id, ...record };
+    // The filename and record must name the same well-formed job; do not let
+    // the payload's id replace the checked path segment during a merge.
+    if (record.id !== undefined && record.id !== id) { records.delete(id); continue; }
+    const entry = records.get(id) ?? { id, index: null, file: null };
+    entry.file = { ...record, id };
     records.set(id, entry);
   }
   return { config: state.config, records };
@@ -494,14 +553,14 @@ function rebuildJobs(stateDir) {
   let names = [];
   try { names = fs.readdirSync(jobsDir); } catch (error) { if (error.code !== "ENOENT") throw error; }
   for (const name of names) {
-    if (!/^[A-Za-z0-9_-]+\.json$/.test(name) || name.endsWith(".result.json")) continue;
+    if (!name.endsWith(".json") || !safeJobId(name.slice(0, -5))) continue;
     let record = null;
     for (let attempt = 0; attempt < 3 && record === null; attempt++) {
       if (attempt) Atomics.wait(LOCK_WAIT, 0, 0, 50);
-      try { record = JSON.parse(fs.readFileSync(path.join(jobsDir, name), "utf8")); }
+      try { record = JSON.parse(fs.readFileSync(jobPath(stateDir, name.slice(0, -5)), "utf8")); }
       catch (error) { if (error.code === "ENOENT") break; }
     }
-    if (record && typeof record === "object" && !Array.isArray(record)) jobs.push(withoutPrivateActivity(indexEntryOf({ id: name.slice(0, -5), ...record })));
+    if (record && typeof record === "object" && !Array.isArray(record) && (record.id === undefined || record.id === name.slice(0, -5))) jobs.push(withoutPrivateActivity(indexEntryOf({ ...record, id: name.slice(0, -5) })));
     else if (fs.existsSync(path.join(jobsDir, name))) unreadable.push(name);
   }
   return { jobs, unreadable };
@@ -537,8 +596,10 @@ function readStateForWrite(stateDir) {
   return rebuilt;
 }
 function readLegacyRecords(legacyDir, onlyId = null, { lockTimeoutMs = LEGACY_LOCK_TIMEOUT_MS } = {}) {
+  const empty = () => ({ config: {}, records: new Map() });
+  if ((onlyId !== null && !legacyJobId(onlyId)) || !trustedLegacyWorkspace(legacyDir)) return empty();
   try {
-    return lockStateDir(legacyDir, () => readWorkspaceRecords(legacyDir, onlyId), { lockTimeoutMs: Math.min(lockTimeoutMs, LEGACY_LOCK_TIMEOUT_MS), create: false });
+    return lockStateDir(legacyDir, () => trustedLegacyWorkspace(legacyDir) ? readWorkspaceRecords(legacyDir, onlyId) : empty(), { lockTimeoutMs: Math.min(lockTimeoutMs, LEGACY_LOCK_TIMEOUT_MS), create: false });
   } catch (error) {
     if (/Timed out waiting for the Codex job-state lock/.test(error.message)) return null;
     throw error;
@@ -549,19 +610,19 @@ const isLive = (record, fallbackPid = null) => isActiveStatus(record?.status) &&
 // Merge selected legacy records into the (already locked) new directory.
 // Newer updatedAt wins; a live legacy job is only noted as pending.
 function mergeLegacyRecords(stateDir, legacyDir, legacy, marker, selected = null) {
-  const stateFile = path.join(stateDir, STATE_FILE_NAME), jobsDir = path.join(stateDir, JOBS_DIR_NAME);
+  const stateFile = path.join(stateDir, STATE_FILE_NAME);
   const state = readState(stateFile, { strict: true }), current = new Map(state.jobs.map(job => [job.id, job]));
   const imports = new Map();
   let pending = 0;
   for (const { id, index, file } of legacy.records.values()) {
-    if (selected && !selected.has(id)) continue;
-    const entry = withoutPrivateActivity({ ...(index ?? {}), ...(file ? indexEntryOf(file) : {}) });
+    if (!legacyJobId(id) || (selected && !selected.has(id))) continue;
+    const entry = withoutPrivateActivity({ ...(index ?? {}), ...(file ? indexEntryOf(file) : {}), id });
     if (isLive(entry)) {
       if (!marker.pending.some(item => item.id === id)) marker.pending.push({ id, stateDir: legacyDir, pid: entry.pid ?? null, noticedAt: nowIso() });
       pending += 1;
       continue;
     }
-    const existing = current.get(id), existingFile = readJsonOrNull(path.join(jobsDir, `${id}.json`));
+    const existing = current.get(id), existingFile = readJsonOrNull(jobPath(stateDir, id));
     if ((existing || existingFile) && !(updatedAtOf(entry, file) > updatedAtOf(existing, existingFile))) continue;
     imports.set(id, { entry, file });
   }
@@ -575,7 +636,7 @@ function mergeLegacyRecords(stateDir, legacyDir, legacy, marker, selected = null
   for (const [id, { entry }] of imports) merged.set(id, entry);
   const retained = new Set(pruneJobs([...merged.values()], stateDir, imports).map(job => job.id));
   for (const [id, { file }] of imports) {
-    if (file && retained.has(id)) writeJsonAtomically(path.join(jobsDir, `${id}.json`), file);
+    if (file && retained.has(id)) writeJsonAtomically(jobPath(stateDir, id), file);
   }
   commitState(stateDir, state, { ...state, config: selected ? state.config : mergeLegacyConfig(state.config, legacy.config), jobs: [...merged.values()] });
   return { at: nowIso(), imported: imports.size, pending };
@@ -592,7 +653,7 @@ function mergeLegacyConfig(config, legacyConfig) {
 function settlePending(stateDir, marker, lockOptions = {}) {
   let changed = false;
   for (const item of [...marker.pending]) {
-    const legacy = isDirectory(item.stateDir) ? readLegacyRecords(item.stateDir, item.id, lockOptions) : { config: {}, records: new Map() };
+    const legacy = readLegacyRecords(item.stateDir, item.id, lockOptions);
     if (legacy === null) continue;
     const record = legacy.records.get(item.id);
     if (record && isLive(record.file ?? record.index, record.index?.pid ?? item.pid)) continue;
@@ -625,7 +686,7 @@ function migrateUnderLock(stateDir, lockOptions = {}) {
     const key = path.basename(stateDir);
     for (const root of legacyStateRoots()) {
       const legacyDir = path.join(root, key);
-      if (marker.sources[legacyDir] || !isDirectory(legacyDir)) continue;
+      if (marker.sources[legacyDir] || !trustedLegacyWorkspace(legacyDir)) continue;
       const legacy = readLegacyRecords(legacyDir, null, lockOptions);
       if (legacy === null) { retryAt = Date.now() + LEGACY_RETRY_MS; continue; }
       marker.sources[legacyDir] = mergeLegacyRecords(stateDir, legacyDir, legacy, marker);
@@ -661,15 +722,20 @@ function ensureMigrated(stateDir, lockOptions = {}) {
 
 // A job served in place lives in its legacy directory until its worker ends.
 function jobStateDir(cwd, jobId, lockOptions = {}) {
+  if (!safeJobId(jobId)) throw new Error("Invalid Duet job ID.");
   const stateDir = resolveStateDir(cwd);
   const status = ensureMigrated(stateDir, lockOptions);
-  return status.pending.find(item => item.id === jobId)?.stateDir ?? stateDir;
+  const pendingDir = status.pending.find(item => item.id === jobId)?.stateDir;
+  // The memo/marker is only a hint. Permissions can change while a live legacy
+  // worker is served in place, so revalidate before every read or mutation.
+  return pendingDir && trustedLegacyWorkspace(pendingDir) && readWorkspaceRecords(pendingDir, jobId).records.has(jobId) ? pendingDir : stateDir;
 }
 function pendingJobs(stateDir, status) {
   const jobs = [];
   for (const item of status.pending) {
-    const entry = readState(path.join(item.stateDir, STATE_FILE_NAME)).jobs.find(job => job.id === item.id)
-      ?? readJsonOrNull(path.join(item.stateDir, JOBS_DIR_NAME, `${item.id}.json`));
+    if (!legacyJobId(item.id) || !trustedLegacyWorkspace(item.stateDir)) continue;
+    const record = readWorkspaceRecords(item.stateDir, item.id).records.get(item.id);
+    const entry = record?.file ?? record?.index;
     if (entry) jobs.push(indexEntryOf({ id: item.id, ...entry }));
   }
   return jobs;
@@ -684,7 +750,7 @@ export function importLegacyJob(cwd, reference) {
   const matches = record => record.id === reference || record.file?.threadId === reference || record.index?.threadId === reference || record.id.startsWith(reference);
   for (const root of legacyStateRoots()) {
     const legacyDir = path.join(root, key);
-    if (!isDirectory(legacyDir)) continue;
+    if (!trustedLegacyWorkspace(legacyDir)) continue;
     const legacy = readLegacyRecords(legacyDir);
     if (legacy === null) continue;
     const selected = new Set([...legacy.records.values()].filter(matches).map(record => record.id));
@@ -730,8 +796,9 @@ function mergeSnapshot(state, current) {
   };
 }
 
-function commitState(stateDir, previousState, state) {
-  const nextJobs = pruneJobs(state.jobs ?? [], stateDir);
+function commitState(stateDir, previousState, state, protectedId = null) {
+  for (const job of state.jobs ?? []) if (!safeJobId(job?.id)) throw new Error("Invalid Duet job ID.");
+  const nextJobs = pruneJobs(state.jobs ?? [], stateDir, new Map(), protectedId);
   const nextState = {
     version: STATE_VERSION,
     config: {
@@ -753,9 +820,9 @@ function commitState(stateDir, previousState, state) {
     // Index paths may be stale legacy paths or aliases of another job. Only
     // remove this job's canonical files, without following a jobs-dir symlink.
     const directory = path.join(stateDir, JOBS_DIR_NAME);
-    if (typeof job.id !== "string" || !/^[A-Za-z0-9_-]+$/.test(job.id) || !fs.lstatSync(directory, { throwIfNoEntry: false })?.isDirectory()) continue;
+    if (!safeJobId(job.id) || !fs.lstatSync(directory, { throwIfNoEntry: false })?.isDirectory()) continue;
     for (const suffix of [".json", ".log", ".output.txt", ".result.json"]) {
-      const file = path.join(directory, `${job.id}${suffix}`);
+      const file = jobPath(stateDir, job.id, suffix);
       if (fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) removeFileIfExists(file);
     }
   }
@@ -788,12 +855,12 @@ export function removeJobsFromState(stateDir, select, options = {}) {
   }, { lockTimeoutMs: 0, ...options, create: false });
 }
 
-export function updateState(cwd, mutate) {
+export function updateState(cwd, mutate, { protectedId = null } = {}) {
   return withStateLock(cwd, stateDir => {
     const previousState = readStateForWrite(stateDir);
     const state = structuredClone(previousState);
     mutate(state);
-    return commitState(stateDir, previousState, state);
+    return commitState(stateDir, previousState, state, protectedId);
   });
 }
 
@@ -826,7 +893,7 @@ export function upsertJob(cwd, jobPatch) {
       ...jobPatch,
       updatedAt: timestamp
     });
-  });
+  }, { protectedId: jobPatch.id });
 }
 
 // Jobs still served in place from a legacy directory are listed alongside,
@@ -842,25 +909,34 @@ export function listJobs(cwd) {
 
 // SessionEnd can run from the parent checkout while workers use other worktrees.
 // Inspect only this plugin-data root, and verify each record's workspace mapping.
-export function listSessionJobs(cwd, sessionId) {
+export function listSessionJobs(cwd, sessionId, { deadline = Infinity, lockTimeoutMs = 1000 } = {}) {
+  if (Date.now() >= deadline) return [];
   const ownDir = resolveStateDir(cwd), root = path.dirname(ownDir);
   // Jobs an older release started in this workspace's legacy directory are
   // merged or served in place first; a busy lock is not waited on (the hook has
   // a 5 s budget) and the owner lease remains the fallback.
   let pending = [];
-  try { pending = pendingJobs(ownDir, ensureMigrated(ownDir, { lockTimeoutMs: 1000 })); } catch { /* reported by the lease fallback */ }
-  if (!fs.existsSync(root)) return [];
+  const lockOptions = { get lockTimeoutMs() { return Math.min(lockTimeoutMs, Math.max(0, deadline - Date.now())); } };
+  try {
+    const status = ensureMigrated(ownDir, lockOptions);
+    if (Date.now() < deadline) pending = pendingJobs(ownDir, status);
+  } catch { /* reported by the lease fallback */ }
+  if (Date.now() >= deadline || !fs.existsSync(root)) return [];
   const pendingIds = new Set(pending.map(job => job.id));
-  return fs.readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory()).flatMap(entry => {
+  const jobs = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (Date.now() >= deadline) break;
+    if (!entry.isDirectory()) continue;
     const directory = path.join(root, entry.name);
     const indexed = readState(path.join(directory, STATE_FILE_NAME)).jobs.filter(job => directory !== ownDir || !pendingIds.has(job.id));
-    return [...indexed, ...(directory === ownDir ? pending : [])].map(job => ({
-      ...job, workspaceRoot: job.workspaceRoot ?? (directory === ownDir ? cwd : null)
-    })).filter(job => {
-      if ((job.sessionId === undefined ? job.ownerId : job.sessionId) !== sessionId || typeof job.workspaceRoot !== "string") return false;
-      try { return resolveStateDirForRoot(job.workspaceRoot) === directory; } catch { return false; }
-    });
-  });
+    for (const record of [...indexed, ...(directory === ownDir ? pending : [])]) {
+      if (Date.now() >= deadline) break;
+      const job = { ...record, workspaceRoot: record.workspaceRoot ?? (directory === ownDir ? cwd : null) };
+      if ((job.sessionId === undefined ? job.ownerId : job.sessionId) !== sessionId || typeof job.workspaceRoot !== "string") continue;
+      try { if (resolveStateDirForRoot(job.workspaceRoot) === directory) jobs.push(job); } catch { /* invalid workspace */ }
+    }
+  }
+  return jobs;
 }
 
 export function setConfig(cwd, key, value) {
@@ -878,7 +954,7 @@ export function getConfig(cwd) {
 
 export function writeJobFile(cwd, jobId, payload) {
   return lockStateDir(jobStateDir(cwd, jobId), stateDir => {
-    const jobFile = path.join(stateDir, JOBS_DIR_NAME, `${jobId}.json`);
+    const jobFile = jobPath(stateDir, jobId);
     writeJsonAtomically(jobFile, payload);
     return jobFile;
   });
@@ -892,7 +968,7 @@ export function readJobFile(jobFile) {
 // answer, cancellation and progress updates. A stale reader cannot erase them.
 export function updateJob(cwd, jobId, mutate, options = {}) {
   return lockStateDir(jobStateDir(cwd, jobId, { lockTimeoutMs: options.lockTimeoutMs }), stateDir => {
-    const file = path.join(stateDir, JOBS_DIR_NAME, `${jobId}.json`);
+    const file = jobPath(stateDir, jobId);
     const state = readStateForWrite(stateDir);
     const indexed = state.jobs.find(j => j.id === jobId);
     const current = fs.existsSync(file) ? { ...indexed, ...readJobFile(file) } : indexed;
@@ -902,9 +978,10 @@ export function updateJob(cwd, jobId, mutate, options = {}) {
       // Status reads the index: cursor updates after completion must not copy raw
       // tool payloads into its output, or duplicate a growing journal there.
       const { result, report, rendered, activity, activityPendingTools, ...indexedNext } = record;
+      indexedNext.usage = report?.usage ?? result?.usage ?? record.usage ?? null;
       const interruptionReason = result?.interruptionReason ?? report?.interruptionReason;
       if (interruptionReason) Object.assign(indexedNext, { interruptionReason, interruptionConfirmed: result?.interruptionConfirmed ?? report?.interruptionConfirmed });
-      commitState(stateDir, state, { ...state, jobs: [indexedNext, ...state.jobs.filter(j => j.id !== jobId)] });
+      commitState(stateDir, state, { ...state, jobs: [indexedNext, ...state.jobs.filter(j => j.id !== jobId)] }, jobId);
     };
     const patch = mutate(structuredClone(current));
     if (patch == null) {
@@ -923,11 +1000,11 @@ export function updateJob(cwd, jobId, mutate, options = {}) {
 export function resolveJobLogFile(cwd, jobId) {
   const stateDir = jobStateDir(cwd, jobId);
   createStateDir(stateDir);
-  return path.join(stateDir, JOBS_DIR_NAME, `${jobId}.log`);
+  return jobPath(stateDir, jobId, ".log");
 }
 
 export function resolveJobFile(cwd, jobId) {
   const stateDir = jobStateDir(cwd, jobId);
   createStateDir(stateDir);
-  return path.join(stateDir, JOBS_DIR_NAME, `${jobId}.json`);
+  return jobPath(stateDir, jobId);
 }

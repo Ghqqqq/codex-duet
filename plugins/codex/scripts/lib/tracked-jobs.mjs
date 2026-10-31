@@ -157,6 +157,7 @@ export function createProgressReporter({ stderr = false, logFile = null, onEvent
 }
 
 function readStoredJobOrNull(workspaceRoot, jobId) {
+  if (typeof jobId !== "string" || !/^[A-Za-z0-9_-]+$/.test(jobId)) return null;
   const jobFile = resolveJobFile(workspaceRoot, jobId);
   if (!fs.existsSync(jobFile)) {
     return null;
@@ -257,6 +258,8 @@ export async function runTrackedJob(job, runner, options = {}) {
           phase: completionStatus === "completed" ? "done" : completionStatus,
           completedAt,
           result: execution.payload,
+          ...(completionStatus === "completed" && execution.payload?.inferredCompletion === true && execution.payload.turnEnded === false
+            ? { turnResolution: "unknown" } : {}),
           ...reviewArtifacts,
           report: execution.report ?? null,
           rendered: execution.rendered
@@ -279,8 +282,10 @@ export async function runTrackedJob(job, runner, options = {}) {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const existing = readStoredJobOrNull(job.workspaceRoot, job.id) ?? runningRecord;
+    const notStarted = job.jobClass === "task" && !existing.turnId && !error.turnId && error.turnStatus === "notStarted";
     const failure = { status: 1, error: errorMessage, threadId: existing.threadId ?? null, turnId: existing.turnId ?? null,
       ...(error.failureSource === "transport" ? { failureSource: "transport", errorCode: error.code ?? null, turnEnded: false } : {}),
+      ...(notStarted ? { turnStatus: "notStarted", turnEnded: true } : {}),
       approvedBrowserOrigins: existing.approvedBrowserOrigins ?? [], approvedComputerApps: existing.approvedComputerApps ?? [] };
     if (job.rawOutputFile && !fs.existsSync(job.rawOutputFile)) fs.writeFileSync(job.rawOutputFile, `${errorMessage}\n`, { mode: 0o600 });
     if (job.resultFile && !fs.existsSync(job.resultFile)) fs.writeFileSync(job.resultFile, `${JSON.stringify(failure)}\n`, { mode: 0o600 });
@@ -296,7 +301,7 @@ export async function runTrackedJob(job, runner, options = {}) {
         status,
         phase: status,
         errorMessage,
-        ...(reason || error.failureSource === "transport" ? { result: failure, turnResolution: "unknown" } : {}),
+        ...(reason || error.failureSource === "transport" || notStarted ? { result: failure, turnResolution: notStarted ? "notStarted" : "unknown" } : {}),
         pid: null,
         completedAt,
         logFile: options.logFile ?? job.logFile ?? existing.logFile ?? null

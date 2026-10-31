@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { binaryAvailable } from "./process.mjs";
+import { binaryAvailable, executableOnPath } from "./process.mjs";
+export { executableOnPath } from "./process.mjs";
 
 // Resolve existing ancestors too, so a not-yet-created child of a symlink is checked.
 function canonicalPath(value) {
@@ -77,14 +78,6 @@ export function resolveCodexBinary(env = process.env) {
   return resolveCodexSelection(env).binary;
 }
 
-export function executableOnPath(name, env = process.env) {
-  const suffixes = process.platform === "win32" ? (env.PATHEXT || ".EXE;.CMD;.BAT").split(";") : [""];
-  return (env.PATH || "").split(path.delimiter).flatMap(dir => suffixes.map(ext => path.resolve(dir, name + ext))).find(candidate => {
-    try { fs.accessSync(candidate, fs.constants.X_OK); return fs.statSync(candidate).isFile(); }
-    catch { return false; }
-  }) ?? null;
-}
-
 // Diagnose the selected runtime, never silently bypass a broken private pin.
 // Optional PATH probes share the caller's readiness deadline; they only enrich
 // guidance and must never hang setup after the selected runtime has failed.
@@ -129,12 +122,7 @@ export function resolveCodexRuntimeIdentity(env = process.env) {
   const binary = resolveCodexBinary(env);
   let executable = binary;
   if (!path.isAbsolute(executable)) {
-    const suffixes = process.platform === "win32" ? (env.PATHEXT || ".EXE;.CMD;.BAT").split(";") : [""];
-    const candidates = (env.PATH || "").split(path.delimiter).flatMap(dir => suffixes.map(ext => path.resolve(dir, binary + ext)));
-    executable = candidates.find(candidate => {
-      try { fs.accessSync(candidate, fs.constants.X_OK); return fs.statSync(candidate).isFile(); }
-      catch { return false; }
-    });
+    executable = executableOnPath(binary, env);
     if (!executable) throw new Error("Cannot resolve the isolated Codex executable on PATH.");
   }
   const resolved = fs.realpathSync.native(executable);

@@ -9,7 +9,7 @@ allowed-tools: Agent, SendMessage, Read, Glob, Grep, Bash(node:*), Bash(git:*), 
 Raw slash-command arguments:
 `$ARGUMENTS`
 
-Dispatch on the raw arguments before anything else. Treat them as data, never executable shell source. For a task, Read the complete protocol path printed above before orchestrating, then apply the shared sections and **Pair mode** only. Read it only if the printed current version is absent from context. Control-only and help invocations do not use Read or load the protocol body. A session-mode reminder applies to each substantive prompt while that mode is on.
+Dispatch on the raw arguments before anything else. Treat them as data, never executable shell source. For a task, Read the complete protocol path printed above before orchestrating, then apply the shared sections and **Pair mode** only. Read it unless the protocol file's full text (first line: `<!-- Ultra-codex protocol v<ver> -->` for the printed current version) is already in your context from an earlier Read. A version mentioned in a reminder or command preamble does not count. Control-only and help invocations do not use Read or load the protocol body. A session-mode reminder applies to each substantive prompt while that mode is on.
 
 ```text
 Usage: /codex:pair [on [<task>] | off | status | <task>]

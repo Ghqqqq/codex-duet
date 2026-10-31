@@ -40,7 +40,7 @@ test("CUA rebuilds a disabled bundled template with exact offline preview and pr
   assert.deepEqual(Object.keys(config.env).sort(), [...CUA_ENV_KEYS].sort());
   assert.equal(config.enabled, true);
   assert.equal(config.env.CODEX_HOME, f.env.CODEX_COMPANION_HOME);
-  assert.equal(config.env.NODE_REPL_TRUSTED_CODE_PATHS, `${f.env.CODEX_COMPANION_HOME}:${f.app.resources}/cua_node/lib/node_modules`);
+  assert.equal(config.env.NODE_REPL_TRUSTED_CODE_PATHS, [f.env.CODEX_COMPANION_HOME, `${f.app.resources}/cua_node/lib/node_modules`].join(path.delimiter));
   assert.equal(config.tool_timeout_sec, 30);
   assert.equal(config.startup_timeout_sec, 120);
   assert.equal(config.env.BROWSER_USE_AVAILABLE_BACKENDS, "chrome");
@@ -99,6 +99,39 @@ test("disabled, inline and env-only existing CUA definitions are preserved", () 
   }
 });
 
+test("CUA replacement reads fractional timeouts and multiline TOML strings without leaking old values", () => {
+  const f = fixture();
+  const before = `[mcp_servers.cua_repl]\ncommand = ${JSON.stringify(path.join(f.app.resources, "cua_node/bin/node"))}\n` + String.raw`startup_timeout_sec = 120.0
+tool_timeout_sec = 10.5
+[mcp_servers.cua_repl.env]
+BASIC = """
+DO-NOT-COPY # [not a header]
+\U0001F642 and a \
+    continued "quote""""
+LITERAL = '''
+C:\DO-NOT-COPY
+# literal''''
+`;
+  fs.mkdirSync(f.env.CODEX_COMPANION_HOME);
+  fs.writeFileSync(f.destination, before);
+  const cua = readToolConfig(before).mcp_servers.cua_repl;
+  assert.equal(cua.startup_timeout_sec, 120);
+  assert.equal(cua.tool_timeout_sec, 10.5);
+  assert.equal(cua.env.BASIC, 'DO-NOT-COPY # [not a header]\n🙂 and a continued "quote"');
+  assert.equal(cua.env.LITERAL, "C:\\DO-NOT-COPY\n# literal'");
+  assert.equal(getToolAvailability(f.env).cuaRepl, "available");
+  const result = run(process.execPath, [script, "setup", "--sync-tools", "--replace-cua", "--dry-run", "--json",
+    "--cua-template", f.app.template, "--chatgpt-resources", f.app.resources], { env: { ...process.env, ...f.env } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).toolSync.replaced, ["mcp_servers.cua_repl"]);
+  assert.doesNotMatch(result.stdout + result.stderr, /DO-NOT-COPY/);
+  assert.equal(fs.readFileSync(f.destination, "utf8"), before);
+  syncToolConfig({ ...f.options, replaceCua: true });
+  const after = fs.readFileSync(f.destination, "utf8");
+  assert.doesNotMatch(after, /DO-NOT-COPY|not a header|# literal/);
+  assert.equal(readToolConfig(after).mcp_servers.cua_repl.env.CUA_REPL_ENABLED_SURFACES, "browser");
+});
+
 test("missing template/resources/assets fail before any write, including planned node_repl changes", () => {
   for (const failure of ["template", "resources", "launcher", "executable"]) {
     const f = fixture();
@@ -144,6 +177,16 @@ test("CUA CLI flags support relocated fixtures, offline dry-run and strict optio
   assert.equal(result.status, 0, result.stderr);
   assert.match(JSON.parse(result.stdout).toolSync.append, /cua_repl/);
   assert.equal(fs.existsSync(f.env.CODEX_COMPANION_HOME), false);
+  const sentinel = path.join(f.base, "shell-expanded");
+  const quotedCwd = path.join(f.base, "Working directory $(touch shell-expanded)");
+  fs.mkdirSync(quotedCwd);
+  const raw = run(process.execPath, [script, "setup", "--json", "--args-stdin"], {
+    cwd: f.base, env: { ...process.env, ...f.env },
+    input: `--sync-tools --dry-run --cwd '${quotedCwd}' --cua-template '${f.app.template}' --chatgpt-resources '${f.app.resources}'`
+  });
+  assert.equal(raw.status, 0, raw.stderr);
+  assert.equal(JSON.parse(raw.stdout).toolSync.cuaSource.resources, f.app.resources);
+  assert.equal(fs.existsSync(sentinel), false);
   for (const args of [["--cua-template", f.app.template], ["--sync-tools", "--cua-template", ""], ["--sync-tools", "--chatgpt-resources", "relative"], ["--sync-tools", "--cua-template"]]) {
     const invalid = run(process.execPath, [script, "setup", ...args], { env: { ...process.env, ...f.env } });
     assert.notEqual(invalid.status, 0);

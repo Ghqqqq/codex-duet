@@ -1,4 +1,6 @@
 import { isolatedCodexCommand } from "./codex-home.mjs";
+import { cleanDisplayText } from "./display-text.mjs";
+import { renderUsageTotals } from "./run-journal.mjs";
 import fs from "node:fs";
 
 const REVIEW_OUTPUT_SCHEMA = JSON.parse(fs.readFileSync(new URL("../../schemas/review-output.schema.json", import.meta.url), "utf8"));
@@ -106,6 +108,8 @@ function isStructuredReviewStoredResult(storedJob) {
 
 function formatJobLine(job) {
   const parts = [job.id, `${job.status || "unknown"}`];
+  if (job.agentName) parts.push(`worker: ${job.agentName}`);
+  if (job.model || job.effort) parts.push([job.model, job.effort].filter(Boolean).join(" / "));
   if (job.kindLabel) {
     parts.push(job.kindLabel);
   }
@@ -154,8 +158,8 @@ function appendPendingQuestion(lines, job) {
 function appendActiveJobsTable(lines, jobs) {
   const showSession = jobs.some(job => job.sessionLabel);
   lines.push("Active jobs:");
-  lines.push(`| Job | Kind | Status | Phase | Elapsed | Codex Session ID | Summary | Actions |${showSession ? " Claude session |" : ""}`);
-  lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- |${showSession ? " --- |" : ""}`);
+  lines.push(`| Job | Worker | Model / effort | Kind | Status | Phase | Elapsed | Codex Session ID | Summary | Actions |${showSession ? " Claude session |" : ""}`);
+  lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |${showSession ? " --- |" : ""}`);
   for (const job of jobs) {
     const actions = [`/codex:status ${job.id}`];
     if (job.status === "queued" || job.status === "running") {
@@ -164,13 +168,14 @@ function appendActiveJobsTable(lines, jobs) {
     if (job.adoptCommand) actions.push(job.adoptCommand);
     const status = job.orphaned ? `${job.status} (orphaned; ${job.leaseRemainingSec}s lease)` : job.status;
     lines.push(
-      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(`${status}${unansweredQuestion(job) ? " (Waiting for an answer)" : ""}`)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |${showSession ? ` ${escapeMarkdownCell(job.sessionLabel)} |` : ""}`
+      `| ${escapeMarkdownCell(job.id)} | ${escapeMarkdownCell(job.agentName)} | ${escapeMarkdownCell([job.model, job.effort].filter(Boolean).join(" / "))} | ${escapeMarkdownCell(job.kindLabel)} | ${escapeMarkdownCell(`${status}${unansweredQuestion(job) ? " (Waiting for an answer)" : ""}`)} | ${escapeMarkdownCell(job.phase ?? "")} | ${escapeMarkdownCell(job.elapsed ?? "")} | ${escapeMarkdownCell(job.threadId ?? "")} | ${escapeMarkdownCell(job.summary ?? "")} | ${actions.map((action) => `\`${action}\``).join("<br>")} |${showSession ? ` ${escapeMarkdownCell(job.sessionLabel)} |` : ""}`
     );
   }
 }
 
 function pushJobDetails(lines, job, options = {}) {
   lines.push(`- ${formatJobLine(job)}`);
+  if (job.sandbox) lines.push(`  Sandbox: ${job.sandbox}`);
   if (job.summary) {
     lines.push(`  Summary: ${job.summary}`);
   }
@@ -289,7 +294,7 @@ export function renderReviewResult(parsedResult, meta) {
 
     appendReasoningSection(lines, meta.reasoningSummary ?? parsedResult.reasoningSummary);
 
-    return `${lines.join("\n").trimEnd()}\n`;
+    return cleanDisplayText(`${lines.join("\n").trimEnd()}\n`);
   }
 
   const validationError = validateReviewResultShape(parsedResult.parsed);
@@ -309,7 +314,7 @@ export function renderReviewResult(parsedResult, meta) {
 
     appendReasoningSection(lines, meta.reasoningSummary ?? parsedResult.reasoningSummary);
 
-    return `${lines.join("\n").trimEnd()}\n`;
+    return cleanDisplayText(`${lines.join("\n").trimEnd()}\n`);
   }
 
   const data = normalizeReviewResultData(parsedResult.parsed);
@@ -347,7 +352,7 @@ export function renderReviewResult(parsedResult, meta) {
 
   appendReasoningSection(lines, meta.reasoningSummary);
 
-  return `${lines.join("\n").trimEnd()}\n`;
+  return cleanDisplayText(`${lines.join("\n").trimEnd()}\n`);
 }
 
 export function renderNativeReviewResult(result, meta) {
@@ -374,7 +379,7 @@ export function renderNativeReviewResult(result, meta) {
 
   appendReasoningSection(lines, meta.reasoningSummary);
 
-  return `${lines.join("\n").trimEnd()}\n`;
+  return cleanDisplayText(`${lines.join("\n").trimEnd()}\n`);
 }
 
 export function renderReviewDetails(report, job) {
@@ -401,11 +406,11 @@ export function renderTaskResult(parsedResult, meta) {
   const rawOutput = typeof parsedResult?.rawOutput === "string" ? parsedResult.rawOutput : "";
   const origins = `${meta?.approvedBrowserOrigins?.length ? `Approved browser origins (this job): ${meta.approvedBrowserOrigins.join(", ")}\n` : ""}${meta?.approvedComputerApps?.length ? `Approved Computer Use apps (this job): ${meta.approvedComputerApps.join(", ")}\n` : ""}`.replace(/\n$/, "\n\n");
   if (rawOutput) {
-    return origins + (rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`);
+    return cleanDisplayText(origins + (rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`));
   }
 
   const message = String(parsedResult?.failureMessage ?? "").trim() || "Codex did not return a final message.";
-  return `${origins}${message}\n`;
+  return cleanDisplayText(`${origins}${message}\n`);
 }
 
 export function renderStatusReport(report, options = {}) {
@@ -414,6 +419,7 @@ export function renderStatusReport(report, options = {}) {
     "",
     `Session runtime: ${report.sessionRuntime.label}`,
     `Review gate: ${report.config.stopReviewGate ? "enabled" : "disabled"}`,
+    ...(report.usageTotals ? [renderUsageTotals(report.usageTotals)] : []),
     ""
   ];
 
@@ -457,7 +463,7 @@ export function renderStatusReport(report, options = {}) {
     lines.push("Ending the session will trigger a fresh Codex adversarial review and block if it finds issues.");
   }
 
-  return `${lines.join("\n").trimEnd()}\n`;
+  return cleanDisplayText(`${lines.join("\n").trimEnd()}\n`);
 }
 
 export function renderJobStatusReport(job) {
@@ -470,7 +476,7 @@ export function renderJobStatusReport(job) {
     showResultHint: true,
     showReviewHint: true
   });
-  return `${lines.join("\n").trimEnd()}\n`;
+  return cleanDisplayText(`${lines.join("\n").trimEnd()}\n`);
 }
 
 function appendResultSection(lines, title, entries, format = String, omitted = 0) {
@@ -513,7 +519,7 @@ export function renderStoredJobResult(job, storedJob) {
   const status = report.status ?? storedJob?.status ?? job.status ?? "unknown";
   const threadId = storedJob?.threadId ?? job.threadId ?? null;
   const resumeCommand = threadId ? isolatedCodexCommand(["resume", threadId]) : null;
-  // Keep the final summary (or the existing formatted review) verbatim.
+  // Keep the final summary (or formatted review) intact until display cleanup.
   const summary = isStructuredReviewStoredResult(storedJob) && storedJob?.rendered
     ? storedJob.rendered
     : result.rawOutput || result.codex?.stdout || structured?.summary || report.summary || storedJob?.rendered || job.summary || "";
@@ -537,7 +543,7 @@ export function renderStoredJobResult(job, storedJob) {
   if (apps.length) lines.push("", `Approved Computer Use apps (this job): ${apps.join(", ")}`);
   if (threadId) lines.push("", `Codex session ID: ${threadId}`, `Resume in Codex: ${resumeCommand}`);
   lines.push("", resultNextAction(status, report.continuationCommand ?? job.continuationCommand ?? resumeCommand));
-  return `${lines.join("\n")}\n`;
+  return cleanDisplayText(`${lines.join("\n")}\n`);
 }
 
 export function renderCancelReport(job) {
@@ -556,5 +562,5 @@ export function renderCancelReport(job) {
   }
   lines.push("- Check `/codex:status` for the updated queue.");
 
-  return `${lines.join("\n").trimEnd()}\n`;
+  return cleanDisplayText(`${lines.join("\n").trimEnd()}\n`);
 }

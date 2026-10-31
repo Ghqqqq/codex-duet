@@ -79,13 +79,16 @@ export function parseArgs(argv, config = {}) {
       const key = aliasMap[rawKey] ?? rawKey;
 
       if (booleanOptions.has(key)) {
-        options[key] = inlineValue === undefined ? true : inlineValue !== "false";
+        if (inlineValue !== undefined && inlineValue !== "true" && inlineValue !== "false") {
+          throw new Error(`Invalid boolean value for --${rawKey}; use true or false, or pass the bare flag.`);
+        }
+        options[key] = inlineValue === undefined || inlineValue === "true";
         continue;
       }
 
       if (valueOptions.has(key)) {
         const nextValue = inlineValue ?? argv[index + 1];
-        if (nextValue === undefined || (inlineValue === undefined &&
+        if (nextValue === undefined || !nextValue.trim() || (inlineValue === undefined &&
             (isRecognizedOption(nextValue, valueOptions, booleanOptions, aliasMap) ||
               (repeatableOptions.has(key) && nextValue.startsWith("-"))))) {
           throw new Error(`Missing value for --${rawKey}`);
@@ -112,7 +115,7 @@ export function parseArgs(argv, config = {}) {
 
     if (valueOptions.has(key)) {
       const nextValue = argv[index + 1];
-      if (nextValue === undefined || isRecognizedOption(nextValue, valueOptions, booleanOptions, aliasMap) ||
+      if (nextValue === undefined || !nextValue.trim() || isRecognizedOption(nextValue, valueOptions, booleanOptions, aliasMap) ||
           (repeatableOptions.has(key) && nextValue.startsWith("-"))) {
         throw new Error(`Missing value for -${shortKey}`);
       }
@@ -131,12 +134,13 @@ export function parseArgs(argv, config = {}) {
 export function splitRawArgumentString(raw, options = {}) {
   const tokens = [];
   let current = "";
+  let started = false;
   let quote = null;
   let escaping = false;
 
   for (let index = 0; index < raw.length; index += 1) {
     const character = raw[index];
-    if (options.literalAfterSeparator && !quote && !escaping && !current &&
+    if (options.literalAfterSeparator && !quote && !escaping && !started &&
         raw.slice(index, index + 2) === "--" && (index === 0 || /\s/.test(raw[index - 1])) &&
         (index + 2 === raw.length || /\s/.test(raw[index + 2]))) {
       tokens.push("--");
@@ -150,7 +154,8 @@ export function splitRawArgumentString(raw, options = {}) {
       continue;
     }
 
-    if (character === "\\") {
+    if (character === "\\" && quote !== "'") {
+      started = true;
       escaping = true;
       continue;
     }
@@ -165,18 +170,21 @@ export function splitRawArgumentString(raw, options = {}) {
     }
 
     if (character === "'" || character === "\"") {
+      started = true;
       quote = character;
       continue;
     }
 
     if (/\s/.test(character)) {
-      if (current) {
+      if (started) {
         tokens.push(current);
         current = "";
+        started = false;
       }
       continue;
     }
 
+    started = true;
     current += character;
   }
 
@@ -184,7 +192,7 @@ export function splitRawArgumentString(raw, options = {}) {
     current += "\\";
   }
 
-  if (current) {
+  if (started) {
     tokens.push(current);
   }
 
@@ -196,20 +204,21 @@ export function splitRawArgumentString(raw, options = {}) {
 function readRawOptionToken(raw, offset) {
   while (/\s/.test(raw[offset] ?? "") && offset < raw.length) offset += 1;
   const start = offset;
-  let value = "", quote = null, escaping = false;
+  let value = "", quote = null, escaping = false, started = false;
   for (; offset < raw.length; offset += 1) {
     const character = raw[offset];
+    if (!quote && !escaping && /\s/.test(character)) break;
+    started = true;
     if (escaping) { value += character; escaping = false; }
-    else if (character === "\\") escaping = true;
+    else if (character === "\\" && quote !== "'") escaping = true;
     else if (quote) {
       if (character === quote) quote = null;
       else value += character;
     } else if (character === "'" || character === '"') quote = character;
-    else if (/\s/.test(character)) break;
     else value += character;
   }
   if (escaping) value += "\\";
-  return start < raw.length ? { start, end: offset, value } : null;
+  return started ? { start, end: offset, value } : null;
 }
 
 function rawSeparatorOffset(raw) {
@@ -217,7 +226,7 @@ function rawSeparatorOffset(raw) {
   for (let index = 0; index < raw.length; index += 1) {
     const character = raw[index];
     if (escaping) { escaping = false; continue; }
-    if (character === "\\") { escaping = true; tokenStart = false; continue; }
+    if (character === "\\" && quote !== "'") { escaping = true; tokenStart = false; continue; }
     if (quote) { if (character === quote) quote = null; continue; }
     if (character === "'" || character === '"') { quote = character; tokenStart = false; continue; }
     if (/\s/.test(character)) { tokenStart = true; continue; }

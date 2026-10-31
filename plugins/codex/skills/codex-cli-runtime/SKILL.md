@@ -8,8 +8,8 @@ user-invocable: false
 
 Use this skill only inside the `codex:codex-rescue` subagent. Its restrictions apply to that wrapper. The parent Claude agent owns planning, parallel task assignments, integration, verification, and user-facing summaries. The self-contained `codex:codex-worker` agent uses its own instructions for fallback delegation and worker-specific follow-ups; do not load this rescue-only skill there.
 
-The parent uses `Agent(subagent_type: "codex:codex-native")` by default from the first dispatch.
-If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.
+The parent uses `Agent(subagent_type: "codex:codex-native")` by default from the first dispatch unless saved dispatch guidance selects Bash: `duet setup --dispatch bash` selects it immediately, while `auto` prefers it for 24 hours after the last native-unavailable observation, or until `duet setup --dispatch` is run without `--dry-run`.
+If saved dispatch guidance selects Bash, native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.
 Native agents receive follow-ups and answers through SendMessage, which pins the displayed question. Do not parse output files.
 
 For a Computer Use approval, the parent submits only an exact displayed option
@@ -32,8 +32,8 @@ Execution rules:
 - Prefer the helper over hand-rolled `git`, direct Codex CLI strings, or any other Bash activity.
 - Do not call `setup`, `review`, `adversarial-review`, `status`, `result`, or `cancel` from `codex:codex-rescue`.
 - Use `task` for every rescue request, including diagnosis, planning, research, and explicit fix requests.
-- You may use the `gpt-5-4-prompting` skill to rewrite the user's request into a tighter Codex prompt before the single `task` call.
-- That prompt drafting is the only Claude-side work allowed. Do not inspect the repo, solve the task yourself, or add independent analysis outside the forwarded prompt text.
+- Forward the request verbatim apart from extracting routing and runtime flags. Never tighten, rewrite, summarize, or add instructions to the task text.
+- Do not inspect the repo, solve the task yourself, or add independent analysis.
 - Omit `--model` and `--effort` unless the user chose them; Duet then applies the saved defaults (see the `codex:models` skill). Respect explicit user choices, and allow `max` for difficult work when supported.
 - Pass an explicit `spark` model choice through unchanged as `--model spark`; the runtime resolves the alias.
 - For implementation and fix requests, add `--write`. For read-only requests or review, diagnosis, planning, or research without edits, pass `--sandbox read-only` explicitly instead.
@@ -44,17 +44,18 @@ Command selection:
 - If the forwarded request includes `--background` or `--wait`, treat that as Claude-side execution control only. Strip it before calling `task`, and do not treat it as part of the natural-language task text.
 - If the forwarded request includes `--model`, pass its value through unchanged to `task`, including `spark`; the runtime resolves aliases.
 - If the forwarded request includes `--effort`, pass it through to `task`.
-- If the forwarded request includes `--resume`, strip that token from the task text and add `--resume-last`.
-- If the forwarded request includes `--fresh`, strip that token from the task text and do not add `--resume-last`.
-- `--resume`: always use `task --resume-last`, even if the request text is ambiguous.
+- If the forwarded request includes `--to <jobId>`, strip it from the task text and forward that exact target to `task`. It pins the candidate offered by the parent; never replace it with `--resume`/`--resume-last` or resolve latest again.
+- If the user explicitly supplied `--resume` without an exact `--to` target, strip it from the task text and add `--resume-last`.
+- If the forwarded request includes `--fresh`, strip that token from the task text and do not add any continuation flag.
 - `--fresh`: always use a fresh `task` run, even if the request sounds like a follow-up.
 - `--effort`: accepted values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, plus efforts listed in Codex's isolated model cache, as for setup. Pass the explicit choice through to `task`; the runtime validates it without starting Codex. The static set applies when the cache is missing.
-- `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run. It inherits the selected thread's recorded model, effort, sandbox and speed unless explicitly overridden; missing sandbox settings require explicit `--sandbox`. Request grants require original dispatch in the same Claude session. Never use latest-thread selection for parallel workers.
+- `task --to <jobId>` inherits the selected thread's recorded model, effort, sandbox and speed unless explicitly overridden; missing sandbox settings require explicit `--sandbox`. Request grants require original dispatch in the same Claude session. Explicit `task --resume-last` inherits the same settings and eligible grants, but must never select parallel workers or replace a parent-offered candidate's exact ID.
+- For a clearly requested sequential follow-up such as "keep going", "resume", "apply the top fix" or "dig deeper", use `--resume-last` only when the parent supplied neither `--to` nor `--fresh`; an offered candidate always uses its exact job ID.
 
 Safety rules:
 - Default to write-capable Codex work in `codex:codex-rescue` for implementation and fix requests. Pass `--sandbox read-only` explicitly for diagnosis, planning, research, and review without requested edits.
 - Pass task text through a single-quoted `DUET_TASK` heredoc with its delimiter absent as a complete line from the prompt. Keep runtime flags separate and shell-quote their values. Do not interpolate prompt text into shell command syntax.
-- Preserve the user's task text as-is apart from stripping routing flags.
+- Preserve the user's task text as-is apart from stripping routing and runtime flags.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Return the stdout of the `task` command exactly as-is.
 - If the Bash call fails or Codex cannot be invoked, return the failure and captured stderr to the outer Claude agent. Do not hide authentication, isolation, unsupported model/effort/tier, or runtime errors; do not claim successful execution.

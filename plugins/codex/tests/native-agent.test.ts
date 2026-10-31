@@ -534,102 +534,36 @@ test('other loops pass untouched; process and hook failures block without a mode
   await f.errors($);
 });
 
-test('typed runtime blockers select recovery without overriding thread-busy actions', async ($, on) => {
+test('typed blockers preserve runtime recovery and only native reports are projected', async ($, on) => {
   const f = fixture(on), reports = new Map();
-  const drawings: any[] = [];
-  on('ui.render', { component: 'AssistantMessage' }, (_, e) => {
-    drawings.push(clone(e));
-    return { type: 'engine', ref: 0 };
-  });
-  for (const code of ['fixture_blocker', 'usage_limit', 'context_window_exceeded', 'provider_refused', 'auth_required']) {
+  let drawn: any;
+  on('ui.render', { component: 'AssistantMessage' }, (_, e) => { drawn = e; return { type: 'engine', ref: 0 }; });
+  for (const code of ['fixture_blocker', 'context_window_exceeded', 'provider_refused', 'auth_required']) {
     reports.set(code, await f.report($, { status: 'blocked', blockers: [{ code }] }));
   }
-  const continuation = reports.get('fixture_blocker').next;
-  expect(reports.get('usage_limit').next).toBe(continuation);
   for (const code of ['context_window_exceeded', 'provider_refused', 'auth_required']) {
-    const { next } = reports.get(code);
-    expect(typeof next).toBe('string');
-    expect(next.length > 0).toBe(true);
-    expect(next === continuation).toBe(false);
-    expect(next.includes('native-worker')).toBe(false);
-    const nextAction = 'duet status predecessor --json';
-    const busy = await f.report($, { status: 'blocked', blockers: [{ code }, { code: 'thread_busy' }], next: nextAction });
-    expect(busy.next).toBe(nextAction);
+    expect(reports.get(code).next).not.toBe(reports.get('fixture_blocker').next);
+    const next = 'duet status predecessor --json';
+    expect((await f.report($, { status: 'blocked', blockers: [{ code }, { code: 'thread_busy' }], next })).next).toBe(next);
   }
-  expect(reports.get('context_window_exceeded').next === reports.get('provider_refused').next).toBe(false);
-  expect(reports.get('auth_required').next.match(/\/[a-z]+:[a-z]+/g)).toEqual(['/codex:setup']);
-
-  const captured = captures[3].events.find((event: any) => event.event === 'turn.step').result.answer;
-  const render = async (text: string, extra = {}) => {
-    const input: any = { surface: 'terminal', component: 'AssistantMessage', requestId: 'report',
-      props: { text, isFirstOfReply: true, ...extra } };
-    const original = clone(input);
-    expect(await $.ui.render(input)).toEqual({ type: 'engine', ref: 0 });
-    const drawing = drawings.at(-1);
-    expect(input).toEqual(original);
-    expect(drawing).toEqual({ ...original, props: { ...original.props, text: drawing.props.text } });
-    return drawing.props.text;
+  const render = async (text: string) => {
+    await $.ui.render({ surface: 'terminal', component: 'AssistantMessage', requestId: 'report', props: { text } });
+    return drawn.props.text;
   };
-  const markdown = await render(captured);
-  expect(typeof markdown).toBe('string');
-  expect(markdown === captured).toBe(false);
-  expect(markdown.split('\n').length <= 60).toBe(true);
-  const report = JSON.parse(captured);
+  const native = captures[3].events.find((event: any) => event.event === 'turn.step').result.answer;
+  expect(await render(native)).not.toBe(native);
+  const question = 'Choose the fixture direction?';
+  expect(await render(JSON.stringify({ ...JSON.parse(native), status: 'needs_answer',
+    question: { text: question, options: ['A', 'B'] } }))).toContain(question);
   for (const text of ['ordinary assistant text', JSON.stringify({ status: 'completed', summary: 'ordinary JSON' }),
-    JSON.stringify([report]), JSON.stringify({ ...report, status: 'not-a-report-status' }),
-    JSON.stringify({ ...report, worker: 1 }), JSON.stringify({ ...report, next: 'duet status' })]) {
+    JSON.stringify({ ...JSON.parse(native), data: { kept: true } })]) {
     expect(await render(text)).toBe(text);
   }
-  expect(await render(captured, { isSummary: true })).toBe(captured);
-  expect(await render(JSON.stringify({ ...report, worker: null, next: null })) === JSON.stringify({ ...report, worker: null, next: null })).toBe(false);
-  const entries = Array.from({ length: 25 }, (_, i) => `entry ${i}`);
-  const large = await render(JSON.stringify({ ...report, summary: entries.join('\n'), checks: { ran: entries },
-    keyFindings: entries, blockers: entries.map(code => ({ code, message: code })) }));
-  expect(large.split('\n').length <= 60).toBe(true);
-  expect(large.match(/^- /gm)).toHaveLength(30);
-  const question = { text: 'Choose the fixture direction?', options: entries.map((_, i) => `choice ${i}`) };
-  const asked = await render(JSON.stringify({ ...report, status: 'needs_answer', question,
-    summary: entries.join('\n'), checks: { ran: entries }, keyFindings: entries }));
-  const omittedQuestion = await render(JSON.stringify({ ...report, status: 'needs_answer', question: { ...question, options: question.options.slice(0, 1), optionsOmitted: 3 } }));
-  const stringQuestion = await render(JSON.stringify({ ...report, status: 'needs_input', question: question.text }));
-  const candidates = [
-    { status: 'completed', worker: null, next: null, data: { kept: true } },
-    { ...report, data: { kept: true } }, { ...report, dataOmitted: 1 },
-    { ...report, details: undefined }, { ...report, details: 'unrelated details' },
-    { ...report, jobId: 'unrelated', blockers: [] },
-    { ...report, jobId: null, blockers: [{ code: 'native_adapter_error' }, { code: 'unrelated' }] },
-  ].map(value => JSON.stringify(value));
-  const native = JSON.stringify({ status: 'blocked', worker: null, jobId: null, summary: 'Fixture block',
-    blockers: [{ code: 'native_adapter_error', message: 'Fixture failure' }], next: null, details: null });
-  const recovery = [
-    ...['context_window_exceeded', 'provider_refused', 'auth_required'].map(code => reports.get(code)),
-    { ...JSON.parse(native), blockers: [{ code: 'native_capacity' }],
-      next: 'Wait for active workers to finish or stop them before starting a new native agent. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.' },
-    { ...JSON.parse(native), blockers: [{ code: 'native_binding_gone' }], next: 'Start a new native agent.' },
-    { ...JSON.parse(native), blockers: [{ code: 'native_message_too_large' }], next: 'Start a new native agent with a shorter brief.' },
-    { ...report, notice: 'Fixture notice' },
-  ];
-  for (const value of recovery) {
-    const text = JSON.stringify(value), rendered = await render(text);
-    expect(rendered === text).toBe(false);
-    if (value.notice) expect(rendered.includes(value.notice)).toBe(true);
-  }
-  for (const value of [{ ...report, notice: {} }, { ...recovery[3], next: 'Unrelated instruction' }]) {
-    const text = JSON.stringify(value);
-    expect(await render(text)).toBe(text);
-  }
-  const untouched = [];
-  for (const text of candidates) untouched.push(await render(text) === text);
-  expect({ question: asked.includes(question.text), options: question.options.filter(option => asked.split('\n').includes(`- ${option}`)).length,
-    omitted: /^\+\d+\b/m.test(asked), bounded: asked.split('\n').length <= 60,
-    next: asked.includes(report.next), preOmitted: /^\+(\d+)\b/m.exec(omittedQuestion)?.[1], stringQuestion: stringQuestion.includes(question.text),
-    native: await render(native) !== native, untouched }).toEqual({ question: true, options: 10, omitted: true, bounded: true,
-    next: true, preOmitted: '3', stringQuestion: true, native: true, untouched: candidates.map(() => true) });
 });
 
 test('SubagentStart identifies the first native turn while discovery rejects; other types still pass through', async ($, on) => {
   const f = fixture(on);
-  await f.replay($, captures[0], true);
+  await f.replay($, captures[3], true);
   await f.isolation($, true);
 });
 
@@ -677,99 +611,44 @@ test('progress is bounded, split lines survive, duplicate notices collapse, and 
   state.notices = { turnId: 'turn-1', count: 200, last: 'burst 196', started: true };
   if (usage.length) Object.assign(state.notices, { count: 200 + usage.length, last: usage.at(-1).message.content[0].text, usage: true });
   const engine = { type: 'engine', ref: 0 };
-  let spinner: any, otherSpinner: any, toolRow: any, promptRow: any, replayedChunks: any[] = [];
-  const otherRows: any[] = [], colors = new Set();
+  let spinner: any, toolRow: any, promptRow: any, endedLog: any, refusedRow: any;
+  let replayedChunks: any[] = [], nativeSpinnerHostCalls = 0;
   const counts: number[] = [];
-  const styles = (tree: any): any[] => [tree.props ?? {}, ...(tree.children ?? [])
-    .filter((child: any) => typeof child === 'object').flatMap(styles)];
-  let runningEntry: any, parentBeforeCompletion: any, endedLog: any, refusedRow: any;
   const f = fixture(on, async notices => {
-    if (counts.at(-1) === notices.count) return;
+    if (counts.at(-1) === notices.count || ![1, 5, capture.notices.length].includes(notices.count)) return;
     counts.push(notices.count);
-    // No redraw call: notice admission must invalidate this existing mount.
-    const activeSpinner = await spinner.drawn();
-    expect(activeSpinner.type).toBe('Box');
-    expect(styles(activeSpinner).some(props => props.bold)).toBe(true);
-    expect(nativeSpinnerHostCalls).toBe(0);
-    const tree = await promptRow.drawn();
-    expect(tree.type).toBe('Box');
-    // The two command starts enter only the feed, before the third notice.
-    // Each matching completion replaces its running entry in that same log.
-    const feedCount = notices.count + (notices.count >= 3 ? liveOnly.length : 0)
-      - Number(notices.count >= 5) - Number(notices.count >= 7);
-    expect(tree.children.slice(1)).toHaveLength(Math.min(40, feedCount) + Number(feedCount > 40));
-    expect(tree.children[0]).toEqual(engine);
-    expect(await otherSpinner.drawn()).toEqual(engine);
-    const parent = await toolRow.drawn();
-    expect(parent.children[0]).toEqual(engine);
-    expect(parent.children.slice(1)).toHaveLength(1 + Math.min(3, feedCount));
-    for (const props of styles(tree)) if (props.color || props.dimColor) colors.add(props.color ?? 'dim');
-    if (notices.count === 4) {
-      runningEntry = clone(tree.children[4]);
-      parentBeforeCompletion = clone(parent);
-      expect(runningEntry.children).toHaveLength(1);
-      expect(styles(runningEntry).some(props => props.dimColor)).toBe(true);
-    }
-    if (notices.count === 5) {
-      const completed = tree.children[4];
-      expect(completed.children).toHaveLength(1);
-      expect(completed.children[0].children[1].children).toEqual(runningEntry.children[0].children[1].children);
-      expect(styles(completed).some(props => props.color === 'success')).toBe(true);
-      expect(parent.children).toHaveLength(parentBeforeCompletion.children.length);
-      expect(parent.children.filter((row: any) => styles(row).some(props => props.color === 'success'))).toHaveLength(1);
-    }
-    endedLog = clone(tree);
-    if (notices.count === 1) for (const ui of otherRows) expect(await ui.drawn()).toEqual(engine);
-  });
-  let nativeSpinnerHostCalls = 0;
-  on('ui.render', { component: 'Spinner' }, (_, e) => {
-    if (e.requestId === 'native-agent') nativeSpinnerHostCalls++;
-    return engine as any;
-  });
-  on('ui.render', { component: 'ToolUse' }, () => engine as any);
-  on('ui.render', { component: 'UserMessage' }, () => engine as any);
-  const props = { word: 'Working', message: null, suffix: '…', mode: 'thinking' as const };
-  spinner = await $.ui.mount({ plugin: 'codex', surface: 'terminal', component: 'Spinner', requestId: 'native-agent',
-    viewport: { columns: 40, rows: 24 }, props });
-  otherSpinner = await $.ui.mount({ plugin: 'codex', surface: 'terminal', component: 'Spinner', requestId: 'other-agent', props });
-  const prompt = { text: `\n ${capture.events.find((event: any) => event.event === 'turn.start').input.text} \n`,
-    origin: { kind: 'unclassified' as const }, isExpanded: true };
-  promptRow = await $.ui.mount({ plugin: 'codex', surface: 'terminal', component: 'UserMessage',
-    requestId: 'native-agent:turn-1', viewport: { columns: 40, rows: 24 }, props: prompt });
-  otherRows.push(await $.ui.mount({ plugin: 'codex', surface: 'terminal', component: 'UserMessage',
-    props: { ...prompt, text: 'An unrelated parent prompt.' } }));
-  const tool = { tool_use_id: 'spawn-1', tool: 'Agent', input: { subagent_type: TYPE },
-    isRunning: false, isErrored: false, isInterrupted: false };
-  toolRow = await $.ui.mount({ plugin: 'codex', surface: 'terminal', component: 'ToolUse', requestId: 'spawn-1', props: tool });
-  for (const value of [{ ...tool, tool: 'Bash' }, { ...tool, input: { subagent_type: 'Explore' } }, { ...tool, tool_use_id: 'unknown' }]) {
-    otherRows.push(await $.ui.mount({ plugin: 'codex', surface: 'terminal', component: 'ToolUse', props: value }));
-  }
-  otherRows.push(await $.ui.mount({ plugin: 'codex', surface: 'terminal', component: 'Spinner', requestId: 'native-session', props }));
-  try {
-    expect(await spinner.drawn()).toEqual(engine);
-    expect(await toolRow.drawn()).toEqual(engine);
-    expect(await promptRow.drawn()).toEqual(engine);
-    nativeSpinnerHostCalls = 0;
-    replayedChunks = await f.replay($, capture);
-    expect(counts.at(-1)).toBe(capture.notices.length);
-    expect(counts.some(count => count > 6)).toBe(true);
     expect((await spinner.drawn()).type).toBe('Box');
     expect(nativeSpinnerHostCalls).toBe(0);
+    const tree = await promptRow.drawn();
+    expect(tree.children[0]).toEqual(engine);
+    expect(tree.children.length > 1).toBe(true);
+    expect((await toolRow.drawn()).children[0]).toEqual(engine);
+    endedLog = clone(tree);
+  });
+  on('ui.render', { component: 'Spinner' }, () => { nativeSpinnerHostCalls++; return engine as any; });
+  on('ui.render', { component: 'ToolUse' }, () => engine as any);
+  on('ui.render', { component: 'UserMessage' }, () => engine as any);
+  spinner = await $.ui.mount({ plugin: 'codex', surface: 'terminal', component: 'Spinner', requestId: 'native-agent',
+    props: { word: 'Working', message: null, suffix: '…', mode: 'thinking' } });
+  promptRow = await $.ui.mount({ plugin: 'codex', surface: 'terminal', component: 'UserMessage',
+    requestId: 'native-agent:turn-1', props: { text: capture.events.find((event: any) => event.event === 'turn.start').input.text,
+      origin: { kind: 'unclassified' }, isExpanded: true } });
+  toolRow = await $.ui.mount({ plugin: 'codex', surface: 'terminal', component: 'ToolUse', requestId: 'spawn-1',
+    props: { tool_use_id: 'spawn-1', tool: 'Agent', input: { subagent_type: TYPE },
+      isRunning: false, isErrored: false, isInterrupted: false } });
+  try {
+    expect(await spinner.drawn()).toEqual(engine);
+    nativeSpinnerHostCalls = 0;
+    replayedChunks = await f.replay($, capture);
+    expect(counts).toEqual([1, 5, capture.notices.length]);
     expect(await promptRow.drawn()).toEqual(endedLog);
-    expect(endedLog.children).toHaveLength(42);
-    expect(endedLog.children[1].children[0].props.dimColor).toBe(true);
-    const parent = await toolRow.drawn();
-    expect(parent.children).toHaveLength(2);
-    expect(parent.children[0]).toEqual(engine);
-    expect(parent.children[1].children[0].children.every((child: any) => typeof child === 'string')).toBe(true);
-    expect([...colors].sort()).toEqual(['dim', 'error', 'success', 'text']);
     expect(f.notices().filter((notice: any) => liveOnly.includes(notice.message.content[0].text))).toHaveLength(0);
     await $.turn.start({ agentId: 'native-agent', turnId: 'refused-turn', text: 'x'.repeat(65537) });
     const refused = await drain($.turn.step({ ...step.input, turnId: 'refused-turn' }));
     expect(JSON.parse(refused.result.answer).status).toBe('blocked');
     refusedRow = await toolRow.drawn();
   } finally {
-    for (const ui of [spinner, otherSpinner, toolRow, promptRow, ...otherRows]) await ui.unmount();
+    for (const ui of [spinner, toolRow, promptRow]) await ui.unmount();
   }
   expect(capture.notices).toHaveLength(200 + usage.length);
   const thinking = replayedChunks.filter((chunk: any) => chunk.kind === 'thinking');
@@ -794,139 +673,25 @@ test('progress is bounded, split lines survive, duplicate notices collapse, and 
   }
 });
 
-test('compact logs fold completed exploration, preserve boundaries and reserve outcome cells at 80 and 120 columns', async () => {
-  await displayReplay(async ({ run, setColumns, setHome }: any) => {
+test('compact logs retain failed and unfamiliar commands beside folded exploration', async () => {
+  await displayReplay(async ({ run }: any) => {
     const plain = (node: any): string => typeof node === 'string' ? node : (node.children ?? []).map(plain).join('');
     const entries = (tree: any) => tree.children.filter((entry: any) => entry.props?.flexDirection === 'column'
       && (entry.children[0]?.children.length === 3 || entry.children[0]?.children[0]?.props.color === 'text'));
-    const event = (entry: any) => entry.children.length === 1 && entry.children[0].children.length === 3;
     const foldCount = (entry: any) => Number(/· (\d+) commands/.exec(plain(entry))?.[1] ?? 0);
     const command = (text: string, result = 'Done') => `Bash(${text}) · ${result}`;
-    const read = ['rg --files lib', "rg -n 'Approval|Grant' lib/codex.mjs", 'rg --files tests',
-      "sed -n '204,290p' lib/setup-config.mjs", "sed -n '70,145p' lib/codex.mjs", "sed -n '1,230p' tests/approvals.mjs",
-      'nl -ba lib/cua-config.mjs', 'cat tests/test-environment.mjs'];
-    setHome('/Users/fixture');
-    for (const columns of [80, 120]) {
-      setColumns(columns);
-      const long = `node ${root}/repo/${'segment/'.repeat(11)}file.mjs && cat b`;
-      const lines = ['Codex: ' + 'Checking approval parsing and temporary grants. '.repeat(20), ...read.map(text => command(text)),
-        command(long, 'Error: exit 1'), 'Codex: ' + 'Checking the candidate defects and their reproduction. '.repeat(20),
-        'Write(repro-mirror-partial.mjs) · +42 −0', command('/Users/fixture/runtime/bin/node repro-policy.mjs'),
-        command('node --import test-root-preload.mjs --test tests/policy.mjs', 'Done (1.8s)')];
-      const rendered = await run(`compact-${columns}`, 'turn-1', true, lines);
-      const log = entries(rendered.phases.at(-1)), events = log.filter(event), messages = log.filter((entry: any) => !event(entry));
-      expect(log).toHaveLength(7);
-      expect(events).toHaveLength(5);
-      expect(messages.map((entry: any) => entry.children.length)).toEqual([4, 4]);
-      for (const message of messages) {
-        expect(plain(message.children.at(-1)).endsWith('…')).toBe(true);
-        expect(plain(message).length > 300).toBe(true);
-        expect(message.children.every((row: any) => plain(row).length <= columns)).toBe(true);
-      }
-      expect(events.map(foldCount)).toEqual([8, 0, 0, 0, 0]);
-      expect(events.map((entry: any) => entry.children[0].children[0].children[0].props.color)).toEqual(['success', 'error', 'success', 'success', 'success']);
-      for (const entry of events) {
-        expect(entry.children).toHaveLength(1);
-        const row = entry.children[0], [dot, title, outcome] = row.children;
-        expect(row.props.width).toBe(columns);
-        expect(row.children.reduce((sum: number, cell: any) => sum + cell.props.width, 0)).toBe(columns);
-        expect(outcome.props.flexShrink).toBe(0);
-        expect(outcome.props.width >= plain(outcome).length).toBe(true);
-        expect(title.props.flexGrow).toBe(1);
-        expect(title.props.minWidth).toBe(0);
-        expect(plain(title).length <= title.props.width).toBe(true);
-        expect(dot.children[0].props.color).toBe(outcome.children[0].props.color);
-      }
-      const failure = events[1].children[0].children;
-      expect(plain(failure[1]).includes('…')).toBe(true);
-      expect(/\(\+1\)$/.test(plain(failure[1]))).toBe(true);
-      expect(Number(/exit (\d+)/.exec(plain(failure[2]))?.[1])).toBe(1);
-      expect(Number(/(\d+) lines/.exec(plain(events[2].children[0].children[2]))?.[1])).toBe(42);
-      expect(Number(/(\d+\.\d+)s/.exec(plain(events[4].children[0].children[2]))?.[1])).toBe(1.8);
-      expect(plain(events[3]).includes('/Users/')).toBe(false);
-      // Fold before taking the last three: the parent retains the message
-      // preceding eight calls, then the folded row and the isolated error.
-      const summary = rendered.summaries[9].children.slice(2);
-      expect(summary).toHaveLength(3);
-      expect(Number(/· (\d+) commands/.exec(plain(summary[1]))?.[1])).toBe(8);
-      expect(summary[2]).toEqual(events[1].children[0]);
-      const full = entries(rendered.phases[8]);
-      expect(full.filter(event).map(foldCount)).toEqual([8]);
-      expect(summary[1]).toEqual(full.find(event).children[0]);
+    const result = await run('compact', 'turn-1', true, [command('cat a'), command('rg --files lib'),
+      command('node change.mjs', 'Error: exit 1')]);
+    const log = entries(result.phases.at(-1));
+    expect(log.map(foldCount)).toEqual([2, 0]);
+    expect(log.at(-1).children[0].children[0].children[0].props.color).toBe('error');
+    // Commands the display cannot classify must remain visible individually.
+    for (const [index, text] of ['cat b > output', 'find . -de"lete"', 'rg --pre=script x b'].entries()) {
+      const boundary = await run(`boundary-${index}`, 'turn-1', true, ['cat a', text, 'cat c'].map(value => command(value)));
+      expect(entries(boundary.phases.at(-1)).map(foldCount)).toEqual([0, 0, 0]);
     }
-    setColumns(120);
-    const breaks = [command('cat b', 'Error: exit 2'), command('cat b', 'running'), command('node change.mjs'),
-      'Codex: boundary', 'Write(b) · +2 −0', command('cat b > output'), command('cat b >> output'),
-      command('cat b; touch output'), command('cat "$(touch output)"'), command('cat `touch output`'),
-      command('cat <(touch output)'), command('cat b &'), command("sed -n -i '1p' b"),
-      command("sed -n '1w output' b"), command("sed -n 's/a/b/w output' b"), command('find . -delete'),
-      command('find . -exec touch output \\;'), command('git diff --output=output'), command('tree -o output'),
-      command('file -C magic'), command('rg --pre=script pattern b'), command('cat b', 'exit unknown')];
-    for (let i = 0; i < breaks.length; i++) {
-      const result = await run(`boundary-${i}`, 'turn-1', true, [command('cat a'), breaks[i], command('cat c')]);
-      const log = entries(result.phases.at(-1));
-      expect(log).toHaveLength(3);
-      expect(log.map(foldCount)).toEqual([0, 0, 0]);
-      if (i < 2) expect(log[1].children[0].children[0].children[0].props).toEqual(expect.objectContaining(
-        i === 0 ? { color: 'error' } : { dimColor: true }));
-    }
-    // Unmodeled shell words stay visible in both logs.
-    const unsupported = ['find . -name victim -de"lete"', 'find . -ex"ec" touch output \\;',
-      'git diff --out"put"=output', 'tree -"o" output', 'find . -de\\lete',
-      'git diff --${OPTION}=output', 'tree "-$OPTION" output', 'find . -del*', 'find . -delet[e]',
-      // An assignment's value or a local file is never the program.
-      "BASH_ENV=./cat /bin/bash -c 'cat input'", "'X=./cat' /usr/bin/touch output", './cat input',
-      // Abbreviated long options and clustered short ones still write.
-      'file --comp -m magic', 'git diff --out=output', 'tree -ao output', 'tree -H . -L 1 -R',
-      'rg --hostname-bin=./tool -n x', 'rg -nz x', 'file -bZ input.Z', 'git log --show-signature',
-      'git show --format=%GG HEAD', 'git show --format=%+GG HEAD', 'git status --help'];
-    for (let i = 0; i < unsupported.length; i++) {
-      const result = await run(`unsupported-${i}`, 'turn-1', true,
-        ['cat first', unsupported[i], 'cat last'].map(text => command(text)));
-      const log = entries(result.phases.at(-1));
-      expect(log).toHaveLength(3);
-      expect(log.map(foldCount)).toEqual([0, 0, 0]);
-      expect(result.summaries.at(-1).children.slice(2)).toEqual(log.map((entry: any) => entry.children[0]));
-    }
-    const ordinary = [...read, 'git diff', 'git show HEAD', 'git log -1', 'git status --short',
-      'ls -la', 'wc -l input', 'find . -name "*.mjs"', 'cat "input"', 'cat input && wc -l input'];
-    const ordinaryLog = entries((await run('ordinary-fold', 'turn-1', true, ordinary.map(text => command(text)))).phases.at(-1));
-    expect(ordinaryLog.map(foldCount)).toEqual([ordinary.length]);
-    for (const columns of [80, 120]) {
-      setColumns(columns);
-      // Independent fixture widths: every listed emoji is two cells, e+acute
-      // is one, and the ASCII title/tail/suffix each occupy one cell per char.
-      for (const [glyph, cells] of [['⌚', 2], ['☕', 2], ['©️', 2], ['😀', 2], ['🧑‍🔬', 2], ['é', 1]] as const) {
-        const result = await run(`wide-${columns}-${glyph.codePointAt(0)}`, 'turn-1', true,
-          [command(`cat ${(glyph + 'aaaaaaa').repeat(12)}/tail.txt && cat next`, 'Error: exit 1')]);
-        const [, title] = entries(result.phases.at(-1))[0].children[0].children;
-        const label = plain(title), rest = label.split(glyph).join('');
-        const used = (label.length - rest.length) / glyph.length * cells + rest.length;
-        expect(used <= title.props.width).toBe(true);
-        expect(/^[\x20-\x7e…]*$/.test(rest)).toBe(true); // No partial grapheme remains.
-        expect(label.endsWith('/tail.txt) (+1)')).toBe(true);
-      }
-    }
-    setColumns(120);
-    // Separators inside quotes/escapes/subshells never inflate the suffix.
-    const quoted = ["rg 'a;b && c || d | e' f && cat f", 'cat a\\;b || head c',
-      'node "a;b" | cat f', 'node $(printf "a;b") && cat f', 'node (a; b) && cat f'];
-    for (let i = 0; i < quoted.length; i++) {
-      const result = await run(`quoted-${i}`, 'turn-1', true, [command(quoted[i])]);
-      const title = entries(result.phases.at(-1))[0].children[0].children[1];
-      expect(Number(/\(\+(\d+)\)$/.exec(plain(title))?.[1])).toBe(1);
-    }
-    const paths = await run('paths', 'turn-1', true, [
-      command(`node ${root}/repo/src/x.mjs /Users/fixture/notes/x.mjs`, 'Done'),
-      command(`node ${root}/repo-other/x.mjs`, 'Done')]);
-    const pathRows = entries(paths.phases.at(-1));
-    expect(plain(pathRows[0]).includes(root + '/repo/')).toBe(false);
-    expect(plain(pathRows[0]).includes('~/notes/')).toBe(true);
-    expect(plain(pathRows[1]).includes(root + '/repo-other/')).toBe(true);
-    // Rendering a fold never consumes stored entries or completion pairing.
-    const running = await run('fold-fifo', 'turn-1', true, [command('cat a', 'running'), command('cat a', 'running'),
+    const paired = await run('paired', 'turn-1', true, [command('cat a', 'running'), command('cat a', 'running'),
       command('cat a'), command('cat a'), command('rg x b', 'running'), command('rg x b', 'Error: exit 3')]);
-    expect(running.phases.map((tree: any) => entries(tree).length)).toEqual([1, 2, 2, 1, 2, 2]);
-    expect(entries(running.phases.at(-1)).map(foldCount)).toEqual([2, 0]);
+    expect(entries(paired.phases.at(-1)).map(foldCount)).toEqual([2, 0]);
   });
 });

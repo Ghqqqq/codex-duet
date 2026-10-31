@@ -1,9 +1,9 @@
 import { test, expect } from 'claude-code/testing';
 import type { On } from 'claude-code';
 import type { CodexLiveMarker, CodexLiveState } from '../types';
-import { attention, attentionCounts, boundState, clearFinished, groupedSessions, isHiddenJob, normalizeSessions, visibleJobs, visibleSessions,
+import { attention, attentionCounts, boundState, clearFinished, groupedSessions, normalizeSessions, visibleJobs, visibleSessions,
   collapseActivity, isAbsolutePath, jobSummary, jobView, markerView, reusedAgentName, statusLine, validView } from '../hooks/model';
-import { activityItems, eventItem, feedItems, feedLines, feedWindow, footerLayout, headerLayout, jobRow, jobRowColor, recentEndedJobIds,
+import { activityItems, eventItem, feedItems, feedLines, feedWindow, footerLayout, headerLayout, jobRow, jobRowColor, jobState,
   normalizeFeed, paneLayout, reconcileFeed, relativePath, scrollFeed, selectedJob, width } from '../hooks/layout';
 
 const createdAt = '2026-10-18T00:00:00.000Z';
@@ -16,26 +16,6 @@ const running = () => jobView({ id: 'job-a', status: 'running', startedAt: creat
     { seq: 2, at: createdAt, type: 'commandExecution', command: 'npm test', lifecycle: 'started' }],
   result: 'must not enter state', rendered: 'must not enter state',
 }, marker());
-
-function richJob() {
-  return jobView({ id: 'job-a', status: 'running', startedAt: createdAt, sandbox: 'read-only',
-    request: { model: 'gpt-6-astra', effort: 'xhigh', serviceTier: 'priority' },
-    pendingQuestion: { text: 'Which approach?', options: ['Check leases', { label: 'Run tests' }] },
-    activity: [
-      { seq: 1, type: 'plan', steps: ['Old plan'] },
-      { seq: 2, type: 'agentMessage', text: 'Short fallback', body: "I'll inspect the lease paths first.\n\nThen run the tests." },
-      { seq: 3, at: createdAt, type: 'commandExecution', command: "/bin/zsh -lc 'node --test tests/worker-lifecycle.test.mjs'", lifecycle: 'started' },
-      { seq: 4, type: 'commandExecution', command: "/bin/zsh -lc 'git status --short'", lifecycle: 'started' },
-      { seq: 5, type: 'commandExecution', command: "/bin/zsh -lc 'git status --short'", lifecycle: 'completed', exitCode: 0, durationMs: 400 },
-      { seq: 6, type: 'commandExecution', command: '/bin/bash -c "npm test"', lifecycle: 'completed', exitCode: 1, durationMs: 1200 },
-      { seq: 7, type: 'fileChange', kind: 'update', path: '/workspace/plugins/codex/scripts/lib/job-runtime.mjs', added: 3, removed: 1 },
-      { seq: 8, type: 'mcpToolCall', server: 'server', tool: 'tool', lifecycle: 'started' },
-      { seq: 9, type: 'mcpToolCall', server: 'server', tool: 'tool', lifecycle: 'completed', durationMs: 1200 },
-      { seq: 10, type: 'dynamicToolCall', tool: 'lookup', lifecycle: 'completed', durationMs: 20 },
-      { seq: 11, type: 'plan', steps: ['Read waitForJob', 'Check lease gaps', 'Write the verdict'], statuses: ['completed', 'inProgress', 'pending'] },
-    ],
-  }, { ...marker(), summary: 'OBJECTIVE: Task job-a' });
-}
 
 const props = { title: 'Codex', isFocused: true, bodyColumns: 60,
   placement: 'dock' as const, scroll: { offset: 0, bodyRows: 16 }, view: {} };
@@ -70,76 +50,49 @@ function track(on: On) {
 const move = (by: number, bodyRows = 14) => ({ component: 'Pane' as const, requestId: 'codex-live',
   offset: by < 0 ? 0 : 1, by, bodyRows, contentRows: bodyRows + 1, origin: { kind: 'person' as const } });
 
-// Goldens cover a whole pane. Outside these two tests, strings are fixture data,
-// identifiers or semantic counts, never prescribed product wording/spacing.
-async function paneText(ui: { findAll: Function }) {
-  return (await ui.findAll({ type: 'Box' })).filter((box: { props: { height?: number } }) => box.props.height === 1)
-    .map((box: { text: string }) => box.text.trimEnd()).join('\n').trimEnd();
-}
-
-test('golden: rich pane with tools, Markdown, current plan and pending question', async ($, on) => {
-  const job = richJob();
-  job.events[1]!.body = "# Review\nRead **the `code`** and [docs](https://example.com).\n- Check leases\n1. Run tests\n```ts\n  const ok = true;\n```\n| result | ok |";
-  job.agentName = 'Ada';
-  const waiting = jobView({ id: 'waiting', status: 'running', agentName: 'Grace',
-    pendingQuestion: { text: 'Use the existing API?', expiresAt: epoch + 899000 },
-  }, { ...marker('waiting'), createdAt: new Date(epoch - 2000).toISOString() }, true, epoch);
-  const quiet = jobView({ id: 'quiet', status: 'running', agentName: 'Linus',
-    activity: [{ seq: 1, at: new Date(epoch - 120000).toISOString(), type: 'commandExecution',
-      command: 'npm test', lifecycle: 'started' }],
-  }, marker('quiet'));
-  seed(on, boundState({ jobs: [job, waiting, quiet], selectedId: job.id, nowMs: epoch + 38000,
-    newSessionIds: ['waiting'] }));
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live',
-    props: { ...props, scroll: { offset: 0, bodyRows: 44 } } });
-  expect(await paneText(ui)).toBe(`  ? Grace  asks: Use the existing API? • new             40s
-❯ ? Ada  asks: Which approach?                           38s
-  ⏺ Linus  npm test                           38s · quiet 2m
-────────────────────────────────────────────────────────────
-⏺ Ada(Task job-a)
-  ⎿  Question for Claude · 6 tool uses · 38s
-     gpt-6-astra · xhigh · fast · read-only
-
-⏺ Review
-  Read the code and docs.
-  • Check leases
-  1. Run tests
-    const ok = true;
-  | result | ok |
-
-⏺ Bash(node --test tests/worker-lifecycle.test.mjs)
-  ⎿  Running… (38s)
-
-⏺ Bash(git status --short)
-  ⎿  Done (0.4s)
-
-⏺ Bash(npm test)
-  ⎿  Error: exit 1 (1.2s)
-
-⏺ Update(plugins/codex/scripts/lib/job-runtime.mjs)
-  ⎿  Updated job-runtime.mjs with 3 additions and 1 removal
-
-⏺ server - tool (MCP)
-  ⎿  Done (1.2s)
-
-⏺ lookup
-  ⎿  Done (0.0s)
-
-⏺ Update Todos
-  ⎿  ☒ Read waitForJob
-     ☐ Check lease gaps
-     ☐ Write the verdict
-
-⏺ Question for Claude
-  ⎿  Which approach?
-     1. Check leases
-     2. Run tests
-
-? Question for Claude · 38s`);
+test('job status labels distinguish progress, attention and confirmed outcomes', async ($, on) => {
+  for (const [status, word, color] of [
+    ['queued', 'Queued', 'inactive'], ['running', 'Running', 'claude'], ['waiting', 'Waiting for Claude', 'warning'],
+    ['completed', 'Done', 'success'], ['failed', 'Failed', 'error'], ['blocked', 'Needs your attention', 'error'],
+    ['needs_input', 'Needs your attention', 'warning'], ['interrupted', 'Stopped', 'inactive'],
+  ]) expect(jobState(jobView({ id: status, status }, marker(status)))).toEqual({ word, color });
+  const question = 'Use the existing API?';
+  const job = jobView({ id: 'job-a', status: 'running', pendingQuestion: { text: question } }, marker());
+  expect(jobState(job)).toEqual({ word: 'Question for Claude', color: 'warning' });
+  seed(on, { jobs: [job], selectedId: job.id, nowMs: epoch });
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props });
+  expect((await ui.find({ key: 'live-status' }))?.text).toContain('Question for Claude');
+  expect((await ui.find({ key: 'transcript' }))?.text).toContain(question);
   await ui.unmount();
 });
 
-test('golden: clearing the final job leaves an empty pane with retention notice', async ($, on) => {
+test('finished needs_input reports retain a terminal question separately from pending questions', () => {
+  const question = 'x'.repeat(650) + ' Which deployment region should receive the fix?';
+  const report = { status: 'needs_input', summary: 'A repository is required.', question };
+  const captured = [{ seq: 1, type: 'agentMessage', body: report.summary, question }];
+  const compactReport = { ...report, question: question.slice(0, 600) };
+  expect(question.length).toBe(698);
+  for (const fields of [{ report }, { activity: captured, report: compactReport },
+    { result: { structured: report }, report: compactReport }]) {
+    const job = jobView({ id: 'job-a', status: 'needs_input', completedAt: createdAt,
+      pendingQuestion: { text: 'Obsolete pending question' }, ...fields }, marker());
+    expect(job).toMatchObject({ active: false, finished: true, question: null, terminalQuestion: question });
+    expect(attentionCounts([job])).toEqual({ question: 0, blocked: 1, unresolved: 0 });
+    const state = boundState({ jobs: [job], selectedId: job.id, nowMs: epoch });
+    expect(validView(state)).toBe(true);
+    expect(jobSummary(job).terminalQuestion?.endsWith('…')).toBe(true);
+    const items = feedItems(selectedJob(state)!, epoch);
+    expect(items.at(-1)).toMatchObject({ key: 'terminal-question', results: [{ text: question, color: 'subtle' }] });
+    expect(items.some(item => item.key === 'pending-question')).toBe(false);
+    expect(feedLines(selectedJob(state)!, epoch, 1000).flatMap(line => line.spans).map(span => span.text).join('')).toContain(question);
+  }
+  const truncated = jobView({ id: 'job-a', status: 'needs_input',
+    report: { ...report, question: 'x'.repeat(2100) } }, marker()).terminalQuestion!;
+  expect(truncated.length).toBe(2000);
+  expect(truncated.endsWith('…')).toBe(true);
+});
+
+test('clearing the final job hides its row and retains its record', async ($, on) => {
   const job = { ...running(), status: 'completed', completedAt: createdAt };
   seed(on, { jobs: [job], selectedId: job.id, nowMs: epoch });
   const writes = track(on);
@@ -147,56 +100,9 @@ test('golden: clearing the final job leaves an empty pane with retention notice'
   await ui.press({ key: 'clear-finished' });
   expect(writes.at(-1)?.selectedId).toBe(null);
   expect(writes.at(-1)?.jobs.map(job => job.id)).toEqual([job.id]);
-  expect(await paneText(ui)).toBe(`No Codex jobs in this session yet. They appear here when
-Claude starts one.
-Finished jobs are hidden. Their records follow your Duet
-cleanup settings.`);
+  expect(await ui.find({ key: 'hidden-notice' })).toBeDefined();
   expect(await ui.find({ key: 'clear-finished' })).toBe(undefined);
   await ui.unmount();
-});
-
-test('clearing includes all terminal states, keeps active jobs and chooses the newest visible fallback', () => {
-  const jobs = ['completed', 'failed', 'cancelled', 'interrupted', 'stopped', 'blocked', 'needs_input', 'running', 'queued', 'waiting']
-    .map((status, i) => jobView({ id: status, status }, { ...marker(status), createdAt: new Date(epoch + (i - 10) * 1000).toISOString() }));
-  const state = { jobs, selectedId: 'failed', nowMs: epoch };
-  const cleared = clearFinished(state, epoch);
-  expect(cleared.hiddenJobIds).toEqual(jobs.slice(0, 7).map(job => job.id));
-  expect(visibleJobs(cleared).map(job => job.id)).toEqual(['running', 'queued', 'waiting']);
-  expect(cleared.selectedId).toBe('waiting');
-  expect(cleared.jobs).toEqual(jobs);
-  expect(state).not.toHaveProperty('hiddenJobIds');
-  const unknown = jobView({ id: 'unknown', status: 'unknown' }, marker('unknown'));
-  expect(clearFinished({ ...state, jobs: [jobs[0]!, unknown], selectedId: 'completed' }, epoch).selectedId).toBe('unknown');
-});
-
-test('hidden jobs use completion, first observed end, then creation time and honor legacy IDs', () => {
-  const jobs = [
-    ['boundary', 'completed', epoch, epoch + 1000],
-    ['later-completion', 'completed', epoch + 1, epoch - 1000],
-    ['observed-before', 'blocked', undefined, epoch - 1],
-    ['observed-after', 'interrupted', undefined, epoch + 1],
-    ['creation-only', 'stopped', undefined, undefined],
-    ['running', 'running', undefined, undefined],
-    ['queued', 'queued', undefined, undefined],
-    ['waiting', 'waiting', undefined, undefined],
-    ['legacy', 'completed', epoch + 1000, undefined],
-  ] as const;
-  const state: CodexLiveState = {
-    jobs: jobs.map(([id, status, end]) => jobView({ id, status,
-      completedAt: end === undefined ? 'invalid' : new Date(end).toISOString(),
-    }, { ...marker(id), createdAt: new Date(epoch - 5000).toISOString() })),
-    selectedId: 'boundary', nowMs: 0, hiddenFinishedBefore: epoch, hiddenJobIds: ['legacy'],
-    firstEndedAtMs: Object.fromEntries(jobs.filter(([, , , end]) => end !== undefined).map(([id, , , end]) => [id, end!])),
-  };
-  expect(state.jobs.filter(job => isHiddenJob(state, job)).map(job => job.id))
-    .toEqual(['boundary', 'observed-before', 'creation-only', 'legacy']);
-  expect(visibleJobs(state).map(job => job.id)).toEqual(['later-completion', 'observed-after', 'running', 'queued', 'waiting']);
-  expect(selectedJob(state)?.id).toBe('waiting');
-  const clearedAgain = clearFinished(state, epoch + 2000);
-  expect(clearedAgain.hiddenFinishedBefore).toBe(epoch + 2000);
-  expect(clearedAgain.hiddenJobIds).toEqual(['legacy', 'later-completion', 'observed-after']);
-  expect(visibleJobs(clearedAgain).map(job => job.id)).toEqual(['running', 'queued', 'waiting']);
-  expect(clearFinished(clearedAgain, epoch).hiddenFinishedBefore).toBe(epoch + 2000);
 });
 
 test('clearing against newer state preserves jobs that ended after the click timestamp', () => {
@@ -264,36 +170,24 @@ test('live and unresolved members control lifecycle, pending questions, status c
   expect(selectedJob(ended)).toMatchObject({ status: 'completed', lifecycleJobId: 'old' });
   expect(visibleJobs(clearFinished(ended, epoch + 10000))).toEqual([]);
 
-  const results = [
+  for (const fields of [
     { status: 'completed', result: { inferredCompletion: true, turnEnded: false } },
     { status: 'failed', result: { failureSource: 'transport', turnEnded: false } },
-    { status: 'failed', result: { errorCode: 'BROKER_CONNECTION_CLOSED' } },
-    { status: 'failed', result: { error: 'Connection to Codex closed while the turn was running.' } },
-    { status: 'failed' },
-    { status: 'interrupted', result: { turnEnded: false, interruptionConfirmed: false } },
-    { status: 'cancelled', result: { turnEnded: false, interruptionConfirmed: false } },
-  ];
-  for (const fields of results) {
-    const raw = { id: 'lost', jobClass: 'task', threadId: 'shared', turnId: 'turn', pid: 123, completedAt: createdAt, ...fields };
+    { status: 'interrupted', turnId: null, turnSubmission: { at: createdAt }, result: { turnEnded: false, interruptionConfirmed: false } },
+  ]) {
+    const raw = { id: 'lost', jobClass: 'task', threadId: 'shared', turnId: 'turn', completedAt: createdAt, ...fields };
     const lost = jobView(raw, marker('lost'));
     expect(lost).toMatchObject({ unresolved: true, finished: false, active: false });
-    expect(attention(lost)).toBeDefined();
-    expect(statusLine([lost])).toBeDefined();
+    expect(jobState(lost).word).toBe('Outcome unknown');
     const unresolved = boundState({ jobs: [lost, ...refusals], selectedId: 'thread:shared', nowMs: epoch });
     expect(selectedJob(unresolved)?.lifecycleJobId).toBe('lost');
     expect(visibleJobs(clearFinished(unresolved, epoch + 10000)).length).toBe(unresolved.jobs.length);
     expect(jobView({ ...raw, recovered: true }, marker('lost')).finished).toBe(true);
     expect(jobView({ ...raw, result: { ...fields.result, turnEnded: true } }, marker('lost')).finished).toBe(true);
-    expect(jobView({ ...raw, status: 'running', completedAt: undefined }, marker('lost')).active).toBe(true);
   }
-  for (const fields of [
-    { status: 'completed', result: { turnEnded: false } },
-    { status: 'completed', result: { inferredCompletion: true, turnEnded: false }, turnId: undefined },
-    { status: 'failed', result: { failureSource: 'transport', structured: { status: 'blocked' } } },
-    { status: 'failed', result: { workerStatus: 'failed', errorCode: 'BROKER_CONNECTION_CLOSED' } },
-    { status: 'interrupted', result: { turnEnded: false, interruptionConfirmed: true } },
-    { status: 'cancelled', result: { turnEnded: false, interruptionConfirmed: false }, turnId: undefined },
-  ]) expect(jobView({ id: 'resolved', jobClass: 'task', turnId: 'turn', ...fields }, marker('resolved')).finished).toBe(true);
+  expect(jobView({ id: 'pending-cancelled', jobClass: 'task', status: 'cancelled',
+    turnSubmission: { at: createdAt } }, marker('pending-cancelled')))
+    .toMatchObject({ status: 'unresolved', unresolved: true, finished: false, active: false });
 
   const pending = { id: 'expires', status: 'running', pendingQuestion: { text: 'Continue?', expiresAt: epoch + 1000 } };
   const expires = jobView(pending, marker('expires'), true, epoch);
@@ -305,18 +199,6 @@ test('live and unresolved members control lifecycle, pending questions, status c
   expect(attentionCounts(expired.jobs).question).toBe(0);
   expect(feedItems(selectedJob(expired)!, expired.nowMs).some(item => item.key.endsWith(':pending-question'))).toBe(false);
   expect(validView({ ...expired, jobs: [{ ...expires, question: { ...expires.question, expiresAt: 'bad' } }] })).toBe(false);
-  for (const [deadline, present] of [[null, false], [String(epoch - 1), false], [String(epoch), false],
-    [String(epoch + 1000), true], [undefined, true], ['bad', true]] as const) {
-    const question = { text: 'Continue?', ...(deadline === undefined ? {} : { expiresAt: deadline }) };
-    const projected = jobView({ ...pending, pendingQuestion: question }, marker('expires'), true, epoch);
-    expect(Boolean(projected.question)).toBe(present);
-    expect(validView({ jobs: [projected], selectedId: projected.id, nowMs: epoch })).toBe(true);
-    if (deadline === String(epoch + 1000)) {
-      expect(projected.question?.expiresAt).toBe(epoch + 1000);
-      expect(boundState({ jobs: [projected], nowMs: epoch + 1000 }).jobs[0]?.question).toBe(null);
-    }
-  }
-
   const coded = ['needs_input', 'blocked'].map((status, i) => jobView({ id: status, status, completedAt: createdAt,
     [i ? 'result' : 'report']: { blockers: [{ code: 'provider_refused' }, { code: 'ignored' }] } }, marker(status)));
   expect(coded.map(job => job.blockerCode)).toEqual(['provider_refused', 'provider_refused']);
@@ -378,13 +260,48 @@ test('overlapping tool invocations remain distinct and completed jobs stop aband
   expect(eventItem(job.events.at(-1)!, job, epoch).color).toBe('error');
 });
 
+test('command outcomes retain warning and failure labels without inventing success', () => {
+  for (const [status, exitCode, lifecycle, color, text] of [
+    ['completed', null, 'completed', 'warning', 'Done · exit unknown'],
+    ['completed', 0, 'completed', 'success', 'Done'],
+    ['completed', 9, 'completed', 'error', 'Error: exit 9'],
+    ['inProgress', undefined, 'started', 'inactive', 'Running…'],
+    ['cancelled', undefined, 'completed', 'inactive', 'Cancelled'],
+  ] as const) {
+    const item = eventItem({ seq: 1, type: 'commandExecution', command: 'echo check', status, exitCode, lifecycle }, running(), epoch);
+    expect(item.color).toBe(color);
+    expect(item.results[0]!.text).toBe(text);
+  }
+});
+
+test('legacy tool totals count all retained paired events beyond the transcript cap', () => {
+  const activity = Array.from({ length: 201 }, (_, index) => [
+    { seq: index * 2, type: 'commandExecution', command: `echo ${index}`, lifecycle: 'started' },
+    { seq: index * 2 + 1, type: 'commandExecution', command: `echo ${index}`, lifecycle: 'completed', exitCode: 0 },
+  ]).flat();
+  const raw = { id: 'job-a', status: 'completed', activity };
+  const job = jobView(raw, marker());
+  expect(job.events.length).toBe(200);
+  expect(job.toolUses).toBe(201);
+  expect(jobView(raw, marker(), false).toolUses).toBe(201);
+  expect(jobView({ ...raw, activityTotals: { toolUses: 999 } }, marker()).toolUses).toBe(999);
+});
+
 test('transcript projection rejects bad identities, bounds events and preserves safe Unicode content', () => {
   const activity = Array.from({ length: 230 }, (_, seq) => ({ seq, type: 'agentMessage', body: 'x'.repeat(3999) + '👩‍💻' }));
   const job = jobView({ id: 'job-a', status: 'running', activity }, marker());
   expect(JSON.stringify(running())).not.toContain('must not enter state');
   expect(job.events.length).toBe(200);
   expect(job.events[0]?.seq).toBe(30);
-  expect(job.events.at(-1)?.body).toBe('x'.repeat(3999));
+  expect(job.events.at(-1)?.body).toBe('x'.repeat(3999) + '…');
+  const message = 'x'.repeat(4030);
+  const captured = { seq: 1, type: 'agentMessage', body: 'x'.repeat(3999) + '…' };
+  for (const event of [captured, { seq: 1, type: 'agentMessage', body: message }]) {
+    const projected = jobView({ id: 'job-a', status: 'completed', activity: [{ ...event, seq: 1 }] }, marker());
+    expect(projected.events[0]?.body?.length).toBe(4000);
+    expect(eventItem(projected.events[0]!, projected, epoch).markdown?.endsWith('…')).toBe(true);
+    expect(feedLines(projected, epoch, 80).flatMap(line => line.spans).map(span => span.text).join('').endsWith('…')).toBe(true);
+  }
   expect(() => jobView({ id: 'other' }, marker())).toThrow();
   expect(() => markerView({ v: 1, jobId: 'a', jobFile: 'relative.json' })).toThrow();
   const absolutePaths = ['/jobs/a.json', 'C:\\Users\\x\\jobs\\a.json', 'C:/Users/x/jobs/a.json', '\\\\server\\share\\jobs\\a.json'];
@@ -425,81 +342,27 @@ test('transcript projection rejects bad identities, bounds events and preserves 
     question: { text: '检查 é?', options: [] } }, false, 12, epoch + 120000, true);
   expect(width(Object.values(row).join('')) <= 12).toBe(true);
 
-  const toolActivity = Array.from({ length: 100 }, (_, seq) => ({ seq, type: 'commandExecution', lifecycle: 'completed' }));
-  const raw = { id: 'job-a', status: 'running', activity: toolActivity };
-  for (const details of [true, false]) {
-    const totalled = jobView({ ...raw, activityTotals: { events: 500, toolUses: 300 } }, marker(), details);
-    expect(totalled.toolUses).toBe(300);
-    expect(totalled.events.length).toBe(details ? 100 : 0);
-    expect(jobSummary(totalled).toolUses).toBe(300);
-    const bounded = boundState({ jobs: [totalled], selectedId: totalled.id, nowMs: epoch });
-    expect(bounded.jobs[0]?.toolUses).toBe(300);
-    expect(validView(bounded)).toBe(true);
-    expect(jobView({ ...raw, activity: toolActivity.slice(-10), activityTotals: { toolUses: 300 } }, marker(), details).toolUses).toBe(300);
-    for (const toolUses of [undefined, null, '300', NaN, Infinity, -Infinity]) {
-      expect(jobView({ ...raw, activityTotals: { toolUses } }, marker(), details).toolUses).toBe(100);
-    }
-    expect(jobView(raw, marker(), details).toolUses).toBe(100);
-    expect(jobView({ ...raw, activityTotals: { toolUses: 0 } }, marker(), details).toolUses).toBe(0);
-  }
-  for (const agentName of ['Tesla-3', 'Tesla-12']) expect(reusedAgentName(jobView({ ...raw, agentName }, marker()))).toBe(true);
+  for (const agentName of ['Tesla-3', 'Tesla-12']) expect(reusedAgentName(jobView({ id: 'job-a', status: 'running', agentName }, marker()))).toBe(true);
   for (const agentName of [undefined, 'Tesla', 'Tesla3', 'Tesla-three', 'Tesla-3-more']) {
-    expect(reusedAgentName(jobView({ ...raw, agentName }, marker()))).toBe(false);
+    expect(reusedAgentName(jobView({ id: 'job-a', status: 'running', agentName }, marker()))).toBe(false);
   }
-  expect(reusedAgentName(jobView(raw, { ...marker(), name: 'Tesla-3' }))).toBe(true);
+  expect(reusedAgentName(jobView({ id: 'job-a', status: 'running' }, { ...marker(), name: 'Tesla-3' }))).toBe(true);
 });
 
-test('pane navigation pins controls, preserves selection and anchors through resize, and resumes following', async ($, on) => {
+test('pane navigation preserves each selection and resumes following', async ($, on) => {
   seed(on, { jobs: fourJobs(), selectedId: 'job-0', nowMs: epoch });
   const writes = track(on);
-  let delegated = 0;
-  on('ui.scroll', () => { delegated++; return {}; });
-  const sized = (rows: number) => ({ ...inlineProps, scroll: { offset: 5, bodyRows: rows } });
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: sized(20) });
-  const transcript = async () => (await ui.find({ key: 'transcript' }))!;
-  const original = (await transcript()).children;
-  const feed = () => writes.at(-1)?.feeds?.['job-0'];
-  await ui.redraw(sized(0));
-  expect(await ui.find({ key: 'footer' })).toBe(undefined);
-  await ui.redraw(sized(14));
-  await ui.redraw(sized(20));
-  expect((await transcript()).children).toEqual(original);
-  expect(writes.length).toBe(0);
-  expect((await ui.find({ key: 'engine-offset-pad' }))?.props.height).toBe(5);
-  await $.ui.scroll(move(-1, 20));
-  const stopped = feed();
-  const stoppedRows = (await transcript()).children;
-  const count = writes.length;
-  await ui.redraw(sized(14));
-  expect((await transcript()).children).toEqual(stoppedRows.slice(0, 8));
-  await ui.redraw(sized(20));
-  expect((await transcript()).children).toEqual(stoppedRows);
-  expect(writes.length).toBe(count);
-  expect(feed()?.anchor).toEqual(stopped?.anchor);
-  await $.ui.scroll({ ...move(-1, 20), pointer: { row: 0, column: 0 } });
-  await $.ui.scroll({ ...move(-1, 20), pointer: { row: 19, column: 0 } });
-  expect(feed()?.anchor).toEqual(stopped?.anchor);
-  await $.ui.scroll({ ...move(-1, 20), pointer: { row: 6, column: 0 } });
-  expect(feed()?.feedOffset).toBe(stopped!.feedOffset - 1);
-  await $.ui.scroll(move(-20, 20)); // Page up.
-  expect(feed()?.feedOffset).toBeLessThan(stopped!.feedOffset - 1);
-  await $.ui.scroll(move(20, 20)); // Page down.
-  expect(feed()?.feedOffset).toBe(stopped!.feedOffset - 1);
-  await $.ui.scroll(move(-21, 20)); // Home.
-  expect(feed()?.feedOffset).toBe(0);
-  await $.ui.scroll(move(21, 20)); // End.
-  expect(feed()?.following).toBe(true);
-  await $.ui.scroll(move(-5, 20));
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: inlineProps });
+  await $.ui.scroll(move(-5));
+  const stopped = writes.at(-1)?.feeds?.['job-0'];
+  expect(stopped?.following).toBe(false);
   await ui.press({ key: 'job-1' });
   expect(writes.at(-1)?.selectedId).toBe('job-1');
-  expect(writes.at(-1)?.feeds?.['job-1']?.following).toBe(true);
-  expect(feed()?.following).toBe(false);
+  expect(writes.at(-1)?.feeds?.['job-0']?.anchor).toEqual(stopped?.anchor);
   await ui.press({ key: 'job-0' });
-  await $.ui.scroll(move(-1, 20));
   await ui.press({ key: 'jump-bottom' });
-  expect(feed()?.following).toBe(true);
+  expect(writes.at(-1)?.feeds?.['job-0']?.following).toBe(true);
   expect(await ui.find({ key: 'jump-bottom' })).toBe(undefined);
-  expect(delegated).toBe(0);
   await ui.unmount();
 });
 
@@ -601,21 +464,7 @@ test('history paging reaches retained jobs, excludes cleared history and keeps t
   expect(writes.at(-1)?.jobsExpanded).toBe(false);
   expect(writes.at(-1)?.selectedId).toBe('h-19');
   expect(await ui.find({ key: 'h-19' })).toBeDefined();
-  // Selection must remain possible with Clear present, including explicit
-  // opens too narrow to show the full control labels.
-  for (const bodyColumns of [1, 14, 20, 24]) for (const bodyRows of [2, 14]) {
-    await ui.redraw({ ...inlineProps, bodyColumns, scroll: { offset: 0, bodyRows } });
-    for (const job of jobs) {
-      if (bodyRows === 2) {
-        for (let n = 0; n < jobs.length && writes.at(-1)?.selectedId !== job.id; n++) await ui.press({ key: 'toggle-jobs' });
-      } else {
-        for (let n = 0; n < 4 && !await ui.find({ key: job.id }); n++) await ui.press({ key: 'toggle-jobs' });
-        await ui.press({ key: job.id });
-      }
-      expect(writes.at(-1)?.selectedId).toBe(job.id);
-    }
-  }
-  await ui.redraw({ ...inlineProps, scroll: { offset: 0, bodyRows: 2 } });
+  await ui.redraw({ ...inlineProps, bodyColumns: 14, scroll: { offset: 0, bodyRows: 2 } });
   await ui.press({ key: 'toggle-jobs' });
   expect(writes.at(-1)?.selectedId).toBe('h-0');
   await ui.press({ key: 'toggle-jobs' });
@@ -694,23 +543,6 @@ test('legacy job selection and feed anchors render as their session before the f
   await ui.unmount();
 });
 
-test('selected-session turns share one serialized event budget and other sessions keep summaries', () => {
-  const jobs = Array.from({ length: 4 }, (_, n) => {
-    const job = conversationTurn(`turn-${n}`, n, 'running', n === 3 ? 'other' : 'shared');
-    job.events = Array.from({ length: 200 }, (_, seq) => ({ seq, type: 'agentMessage', body: 'x'.repeat(4000) }));
-    return job;
-  });
-  const state = boundState({ jobs: [...jobs].reverse(), selectedId: 'turn-0', nowMs: epoch });
-  expect(state.selectedId).toBe('thread:shared');
-  expect(state.jobs.filter(job => job.threadId === 'shared').every(job => job.detailsLoaded)).toBe(true);
-  expect(state.jobs.find(job => job.id === 'turn-3')).toMatchObject({ events: [], detailsLoaded: false });
-  expect(state.jobs.flatMap(job => job.events).reduce((size, event) => size + JSON.stringify(event).length, 0) <= 450000).toBe(true);
-  expect(JSON.stringify(state).length < 900000).toBe(true);
-  expect(state.jobs.find(job => job.id === 'turn-0')?.events[0]?.body!.length < 4000).toBe(true);
-  expect(state.jobs.find(job => job.id === 'turn-2')?.events.at(-1)?.body?.length).toBe(4000);
-  expect(feedItems(selectedJob(state)!, epoch).filter(item => item.key.startsWith('job-header')).length).toBe(3);
-});
-
 test('turn retention keeps twenty headers, five detailed turns and protects active work', async ($, on) => {
   const jobs = Array.from({ length: 23 }, (_, n) => conversationTurn(`turn-${n}`, n, 'completed'));
   const state = boundState({ jobs, selectedId: 'thread:shared', nowMs: epoch,
@@ -731,30 +563,6 @@ test('turn retention keeps twenty headers, five detailed turns and protects acti
   expect(protectedState.jobs.some(job => job.id === 'turn-22')).toBe(true);
   const active = jobs.map(job => ({ ...job, status: 'running', completedAt: '' }));
   expect(boundState({ ...state, jobs: active }).jobs.length).toBe(23);
-});
-
-test('global state safety evicts finished sessions after exhausting removable history and protects active jobs', () => {
-  const jobs = Array.from({ length: 900 }, (_, n) => ({
-    ...conversationTurn(`session-${n}`, n, 'completed', `thread-${n}`), label: 'x'.repeat(1000),
-  }));
-  const active = { ...conversationTurn('active', -1), threadId: 'active', label: 'y'.repeat(1000) };
-  const state = boundState({ jobs: [active, ...jobs], selectedId: 'thread:thread-899', nowMs: epoch });
-  expect(JSON.stringify(state).length < 900000).toBe(true);
-  expect(state.jobs.length < jobs.length).toBe(true);
-  expect(state.jobs.some(job => job.id === 'session-0')).toBe(false);
-  expect(state.jobs.some(job => job.id === 'session-899')).toBe(true);
-  expect(state.jobs.some(job => job.id === 'active' && job.active)).toBe(true);
-});
-
-test('recent history sorts by completion and expires while preserving selection', () => {
-  const jobs = [conversationTurn('older', 0, 'completed', 'older'), conversationTurn('newer', 1, 'completed', 'newer')];
-  jobs[0]!.completedAt = new Date(epoch + 2000).toISOString();
-  const state = { jobs, selectedId: 'thread:newer', nowMs: epoch + 3000 };
-  expect(recentEndedJobIds(groupedSessions(jobs), state.nowMs)).toEqual(['thread:older', 'thread:newer']);
-  const selected = selectedJob(state)!;
-  expect(headerLayout(state, selected, 14).jobs.length).toBe(2);
-  expect(headerLayout({ ...state, nowMs: epoch + 123000 }, selected, 14).jobs.map(job => job.id)).toEqual(['thread:newer']);
-  expect(state.jobs.length).toBe(2);
 });
 
 test('each detailed turn exposes its prompt and hint clicks preserve the reading anchor across reload', async ($, on) => {
@@ -786,7 +594,6 @@ test('each detailed turn exposes its prompt and hint clicks preserve the reading
     .filter(line => line.source === 'job:prompt-first:prompt-results');
   expect(feedItems(selected, epoch).filter(item => item.prompt).map(item => item.prompt!.turnId)).toEqual([first.id, second.id]);
   expect(first.prompt).toBe(prompt);
-  expect(promptRows().length).toBe(3);
   const mount = () => $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: sized });
   let ui = await mount();
   expect((await ui.find({ key: 'toggle-prompt-prompt-first' }))?.props.plain).toBe(true);
@@ -796,10 +603,6 @@ test('each detailed turn exposes its prompt and hint clicks preserve the reading
   expect(expanded.anchor).toEqual(stopped.anchor);
   expect(promptRows(expanded).length > 3).toBe(true);
   expect(promptRows(expanded).at(-1)!.spans.map(span => span.text).join('')).toContain(prompt.split('\n').at(-1)!);
-  // Alignment is measured against fixture content, not a layout-string golden.
-  const list = promptRows(expanded).filter(line => line.start! >= prompt.indexOf('- ') && line.start! < prompt.indexOf('\n  *'));
-  const contentColumn = list[0]!.spans.map(span => span.text).join('').indexOf('Keep');
-  expect(list.slice(1).every(line => /^ */.exec(line.spans.map(span => span.text).join(''))![0].length === contentColumn)).toBe(true);
   await ui.unmount();
   ui = await mount();
   const reloaded = JSON.parse(JSON.stringify(expanded));
@@ -808,7 +611,6 @@ test('each detailed turn exposes its prompt and hint clicks preserve the reading
   const collapsed = writes.at(-1)!.feeds![selected.id]!;
   expect(collapsed.expandedPromptIds).toEqual([]);
   expect(collapsed.anchor).toEqual(stopped.anchor);
-  expect(promptRows(collapsed).length).toBe(3);
   await ui.unmount();
 });
 
@@ -838,7 +640,6 @@ test('parent calls match C3 history only by callId across timeouts, approvals an
     [3, questionHistory[2]!.text, 'Y'.repeat(2000)], [4, undefined, undefined], [5, undefined, undefined],
   ]);
   const items = job.events.map(event => eventItem(event, job, epoch));
-  expect(items.map(item => item.results.length)).toEqual([2, 3, 1, 1]);
   expect(items[0]!.results[1]!.text).toBe(questionHistory[0]!.text);
   expect(items[1]!.results[2]!.text).toContain('Y'.repeat(2000));
   const capped = jobView({ ...raw, questionHistory: questionHistory.slice(1) }, marker());

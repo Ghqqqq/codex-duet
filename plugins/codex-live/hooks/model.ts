@@ -28,7 +28,7 @@ export function validView(value: unknown): value is CodexLiveState {
   const job = (v: unknown) => record(v) &&
     ['id', 'label', 'status', 'createdAt', 'startedAt', 'completedAt', 'model', 'effort', 'sandbox', 'finalStatus'].every(key => text(v[key])) &&
     ['active', 'finished', 'fast', 'detailsUnavailable'].every(key => bool(v[key])) &&
-    optional(v, ['threadId', 'agentName', 'workspaceRoot', 'prompt', 'currentOperation', 'lastActivityAt'], text) &&
+    optional(v, ['threadId', 'agentName', 'workspaceRoot', 'prompt', 'currentOperation', 'lastActivityAt', 'terminalQuestion'], text) &&
     optional(v, ['blockerCode'], validBlockerCode) &&
     optional(v, ['unresolved', 'notStarted', 'promptReport', 'detailsLoaded', 'detailsOmitted'], bool) &&
     optional(v, ['toolUses', 'lastUpdateMs'], finite) && (v.fileCount === null || finite(v.fileCount)) &&
@@ -56,6 +56,10 @@ export function cleanBody(value: unknown): string {
 
 export function clean(value: unknown): string {
   return cleanBody(value).replace(/\s+/g, ' ').trim();
+}
+
+function markedLimit(text: string, length: number): string {
+  return text.length <= length ? text : `${limitChars(text, length - 1)}…`;
 }
 
 // Keep the row's "asks: " prefix plus excerpt within 60 characters.
@@ -120,7 +124,7 @@ function eventView(value: unknown, index: number): CodexLiveEvent {
     seq: number(e.seq) ?? index, at: string(e.at), type: string(e.type),
     status: clean(e.status), lifecycle: string(e.lifecycle),
     text: limitChars(e.type === 'agentMessage' ? cleanBody(e.text) : clean(e.text), 300), command: string(e.command),
-    body: typeof e.body === 'string' ? limitChars(cleanBody(e.body), 4000) : undefined,
+    body: typeof e.body === 'string' ? markedLimit(cleanBody(e.body), 4000) : undefined,
     exitCode: number(e.exitCode), durationMs: number(e.durationMs),
     path: limitChars(clean(e.path), 1000), kind: clean(e.kind),
     added: count(e.added), removed: count(e.removed),
@@ -148,16 +152,16 @@ export function jobLifecycle(job: { status: string; completedAt: string; finalSt
   return { status, finished, active: !finished && ['running', 'queued', 'waiting'].includes(status) };
 }
 
-// Mirror plugins/codex/scripts/lib/state.mjs:308-322 (unresolvedTask).
+// Mirror plugins/codex/scripts/lib/state.mjs:356-374 (unresolvedTask).
 // The hook sandbox has no PID-liveness API and must not spawn processes.
 // Keep queued/running records active; conservatively apply the result checks
 // to terminal task records even when a recorded PID may still be alive.
 function unresolvedTask(job: Record<string, unknown>): boolean {
   if (job.jobClass !== 'task' || job.recovered || ['queued', 'running', 'waiting'].includes(string(job.status))) return false;
-  if (!job.result) return job.status !== 'cancelled';
+  if (!job.result) return job.status !== 'cancelled' || Boolean(job.turnSubmission);
   const result = object(job.result);
   if (['interrupted', 'cancelled'].includes(string(job.status))) {
-    return Boolean(job.turnId) && result.turnEnded === false && result.interruptionConfirmed !== true;
+    return Boolean(job.turnId || job.turnSubmission) && result.turnEnded === false && result.interruptionConfirmed !== true;
   }
   if (job.status === 'completed' && result.inferredCompletion === true) {
     return Boolean(job.turnId) && result.turnEnded === false;
@@ -221,6 +225,12 @@ export function jobView(value: unknown, marker: CodexLiveMarker, details = true,
       ? pending.options.map(option => limitChars(clean(typeof option === 'string' ? option :
         object(option).label ?? object(option).text), 300)).slice(0, 20) : [] } : null;
   const activity = Array.isArray(job.activity) ? job.activity : [];
+  const terminalQuestion = finished && status === 'needs_input'
+    ? markedLimit([
+      clean([...activity].reverse().map(object)
+        .find(event => event.type === 'agentMessage' && typeof event.question === 'string')?.question),
+      clean(object(result.structured).question), clean(report.question),
+    ].reduce((longest, question) => question.length > longest.length ? question : longest, ''), 2000) : '';
   // Pair lifecycles on lightweight metadata before cleaning retained bodies.
   const allPaired = collapseActivity(activity.map((value, index) => {
     const e = object(value);
@@ -260,14 +270,14 @@ export function jobView(value: unknown, marker: CodexLiveMarker, details = true,
     effort: limitChars(clean(request.effort), 40), fast: request.serviceTier === 'priority',
     sandbox: limitChars(clean(job.sandbox), 100), workspaceRoot: marker.workspaceRoot,
     ...summaryFields({ currentOperation, lastActivityAt: string(latest.at) }),
-    question, finalStatus: clean(report.status) || status,
+    question, ...(terminalQuestion ? { terminalQuestion } : {}), finalStatus: clean(report.status) || status,
     ...(validBlockerCode(blockerCode) ? { blockerCode } : {}),
     ...(details && typeof request.prompt === 'string'
       ? { prompt: limitChars(cleanBody(request.prompt), 20_000), promptReport: request.report === true } : {}),
     fileCount: Array.isArray(report.touchedFiles) ? report.touchedFiles.length : null,
     events: details ? events : [], detailsLoaded: details,
     toolUses: number(object(job.activityTotals).toolUses)
-      ?? paired.filter(event => ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall'].includes(event.type)).length,
+      ?? allPaired.filter(event => ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall'].includes(event.type)).length,
     detailsUnavailable: false,
   };
 }
@@ -484,6 +494,7 @@ export function jobSummary(job: CodexLiveJob): CodexLiveJob {
   const lifecycle = jobLifecycle(job);
   return { ...job, ...lifecycle, ...summaryFields(job), events: [], detailsLoaded: false,
     prompt: undefined, promptReport: undefined,
+    terminalQuestion: job.terminalQuestion ? questionExcerpt(job.terminalQuestion) : undefined,
     toolUses: job.toolUses ?? job.events.filter(event => ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall'].includes(event.type)).length,
     question: lifecycle.active && job.question ? { text: questionExcerpt(job.question.text), options: [],
       createdAt: isoTime(job.question.createdAt), ...(job.question.expiresAt === undefined ? {} : { expiresAt: job.question.expiresAt }) } : null };

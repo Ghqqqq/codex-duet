@@ -6,10 +6,11 @@ import assert from "node:assert/strict";
 import { makeTempDir, requireLocalSockets, run, readyBroker } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { CodexAppServerClient } from "../plugins/codex/scripts/lib/app-server.mjs";
-import { spawnBrokerProcess, waitForBrokerEndpoint, sendBrokerShutdown } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
+import { spawnBrokerProcess, waitForBrokerEndpoint, sendBrokerShutdown, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { resolveCodexRuntimeIdentity, resolveIsolatedCodexHome } from "../plugins/codex/scripts/lib/codex-home.mjs";
 import { parseBrokerEndpoint } from "../plugins/codex/scripts/lib/broker-endpoint.mjs";
 import { spawnOwned } from "../plugins/codex/scripts/lib/process.mjs";
+import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === "ESRCH") return false; throw error; } };
@@ -40,6 +41,61 @@ async function serve(f, handler) {
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(f.socketPath, resolve); });
   return async () => { for (const socket of sockets) socket.destroy(); await new Promise(resolve => server.close(resolve)); };
 }
+
+test("concurrent first callers publish and reuse one workspace broker", async t => {
+  if (!await requireLocalSockets(t)) return;
+  const f = fixture(), entered = path.join(f.dir, "entered"), started = path.join(f.dir, "started");
+  const gate = path.join(f.dir, "start-broker"), wrapper = path.join(f.dir, "gated-broker.mjs");
+  fs.mkdirSync(entered); fs.mkdirSync(started);
+  f.env.CODEX_COMPANION_BROKER_IDLE_SEC = "60";
+  fs.writeFileSync(wrapper, `
+    import fs from "node:fs";
+    fs.writeFileSync(${JSON.stringify(started)} + '/' + process.pid, 'started');
+    while (!fs.existsSync(${JSON.stringify(gate)})) await new Promise(resolve => setTimeout(resolve, 10));
+    await import(${JSON.stringify(new URL("../plugins/codex/scripts/app-server-broker.mjs", import.meta.url).href)});
+  `);
+  // An old crashed holder must not prevent the first caller from creating it.
+  const dead = run(process.execPath, ["-p", "process.pid"], { env: f.env });
+  assert.equal(dead.status, 0, dead.stderr);
+  const lock = path.join(resolveIsolatedCodexHome(f.env), "duet", "broker-spawn", `${path.basename(resolveStateDir(f.dir, f.env))}.lock`);
+  fs.mkdirSync(lock, { recursive: true });
+  const marker = path.join(lock, `owner-${dead.stdout.trim()}-deadbeef`);
+  fs.writeFileSync(marker, "");
+  fs.utimesSync(marker, new Date(0), new Date(0));
+  const callers = Array.from({ length: 3 }, (_, index) => {
+    const child = spawnOwned(process.execPath, ["--input-type=module", "-e", `
+      import fs from "node:fs";
+      import { ensureBrokerSession } from ${JSON.stringify(new URL("../plugins/codex/scripts/lib/broker-lifecycle.mjs", import.meta.url).href)};
+      const pending = ensureBrokerSession(process.cwd(), { scriptPath: ${JSON.stringify(wrapper)}, timeoutMs: 30000, connectDeadline: Date.now() + 30000 });
+      fs.writeFileSync(${JSON.stringify(path.join(entered, String(index)))}, 'entered');
+      console.log(JSON.stringify(await pending));
+    `], { cwd: f.dir, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    child.stdout.on("data", data => { stdout += data; }); child.stderr.on("data", data => { stderr += data; });
+    return { child, done: new Promise(resolve => child.once("close", status => resolve({ status, stdout, stderr }))) };
+  });
+  t.after(async () => {
+    fs.writeFileSync(gate, "release");
+    for (const { child } of callers) if (child.exitCode === null) child.kill("SIGTERM");
+    await Promise.all(callers.map(caller => caller.done));
+    const pids = fs.readdirSync(started).map(Number);
+    for (const pid of pids) if (alive(pid)) process.kill(pid, "SIGTERM");
+    await until(() => pids.every(pid => !alive(pid)));
+  });
+  // Keep every broker before listen until all callers have entered ensure.
+  await until(() => fs.readdirSync(entered).length === callers.length);
+  fs.writeFileSync(gate, "release");
+  const sessions = (await Promise.all(callers.map(caller => caller.done))).map(result => {
+    assert.equal(result.status, 0, result.stderr);
+    const session = JSON.parse(result.stdout); assert.ok(session); return session;
+  });
+  assert.equal(new Set(sessions.map(session => session.pid)).size, 1);
+  assert.deepEqual(fs.readdirSync(started), [String(sessions[0].pid)]);
+  assert.ok(sessions.every(session => session.endpoint === sessions[0].endpoint));
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(resolveStateDir(f.dir, f.env), "broker.json"))), sessions[0]);
+  assert.equal(alive(sessions[0].pid), true);
+  assert.equal(fs.existsSync(lock), false);
+});
 
 test("broker shutdown stops admitting clients before awaiting app-server cleanup", async t => {
   if (!await requireLocalSockets(t)) return;
@@ -407,6 +463,59 @@ test("a broker close after handshake never replays thread/start", async t => {
 const {
   fs, path, makeTempDir, run, requireLocalSockets, buildEnv, installFakeCodex, resolveIsolatedCodexHome, resolveSessionMarkersRoot, spawnOwned, script, hook, brokerScript, alive, fixture, json, delay, waitUntil, job
 } = await (await import('./fake-codex-fixture.mjs')).lifecycleHarness();
+test("runtime status inspects the selected binary and broker identity without starting or retiring a runtime", async t => {
+  if (!await requireLocalSockets(t)) return;
+  const f = fixture("review-ok");
+  f.env.CODEX_COMPANION_BROKER_IDLE_SEC = "3600";
+  const empty = json(f.call("runtime", "status", "--json"));
+  assert.equal(empty.runtime.executable, path.join(f.dir, "codex"));
+  assert.equal(empty.runtime.source, "PATH");
+  assert.equal(empty.runtime.version, "codex-cli test");
+  assert.equal(empty.broker, null);
+  assert.equal(fs.existsSync(path.join(f.dir, "fake-codex-state.json")), false);
+  const broker = await readyBroker(f.repo, f.env); t.after(broker.close);
+  const matching = json(f.call("runtime", "status", "--json"));
+  assert.equal(matching.broker.pid, broker.pid);
+  assert.equal(matching.broker.alive, true);
+  assert.equal(matching.broker.endpoint, broker.endpoint);
+  assert.equal(matching.broker.runtimeMatches, true);
+  assert.equal(matching.broker.busy, null, "the broker has no read-only busy control");
+  fs.appendFileSync(path.join(f.dir, "codex"), "\n// Updated fixture binary.\n");
+  const stale = json(f.call("runtime", "status", "--json"));
+  assert.equal(stale.broker.runtimeMatches, false);
+  assert.equal(alive(broker.pid), true);
+  assert.equal(f.state().launches.length, 1);
+  assert.equal(f.state().lastInterrupt, null);
+});
+
+test("runtime restart refuses a busy broker and retires it when idle before the next task", async t => {
+  if (!await requireLocalSockets(t)) return;
+  const f = fixture();
+  f.env.CODEX_COMPANION_BROKER_IDLE_SEC = "3600";
+  const launch = json(f.call("task", "--fresh", "--detached", "--json", "Keep the runtime busy"));
+  await waitUntil(() => job(f, launch.jobId)?.turnId);
+  const brokerFile = path.join(resolveStateDir(f.repo, f.env), "broker.json");
+  const broker = JSON.parse(fs.readFileSync(brokerFile, "utf8"));
+  const serverPid = f.state().launches.at(-1).pid;
+  const busy = json(f.call("runtime", "restart", "--json"), 2);
+  assert.equal(busy.status, "refused");
+  assert.equal(busy.reason, "busy");
+  assert.equal(busy.broker.busy, true);
+  assert.deepEqual(busy.runningWorkers.map(worker => worker.jobId), [launch.jobId]);
+  assert.equal(alive(broker.pid), true);
+  assert.equal(f.state().lastInterrupt, null);
+  assert.equal(json(f.call("cancel", launch.jobId, "--json")).confirmation, "confirmed");
+  const retired = json(f.call("runtime", "restart", "--json"));
+  assert.equal(retired.status, "retired");
+  await waitUntil(() => !alive(broker.pid) && !alive(serverPid));
+  assert.equal(fs.existsSync(brokerFile), false);
+  assert.equal(json(f.call("runtime", "restart", "--json")).status, "not_running");
+  const next = json(f.call("task", "--fresh", "--detached", "--json", "Start a fresh shared runtime"));
+  await waitUntil(() => job(f, next.jobId)?.turnId);
+  assert.notEqual(JSON.parse(fs.readFileSync(brokerFile, "utf8")).pid, broker.pid);
+  assert.equal(json(f.call("cancel", next.jobId, "--json")).confirmation, "confirmed");
+});
+
 test("broker SIGTERM during initialize reaps its separately grouped app-server", async () => {
   const f = fixture("w5-initialize-hang");
   const child = spawnOwned(process.execPath, [brokerScript, "serve", "--endpoint", `unix:${path.join(f.dir, "startup.sock")}`, "--cwd", f.repo], { cwd: f.repo, env: f.env, stdio: "ignore" });
@@ -415,6 +524,89 @@ test("broker SIGTERM during initialize reaps its separately grouped app-server",
   });
   child.kill("SIGTERM");
   await waitUntil(() => !alive(serverPid) && !alive(child.pid));
+});
+
+test("updated runtime completes privately while a stale broker is busy, then prewarm retires it when idle", async t => {
+  if (!await requireLocalSockets(t)) return;
+  const legacy = fixture("review-ok"), legacyMethods = [];
+  const socketPath = path.join(legacy.dir, "legacy.sock"), endpoint = `unix:${socketPath}`;
+  t.after(await serve({ socketPath }, (socket, message) => {
+    legacyMethods.push(message.method);
+    socket.write(JSON.stringify({ id: message.id, ...(message.method === "initialize" ? { result: {
+      codexCompanionHome: resolveIsolatedCodexHome(legacy.env), codexCompanionRuntime: "legacy-runtime"
+    } } : { error: { code: -32601, message: "Unsupported method" } }) }) + "\n");
+  }));
+  saveBrokerSession(legacy.repo, { endpoint });
+  // The saved-session probe and an inherited endpoint both bypass an older
+  // broker using only its identity; unsupported controls must never reach it.
+  const probed = await CodexAppServerClient.connect(legacy.repo, { env: legacy.env });
+  try {
+    assert.equal(probed.transport, "direct");
+    const { thread } = await probed.request("thread/start", { cwd: legacy.repo });
+    const completed = new Promise(resolve => probed.setNotificationHandler(message => {
+      if (message.method === "turn/completed") resolve(message.params.turn);
+    }));
+    const { turn } = await probed.request("turn/start", { threadId: thread.id, input: [] });
+    const ended = await completed;
+    assert.equal(ended.id, turn.id); assert.equal(ended.status, "completed");
+    assert.deepEqual(legacyMethods, ["initialize"]);
+  } finally { await probed.close(); }
+  const inherited = await CodexAppServerClient.connect(legacy.repo, { env: legacy.env, brokerEndpoint: endpoint });
+  try {
+    assert.equal(inherited.transport, "direct");
+    assert.equal((await inherited.request("account/read", {})).account.type, "chatgpt");
+    assert.deepEqual(legacyMethods, ["initialize", "initialize"]);
+  } finally { await inherited.close(); }
+
+  const f = fixture("interruptible-slow-task");
+  // Retirement must come from the control request, not the normal idle timer.
+  f.env.CODEX_COMPANION_BROKER_IDLE_SEC = "3600";
+  const broker = await readyBroker(f.repo, f.env); t.after(broker.close);
+  const owner = await CodexAppServerClient.connect(f.repo, { env: f.env, brokerEndpoint: broker.endpoint });
+  t.after(() => owner.close());
+  assert.deepEqual((await owner.request("initialize", {})).codexCompanionBrokerControls, ["shutdownIfIdle"]);
+  const { thread } = await owner.request("thread/start", { cwd: f.repo });
+  const completed = new Promise(resolve => owner.setNotificationHandler(message => {
+    if (message.method === "turn/completed") resolve();
+  }));
+  const { turn } = await owner.request("turn/start", { threadId: thread.id, input: [] });
+  const oldServerPid = f.state().launches[0].pid, binary = path.join(f.dir, "codex");
+  const oldIdentity = resolveCodexRuntimeIdentity(f.env);
+  // A keeps its loaded behavior; every later spawn reads B from the same path.
+  fs.writeFileSync(binary, fs.readFileSync(binary, "utf8")
+    .replace('const BEHAVIOR = "interruptible-slow-task";', 'const BEHAVIOR = "review-ok";')
+    .replace('pid: process.pid, home:', 'pid: process.pid, runtimeVersion: "B", home:'));
+  assert.notEqual(resolveCodexRuntimeIdentity(f.env), oldIdentity);
+  const events = [], privateClient = await CodexAppServerClient.connect(f.repo, {
+    env: f.env, brokerEndpoint: broker.endpoint, onRuntimeEvent: event => events.push(event)
+  });
+  try {
+    assert.equal(privateClient.transport, "direct");
+    assert.equal(events.filter(event => event.brokerStartupRetry).length, 1);
+  } finally { await privateClient.close(); }
+  const task = json(f.call("task", "--fresh", "--direct", "--quiet", "Use the updated runtime"));
+  assert.equal(task.status, "completed");
+  assert.equal(job(f, task.jobId).status, "completed");
+  assert.equal(f.state().launches.at(-1).runtimeVersion, "B");
+  assert.equal(alive(broker.pid), true); assert.equal(alive(oldServerPid), true);
+  assert.equal(f.state().lastInterrupt, null, "runtime probes cannot interrupt another session's turn");
+
+  await owner.request("turn/interrupt", { threadId: thread.id, turnId: turn.id });
+  await completed; await owner.close();
+  const pinned = run(process.execPath, [hook, "prewarm", f.repo], { cwd: f.repo, env: f.env });
+  assert.equal(pinned.status, 0, pinned.stderr);
+  assert.equal(alive(broker.pid), true, "a connected peer also prevents idle retirement");
+  broker.close();
+  const retired = run(process.execPath, [hook, "prewarm", f.repo], { cwd: f.repo, env: f.env });
+  assert.equal(retired.status, 0, retired.stderr);
+  await waitUntil(() => !alive(broker.pid) && !alive(oldServerPid));
+  const fresh = json(f.call("task", "--fresh", "--direct", "--quiet", "Use a fresh shared runtime"));
+  assert.equal(fresh.status, "completed");
+  const session = JSON.parse(fs.readFileSync(path.join(resolveStateDir(f.repo, f.env), "broker.json")));
+  assert.notEqual(session.pid, broker.pid);
+  const client = await CodexAppServerClient.connect(f.repo, { env: f.env, brokerEndpoint: session.endpoint });
+  try { assert.equal(client.transport, "broker"); } finally { await client.close(); }
+  assert.equal(f.state().launches.at(-1).runtimeVersion, "B");
 });
 
 test("broker prewarm is non-blocking and idle exit reaps the server group", async t => {

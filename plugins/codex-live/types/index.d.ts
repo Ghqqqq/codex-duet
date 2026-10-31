@@ -50,6 +50,8 @@ export type CodexLiveJob = {
   sandbox: string;
   workspaceRoot?: string;
   question: { text: string; options: string[]; createdAt?: string; expiresAt?: number } | null;
+  // A finished needs_input report, separate from an active pending question.
+  terminalQuestion?: string;
   // Only detailed turns retain the bounded Claude brief.
   prompt?: string;
   promptReport?: boolean;

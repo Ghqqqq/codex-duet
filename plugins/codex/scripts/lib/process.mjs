@@ -3,11 +3,53 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
+function windowsEnv(env, name) {
+  const key = Object.keys(env).sort().find(key => key.toUpperCase() === name);
+  return key ? env[key] : undefined;
+}
+
+export function executableOnPath(name, env = process.env) {
+  const windows = process.platform === "win32";
+  const paths = windows ? path.win32 : path;
+  const suffixes = windows && !paths.extname(name) ? (windowsEnv(env, "PATHEXT") || ".EXE;.CMD;.BAT").split(";") : [""];
+  const directories = windows && /[\\/]/.test(name) ? [""] :
+    (windows ? windowsEnv(env, "PATH") || "" : env.PATH || "").split(windows ? ";" : path.delimiter);
+  return directories.flatMap(dir => suffixes.map(ext => paths.resolve(windows ? dir.replace(/^"(.*)"$/, "$1") : dir, name + ext))).find(candidate => {
+    try { fs.accessSync(candidate, fs.constants.X_OK); return fs.statSync(candidate).isFile(); }
+    catch { return false; }
+  }) ?? null;
+}
+
+const CMD_META = /([()\][%!^"`<>&|;, *?])/g;
+function quoteCmdArgument(value, doubleEscape) {
+  // Preserve embedded quotes and trailing backslashes through Windows argv
+  // parsing, then protect cmd.exe metacharacters (including the quote marks).
+  let quoted = `"${String(value).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, "$1$1")}"`;
+  quoted = quoted.replace(CMD_META, "^$1");
+  return doubleEscape ? quoted.replace(CMD_META, "^$1") : quoted;
+}
+
+function commandInvocation(command, args, options) {
+  if (process.platform !== "win32" || options.shell != null) return { command, args, options };
+  const env = options.env ?? process.env;
+  const executable = executableOnPath(command, env) ?? command;
+  if (!/\.(?:cmd|bat)$/i.test(executable)) return { command: executable, args, options: { ...options, shell: false } };
+  // npm's local .bin shims parse arguments an extra time while forwarding %*.
+  const doubleEscape = /node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i.test(executable);
+  const line = [executable.replace(CMD_META, "^$1"), ...args.map(arg => quoteCmdArgument(arg, doubleEscape))].join(" ");
+  return {
+    command: windowsEnv(env, "COMSPEC") || "cmd.exe",
+    args: ["/d", "/s", "/c", `"${line}"`],
+    options: { ...options, shell: false, windowsVerbatimArguments: true }
+  };
+}
+
 // Tests share only a fresh suite-owned process ledger. Never discover/kill by
 // executable name, inherited broker PID, or a user's existing runtime state.
 export function spawnOwned(command, args, options = {}) {
   if (process.env.CODEX_COMPANION_TEST_MODE === "1") options = { ...options, env: { ...process.env, ...options.env } };
-  const child = spawn(command, args, options);
+  const invocation = commandInvocation(command, args, options);
+  const child = spawn(invocation.command, invocation.args, invocation.options);
   const env = options.env ?? process.env;
   if (env.CODEX_COMPANION_TEST_MODE === "1" && env.CODEX_COMPANION_TEST_PROCESSES && child.pid) {
     const dir = env.CODEX_COMPANION_TEST_PROCESSES;
@@ -85,7 +127,7 @@ export async function stopOwnedProcessGroup(child, graceMs = 500) {
 }
 
 export function runCommand(command, args = [], options = {}) {
-  const result = spawnSync(command, args, {
+  const invocation = commandInvocation(command, args, {
     cwd: options.cwd,
     env: options.env,
     encoding: "utf8",
@@ -94,9 +136,10 @@ export function runCommand(command, args = [], options = {}) {
     timeout: options.timeoutMs,
     killSignal: options.timeoutMs ? "SIGKILL" : undefined,
     stdio: options.stdio ?? "pipe",
-    shell: options.shell ?? (process.platform === "win32" ? (process.env.SHELL || true) : false),
+    shell: options.shell,
     windowsHide: true
   });
+  const result = spawnSync(invocation.command, invocation.args, invocation.options);
 
   return {
     command,

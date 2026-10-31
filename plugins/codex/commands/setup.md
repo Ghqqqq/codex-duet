@@ -8,8 +8,13 @@ Run:
 
 Use `dangerouslyDisableSandbox: true` on every companion Bash call below. This tool parameter is required for network access and local sockets; it is not a shell argument.
 
+Pass the raw `$ARGUMENTS` unchanged through the single-quoted heredoc below, without shell expansion. Do not split, reorder, unquote or rewrite the arguments; the companion parses them.
+If an argument line is exactly `DUET_ARGS`, choose a delimiter absent from the arguments and change both heredoc delimiters together.
+
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --json $ARGUMENTS
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --json --args-stdin <<'DUET_ARGS'
+$ARGUMENTS
+DUET_ARGS
 ```
 
 If the result says Codex is unavailable and npm is available:
@@ -27,7 +32,9 @@ npm install -g @openai/codex
 - Then rerun:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --json $ARGUMENTS
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --json --args-stdin <<'DUET_ARGS'
+$ARGUMENTS
+DUET_ARGS
 ```
 
 If Codex is already installed or npm is unavailable:
@@ -114,9 +121,10 @@ Computer Use app approvals follow the user's own Codex app by default:
 "Always" allowed in `~/.codex/computer-use/config.toml` (`[apps] allowed`, read
 only; never session-level choices, the denied list or anything an organization
 policy blocks) into `<isolated home>/computer-use/config.toml`, where node_repl
-reads them. `ask` stops the sync and removes the mirrored entries; unapproved
-apps are then denied by the runtime and reported as `blocked` with
-`computer_use_app_not_approved`. `--allow-computer-app <bundle-id>` adds one app
+reads them. `ask` stops the sync and removes the mirrored entries; in owned jobs,
+apps without approval pause the tool call and forward an approval question to
+the parent (see below). Denial, an invalid answer, timeout or a runtime/policy
+refusal blocks the job. `--allow-computer-app <bundle-id>` adds one app
 (also in ask mode), `--revoke-computer-app <bundle-id>` removes it and keeps it
 out of later mirrors, `--list-computer-apps` is read-only. Bundle identifiers
 such as `com.google.Chrome` are validated before any write; invalid input is not
@@ -161,8 +169,9 @@ Transport/browser setup is offline. `--transport status` only reads selected
 transport; explicit `--transport http|websocket` merges a named ChatGPT provider
 and selector, with a timestamped private backup. Recognize the existing matching
 hand-written block as a no-op. Do not change transport automatically based on a
-warning or assume a live speedup; restart the runtime after an actual change when
-other assignments are finished.
+warning or assume a live speedup; after an actual change, run `duet runtime restart`
+when other assignments have finished. It retires only an idle broker; the next task
+starts a fresh broker.
 
 With explicit user consent per origin, `--allow-browser-origin <origin>` merges
 the official `<CODEX_HOME>/browser/config.toml` allowed list and removes exact

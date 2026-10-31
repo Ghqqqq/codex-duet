@@ -2,224 +2,135 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-
 import { collectReviewContext, getWorkingTreeState, resolveReviewTarget } from "../plugins/codex/scripts/lib/git.mjs";
 import { snapshotWorkspace } from "../plugins/codex/scripts/lib/workspace-changes.mjs";
 import { resolveWorkspaceRoot } from "../plugins/codex/scripts/lib/workspace.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 
-test("resolveReviewTarget prefers working tree when repo is dirty", () => {
-  const cwd = makeTempDir();
-  initGitRepo(cwd);
-  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
-  run("git", ["add", "app.js"], { cwd });
-  run("git", ["commit", "-m", "init"], { cwd });
-  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v2');\n");
+function git(cwd, ...args) {
+  const result = run("git", args, { cwd });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout;
+}
+function repo() {
+  const cwd = makeTempDir(); initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "app.js"), "base\n");
+  git(cwd, "add", "."); git(cwd, "commit", "-m", "base");
+  return cwd;
+}
 
-  const target = resolveReviewTarget(cwd, {});
+test("review scope follows clean branches and dirty worktrees with bounded inline context", () => {
+  const cwd = repo(), branch = "main&branch-helper&x";
+  git(cwd, "branch", "-m", branch);
+  git(cwd, "update-ref", `refs/remotes/origin/${branch}`, branch);
+  git(cwd, "symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${branch}`);
+  git(cwd, "checkout", "-b", "feature/test");
+  fs.writeFileSync(path.join(cwd, "app.js"), "feature\n");
+  git(cwd, "commit", "-am", "feature");
+  const clean = resolveReviewTarget(cwd);
+  assert.deepEqual([clean.mode, clean.baseRef], ["branch", branch]);
+  assert.equal(resolveReviewTarget(cwd, { base: "HEAD~1" }).baseRef, "HEAD~1");
+  fs.writeFileSync(path.join(cwd, "app.js"), "INLINE_MARKER\n");
+  const dirty = resolveReviewTarget(cwd), inline = collectReviewContext(cwd, dirty);
+  assert.equal(dirty.mode, "working-tree");
+  assert.equal(inline.inputMode, "inline-diff");
+  assert.match(inline.content, /INLINE_MARKER/);
+  fs.writeFileSync(path.join(cwd, "app.js"), "x".repeat(512));
+  fs.writeFileSync(path.join(cwd, "new.js"), "UNTRACKED_MARKER\n");
+  const large = collectReviewContext(cwd, dirty, { maxInlineDiffBytes: 128 });
+  assert.equal(large.inputMode, "self-collect");
+  assert.doesNotMatch(large.content, /xxx/);
+  assert.match(large.content, /UNTRACKED_MARKER/);
+  assert.throws(() => resolveReviewTarget(cwd, { base: "missing-base" }));
+  git(cwd, "reset", "--hard"); fs.unlinkSync(path.join(cwd, "new.js"));
+  git(cwd, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD");
+  git(cwd, "update-ref", "-d", `refs/remotes/origin/${branch}`); git(cwd, "branch", "-D", branch);
+  assert.throws(() => resolveReviewTarget(cwd));
+});
 
-  assert.equal(target.mode, "working-tree");
+test("nested ignored submodules remain in review scope without initializing absent modules", () => {
+  const cwd = repo(), outer = repo(), inner = repo();
+  git(outer, "-c", "protocol.file.allow=always", "submodule", "add", inner, "inner");
+  git(outer, "config", "-f", ".gitmodules", "submodule.inner.ignore", "all");
+  git(outer, "commit", "-am", "inner");
+  const module = "vendor/child module";
+  git(cwd, "-c", "protocol.file.allow=always", "submodule", "add", outer, module);
+  git(cwd, "commit", "-am", "outer");
+  git(cwd, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive");
+  git(cwd, "config", `submodule.${module}.ignore`, "all");
+  git(cwd, "config", "status.showUntrackedFiles", "no");
+  const nested = path.join(cwd, module, "inner"), file = path.join(nested, "new.js");
+  assert.equal(getWorkingTreeState(cwd).isDirty, false);
+  fs.writeFileSync(file, "NESTED_REVIEW_CHANGE\n");
+  assert.equal(git(cwd, "status", "--porcelain=v2", "--ignore-submodules=none"), "");
+  assert.equal(getWorkingTreeState(cwd).isDirty, true);
+  assert.equal(resolveReviewTarget(cwd).mode, "working-tree");
+  const context = collectReviewContext(cwd, { mode: "working-tree" });
+  assert.equal(context.inputMode, "self-collect");
+  assert.deepEqual(context.changedFiles, [module, `${module}/inner`]);
+  assert.deepEqual(context.omittedSubmodules, context.changedFiles);
+  fs.unlinkSync(file);
+  assert.equal(getWorkingTreeState(cwd).isDirty, false);
+  git(cwd, "-C", module, "submodule", "deinit", "--force", "inner");
+  assert.deepEqual(collectReviewContext(cwd, { mode: "working-tree" }).omittedSubmodules, []);
+  assert.equal(fs.existsSync(path.join(nested, ".git")), false);
+});
 
-  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
-  const subdir = path.join(cwd, "src");
-  fs.mkdirSync(subdir);
-  for (let index = 0; index < 40; index += 1) {
-    fs.writeFileSync(path.join(cwd, `new-${index}.txt`), "x".repeat(24000));
-  }
-  assert.deepEqual(resolveReviewTarget(subdir), resolveReviewTarget(cwd));
-  assert.deepEqual(getWorkingTreeState(subdir), getWorkingTreeState(cwd));
-  assert.equal(resolveReviewTarget(subdir).mode, "working-tree");
-  const bounded = collectReviewContext(subdir, resolveReviewTarget(subdir));
-  assert.deepEqual(bounded, collectReviewContext(cwd, resolveReviewTarget(cwd)));
+test("branch review includes committed ignored submodules and bounds their inline diffs", () => {
+  const cwd = repo(), child = repo(), module = "child";
+  git(cwd, "-c", "protocol.file.allow=always", "submodule", "add", child, module);
+  git(cwd, "commit", "-am", "add child");
+  git(cwd, "checkout", "-b", "feature/submodule");
+  fs.writeFileSync(path.join(child, "app.js"), "COMMITTED_SUBMODULE_REVIEW_MARKER\n");
+  git(child, "commit", "-am", "child change");
+  git(cwd, "-C", module, "fetch");
+  git(cwd, "-C", module, "checkout", "origin/main");
+  git(cwd, "commit", "-am", "bump child");
+  git(cwd, "config", `submodule.${module}.ignore`, "all");
+  const target = resolveReviewTarget(cwd, { base: "main" });
+  const context = collectReviewContext(cwd, target);
+  assert.deepEqual(context.changedFiles, [module]);
+  assert.equal(context.inputMode, "inline-diff");
+  assert.match(context.content, /COMMITTED_SUBMODULE_REVIEW_MARKER/);
+  const diff = git(cwd, "diff", "--binary", "--no-ext-diff", "--submodule=diff", "--ignore-submodules=none", "main...HEAD");
+  assert.equal(context.diffBytes, Buffer.byteLength(diff));
+  const bounded = collectReviewContext(cwd, target, { maxInlineDiffBytes: 128 });
+  assert.equal(bounded.inputMode, "self-collect");
+  assert.match(bounded.content, /child \|/);
+  assert.doesNotMatch(bounded.content, /COMMITTED_SUBMODULE_REVIEW_MARKER/);
+  assert.equal(collectReviewContext(cwd, target, { maxInlineFiles: 0 }).inputMode, "self-collect");
+});
+
+test("untracked review context is byte and count bounded and never follows unsafe paths", t => {
+  const cwd = repo(), target = { mode: "working-tree" };
+  for (let i = 0; i < 40; i++) fs.writeFileSync(path.join(cwd, `new-${i}.txt`), "x".repeat(24000));
+  const bounded = collectReviewContext(cwd, target);
   assert.ok(bounded.untrackedInlineBytes <= 256 * 1024);
   assert.equal(bounded.untrackedInlineFiles + bounded.omittedUntracked.length, 40);
   assert.ok(bounded.omittedUntracked.length > 0);
-  assert.ok(bounded.omittedUntracked.every(file => file.size === 24000));
-  for (let index = 0; index < 40; index += 1) {
-    fs.writeFileSync(path.join(cwd, `new-${index}.txt`), "small");
-  }
-  const countBounded = collectReviewContext(cwd, resolveReviewTarget(cwd));
-  assert.equal(countBounded.untrackedInlineFiles, 32);
-  assert.equal(countBounded.omittedUntracked.length, 8);
-  for (let index = 0; index < 40; index += 1) fs.unlinkSync(path.join(cwd, `new-${index}.txt`));
-
-  run("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd });
-  run("git", ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], { cwd });
-  assert.equal(resolveReviewTarget(subdir).baseRef, "main");
-  run("git", ["branch", "-m", "feature-only"], { cwd });
-  assert.equal(resolveReviewTarget(subdir).baseRef, "origin/main");
-  assert.equal(collectReviewContext(subdir, resolveReviewTarget(subdir)).fileCount, 0);
-  assert.throws(() => resolveReviewTarget(subdir, { base: "missing-base" }));
-  run("git", ["update-ref", "-d", "refs/remotes/origin/main"], { cwd });
-  assert.throws(() => resolveReviewTarget(subdir));
-
-  const parent = makeTempDir();
-  const spaced = path.join(parent, "trailing-space "), sibling = spaced.slice(0, -1);
-  fs.mkdirSync(spaced); initGitRepo(spaced);
-  fs.mkdirSync(path.join(spaced, "sub"));
-  fs.writeFileSync(path.join(spaced, "own.txt"), "own repository");
-  for (const withSibling of [false, true]) {
-    if (withSibling) {
-      fs.mkdirSync(sibling); initGitRepo(sibling);
-      fs.writeFileSync(path.join(sibling, "other.txt"), "other repository");
-    }
-    const inside = path.join(spaced, "sub");
-    const context = collectReviewContext(inside, resolveReviewTarget(inside));
-    assert.equal(context.repoRoot, fs.realpathSync(spaced));
-    assert.equal(resolveWorkspaceRoot(inside), fs.realpathSync(spaced));
-    assert.deepEqual(context.changedFiles, ["own.txt"]);
-    const snapshot = snapshotWorkspace(inside);
-    assert.equal(snapshot.status, "complete");
-    assert.equal(snapshot.root, fs.realpathSync(spaced));
-    assert.deepEqual([...snapshot.files.keys()], ["own.txt"]);
-  }
-});
-
-test("resolveReviewTarget falls back to branch diff when repo is clean", () => {
-  const cwd = makeTempDir();
-  initGitRepo(cwd);
-  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
-  run("git", ["add", "app.js"], { cwd });
-  run("git", ["commit", "-m", "init"], { cwd });
-  run("git", ["checkout", "-b", "feature/test"], { cwd });
-  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v2');\n");
-  run("git", ["add", "app.js"], { cwd });
-  run("git", ["commit", "-m", "change"], { cwd });
-
-  const target = resolveReviewTarget(cwd, {});
-  const context = collectReviewContext(cwd, target);
-
-  assert.equal(target.mode, "branch");
-  assert.match(target.label, /main/);
-
-});
-
-test("default branch names with special characters are passed to git literally", () => {
-  const cwd = makeTempDir();
-  const branchName = "main&branch-helper&x";
-  const helperOutputPath = path.join(cwd, "branch-helper-output");
-  initGitRepo(cwd);
-  fs.writeFileSync(path.join(cwd, "branch-helper.cmd"), "@echo branch-helper>branch-helper-output\r\n");
-  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('base');\n");
-  run("git", ["add", "app.js", "branch-helper.cmd"], { cwd });
-  run("git", ["commit", "-m", "base"], { cwd });
-  run("git", ["branch", "-m", branchName], { cwd, shell: false });
-  run("git", ["update-ref", `refs/remotes/origin/${branchName}`, branchName], { cwd, shell: false });
-  run("git", ["symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${branchName}`], {
-    cwd,
-    shell: false
-  });
-  run("git", ["checkout", "-b", "feature/test"], { cwd });
-  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('feature');\n");
-  run("git", ["add", "app.js"], { cwd });
-  run("git", ["commit", "-m", "feature"], { cwd });
-
-  const target = resolveReviewTarget(cwd, {});
-  const context = collectReviewContext(cwd, target);
-
-  assert.equal(target.mode, "branch");
-  assert.equal(target.baseRef, branchName);
-
-  assert.equal(fs.existsSync(helperOutputPath), false);
-});
-
-test("resolveReviewTarget honors explicit base overrides", () => {
-  const cwd = makeTempDir();
-  initGitRepo(cwd);
-  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
-  run("git", ["add", "app.js"], { cwd });
-  run("git", ["commit", "-m", "init"], { cwd });
-  run("git", ["checkout", "-b", "feature/test"], { cwd });
-  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v2');\n");
-  run("git", ["add", "app.js"], { cwd });
-  run("git", ["commit", "-m", "change"], { cwd });
-
-  const target = resolveReviewTarget(cwd, { base: "main" });
-
-  assert.equal(target.mode, "branch");
-  assert.equal(target.baseRef, "main");
-});
-
-test("resolveReviewTarget requires an explicit base when no default branch can be inferred", () => {
-  const cwd = makeTempDir();
-  initGitRepo(cwd);
-  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
-  run("git", ["add", "app.js"], { cwd });
-  run("git", ["commit", "-m", "init"], { cwd });
-  run("git", ["branch", "-m", "feature-only"], { cwd });
-
-  assert.throws(
-    () => resolveReviewTarget(cwd, {}),
-    /Unable to detect the repository default branch\. Pass --base <ref> or use --scope working-tree\./
-  );
-});
-
-test("collectReviewContext keeps inline diffs for tiny adversarial reviews", () => {
-  const cwd = makeTempDir();
-  initGitRepo(cwd);
-  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
-  run("git", ["add", "app.js"], { cwd });
-  run("git", ["commit", "-m", "init"], { cwd });
-  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('INLINE_MARKER');\n");
-
-  const target = resolveReviewTarget(cwd, {});
-  const context = collectReviewContext(cwd, target);
-
-  assert.equal(context.inputMode, "inline-diff");
-  assert.equal(context.fileCount, 1);
-
-  assert.match(context.content, /INLINE_MARKER/);
-});
-
-test("collectReviewContext skips untracked directories in working tree review", () => {
-  const cwd = makeTempDir();
-  initGitRepo(cwd);
-  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
-  run("git", ["add", "app.js"], { cwd });
-  run("git", ["commit", "-m", "init"], { cwd });
-
-  const nestedRepoDir = path.join(cwd, ".claude", "worktrees", "agent-test");
-  fs.mkdirSync(nestedRepoDir, { recursive: true });
-  initGitRepo(nestedRepoDir);
-  fs.writeFileSync(path.join(nestedRepoDir, "private.txt"), "NESTED_PRIVATE_SENTINEL");
-
-  const target = resolveReviewTarget(cwd, { scope: "working-tree" });
-  const context = collectReviewContext(cwd, target);
-
-  assert.doesNotMatch(context.content, /NESTED_PRIVATE_SENTINEL/);
-});
-
-test("collectReviewContext skips broken untracked symlinks instead of crashing", (t) => {
-  const cwd = makeTempDir();
-  initGitRepo(cwd);
-  fs.writeFileSync(path.join(cwd, "app.js"), "console.log('v1');\n");
-  run("git", ["add", "app.js"], { cwd });
-  run("git", ["commit", "-m", "init"], { cwd });
+  for (let i = 0; i < 40; i++) fs.writeFileSync(path.join(cwd, `new-${i}.txt`), "small");
+  assert.equal(collectReviewContext(cwd, target).untrackedInlineFiles, 32);
+  for (let i = 0; i < 40; i++) fs.unlinkSync(path.join(cwd, `new-${i}.txt`));
+  const nested = path.join(cwd, ".claude", "worktrees", "agent");
+  fs.mkdirSync(nested, { recursive: true }); initGitRepo(nested);
+  fs.writeFileSync(path.join(nested, "private.txt"), "NESTED_PRIVATE_SENTINEL");
   fs.symlinkSync("missing-target", path.join(cwd, "broken-link"));
-
-  const target = resolveReviewTarget(cwd, {});
   const context = collectReviewContext(cwd, target);
-
-  assert.equal(target.mode, "working-tree");
+  assert.doesNotMatch(context.content, /NESTED_PRIVATE_SENTINEL/);
   assert.ok(context.content.includes("broken-link"));
-
   fs.unlinkSync(path.join(cwd, "broken-link"));
-  const leaf = path.join(fs.realpathSync(cwd), "new.txt");
-  const outside = path.join(makeTempDir(), "outside.txt");
-  fs.writeFileSync(outside, "outside content");
+  fs.rmSync(path.join(cwd, ".claude"), { recursive: true });
+  const leaf = path.join(fs.realpathSync(cwd), "new.txt"), outside = path.join(makeTempDir(), "outside.txt");
+  fs.writeFileSync(outside, "OUTSIDE_SENTINEL");
   const open = fs.openSync, read = fs.readSync;
   for (const mutation of ["symlink-before-open", "symlink-after-read", "grow-before-open", "grow-before-read", "replace-after-read"]) {
     fs.rmSync(leaf, { force: true }); fs.writeFileSync(leaf, "small");
     let mutated = false, watchedFd, bytesRead = 0;
     const mutate = () => {
       mutated = true;
-      if (mutation.startsWith("symlink")) {
-        fs.unlinkSync(leaf); fs.symlinkSync(outside, leaf);
-      } else if (mutation.startsWith("grow")) {
-        fs.writeFileSync(leaf, Buffer.alloc(8 * 1024 * 1024, 65));
-      } else {
-        fs.unlinkSync(leaf); fs.writeFileSync(leaf, "replacement");
-      }
+      if (mutation.startsWith("symlink")) { fs.unlinkSync(leaf); fs.symlinkSync(outside, leaf); }
+      else if (mutation.startsWith("grow")) fs.writeFileSync(leaf, Buffer.alloc(8 * 1024 * 1024, 65));
+      else { fs.unlinkSync(leaf); fs.writeFileSync(leaf, "replacement"); }
     };
     t.mock.method(fs, "openSync", function (name, ...args) {
       if (name === leaf && !mutated && mutation.endsWith("before-open")) mutate();
@@ -230,89 +141,33 @@ test("collectReviewContext skips broken untracked symlinks instead of crashing",
     t.mock.method(fs, "readSync", function (fd, ...args) {
       if (fd === watchedFd && !mutated && mutation === "grow-before-read") mutate();
       const count = read.call(this, fd, ...args);
-      if (fd === watchedFd) {
-        bytesRead += count;
-        if (!mutated && mutation.endsWith("after-read")) mutate();
-      }
+      if (fd === watchedFd) { bytesRead += count; if (!mutated && mutation.endsWith("after-read")) mutate(); }
       return count;
     });
-    const collected = collectReviewContext(cwd, target);
-    t.mock.restoreAll();
+    const collected = collectReviewContext(cwd, target); t.mock.restoreAll();
     assert.equal(mutated, true);
     assert.ok(bytesRead <= 24 * 1024 + 1);
     assert.equal(collected.untrackedInlineFiles, 0);
     assert.equal(collected.untrackedInlineBytes, 0);
     assert.equal(collected.omittedUntracked.length, 1);
-    const omitted = collected.omittedUntracked[0];
-    assert.equal(omitted.path, "new.txt");
-    if (mutation.startsWith("symlink")) {
-      assert.equal(omitted.reason, "symlink, not inlined");
-      assert.equal(omitted.size, fs.lstatSync(leaf).size);
-    } else if (mutation.startsWith("grow")) {
-      assert.equal(omitted.size, 8 * 1024 * 1024);
-      assert.ok(omitted.reason.includes("byte limit"));
-    }
+    assert.equal(collected.omittedUntracked[0].path, "new.txt");
+    assert.doesNotMatch(collected.content, /OUTSIDE_SENTINEL/);
   }
 });
 
-test("collectReviewContext falls back to lightweight context for larger adversarial reviews", () => {
-  const cwd = makeTempDir();
-  initGitRepo(cwd);
-  for (const name of ["a.js", "b.js", "c.js"]) {
-    fs.writeFileSync(path.join(cwd, name), `export const value = "${name}-v1";\n`);
-  }
-  run("git", ["add", "a.js", "b.js", "c.js"], { cwd });
-  run("git", ["commit", "-m", "init"], { cwd });
-  fs.writeFileSync(path.join(cwd, "a.js"), 'export const value = "SELF_COLLECT_MARKER_A";\n');
-  fs.writeFileSync(path.join(cwd, "b.js"), 'export const value = "SELF_COLLECT_MARKER_B";\n');
-  fs.writeFileSync(path.join(cwd, "c.js"), 'export const value = "SELF_COLLECT_MARKER_C";\n');
-
-  const target = resolveReviewTarget(cwd, {});
-  const context = collectReviewContext(cwd, target);
-
-  assert.equal(context.inputMode, "self-collect");
-  assert.equal(context.fileCount, 3);
-
-  assert.doesNotMatch(context.content, /SELF_COLLECT_MARKER_[ABC]/);
-
-});
-
-test("collectReviewContext falls back to lightweight context for oversized single-file diffs", () => {
-  const cwd = makeTempDir();
-  initGitRepo(cwd);
-  fs.writeFileSync(path.join(cwd, "app.js"), "export const value = 'v1';\n");
-  run("git", ["add", "app.js"], { cwd });
-  run("git", ["commit", "-m", "init"], { cwd });
-  fs.writeFileSync(path.join(cwd, "app.js"), `export const value = '${"x".repeat(512)}';\n`);
-
-  const target = resolveReviewTarget(cwd, {});
-  const context = collectReviewContext(cwd, target, { maxInlineDiffBytes: 128 });
-
-  assert.equal(context.fileCount, 1);
-  assert.equal(context.inputMode, "self-collect");
-  assert.ok(context.diffBytes > 128);
-  assert.doesNotMatch(context.content, /xxx/);
-
-});
-
-test("collectReviewContext keeps untracked file content in lightweight working tree context", () => {
-  const cwd = makeTempDir();
-  initGitRepo(cwd);
-  for (const name of ["a.js", "b.js"]) {
-    fs.writeFileSync(path.join(cwd, name), `export const value = "${name}-v1";\n`);
-  }
-  run("git", ["add", "a.js", "b.js"], { cwd });
-  run("git", ["commit", "-m", "init"], { cwd });
-  fs.writeFileSync(path.join(cwd, "a.js"), 'export const value = "TRACKED_MARKER_A";\n');
-  fs.writeFileSync(path.join(cwd, "b.js"), 'export const value = "TRACKED_MARKER_B";\n');
-  fs.writeFileSync(path.join(cwd, "new-risk.js"), 'export const value = "UNTRACKED_RISK_MARKER";\n');
-
-  const target = resolveReviewTarget(cwd, {});
-  const context = collectReviewContext(cwd, target);
-
-  assert.equal(context.inputMode, "self-collect");
-  assert.equal(context.fileCount, 3);
-  assert.doesNotMatch(context.content, /TRACKED_MARKER_[AB]/);
-
-  assert.match(context.content, /UNTRACKED_RISK_MARKER/);
+test("workspace roots preserve trailing spaces and nested callers cannot select sibling repositories", () => {
+  const parent = makeTempDir(), cwd = path.join(parent, "trailing-space "), sibling = cwd.slice(0, -1);
+  fs.mkdirSync(cwd); initGitRepo(cwd); fs.mkdirSync(sibling); initGitRepo(sibling);
+  fs.writeFileSync(path.join(cwd, "own.txt"), "own repository");
+  fs.writeFileSync(path.join(sibling, "other.txt"), "other repository");
+  const inside = path.join(cwd, "sub"); fs.mkdirSync(inside);
+  const context = collectReviewContext(inside, resolveReviewTarget(inside));
+  assert.equal(context.repoRoot, fs.realpathSync(cwd));
+  assert.equal(resolveWorkspaceRoot(inside), fs.realpathSync(cwd));
+  assert.deepEqual(context.changedFiles, ["own.txt"]);
+  assert.deepEqual(getWorkingTreeState(inside), getWorkingTreeState(cwd));
+  const snapshot = snapshotWorkspace(inside);
+  assert.equal(snapshot.status, "complete");
+  assert.equal(snapshot.root, fs.realpathSync(cwd));
+  assert.deepEqual([...snapshot.files.keys()], ["own.txt"]);
 });

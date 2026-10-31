@@ -180,5 +180,6 @@ test('changing private runtime pointer cannot reuse a broker from the previous e
   const firstClient=await CodexAppServerClient.connect(f.repo,{env:f.env, brokerEndpoint: broker.endpoint}); await firstClient.close();
   assert.equal(firstClient.transport, "broker");
   fs.writeFileSync(runtime,JSON.stringify({codexBinary:path.join(secondDir,'codex')}));
-  await assert.rejects(CodexAppServerClient.connect(f.repo,{env:f.env,brokerEndpoint:broker.endpoint}).then(async client=>{await client.close();}),/runtime|executable|restart/i);
+  const updatedClient=await CodexAppServerClient.connect(f.repo,{env:f.env,brokerEndpoint:broker.endpoint});
+  try { assert.equal(updatedClient.transport, "direct"); } finally { await updatedClient.close(); }
 });

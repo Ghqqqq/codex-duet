@@ -100,6 +100,7 @@ async function main() {
     for (const signal of signals) process.off(signal, stopStarting);
   }
   const sockets = new Set();
+  const staleProbes = new WeakSet();
   const requests = new ServerRequestRelay({ send, respond: message => {
     if (!appClient.closed && !appClient.exitResolved) appClient.sendMessage(message);
   }, log: summary => logServerRequest(summary) });
@@ -230,7 +231,6 @@ async function main() {
       socket.destroy(error);
     }));
     sockets.add(socket);
-    lastBusy = Date.now();
     socket.setEncoding("utf8");
     let inputQueue = Promise.resolve();
     const readLines = createJsonLineReader(line => {
@@ -261,12 +261,16 @@ async function main() {
     async function handleRequest(message) {
       if (closing || socket.destroyed) return;
       if (message.id !== undefined && message.method === "initialize") {
+        if (typeof message.params?.codexCompanionRuntime === "string" && message.params.codexCompanionRuntime !== runtimeIdentity) {
+          staleProbes.add(socket);
+        }
         send(socket, {
           id: message.id,
           result: {
             userAgent: "codex-companion-broker",
             codexCompanionHome: resolveIsolatedCodexHome(),
             codexCompanionRuntime: runtimeIdentity,
+            codexCompanionBrokerControls: ["shutdownIfIdle"],
             startupTimings: appClient.startupTimings, startupWarning: appClient.startupWarning ?? null
           }
         });
@@ -274,6 +278,18 @@ async function main() {
       }
 
       if (message.method === "initialized" && message.id === undefined) {
+        return;
+      }
+
+      if (message.id !== undefined && message.method === "broker/shutdownIfIdle") {
+        // Check every peer, including uninitialized probes, and every pending
+        // runtime operation. Stop admission synchronously after this check.
+        const idle = message.params?.runtimeIdentity === runtimeIdentity &&
+          ![...sockets].some(peer => peer !== socket && !peer.destroyed) &&
+          !activeTurns.size && !activeRequestSocket && !activeStreamSocket &&
+          !pendingStreamStarts.size && !appClient.pending.size;
+        send(socket, { id: message.id, result: { shutdown: idle } });
+        if (idle) await shutdown(server);
         return;
       }
 
@@ -286,6 +302,8 @@ async function main() {
       if (message.id === undefined) {
         return;
       }
+      // A peer that proceeds beyond a mismatched handshake is doing real work.
+      staleProbes.delete(socket);
 
       const allowInterruptDuringActiveStream =
         isInterruptRequest(message) && activeStreamSocket && activeStreamSocket !== socket && !activeRequestSocket;
@@ -349,13 +367,13 @@ async function main() {
 
     socket.on("close", () => {
       sockets.delete(socket);
-      lastBusy = Date.now();
+      if (!staleProbes.has(socket)) lastBusy = Date.now();
       clearSocketOwnership(socket);
     });
 
     socket.on("error", () => {
       sockets.delete(socket);
-      lastBusy = Date.now();
+      if (!staleProbes.has(socket)) lastBusy = Date.now();
       clearSocketOwnership(socket);
     });
   });
@@ -375,7 +393,8 @@ async function main() {
     }
     const internalRequests = appClient.pending.size > forwardedRequests.size + abandonedRequests.size;
     const ownedOrSettlingTurns = [...activeTurns.values()].some(turn => !turn.expired);
-    if (sockets.size || ownedOrSettlingTurns || (activeRequestSocket && !activeRequestSocket.destroyed) || internalRequests) lastBusy = Date.now();
+    const connectedPeers = [...sockets].some(socket => !staleProbes.has(socket));
+    if (connectedPeers || ownedOrSettlingTurns || (activeRequestSocket && !activeRequestSocket.destroyed) || internalRequests) lastBusy = Date.now();
     else if (Date.now() - lastBusy >= idleMs) void shutdown(server);
   }, 250);
   for (const signal of signals) process.on(signal, () => { void shutdown(server); });

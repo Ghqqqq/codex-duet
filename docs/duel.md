@@ -144,7 +144,7 @@ version/path with `duet duel status --for-command`.
 **Reminder template** (placeholders):
 
 ```text
-Duel mode on (Claude vs Codex on <model>/<effort>, max <rounds> rounds). Apply duel protocol v<hash> to substantive tasks; re-read <absolute-protocol-path> only if v<hash> is not in your context.
+Duel mode on (Claude vs Codex on <model>/<effort>, max <rounds> rounds). Apply duel protocol v<hash> to substantive tasks; re-read <absolute-protocol-path> unless its full text (first line: <!-- Ultra-codex protocol v<hash> -->) is already in context from an earlier Read. Reminder/preamble version mentions do not count.
 ```
 
 Round limits are advisory protocol rules, not runtime counters. Native/Bash,

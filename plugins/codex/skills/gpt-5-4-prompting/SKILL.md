@@ -1,12 +1,12 @@
 ---
 name: gpt-5-4-prompting
-description: Internal guidance for composing Codex and GPT-5.4 prompts for coding, review, diagnosis, and research tasks inside the Codex Claude Code plugin
+description: Internal guidance for composing Codex prompts for coding, review, diagnosis, and research tasks inside the Codex Claude Code plugin
 user-invocable: false
 ---
 
-# GPT-5.4 Prompting
+# Codex Prompting
 
-Use this skill when `codex:codex-rescue` needs to ask Codex or another GPT-5.4-based workflow for help.
+Use this skill when `codex:codex-rescue` needs to shape a prompt for the selected Codex model.
 
 Prompt Codex like an operator, not a collaborator. Keep prompts compact and block-structured with XML tags. State the task, the output contract, the follow-through defaults, and the small set of extra constraints that matter.
 
@@ -29,11 +29,6 @@ When to add blocks:
 - Review or adversarial review: add `grounding_rules`, `structured_output_contract`, and `dig_deeper_nudge`.
 - Research or recommendation tasks: add `research_mode` and `citation_rules`.
 - Write-capable tasks: add `action_safety` so Codex stays narrow and avoids unrelated refactors.
-
-How to choose prompt shape:
-- Use built-in `review` or `adversarial-review` commands when the job is reviewing local git changes. Those prompts already carry the review contract.
-- Use `task` when the task is diagnosis, planning, research, or implementation and you need to control the prompt more directly.
-- Use `duet task --to <worker>` or `--thread <id>` for follow-up instructions on the same Codex thread. Reserve `--resume`/`--resume-last` for unambiguous sequential work; they inherit the selected thread's recorded settings and must not select among parallel workers. Send only the delta instruction instead of restating the whole prompt unless the direction changed materially.
 
 Working rules:
 - Prefer explicit prompt contracts over vague nudges.

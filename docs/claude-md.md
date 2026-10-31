@@ -11,6 +11,23 @@ Duet forwards loaded CLAUDE.md files to Codex as developer instructions; see
 [instruction forwarding](direct-mode.md#context-instructions-and-explicit-forks).
 The snippet costs context in every session where that file is loaded.
 
+## Delivery to workers
+
+When every project `CLAUDE.md` on the path from the worker's cwd through its
+ancestors was forwarded with Duet's executor framing, Codex's fallback list
+is Duet's default `["CLAUDE.md"]`, and no `.codex/config.toml` on that path sets
+`project_doc_fallback_filenames`, the worker thread disables that fallback.
+The project instructions then arrive once through `developerInstructions`;
+the isolated home's config file is not changed. On runtimes that reject
+per-thread config, the compatibility retry drops the override, so Codex's own
+CLAUDE.md fallback stays on and project instructions can arrive twice.
+`AGENTS.md` discovery remains.
+Custom fallback lists, `--no-claude-md`, or incomplete project-file forwarding
+keep Codex discovery enabled. See
+[instruction forwarding](direct-mode.md#context-instructions-and-explicit-forks).
+
+## Optional policy
+
 For orchestration in every fresh session without a CLAUDE.md, use
 `duet setup --default-mode pair` (or `ultra` / `duel`). See
 [Default orchestration mode](configuration.md#default-orchestration-mode).
@@ -28,7 +45,8 @@ For orchestration in every fresh session without a CLAUDE.md, use
   Define the intended outcome, dependencies and numbered acceptance criteria
   before dispatch. Give each worker a brief with the objective, owned paths,
   acceptance criteria and verification commands.
-- Dispatch natively from the first task:
+- Honor the dispatch route in SessionStart guidance; use native dispatch from
+  the first task when that route selects it:
   `Agent(subagent_type: "codex:codex-native", description: "<purpose>", prompt: "DUET: --model <model> --effort <effort> --normal [--sandbox <mode>] [--cwd <dir>]\n<brief>")`.
   Omit `name`; use the assigned name from the Agent result for `SendMessage`
   follow-ups and answers. Wait for the actual result; never poll or treat a launch

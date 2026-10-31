@@ -1,6 +1,7 @@
 // Native adapter for the early-access Claude Code 2.1.302 function-hook API.
 // No Node globals/imports in this sandbox; all host work goes through $.
 import { TIER_1_NAMES, TIER_2_NAMES, TIER_3_NAMES } from '../scripts/lib/agent-name-pool.mjs';
+import { cleanDisplayText } from '../scripts/lib/display-text.mjs';
 export const AGENT_TYPE = 'codex:codex-native';
 const PREFIX = 'native:v2:';
 const ACTIVE = ['queued', 'running'];
@@ -11,6 +12,54 @@ const READY = 'Native Codex workers ready: Agent(subagent_type: "codex:codex-nat
 const GUIDE_ID = 'codex:native-dispatch';
 const NATIVE_GUIDE = 'Native Codex workers are ready. Dispatch Codex with Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (the plugin assigns a scientist name, replacing a passed label unless it is a free pool name; the assigned name appears in the Agent result); an optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast|--normal --fork --cwd <dir> sets task flags. The agent result is the Duet report; continue a worker or answer its question with SendMessage. Browser work and Computer Use run natively: an app not yet approved arrives as an approval question answered through SendMessage. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.';
 const PERSON_ORIGINS = ['composer', 'bridge', 'sdk'];
+const GUIDANCE_TTL_MS = 60000;
+let guidanceCache = null;
+async function nativeDirectory($) {
+  const override = await $.env.get('CODEX_COMPANION_HOME');
+  const home = override || await $.env.get('HOME') || await $.env.get('USERPROFILE');
+  return home ? `${home.replace(/[\\/]+$/, '')}${override ? '' : '/.claude/codex-isolated'}/duet` : null;
+}
+async function nativeHostState($, action) {
+  try {
+    const observedAt = action === 'dispatch-status' ? undefined : await $.clock.now();
+    const directory = await nativeDirectory($);
+    if (!directory) return null;
+    const marker = `${directory}/native-unavailable.json`;
+    if (action === 'dispatch-status' && !await $.fs.exists(`${directory}/config.toml`) && !await $.fs.exists(marker)) return null;
+    const result = await $.process.run(['node', `${$.plugin.root}/scripts/lib/setup-config.mjs`, action,
+      ...(observedAt === undefined ? [] : [String(observedAt)])], { timeoutMs: 1000 });
+    return action === 'dispatch-status' && result.exitCode === 0 ? JSON.parse(result.stdout) : null;
+  } catch { return null; } // Preferences and host observations never block a turn.
+  finally { if (action !== 'dispatch-status') guidanceCache = null; }
+}
+async function nativeGuidanceEnabled($) {
+  let now, key;
+  try {
+    now = await $.clock.now();
+    const directory = await nativeDirectory($);
+    if (!directory) return true;
+    key = JSON.stringify([directory, ...await Promise.all(['config.toml', 'native-unavailable.json'].map(async file => {
+      const path = `${directory}/${file}`;
+      if (!await $.fs.exists(path)) return null;
+      const stat = await $.fs.stat(path);
+      return [stat.mtimeMs, stat.size];
+    }))]);
+  } catch { return true; }
+  if (guidanceCache?.key === key) {
+    if (guidanceCache.pending) return guidanceCache.pending;
+    if (now >= guidanceCache.at && now - guidanceCache.at < GUIDANCE_TTL_MS) return guidanceCache.enabled;
+  }
+  const entry = { at: now, key, enabled: true };
+  guidanceCache = entry;
+  // Invalidation can detach this entry while its read is pending; completion
+  // updates only that entry, never a newer cache or the invalidated slot.
+  entry.pending = (async () => {
+    const state = await nativeHostState($, 'dispatch-status');
+    entry.enabled = state?.dispatch !== 'bash' && !(state?.dispatch === 'auto' && state.nativeUnavailable);
+    return entry.enabled;
+  })().finally(() => { delete entry.pending; });
+  return entry.pending;
+}
 // Final statuses whose Codex turn is known to have ended. Interrupted,
 // cancelled and failed jobs need a confirmed cancellation instead.
 const ENDED = ['completed', 'needs_input', 'blocked'];
@@ -44,6 +93,10 @@ const promptPrefixes = new Map();
 const ambiguousEchoes = new Set();
 const COORDINATOR_PREFIX = 'The coordinator sent a message while you were working:\n';
 const COORDINATOR_SUFFIX = '\n\nAddress this before completing your current task.';
+// Normalize only execution input. Prompt rows and turn text retain the host's
+// exact framing so run-log binding can still match them.
+const coordinatorBody = text => text.startsWith(COORDINATOR_PREFIX) && text.endsWith(COORDINATOR_SUFFIX)
+  ? text.slice(COORDINATOR_PREFIX.length, -COORDINATOR_SUFFIX.length) : text;
 const logKey = (agentId, turnId) => JSON.stringify([agentId, turnId]);
 const invalidateProgress = $ => {
   try { $.ui.invalidate('ui.render'); } catch { /* Display must never affect a turn. */ }
@@ -148,6 +201,7 @@ function displayPrompt(e) {
   return row;
 }
 function updateDisplay($, state, job) {
+  if (job) settleLog($, state, job);
   const view = agentDisplays.get(state.agentId);
   if (!view || !liveProgress.has(state.agentId) || view.turnId !== (state.incoming?.turnId ?? state.intent?.turnId)) return;
   liveProgress.get(state.agentId).cwd = job?.request?.cwd ?? state.cwd;
@@ -159,7 +213,7 @@ function updateDisplay($, state, job) {
     if (typeof request?.effort === 'string') view.effort = request.effort;
     if (request && Object.hasOwn(request, 'serviceTier')) view.speed = request.serviceTier === 'priority' ? 'fast' : 'normal';
     view.question = ACTIVE.includes(job.status) && job.pendingQuestion?.answer === undefined
-      && typeof job.pendingQuestion?.text === 'string' ? job.pendingQuestion.text.slice(0, 200) : undefined;
+      && typeof job.pendingQuestion?.text === 'string' ? cleanDisplayText(job.pendingQuestion.text).slice(0, 200) : undefined;
   }
   invalidateProgress($);
 }
@@ -212,6 +266,17 @@ function appendLog($, log, text) {
     }
     invalidateProgress($);
   } catch { /* The display log must never affect progress delivery. */ }
+}
+function settleLog($, state, job) {
+  try {
+    const status = ACTIVE.includes(job.status) ? state.cancellation?.status : job.status;
+    if (!['interrupted', 'cancelled'].includes(status) || !ended(job, state)) return;
+    const log = turnLogs.get(logKey(state.agentId, state.intent?.turnId));
+    if (!log || log.interruption === status) return;
+    // Keep starts available for FIFO pairing with buffered completion events.
+    log.interruption = status;
+    invalidateProgress($);
+  } catch { /* Confirmation only updates the display; never affect a turn. */ }
 }
 // Parse for display only. Quoted, escaped and nested separators are not chains.
 // Unsupported shell constructs stay visible and are never folded.
@@ -314,9 +379,9 @@ function eventTitle(entry, context) {
   }
   return { title: title.replace(/^((?:Write|Update|Delete)\()(.*)\)$/, (_, action, path) => action + displayPath(path, context) + ')'), suffix: '' };
 }
-function eventStatus(entry) {
+function eventStatus(entry, context = {}) {
   const result = entry.result;
-  if (entry.running) return '… running';
+  if (entry.running) return context.interruption || '… running';
   if (/^Done\b/.test(result)) return '✓' + result.slice(4).replace(/^\s*\((.*)\)$/, ' $1');
   if (/^(?:Error|Failed|Blocked)\b/.test(result)) return '✗' + result.replace(/^(?:Error|Failed|Blocked)\b:?\s*/, ' ').replace(/\s+\([^)]*\)$/, '').trimEnd();
   const added = /^\+(\d+|\?) [−-]0$/.exec(result);
@@ -326,7 +391,7 @@ function eventStatus(entry) {
 const entryText = (entry, context) => {
   if (entry.kind !== 'event') return entry.kind === 'message' ? `Codex: ${entry.title}` : entry.title;
   const { title, suffix } = eventTitle(entry, context);
-  return `${title}${suffix} ${eventStatus(entry)}`;
+  return `${title}${suffix} ${eventStatus(entry, context)}`;
 };
 const entryStyle = entry => entry.kind === 'event'
   ? (/^\+\d+ [−-]\d+$/.test(entry.result) ? { color: 'success' } : resultStyle(entry.result))
@@ -345,7 +410,7 @@ const displayWidth = e => Number.isFinite(e.viewport?.columns) ? Math.max(0, Mat
 const displayRow = (e, children, props = {}) => ({ type: 'Box', props: {
   width: displayWidth(e)
 }, children: [{ type: 'Text', props: { wrap: 'truncate-end', ...props }, children }] });
-const progressRow = (e, text, prefix = '') => displayRow(e, [prefix + text.replace(/\s+/g, ' ')], lineStyle(text));
+const progressRow = (e, text, prefix = '') => displayRow(e, [prefix + cleanDisplayText(text).replace(/\s+/g, ' ')], lineStyle(text));
 // A host without Intl.Segmenter falls back to code points rather than
 // failing to load the adapter.
 const graphemeSegmenter = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
@@ -354,19 +419,24 @@ const charWidth = char => /[\p{Mark}\u200d]/u.test(char) ? 0 : /\p{Emoji_Present
 const cellWidth = char => /\p{Emoji_Presentation}|\p{Emoji}\uFE0F/u.test(char) ? 2
   : Array.from(char).reduce((width, point) => width + charWidth(point), 0);
 const textWidth = text => textChars(text).reduce((width, char) => width + cellWidth(char), 0);
-function takeCells(chars, width) {
+function takeCells(chars, width, fromEnd = false) {
   let result = '', used = 0;
-  for (const char of chars) { const size = cellWidth(char); if (used + size > width) break; result += char; used += size; }
+  for (const char of fromEnd ? [...chars].reverse() : chars) {
+    const size = cellWidth(char);
+    if (used + size > width) break;
+    result = fromEnd ? char + result : result + char; used += size;
+  }
   return result;
 }
 function middleText(text, width) {
   if (textWidth(text) <= width) return text;
   if (width < 1) return '';
   const left = Math.ceil((width - 1) / 2), chars = textChars(text);
-  return takeCells(chars, left) + '…' + textChars(takeCells([...chars].reverse(), width - 1 - left)).reverse().join('');
+  // Preserve the original clusters: reversed regional indicators pair differently.
+  return takeCells(chars, left) + '…' + takeCells(chars, width - 1 - left, true);
 }
 function eventRow(e, entry, context) {
-  const width = displayWidth(e), dotWidth = Math.min(2, width), status = eventStatus(entry);
+  const width = displayWidth(e), dotWidth = Math.min(2, width), status = eventStatus(entry, context);
   const statusWidth = Math.min(width - dotWidth, textWidth(status) + 1), titleWidth = width - dotWidth - statusWidth;
   const { title, suffix } = eventTitle(entry, context);
   const label = middleText(title, Math.max(0, titleWidth - textWidth(suffix))) + suffix;
@@ -400,8 +470,9 @@ const displayStatus = status => ({ completed: 'Done', blocked: 'Blocked', failed
   needs_answer: 'Needs answer', needs_input: 'Needs answer', interrupted: 'Interrupted',
   cancelled: 'Interrupted', owner_stopped: 'Interrupted', ownership_moved: 'Interrupted' })[status] || 'Failed';
 function promptDisplay(text) {
-  if (typeof text !== 'string' || !text.startsWith('DUET: ')) return null;
+  if (typeof text !== 'string') return null;
   const { brief, flags, cwd } = parsePrompt(text);
+  if (brief === text) return null;
   const value = flag => {
     const index = flags.indexOf(flag);
     return index < 0 ? undefined : flags[index + 1];
@@ -448,7 +519,7 @@ const UNSETTLED = [...ACTIVE, ...RECOVERY_STATUSES];
 const REPORT_STATUSES = new Set([...ACTIVE, ...RECOVERY_STATUSES, 'completed', 'needs_input', 'needs_answer', 'blocked',
   'failed', 'interrupted', 'cancelled', 'owner_stopped', 'ownership_moved']);
 const REPORT_FIELDS = new Set(['status', 'worker', 'jobId', 'summary', 'summaryTruncated', 'blockers',
-  'question', 'changedFiles', 'checks', 'assumptions', 'keyFindings', 'usage', 'next', 'details', 'notice',
+  'question', 'changedFiles', 'changedFilesShared', 'changedFilesNote', 'checks', 'assumptions', 'keyFindings', 'usage', 'next', 'details', 'notice',
   'changedFilesOmitted', 'keyFindingsOmitted', 'assumptionsOmitted', 'blockersOmitted',
   'verificationOmitted', 'claimedVerificationOmitted', 'touchedFilesOmitted', 'preExistingChangesOmitted',
   'approvedBrowserOriginsOmitted', 'approvedComputerAppsOmitted']);
@@ -458,6 +529,8 @@ function reportMarkdown(props) {
   try { report = JSON.parse(props.text.trim()); } catch { return null; }
   if (!report || typeof report !== 'object' || Array.isArray(report)
     || Object.keys(report).some(key => !REPORT_FIELDS.has(key))
+    || (Object.hasOwn(report, 'changedFilesShared') && report.changedFilesShared !== true)
+    || (Object.hasOwn(report, 'changedFilesNote') && (typeof report.changedFilesNote !== 'string' || report.changedFilesNote.length > 600))
     || !REPORT_STATUSES.has(report.status) || ACTIVE.includes(report.status) || RECOVERY_STATUSES.includes(report.status)
     || !(report.worker === null || typeof report.worker === 'string')
     || !(report.next === null || (typeof report.next === 'string' && (report.next.startsWith('SendMessage to ')
@@ -470,40 +543,42 @@ function reportMarkdown(props) {
       || (Array.isArray(report.blockers) && report.blockers.length > 0
         && report.blockers.every(blocker => typeof blocker?.code === 'string' && blocker.code.startsWith('native_'))))) return null;
   const clip = text => {
-    const value = boundedText(text, 600);
-    return value === text ? value : `${value}…`;
+    const cleaned = cleanDisplayText(text), value = boundedText(cleaned, 600);
+    return value === cleaned ? value : `${value}…`;
   };
   const plain = value => typeof value === 'string'
-    ? clip(value.replace(/\s+/g, ' ').trim()).replace(/[\\`*_{}\[\]<>#|]/g, '\\$&') : '';
+    ? clip(cleanDisplayText(value).replace(/\s+/g, ' ').trim()).replace(/[\\`*_{}\[\]<>#|]/g, '\\$&') : '';
   const lines = [`**${plain(report.worker) || 'Codex'}** · ${report.status} · job ${plain(report.jobId) || '—'}`];
   if (typeof report.summary === 'string' && report.summary.trim()) {
     const summary = report.summary.trim().split(/\r\n?|\n|\u2028|\u2029/);
     lines.push('', ...summary.slice(0, 12).map(clip));
     if (summary.length > 12) lines[lines.length - 1] = '…';
   }
-  const list = (title, values) => {
+  const list = (title, values, limit = 10) => {
     const items = Array.isArray(values) ? values.filter(value => typeof value === 'string' && value.trim()) : [];
     if (!items.length) return;
-    lines.push('', `**${title}**`, ...items.slice(0, 10).map(value => `- ${plain(value)}`));
-    if (items.length > 10) lines.push('', `+${items.length - 10} more`);
+    lines.push('', `**${title}**`, ...items.slice(0, limit).map(value => `- ${plain(value)}`));
+    if (items.length > limit) lines.push('', `+${items.length - limit} more`);
   };
-  list('Checks run', report.checks?.ran);
-  list('Key findings', report.keyFindings);
   list('Blockers', Array.isArray(report.blockers) ? report.blockers
     .filter(blocker => typeof blocker?.code === 'string')
     .map(blocker => `${blocker.code}${typeof blocker.message === 'string' ? `: ${blocker.message}` : ''}`) : []);
-  // Reserve the question and next action before trimming less urgent sections.
+  // Reserve blockers, the question and next action before less urgent sections.
   const tail = [], question = typeof report.question === 'string' ? { text: report.question } : report.question;
   if (report.notice) tail.push('', plain(report.notice));
   if (question) {
     const options = Array.isArray(question.options) ? question.options.filter(option => typeof option === 'string') : [];
-    tail.push('', '**Question**');
-    if (typeof question.text === 'string') tail.push(plain(question.text));
-    tail.push(...options.slice(0, 10).map(option => `- ${plain(option)}`));
+    lines.push('', '**Question**');
+    if (typeof question.text === 'string') lines.push(plain(question.text));
+    lines.push(...options.slice(0, 10).map(option => `- ${plain(option)}`));
     const omitted = Math.max(0, options.length - 10)
       + (Number.isSafeInteger(question.optionsOmitted) && question.optionsOmitted > 0 ? question.optionsOmitted : 0);
-    if (omitted) tail.push('', `+${omitted} more`);
+    if (omitted) lines.push('', `+${omitted} more`);
   }
+  list('Changed files', report.changedFiles, 5);
+  if (report.changedFilesNote) lines.push('', plain(report.changedFilesNote));
+  list('Checks run', report.checks?.ran);
+  list('Key findings', report.keyFindings);
   const usage = [['inputTokens', 'input'], ['cachedInputTokens', 'cached'], ['outputTokens', 'output'],
     ['reasoningOutputTokens', 'reasoning'], ['totalTokens', 'total']]
     .filter(([key]) => Number.isSafeInteger(report.usage?.[key]) && report.usage[key] >= 0)
@@ -542,9 +617,16 @@ async function ours($, id) {
 // A small argv tokenizer, never a shell. Quotes/backslashes allow cwd with spaces;
 // command substitution, expansions and shell operators have no special meaning.
 function parsePrompt(text) {
-  if (!text.startsWith('DUET: ')) return { brief: text, flags: [] };
+  const invalid = () => { throw new Error(`Invalid DUET header. Allowed flags: ${ALLOWED}.`); };
   const newline = text.indexOf('\n');
-  const header = text.slice(6, newline < 0 ? undefined : newline).replace(/\r$/, '');
+  const firstLine = text.slice(0, newline < 0 ? undefined : newline).replace(/\r$/, '');
+  const prefix = /^[ \t]*DUET:[ \t]+/.exec(firstLine);
+  if (!prefix) {
+    // Header-like first lines must fail closed rather than discard settings.
+    if (/^[ \t]*duet[ \t]*:/i.test(firstLine)) invalid();
+    return { brief: text, flags: [] };
+  }
+  const header = firstLine.slice(prefix[0].length);
   const tokens = []; let token = '', quote = '', escaped = false, present = false;
   for (const char of header) {
     if (escaped) { token += char; escaped = false; present = true; }
@@ -554,7 +636,6 @@ function parsePrompt(text) {
     else if (/\s/.test(char)) { if (present) tokens.push(token); token = ''; present = false; }
     else { token += char; present = true; }
   }
-  const invalid = () => { throw new Error(`Invalid DUET header. Allowed flags: ${ALLOWED}.`); };
   if (quote || escaped) invalid();
   if (present) tokens.push(token);
   const flags = [], seen = new Set(); let cwd;
@@ -591,9 +672,11 @@ const SPAWN_GRACE_MS = 10 * 60 * 1000;
 // orphan guards (tiny, still budgeted) are reclaimed only after a day.
 const ORPHAN_GUARD_MS = 24 * 60 * 60 * 1000;
 const unstartedSince = new Map();
+const missingSince = new Map();
 // Keep the queues outside register(): re-registration must not forget writes
 // that have already entered the host. A fresh module has its own queues.
 let admission = Promise.resolve();
+let pruneCursor;
 const bindingWrites = new Map();
 const serializeAdmission = action => {
   const pending = admission.then(action);
@@ -611,8 +694,98 @@ function writeBinding(key, action) {
 async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = () => false } = {}) {
   const now = await $.clock.now(), keys = await $.store.keys(), kept = new Set(), records = [];
   const unstarted = value => !value.v && !value.intent && !value.incoming && !value.finishedAt;
+  const questionExpiry = value => {
+    const question = value.answer?.question;
+    const askedAt = typeof question?.askedAt === 'number' ? question.askedAt : Date.parse(question?.askedAt);
+    return question?.expiresAt ?? (Number.isFinite(askedAt) ? askedAt + (value.questionTimeoutSec ?? 900) * 1000 : undefined);
+  };
   const seen = new Set(keys), guards = new Map();
   for (const key of unstartedSince.keys()) if (!seen.has(key)) unstartedSince.delete(key);
+  for (const key of missingSince.keys()) if (!seen.has(key)) missingSince.delete(key);
+  const inventories = new Map(), jobs = new Map(), timing = { deadline: now + 3000 };
+  let lookups = 0;
+  const lookupBudget = async key => {
+    if (lookups >= 8) {
+      throw new Error('Native binding lookup budget exhausted.');
+    }
+    const timeoutMs = await processBudget($, timing);
+    lookups++;
+    const index = candidates.findIndex(record => record.key === key);
+    if (index >= 0) pruneCursor = candidates[(index + 1) % candidates.length].key;
+    return timeoutMs;
+  };
+  const stale = async (key, value) => {
+    // Admission can retain the previous job while a newer turn waits for step.
+    // That job's terminal status cannot release the newer turn's slot.
+    if (value.incoming || value.bindingPending || !value.cwd || !value.session || !value.jobId) return null;
+    const turn = bindingTurn(value);
+    if (turn && turn !== (value.intent?.turnId ?? value.answeredTurn)) return null;
+    const scope = value.cwd, identity = JSON.stringify([value.session, value.jobId]);
+    const reference = JSON.stringify([scope, identity]);
+    if (!jobs.has(reference) && (lookups >= 8 || await $.clock.now() >= timing.deadline)) return null;
+    if (!inventories.has(scope)) inventories.set(scope, (async () => {
+      const status = await snapshot($, value, ['status', '--all', '--json'], {
+        ...timing, timeoutMs: await lookupBudget(key), requireSuccess: true });
+      if (!Array.isArray(status.running) || !Array.isArray(status.recent) || !Object.hasOwn(status, 'latestFinished')) throw new Error('Incomplete Duet binding inventory.');
+      // --all spans every session in this workspace; index it once per prune.
+      return new Map([...status.running, status.latestFinished, ...status.recent].filter(Boolean)
+        .map(job => [JSON.stringify([job.sessionId, job.id]), job]));
+    })().catch(() => null));
+    const inventory = await inventories.get(scope);
+    if (!inventory) return null;
+    const listed = inventory.get(identity);
+    if (listed && ACTIVE.includes(listed.status)) {
+      missingSince.delete(key); return null;
+    }
+    if (!jobs.has(reference)) jobs.set(reference, (async () => {
+      try {
+        await lookupBudget(key);
+        const request = await command($, value, ['status', value.jobId, '--json'], '', timing);
+        const timeoutMs = await processBudget($, timing);
+        const result = await $.process.run(request.argv, { cwd: request.cwd, timeoutMs });
+        if (result.isStdoutTruncated || result.isStderrTruncated) return null;
+        // A failed lookup is not absence, except for the companion's exact
+        // missing-job response. Inconclusive recovery keeps its binding.
+        const error = result.stderr?.trim() || '';
+        const missing = error.startsWith(`Worker ${JSON.stringify(value.jobId)}: no match. Pass a jobId or --thread <id>. Candidates: `)
+          || error === `No job found for "${value.jobId}". Run /codex:status to list known jobs.`;
+        if (result.exitCode !== 0) return result.exitCode === 1 && missing ? { job: null } : null;
+        const status = parseReport(result.stdout, result.exitCode, result.stderr, true);
+        if (!status?.job || typeof status.job !== 'object' || Array.isArray(status.job)
+          || status.job.id !== value.jobId || status.job.sessionId !== value.session
+          || !REPORT_STATUSES.has(status.job.status)) return null;
+        // Like stopJob, check the report before trusting a terminal label:
+        // an inferred completion may still own an unresolved Codex turn.
+        if (status.job && !ACTIVE.includes(status.job.status) && status.job.interruptionConfirmed !== true) {
+          const report = await snapshot($, value, ['result', value.jobId, '--report'], {
+            ...timing, timeoutMs: await lookupBudget(key) });
+          if (report.jobId !== value.jobId || ![...ENDED, 'failed'].includes(report.status)
+            || UNSETTLED.includes(report.recovery?.status)) return null;
+        }
+        return status;
+      } catch { return null; }
+    })());
+    const result = await jobs.get(reference);
+    if (!result) return null;
+    const job = result.job;
+    if (job) {
+      missingSince.delete(key);
+      if (job.id !== value.jobId || job.sessionId !== value.session || ACTIVE.includes(job.status)) return null;
+      if (value.intent?.kind === 'task' && job.dispatchNonce !== value.intent.nonce) return null;
+      const recovery = result.recovery ?? job.recovery;
+      const current = { ...value, status: recovery?.status || job.status };
+      if (!ended(job, current) && !(job.status === 'failed' && !recovery)) return null;
+      return { at: Date.parse(job.completedAt ?? job.updatedAt) };
+    }
+    const parked = value.status === 'needs_answer' || value.answer?.status === 'needs_answer';
+    const timeout = (value.questionTimeoutSec ?? 900) * 1000;
+    const expiresAt = questionExpiry(value);
+    if (typeof expiresAt === 'number') return now - expiresAt >= SPAWN_GRACE_MS ? { at: expiresAt } : null;
+    const missingIdentity = JSON.stringify([value.jobId, bindingTurn(value)]);
+    if (missingSince.get(key)?.identity !== missingIdentity) missingSince.set(key, { identity: missingIdentity, at: now });
+    const at = missingSince.get(key).at + (parked ? timeout : 0);
+    return now - at >= SPAWN_GRACE_MS ? { at } : null;
+  };
   let count = 0, active = 0, size = 0, keepSize = 0;
   // Spawn may publish only its guard before a host/store failure. Such orphans
   // still consume store space; reclaim them after ORPHAN_GUARD_MS.
@@ -646,7 +819,14 @@ async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = 
   // History uses spare record slots, never admission slots. Reclaim oldest
   // finished bindings first, including enough room for the incoming record.
   records.sort((a, b) => (a.state.finishedAt || Infinity) - (b.state.finishedAt || Infinity));
-  for (const record of records) {
+  // Keep finished history oldest-first; rotate the bounded lookup phase so
+  // unresolved prefixes cannot starve reclaimable bindings on later prunes.
+  const candidates = records.filter(({ state }) => !finished(state));
+  const start = Math.max(0, candidates.findIndex(({ key }) => key === pruneCursor));
+  const ordered = [...records.filter(({ state }) => finished(state)), ...candidates.slice(start), ...candidates.slice(0, start)];
+  const pressure = () => count + reserveCount > MAX_RECORDS || size + reserveSize > MAX_STORE_SIZE;
+  const pressured = pressure();
+  for (const record of ordered) {
     const { key } = record;
     let { state } = record;
     // finishedAt is certain except after an unconfirmed cancellation, whose
@@ -660,8 +840,11 @@ async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = 
         if (now - unstartedSince.get(key) < SPAWN_GRACE_MS) return false;
       } else {
         unstartedSince.delete(key);
-        if (!finished(value)) return false;
-        if (!expired(value) && value.cancellation
+        if (!finished(value)) {
+          const old = await stale(key, value);
+          if (!old || (!pressure() && (!Number.isFinite(old.at) || now - old.at <= RETENTION_MS))) return false;
+        }
+        if (finished(value) && !expired(value) && value.cancellation
           && !(value.cancellation?.confirmation === 'confirmed' && value.cancellation.jobId === value.jobId)
           && !await isClosed($, value)) return false;
       }
@@ -669,8 +852,12 @@ async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = 
       return !(typeof guard?.at === 'number' && now - guard.at < SPAWN_GRACE_MS)
         && !pending(key) && !dispatching.has(key);
     };
-    const needed = value => (!unstarted(value) && now - value.finishedAt > RETENTION_MS)
-      || count + reserveCount > MAX_RECORDS || size + reserveSize > MAX_STORE_SIZE;
+    const needed = value => {
+      if (pressure()) return true;
+      // Stop companion lookups once admission has enough room.
+      if (unstarted(value) || (pressured && !finished(value))) return false;
+      return now - value.finishedAt > RETENTION_MS || now - questionExpiry(value) >= SPAWN_GRACE_MS;
+    };
     if (needed(state) && await evictable(state)) {
       // A turn may have admitted a message or parked a question since the
       // inventory read. Recheck both eligibility and budgets before deleting.
@@ -682,6 +869,7 @@ async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = 
       if (needed(state) && await evictable(state)) {
         await $.store.delete(key);
         unstartedSince.delete(key);
+        missingSince.delete(key);
         if (state.agentId) {
           await $.store.delete(closedKey(state.session, state.agentId));
           const guard = bindingFailedKey(state.session, state.agentId);
@@ -838,7 +1026,15 @@ const save = ($, state, { fields, valid = () => true, close = false,
     return true;
   });
 };
-async function handles($, state, jobId, recovery = false, persist = true, { waitMs = 0, ...timing } = {}) {
+async function saveReport($, state, report) {
+  try { await save($, state); }
+  catch (error) {
+    // A terminal companion report may already be marked delivered. Preserve
+    // it on cache failure; pending questions still need their routing state.
+    if (!report || report.status === 'needs_answer' || UNSETTLED.includes(report.status)) throw error;
+  }
+}
+async function handles($, state, jobId, recovery = false, persist = true, { waitMs = 0, report, ...timing } = {}) {
   const args = ['status', jobId, '--json', ...(waitMs ? ['--wait', '--timeout-ms', String(waitMs), '--poll-interval-ms', '250'] : [])];
   const { job, recovery: notice } = await snapshot($, state, args, timing);
   if (!job || job.sessionId !== state.session) throw new Error('Duet job is missing or belongs to another session.');
@@ -851,10 +1047,10 @@ async function handles($, state, jobId, recovery = false, persist = true, { wait
     status: unresolved ? job.recovery?.status || 'unknown' : job.status });
   if (unresolved) delete state.finishedAt;
   updateDisplay($, state, job);
-  if (persist) await save($, state);
+  if (persist) await saveReport($, state, report);
   return job;
 }
-async function reconcile($, state, recovery = false, allowAbsent = false, { persist = true, ...timing } = {}) {
+async function reconcile($, state, recovery = false, allowAbsent = false, { persist = true, report, ...timing } = {}) {
   const args = ['status', '--all', '--json'];
   timing.deadline ??= await $.clock.now() + await processBudget($, timing);
   const lookup = flags => snapshot($, state, flags, { ...timing, requireSuccess: allowAbsent });
@@ -869,13 +1065,20 @@ async function reconcile($, state, recovery = false, allowAbsent = false, { pers
   const matches = jobs.filter(job => job.sessionId === state.session && job.dispatchNonce === state.intent.nonce);
   if (allowAbsent && matches.length === 0) return null;
   if (matches.length !== 1) throw new Error('Native launch intent has no unique recorded job. Refusing to redispatch; inspect duet status before retrying.');
-  return handles($, state, matches[0].id, recovery, persist, timing);
+  return handles($, state, matches[0].id, recovery, persist, { ...timing, report });
 }
 async function drive($, e, state, progress) {
   // Block only a binding known to have failed: permissionMode is optional in
   // the host API, and agents from earlier versions have none.
   if (state.bindingPending) return blocked('Native permission binding is unavailable; nothing was launched. Start a new agent.', state, 'native_binding_unavailable');
-  if (state.v === undefined) return blocked('Native dispatch context unavailable (store full, oversized message, or failed turn.start); nothing was launched.', state);
+  if (state.v === undefined) {
+    if (!state.incoming && !state.intent && bindingTurn(state) === undefined && !state.jobId) {
+      await nativeHostState($, 'native-unavailable');
+      return { ...blocked('The host did not deliver the native turn start; nothing was dispatched.', state, 'native_adapter_unavailable'),
+        next: 'Run `duet status` first, then use background Bash `duet task` as described in the `codex:native-fallback` skill.' };
+    }
+    return blocked('Native dispatch context unavailable (store full, oversized message, or failed turn.start); nothing was launched.', state);
+  }
   if (state.v !== 2) return blocked('Unsupported native adapter state version; nothing was dispatched.', state);
   if (state.answeredTurn === e.turnId) return state.answer;
   const durable = await $.store.get(keyFor(state.session, state.agentId));
@@ -890,9 +1093,12 @@ async function drive($, e, state, progress) {
     // Re-entry after an answer never resubmits it. If the old question is still
     // pending, leave it parked; a new SendMessage can explicitly answer again.
     report = await companion($, state, ['wait', state.jobId, '--owner', state.ownerId, '--timeout-sec', WAIT_TIMEOUT_SEC], '', progress);
-    await handles($, state, state.jobId);
+    await handles($, state, state.jobId, false, true, { report });
   } else {
-    let input = state.incoming.text, args, questionChanged = false;
+    // Only later SendMessage turns carry host framing. An initial Agent brief
+    // may contain that exact text as a literal example.
+    const previousTurn = state.jobId || state.intent || state.answeredTurn;
+    let input = previousTurn ? coordinatorBody(state.incoming.text) : state.incoming.text, args, questionChanged = false;
     const answeringDisplayedQuestion = state.answer?.status === 'needs_answer';
     if (!input.trim()) return blocked('Empty native-agent message; nothing was dispatched.', state);
     // Overlapping stop handlers may have saved a stale status; the job record
@@ -927,7 +1133,7 @@ async function drive($, e, state, progress) {
     }
     if (ACTIVE.includes(state.status)) return blocked('A Codex job is already running. Wait for completion before sending another assignment.', state);
     if (state.status === 'needs_answer') {
-      // Headers are task settings only. A question answer is always verbatim.
+      // Headers are task settings only. A question answer's body is verbatim.
       state.intent = { session: state.session, agentId: e.agentId, turnId: e.turnId, kind: 'answer', nonce: nonceFor(state.session, e.agentId, e.turnId) };
       args = questionChanged
         ? ['wait', state.jobId, '--owner', state.ownerId, '--timeout-sec', WAIT_TIMEOUT_SEC]
@@ -972,26 +1178,30 @@ async function drive($, e, state, progress) {
         // An exited companion's error AND an authoritative empty nonce lookup close
         // only this rejected turn. Failed/ambiguous lookups still fail closed.
         await closeTurn($, state);
-        return blocked(error.message, state);
+        const message = args[0] === 'task' && args.includes('--fork')
+          ? error.message.replace('Retry with --source <path-to-claude-jsonl>.',
+            "Retry with --fork after this session's SessionStart has recorded the transcript, send a brief without --fork, or load the codex:native-fallback skill for an explicit --source.")
+          : error.message;
+        return blocked(message, state);
       }
       throw error;
     }
     // The task process stays attached throughout the wait. Resolve handles
     // from its durable nonce reservation, never a short dispatch response.
     // If aborted before returning, cancel() resolves that same intent.
-    if (state.intent.kind === 'task') await reconcile($, state);
-    else await handles($, state, state.jobId);
+    if (state.intent.kind === 'task') await reconcile($, state, false, false, { report });
+    else await handles($, state, state.jobId, false, true, { report });
   }
   await progress.start();
   for (;;) {
     if (!report.jobId || report.jobId !== state.jobId) throw new Error('Duet report does not match the recorded job handle.');
     state.status = report.status;
-    await save($, state);
+    await saveReport($, state, report);
     if (!ACTIVE.includes(report.status)) break;
     // Only a full wait timeout returns active; questions and terminal reports
     // exit above. Await process I/O so waiting does not spend hook budget.
     report = await companion($, state, ['wait', state.jobId, '--owner', state.ownerId, '--timeout-sec', WAIT_TIMEOUT_SEC], '', progress);
-    await handles($, state, state.jobId);
+    await handles($, state, state.jobId, false, true, { report });
   }
   if (report.status === 'needs_answer') await progress.line(`? Waiting for Claude: ${report.question?.text || report.summary}`);
   return { ...report, next: RECOVERY_STATUSES.includes(report.status) || report.blockers?.some(blocker => blocker.code === 'thread_busy')
@@ -1072,6 +1282,7 @@ async function stopJob($, state, deadline) {
     }
   }
   if (!ended(job, state)) return null;
+  settleLog($, state, job);
   state.finishedAt = await $.clock.now();
   await closeTurn($, state);
   await save($, state, { turnId: state.intent?.turnId, fields: ['status', 'cancellation', 'finishedAt'] });
@@ -1260,6 +1471,7 @@ function progressFor($, e, state, publish, currentFlight) {
 }
 
 export function register(on) {
+  guidanceCache = null;
   let registered = false;
   const announcing = new Map(), announced = new Set();
   const efforts = new Map(), spawning = new Map(), observedBindings = new Map(), refusals = new Map(), resumedSpawns = new Set();
@@ -1633,13 +1845,15 @@ export function register(on) {
           if (report.status === 'needs_answer') state.questionId = report.question?.id ?? null;
           try { await save($, state); }
           catch (error) {
-            // A store may commit and then throw. Still return that question,
-            // never a blocked report that would leave an unseen id as shown.
-            if (report.status !== 'needs_answer') throw error;
-            // Retry a transient pre-commit failure too, so the displayed
-            // question remains answerable. Persistent failure is repaired by
-            // recheck re-showing the job's current question conservatively.
-            await save($, state).catch(() => {});
+            // The companion may already have marked a terminal report as
+            // delivered. A failed adapter cache write must not replace it.
+            if (UNSETTLED.includes(report.status)) throw error;
+            if (report.status === 'needs_answer') {
+              // A store may commit and then throw. Still return the question;
+              // retry pre-commit failures so it remains answerable. Persistent
+              // failure is repaired by re-showing the current question.
+              await save($, state).catch(() => {});
+            }
           }
         }
         running.display.status = report.status;
@@ -1706,6 +1920,7 @@ export function register(on) {
   // command (such as /reload-plugins) may never ask the model.
   on('prompt.submit', { origin: { kind: PERSON_ORIGINS } }, async ($, e, next) => {
     if (!registered || e.command || !PERSON_ORIGINS.includes(e.origin?.kind)) return next(e);
+    if (!await nativeGuidanceEnabled($)) return next(e);
     const session = await $.session.id(), key = `native:ready:v1:${session}`;
     // Claim synchronously after the last await, so concurrent prompts attach
     // once; persist only after the prompt entered, so a dropped one does not
@@ -1730,6 +1945,7 @@ export function register(on) {
     const result = await next(e);
     if (!registered || !e.tools?.includes('Agent') || !Array.isArray(result?.sections)
         || result.sections.some(section => section.id === GUIDE_ID)) return result;
+    if (!await nativeGuidanceEnabled($)) return result;
     return { ...result, sections: [...result.sections, { id: GUIDE_ID, text: NATIVE_GUIDE, scope: 'session' }] };
   }).catch(passthrough);
   registered = true;

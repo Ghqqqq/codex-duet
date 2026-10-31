@@ -1,7 +1,8 @@
 # Native worker lifecycle and protocol evidence
 
 Use `Agent(subagent_type: "codex:codex-native")` by default from the first dispatch,
-without waiting for a readiness notice. Background `duet task` is for
+without waiting for a readiness notice, subject to the [saved dispatch route](configuration.md#worker-dispatch).
+Background `duet task` is for
 `native_adapter_unavailable`, `native_capacity`, per-call options the `DUET:` line
 rejects, or follow-ups to Bash-launched workers. Reports arrive with completion notifications;
 only if missing, use `duet result <worker>`. The Haiku `codex:codex-worker` is a
@@ -26,6 +27,14 @@ re-wait prints only activity after the reader's stored cursor. The default
 180 outside direct mode. The process heartbeats and renews the lease while
 attached. A normal return leaves the lease protecting the job; observation-only
 status/result calls do not renew it.
+
+To stop all active jobs of this Claude session in the current workspace, run
+`duet cancel --all`. It attempts each job and prints per-job outcomes, including
+unconfirmed interruption or errors; inspect those outcomes before assuming all
+work has stopped. Other sessions' jobs are untouched. It cannot be combined with
+a worker argument. Outside a Claude session, use `--session <id>` to select the
+session explicitly; `--cwd <dir>` selects the workspace. Use `duet cancel
+<worker>` to stop one job.
 
 When a worker tick is delayed by more than two seconds (for example, Mac sleep),
 it shifts an active, uncancelled job's heartbeat and lease by the full gap under
@@ -538,11 +547,14 @@ and in `duet cancel --json`. It never changes the cancellation's confirmation or
 exit code. A natural turn end sends no terminal cleanup. Task-scoped Computer Use grants
 left behind by a dead worker are released at the next start or recovery.
 
-SessionEnd writes cancellation controls for this Claude session and waits up to
-four seconds inside the hook's five-second budget, across worktrees sharing the
-state root `<isolated-home>/duet/state`. Busy state locks are reported
-unconfirmed without blocking; lease expiry remains the fallback. History remains
-recoverable.
+SessionEnd, for every end reason including `/clear` and logout, requests
+cancellation of this Claude session's running workers by writing cancellation
+controls. It waits up to four seconds inside the hook's five-second budget,
+across worktrees sharing the state root `<isolated-home>/duet/state`. Busy state
+locks are reported unconfirmed without blocking; lease expiry remains the
+fallback. Finish the work or let workers complete before ending the session to
+keep their work. Saved results remain retrievable with `duet result <worker>`
+(`--details` for full evidence and recovery handles) while retained.
 
 Job state lives in the isolated home (`~/.claude/codex-isolated/duet/state/`,
 beside `duet/config.toml`), never under `CLAUDE_PLUGIN_DATA` or the temp dir, so

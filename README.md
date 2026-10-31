@@ -65,7 +65,7 @@ to run it in the session.
 **Requirements:**
 - Claude Code 2.1.302 or later with plugin support;
 - Node.js 18.18+;
-- a Codex CLI (`codex` on PATH or a [pinned binary](docs/configuration.md#runtime-selection));
+- a Codex CLI with `app-server` support (`codex` on PATH or a [pinned binary](docs/configuration.md#runtime-selection)); tested with **0.146.0**, pinned in [.codex-version](.codex-version);
 - a ChatGPT plan (including Free) or an OpenAI API key. Usage counts toward your normal Codex limits.
 
 > Upgrade or downgrade only while no Duet jobs are running. Workers from
@@ -180,9 +180,10 @@ from `/tasks`. → [Native dispatch](docs/direct-mode.md#native-subagent-default
 
 ### Fallback: background workers
 
-Native dispatch is the default. Only when it is unavailable, or a call needs an
-option the `DUET:` line rejects, does Claude load the `codex:native-fallback`
-skill and run one background Bash call per job:
+Native dispatch is the default. When it is unavailable, a call needs an option
+the `DUET:` line rejects, or the [dispatch preference](docs/configuration.md#worker-dispatch)
+selects Bash, Claude loads the `codex:native-fallback` skill and runs one
+background Bash call per job:
 
 ```bash
 duet task --model gpt-6-astra --effort xhigh --normal <<'DUET_TASK'

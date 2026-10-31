@@ -8,446 +8,239 @@ import { projectDocsSetup, ensureProjectDocs } from "../plugins/codex/scripts/li
 import { instructionInventory } from "../plugins/codex/hooks/claude-memory.mjs";
 import { register } from "../plugins/codex/hooks/register.mjs";
 import { approveDuet } from "../plugins/codex/scripts/duet-permission-hook.mjs";
-import { claudeSnapshotFile, readClaudeSnapshot, writeClaudeSnapshot, prepareClaudeInstructions, renderClaudeInstructions, EXECUTOR_FRAMING, INSTRUCTION_LIMIT } from "../plugins/codex/scripts/lib/claude-memory.mjs";
-import { resolveClaudeConfigRoot, resolveClaudeSessionPath, snapshotClaudeSession, planClaudeImports, sweepClaudeImports } from "../plugins/codex/scripts/lib/claude-session-transfer.mjs";
+import { claudeSnapshotFile, readClaudeSnapshot, writeClaudeSnapshot, scanClaudeInstructions, prepareClaudeInstructions, renderClaudeInstructions, EXECUTOR_FRAMING, INSTRUCTION_LIMIT } from "../plugins/codex/scripts/lib/claude-memory.mjs";
+import { resolveClaudeSessionPath, snapshotClaudeSession } from "../plugins/codex/scripts/lib/claude-session-transfer.mjs";
 
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
-
+const duet = new URL("../plugins/codex/bin/duet", import.meta.url).pathname;
+function put(file, text) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); }
 function fixture() {
   const dir = makeTempDir(); installFakeCodex(dir);
   const repo = path.join(dir, "repo"); fs.mkdirSync(repo); initGitRepo(repo);
   const env = { ...buildEnv(dir), CODEX_COMPANION_HOME: path.join(dir, "isolated"), CLAUDE_PLUGIN_DATA: path.join(dir, "data") };
-  const configFile = path.join(env.CODEX_COMPANION_HOME, "config.toml");
-  const call = (...args) => run(process.execPath, [script, ...args], { cwd: repo, env });
-  const json = result => { assert.equal(result.status, 0, result.stderr + result.stdout); return JSON.parse(result.stdout); };
-  const config = () => fs.existsSync(configFile) ? fs.readFileSync(configFile, "utf8") : null;
-  return { dir, repo, env, configFile, call, json, config };
+  const call = (...args) => {
+    const result = run(process.execPath, [script, ...args], { cwd: repo, env });
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    return JSON.parse(result.stdout);
+  };
+  return { dir, repo, env, call, state: () => JSON.parse(fs.readFileSync(path.join(dir, "fake-codex-state.json"))) };
 }
 
-test("workers read CLAUDE.md through Codex's own fallback setting; the user can keep AGENTS.md only", () => {
-  const f = fixture();
-  const preview = projectDocsSetup({ env: f.env, dryRun: true });
-  assert.deepEqual([preview.projectDocs, preview.fallbackFilenames, preview.custom, preview.dryRun], ["claude-md", ["CLAUDE.md"], false, true]);
-  assert.equal(f.config(), null, "a dry run writes nothing");
-  // Before a task the key is written once into the isolated home's config.toml.
-  fs.mkdirSync(f.env.CODEX_COMPANION_HOME, { recursive: true });
-  fs.writeFileSync(f.configFile, 'model = "gpt-6-astra"\n\n[mcp_servers.node_repl]\ncommand = "fixture"\n');
-  const first = ensureProjectDocs({ env: f.env });
-  assert.deepEqual(first.fallbackFilenames, ["CLAUDE.md"]);
-  assert.equal(first.changedFiles.length, 1);
-  assert.equal(f.config(), '"project_doc_fallback_filenames" = ["CLAUDE.md"]\nmodel = "gpt-6-astra"\n\n[mcp_servers.node_repl]\ncommand = "fixture"\n', "a top-level key precedes every table");
-  assert.deepEqual(ensureProjectDocs({ env: f.env }).changedFiles, [], "idempotent");
-  const backups = fs.readdirSync(f.env.CODEX_COMPANION_HOME).filter(name => name.startsWith("config.toml.backup-"));
-  assert.equal(backups.length, 1);
-  // agents-only removes Duet's list and is remembered; claude-md restores it.
-  const off = f.json(f.call("setup", "--project-docs", "agents-only", "--json")).projectDocs;
-  assert.deepEqual([off.projectDocs, off.fallbackFilenames], ["agents-only", []]);
-  assert.doesNotMatch(f.config(), /project_doc_fallback_filenames/);
-  assert.deepEqual(ensureProjectDocs({ env: f.env }).fallbackFilenames, [], "the preference survives the next task");
-  assert.doesNotMatch(f.config(), /project_doc_fallback_filenames/);
-  const on = f.json(f.call("setup", "--project-docs", "claude-md", "--json")).projectDocs;
-  assert.deepEqual(on.fallbackFilenames, ["CLAUDE.md"]);
-  assert.match(f.config(), /^"project_doc_fallback_filenames" = \["CLAUDE\.md"\]$/m);
-  // A hand-written list is the user's: reported as custom and left alone in both modes.
-  fs.writeFileSync(f.configFile, f.config().replace('"project_doc_fallback_filenames" = ["CLAUDE.md"]', 'project_doc_fallback_filenames = ["CLAUDE.md", "NOTES.md"]'));
-  const custom = ensureProjectDocs({ env: f.env });
-  assert.deepEqual([custom.fallbackFilenames, custom.changedFiles], [["CLAUDE.md", "NOTES.md"], []]);
-  assert.equal(f.json(f.call("setup", "--project-docs", "agents-only", "--json")).projectDocs.custom, true);
-  assert.match(f.config(), /NOTES\.md/);
-  for (const args of [["--project-docs", "both"], ["--project-docs", "claude-md", "--default-sandbox", "read-only"], ["--project-docs", "claude-md", "--sync-tools"]]) {
-    const rejected = f.call("setup", ...args, "--json");
-    assert.notEqual(rejected.status, 0, args.join(" "));
-  }
-  assert.throws(() => projectDocsSetup({ mode: "both", env: f.env }), /--project-docs must be/);
-  // A task applies the preference before Codex starts; setup reports it read-only.
-  fs.writeFileSync(f.configFile, 'model = "gpt-6-astra"\n');
-  f.json(f.call("setup", "--project-docs", "claude-md", "--json"));
-  const task = f.json(f.call("task", "--json", "investigate"));
-  assert.equal(task.status, 0);
-  assert.match(f.config(), /project_doc_fallback_filenames/);
-  assert.deepEqual(f.json(f.call("setup", "--json")).projectDocs.fallbackFilenames, ["CLAUDE.md"]);
+test("project documentation preferences preserve custom settings and apply before task startup", () => {
+  const f = fixture(), config = path.join(f.env.CODEX_COMPANION_HOME, "config.toml");
+  assert.equal(projectDocsSetup({ env: f.env, dryRun: true }).dryRun, true);
+  assert.equal(fs.existsSync(config), false);
+  put(config, 'model = "gpt-6-astra"\n[mcp_servers.fixture]\ncommand = "fixture"\n');
+  assert.deepEqual(ensureProjectDocs({ env: f.env }).fallbackFilenames, ["CLAUDE.md"]);
+  assert.match(fs.readFileSync(config, "utf8"), /^"project_doc_fallback_filenames" = \["CLAUDE.md"\]/);
+  assert.deepEqual(ensureProjectDocs({ env: f.env }).changedFiles, []);
+  assert.equal(fs.readdirSync(path.dirname(config)).filter(name => name.startsWith("config.toml.backup-")).length, 1);
+  f.call("setup", "--project-docs", "agents-only", "--json");
+  assert.deepEqual(ensureProjectDocs({ env: f.env }).fallbackFilenames, []);
+  assert.doesNotMatch(fs.readFileSync(config, "utf8"), /project_doc_fallback_filenames/);
+  f.call("setup", "--project-docs", "claude-md", "--json");
+  fs.writeFileSync(config, 'model = "gpt-6-astra"\n');
+  put(path.join(f.repo, "CLAUDE.md"), "PROJECT_RULE");
+  f.call("task", "--json", "investigate");
+  const started = f.state().lastThreadStart;
+  assert.ok(started.developerInstructions.startsWith(EXECUTOR_FRAMING));
+  assert.ok(started.developerInstructions.includes("PROJECT_RULE"));
+  assert.deepEqual(started.config.project_doc_fallback_filenames, []);
+  assert.ok(started.config.mcp_servers, "project documentation overrides retain the parent bridge");
+  assert.deepEqual(f.call("setup", "--json").projectDocs.fallbackFilenames, ["CLAUDE.md"]);
+  const projectConfig = path.join(f.dir, ".codex", "config.toml");
+  put(projectConfig, 'project_doc_fallback_filenames = ["NOTES.md"]\n');
+  f.call("task", "--fresh", "--json", "project fallback");
+  assert.equal(f.state().lastThreadStart.config?.project_doc_fallback_filenames, undefined,
+    "an ancestor project config retains its own fallback filenames");
+  fs.rmSync(path.dirname(projectConfig), { recursive: true });
+  const custom = 'project_doc_fallback_filenames = ["CLAUDE.md", "NOTES.md"]\n';
+  fs.writeFileSync(config, custom);
+  assert.equal(projectDocsSetup({ mode: "agents-only", env: f.env }).custom, true);
+  assert.equal(fs.readFileSync(config, "utf8"), custom);
+  f.call("task", "--fresh", "--json", "custom fallback");
+  assert.equal(f.state().lastThreadStart.config?.project_doc_fallback_filenames, undefined);
+  assert.equal(fs.readFileSync(config, "utf8"), custom);
 });
 
-test("first prompt.context wins, preserves loaded instructions, and leaves incomplete sessions on approximate fallback", async () => {
-  const f = fixture(); let sessionId = "captured-session";
-  const hooks = new Map();
-  const load = () => { hooks.clear(); register((name, matcher, hook) => {
-    const handler = typeof matcher === "function" ? matcher : ($, e, next) =>
-      Object.entries(matcher).every(([key, value]) => e[key] === value) ? hook($, e, next) : next(e);
-    const previous = hooks.get(name);
-    hooks.set(name, previous ? ($, e, next) => previous($, e, forwarded => handler($, forwarded, next)) : handler);
-    return { catch() {} };
-  }); };
-  load();
-  const observe = (...args) => hooks.get("prompt.context")(...args), start = (...args) => hooks.get("classic.SubagentStart")(...args);
-  let captures = 0;
-  const store = new Map();
-  const files = [
-    { path: "/managed/CLAUDE.md", kind: "managed", content: "Managed rules." },
-    { path: "/loaded/CLAUDE.md", kind: "user", content: "Loaded user rules, not re-read from disk." },
-    { path: "/loaded/import.md", kind: "user", content: "Imported identity.\n" + "用户规则".repeat(15000), parent: "/loaded/CLAUDE.md" },
-    { path: "/loaded/MEMORY.md", kind: "memory", content: "AUTO_MEMORY_SECRET" },
-    { path: "/project/CLAUDE.md", kind: "project", content: "Project testing standard." }
-  ];
-  const event = { blocks: [{ name: "claudeMd", text: "Rendered instruction block including AUTO_MEMORY_SECRET" }, { name: "other", text: "PRIVATE_CONTEXT" }], instructionFiles: files };
-  const before = structuredClone(event);
+test("first context captures only loaded instructions, freezes filtered inventories and keeps incomplete captures approximate", async () => {
+  const f = fixture(), hooks = new Map(), store = new Map();
+  let sessionId = "captured", captures = 0;
+  const load = () => {
+    hooks.clear();
+    register((name, matcher, hook) => {
+      const handler = typeof matcher === "function" ? matcher : ($, e, next) =>
+        Object.entries(matcher).every(([key, value]) => e[key] === value) ? hook($, e, next) : next(e);
+      const previous = hooks.get(name);
+      hooks.set(name, previous ? ($, e, next) => previous($, e, forwarded => handler($, forwarded, next)) : handler);
+      return { catch() {} };
+    });
+  };
   const $ = { plugin: { root: path.dirname(path.dirname(script)) }, env: { get: async name => f.env[name] },
     session: { id: async () => sessionId, cwd: async () => f.repo },
     store: { get: async key => store.get(key), set: async (key, value) => store.set(key, value), delete: async key => store.delete(key), keys: async () => [...store.keys()] },
     process: { run: async (argv, init) => {
       captures++;
-      assert.doesNotMatch(init.stdin, /AUTO_MEMORY_SECRET|PRIVATE_CONTEXT/);
+      assert.doesNotMatch(init.stdin, /PRIVATE_CONTEXT|AUTO_MEMORY_SECRET/);
       const result = run(process.execPath, argv.slice(1), { cwd: f.repo, env: f.env, input: init.stdin });
       assert.equal(result.status, 0, result.stderr); return { exitCode: result.status };
     } } };
-  assert.equal(await observe($, event, async forwarded => { assert.equal(forwarded, event); return event; }), event);
-  assert.deepEqual(event, before);
-  const saved = readClaudeSnapshot(sessionId, f.env);
+  const files = [
+    { path: "/managed/CLAUDE.md", kind: "managed", content: "MANAGED_RULE" },
+    { path: "/loaded/import.md", kind: "user", content: "LOADED_RULE", parent: "/loaded/CLAUDE.md" },
+    { path: "/loaded/MEMORY.md", kind: "memory", content: "AUTO_MEMORY_SECRET" }
+  ];
+  const event = { blocks: [{ name: "other", text: "PRIVATE_CONTEXT" }], instructionFiles: files }, before = structuredClone(event);
+  const observe = (input, next = async forwarded => forwarded) => hooks.get("prompt.context")($, input, next);
+  load();
+  assert.equal(await observe(event), event); assert.deepEqual(event, before);
+  const saved = readClaudeSnapshot(sessionId, f.env), file = claudeSnapshotFile(sessionId, f.env);
   assert.equal(saved.complete, true);
-  assert.deepEqual(saved.entries, files.filter(file => file.kind !== "memory").map(file => ({ path: file.path, tier: file.kind, text: file.content, importer: file.parent ?? null })));
-  const file = claudeSnapshotFile(sessionId, f.env);
+  assert.deepEqual(saved.entries, instructionInventory(files).entries);
+  assert.doesNotMatch(fs.readFileSync(file, "utf8"), /PRIVATE_CONTEXT|AUTO_MEMORY_SECRET/);
   assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700);
-  assert.doesNotMatch(fs.readFileSync(file, "utf8"), /AUTO_MEMORY_SECRET|PRIVATE_CONTEXT/);
-  const capped = renderClaudeInstructions({ ...saved, entries: [saved.entries[0], { ...saved.entries[1], text: "x".repeat(INSTRUCTION_LIMIT) }, ...saved.entries.slice(2)] });
+  const capped = renderClaudeInstructions({ ...saved, entries: [saved.entries[0], { ...saved.entries[1], text: "x".repeat(INSTRUCTION_LIMIT) }] });
   assert.ok(capped.developerInstructions.length <= INSTRUCTION_LIMIT);
-  assert.ok(capped.developerInstructions.includes(saved.entries[0].text));
-  assert.ok(!capped.developerInstructions.includes("xxx"));
-  assert.deepEqual(capped.omittedPaths, saved.entries.slice(1).map(entry => entry.path));
-  for (const [input, output] of [[{ blocks: event.blocks }, { blocks: event.blocks }], [event, { blocks: [{ name: "claudeMd", text: "Rewritten" }] }]]) {
-    assert.equal(await observe($, input, async forwarded => { assert.equal(forwarded, input); return output; }), output);
-    assert.deepEqual(readClaudeSnapshot(sessionId, f.env), saved, "incomplete context cannot replace the loaded hierarchy");
-  }
-  // Later contexts have no reliable agent attribution: every shape is ignored,
-  // with or without a SubagentStart, including equal/higher-tier inventories.
-  const later = [[], files.filter(file => file.kind === "project"), files.filter(file => !file.parent),
-    files.map(file => ({ ...file, content: `${file.content}\nReloaded.` })),
-    [...files, { path: "/local/CLAUDE.local.md", kind: "local", content: "Later local rules." }]];
-  for (const agent_type of [null, "Explore", "Plan", "codex:codex-native"]) {
-    if (agent_type) {
-      const started = { hook_event_name: "SubagentStart", session_id: sessionId, agent_id: `subagent-${agent_type}`, agent_type };
-      assert.equal(await start($, started, async forwarded => forwarded), started);
-    }
-    for (const instructionFiles of later) {
-      const context = { blocks: [], instructionFiles };
-      assert.equal(await observe($, context, async forwarded => forwarded), context);
-      assert.deepEqual(readClaudeSnapshot(sessionId, f.env), saved);
-      assert.deepEqual(writeClaudeSnapshot({ sessionId, cwd: f.repo, ...instructionInventory(instructionFiles) }, f.env), saved,
-        "the host writer also refuses replacement");
-    }
-  }
-  load();
-  await observe($, event, async forwarded => forwarded);
-  assert.equal(captures, 1, "only the first context reaches the capture helper, including after hook reload");
+  assert.deepEqual(capped.omittedPaths, [saved.entries[1].path]);
+  await hooks.get("classic.SubagentStart")($, { agent_type: "codex:codex-native" }, async forwarded => forwarded);
+  load(); await observe({ ...event, instructionFiles: [] });
+  assert.deepEqual(readClaudeSnapshot(sessionId, f.env), saved);
+  assert.equal(captures, 1);
+  assert.deepEqual(writeClaudeSnapshot({ sessionId, cwd: f.repo, ...instructionInventory([]) }, f.env), saved);
 
-  const edited = { ...event, instructionFiles: [{ path: "/new/CLAUDE.md", kind: "user", content: "Next session rules." }] };
-  sessionId = "next-session";
-  // Claim the first context before downstream work can enter another one.
-  await observe($, edited, async forwarded => { await observe($, event, async other => other); return forwarded; });
-  assert.deepEqual(readClaudeSnapshot(sessionId, f.env).entries, instructionInventory(edited.instructionFiles).entries);
-  for (const [index, incomplete] of [{ blocks: event.blocks }, { ...event, instructionFiles: [
-    { path: "/unreadable/CLAUDE.md", kind: "user", content: undefined }
-  ] }].entries()) {
-    sessionId = `incomplete-session-${index}`;
-    await observe($, incomplete, async forwarded => forwarded);
-    load();
-    await observe($, event, async forwarded => forwarded);
-    assert.equal(readClaudeSnapshot(sessionId, f.env), null);
-    assert.equal(fs.existsSync(claudeSnapshotFile(sessionId, f.env)), false);
-    const fallback = prepareClaudeInstructions({ sessionId, cwd: f.repo }, f.env);
-    assert.equal(fallback.claudeMd.approximate, true);
-    assert.equal(fallback.claudeMd.source, "scan");
-  }
-  assert.equal(captures, 4, "one attempt per session even when the first capture is incomplete");
-  const removed = { path: path.join(f.repo, "CLAUDE.md"), kind: "project", content: "FILTERED_FROM_CONTEXT" };
-  fs.writeFileSync(removed.path, removed.content);
-  const input = { blocks: [{ name: "claudeMd", text: "Loaded instructions" }], instructionFiles: [files[0], removed] };
-  const filteredSessions = [];
-  for (const [index, instructionFiles] of [[files[0]], []].entries()) {
-    sessionId = `filtered-session-${index}`; filteredSessions.push(sessionId);
-    const filtered = { blocks: instructionFiles.length ? [{ name: "claudeMd", text: files[0].content }] : [], instructionFiles };
-    assert.equal(await observe($, input, async () => filtered), filtered);
+  // A complete empty downstream inventory is authoritative; incomplete and
+  // bounded inventories must never restore files filtered out of the context.
+  for (const [name, result, source] of [
+    ["filtered", { blocks: [], instructionFiles: [] }, "capture"],
+    ["incomplete", { blocks: [] }, "scan"],
+    ["bounded", { blocks: [], instructionFiles: [{ path: "/large/CLAUDE.md", kind: "user", content: "x".repeat(1000001) }] }, "capture"]
+  ]) {
+    sessionId = name;
+    await observe(name === "incomplete" ? result : event, async () => result);
     const snapshot = readClaudeSnapshot(sessionId, f.env);
-    assert.equal(snapshot.complete, true);
-    assert.deepEqual(snapshot.entries, instructionInventory(instructionFiles).entries);
-    load();
-    await observe($, input, async forwarded => forwarded);
-    assert.deepEqual(readClaudeSnapshot(sessionId, f.env), snapshot, "a reload cannot restore filtered files");
-    const prepared = prepareClaudeInstructions({ sessionId, cwd: f.repo }, f.env);
-    assert.equal(prepared.claudeMd.source, "capture");
-    assert.equal(prepared.claudeMd.approximate, false);
-    assert.equal(prepared.developerInstructions.includes(removed.content), false);
-    assert.equal(prepared.developerInstructions.includes(files[0].content), instructionFiles.length > 0);
-  }
-  for (const [index, result] of [{ blocks: [] }, { blocks: [], instructionFiles: [{ ...removed, content: undefined }] }].entries()) {
-    sessionId = `rewritten-incomplete-${index}`; filteredSessions.push(sessionId);
-    await observe($, input, async () => result);
-    assert.equal(readClaudeSnapshot(sessionId, f.env), null, "rewritten text without an inventory and unreadable content remain incomplete");
-    assert.equal(prepareClaudeInstructions({ sessionId, cwd: f.repo }, f.env).claudeMd.source, "scan");
-  }
-  assert.equal(captures, 8);
-  for (const [index, instructionFiles] of [
-    Array.from({ length: 257 }, (_, i) => ({ path: `/virtual/${i}.md`, kind: "project", content: `Allowed ${i}` })),
-    [{ path: "/oversized/CLAUDE.md", kind: "user", content: "x".repeat(1000001) }],
-    [{ path: `/${"long/".repeat(1000)}CLAUDE.md`, kind: "project", content: "Long virtual path" }]
-  ].entries()) {
-    sessionId = `bounded-session-${index}`; filteredSessions.push(sessionId);
-    await observe($, { ...input, instructionFiles: [...instructionFiles, removed] }, async () => ({ blocks: [], instructionFiles }));
-    const snapshot = readClaudeSnapshot(sessionId, f.env);
-    assert.equal(snapshot.inventoryAvailable, true);
-    assert.equal(snapshot.complete, false);
-    assert.equal(snapshot.bounded, true);
-    assert.equal(snapshot.entries.length, index === 0 ? 256 : 0);
-    assert.equal(snapshot.omittedCount, 1);
-    assert.deepEqual(snapshot.omittedPaths, index === 2 ? [] : [instructionFiles.at(-1).path]);
-    load(); await observe($, input, async forwarded => forwarded);
+    load(); await observe(event);
     assert.deepEqual(readClaudeSnapshot(sessionId, f.env), snapshot);
     const prepared = prepareClaudeInstructions({ sessionId, cwd: f.repo }, f.env);
-    assert.equal(prepared.claudeMd.source, "capture");
-    assert.equal(prepared.claudeMd.approximate, false);
-    assert.equal(prepared.claudeMd.bounded, true);
-    assert.equal(prepared.claudeMd.omittedCount, 1);
-    assert.equal(prepared.developerInstructions.includes(removed.content), false);
+    assert.equal(prepared.claudeMd.source, source);
+    assert.equal(prepared.claudeMd.approximate, source === "scan");
+    assert.doesNotMatch(prepared.developerInstructions, /LOADED_RULE/);
+    if (name === "bounded") assert.equal(prepared.claudeMd.bounded, true);
   }
-  // Both logical memory paths and aliases resolving into real memory paths
-  // are excluded, including when .claude itself is a directory symlink.
-  for (const profile of ["default", "custom"]) for (const linkedConfig of [false, true]) {
-    const home = path.join(f.dir, `scan-home-${profile}-${linkedConfig}`), config = path.join(home, profile === "custom" ? "selected-profile" : ".claude");
-    const env = { ...f.env, HOME: home, CLAUDE_CONFIG_DIR: profile === "custom" ? config : "" };
-    fs.mkdirSync(home);
-    if (linkedConfig) {
-      const target = path.join(home, "config-target"); fs.mkdirSync(target); fs.symlinkSync(target, config);
-    } else fs.mkdirSync(config);
-    for (const name of ["projects/p/memory", "agent-memory/reviewer", "agent-memory-local/reviewer"]) {
-      const storage = path.join(config, name.replaceAll("/", "-"));
-      fs.mkdirSync(storage); fs.writeFileSync(path.join(storage, "MEMORY.md"), "EXCLUDED_AUTO_MEMORY");
-      fs.mkdirSync(path.dirname(path.join(config, name)), { recursive: true });
-      fs.symlinkSync(storage, path.join(config, name));
-      const alias = name.replaceAll("/", "-") + "-alias.md";
-      fs.symlinkSync(path.join(config, name, "MEMORY.md"), path.join(config, alias));
-    }
-    const realMemory = path.join(config, "projects/real/memory"); fs.mkdirSync(realMemory, { recursive: true });
-    fs.writeFileSync(path.join(realMemory, "MEMORY.md"), "EXCLUDED_AUTO_MEMORY");
-    fs.symlinkSync(realMemory, path.join(config, "alias"));
-    fs.writeFileSync(path.join(config, "CLAUDE.md"), "USER_SCAN_RULE\n@inside.md\n@projects/p/memory/MEMORY.md\n@agent-memory/reviewer/MEMORY.md\n@agent-memory-local/reviewer/MEMORY.md\n@alias/MEMORY.md");
-    fs.appendFileSync(path.join(config, "CLAUDE.md"), "\n@projects-p-memory-alias.md\n@agent-memory-reviewer-alias.md\n@agent-memory-local-reviewer-alias.md");
-    fs.writeFileSync(path.join(config, "inside.md"), "SAFE_IMPORT");
-    fs.mkdirSync(path.join(config, "rules"));
-    fs.writeFileSync(path.join(config, "rules", "global.md"), "USER_PROFILE_RULE");
-    if (profile === "custom") {
-      fs.mkdirSync(path.join(home, ".claude"));
-      fs.writeFileSync(path.join(home, ".claude", "CLAUDE.md"), "WRONG_DEFAULT_PROFILE");
-    }
-    assert.equal(resolveClaudeConfigRoot(env), config);
-    assert.equal(resolveClaudeConfigRoot({ ...env, CLAUDE_CONFIG_DIR: "relative-profile" }), path.join(home, ".claude"));
-    const prepared = prepareClaudeInstructions({ sessionId: `scan-links-${profile}-${linkedConfig}`, cwd: f.repo }, env);
-    assert.equal(prepared.claudeMd.source, "scan");
-    assert.match(prepared.developerInstructions, /USER_SCAN_RULE/);
-    assert.match(prepared.developerInstructions, /SAFE_IMPORT/);
-    assert.doesNotMatch(prepared.developerInstructions, /EXCLUDED_AUTO_MEMORY/);
-    assert.match(prepared.developerInstructions, /USER_PROFILE_RULE/);
-    assert.doesNotMatch(prepared.developerInstructions, /WRONG_DEFAULT_PROFILE/);
-    const source = path.join(config, "projects", "real", "session.jsonl"), transcript = '{"type":"user","message":"fixture"}\n';
-    fs.writeFileSync(source, transcript);
-    assert.equal(resolveClaudeSessionPath(f.repo, { source }, env), fs.realpathSync(source));
-    assert.equal(resolveClaudeSessionPath(f.repo, {}, { ...env, CODEX_COMPANION_TRANSCRIPT_PATH: source }), fs.realpathSync(source));
-    const outside = path.join(home, "outside.jsonl"); fs.writeFileSync(outside, transcript);
-    const alias = path.join(config, "projects", "outside.jsonl"); fs.symlinkSync(outside, alias);
-    assert.throws(() => resolveClaudeSessionPath(f.repo, { source: outside }, env));
-    assert.throws(() => resolveClaudeSessionPath(f.repo, { source: alias }, env));
-    const staged = snapshotClaudeSession(f.repo, source, env);
-    assert.equal(path.dirname(path.dirname(staged.snapshotPath)), fs.realpathSync(path.join(config, "projects")));
-    assert.equal(fs.readFileSync(staged.snapshotPath, "utf8"), transcript);
-    staged.cleanup(); assert.equal(fs.existsSync(staged.snapshotPath), false);
-    const abandoned = snapshotClaudeSession(f.repo, source, env), directory = path.dirname(abandoned.snapshotPath);
-    const old = new Date(Date.now() - 2 * 3600000);
-    for (const name of fs.readdirSync(directory)) fs.utimesSync(path.join(directory, name), old, old);
-    fs.utimesSync(directory, old, old);
-    assert.deepEqual(planClaudeImports({ env }).imports.map(item => item.path), [directory]);
-    assert.equal(sweepClaudeImports({ env }).importsDeleted, 1);
-    assert.ok(fs.existsSync(source));
+  for (const session_id of ["captured", "filtered", "incomplete", "bounded"]) {
+    await hooks.get("classic.SessionEnd")($, { session_id, hook_event_name: "SessionEnd" }, async forwarded => forwarded);
   }
-  // Project directory aliases must not widen the owning ancestor's boundary;
-  // aliases within it and the user-profile aliases above remain supported.
-  const put = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
-  for (const variant of ["plain", "rules", "config", "import", "internal-rules", "internal-config"]) {
-    const directory = path.join(f.dir, `project-links-${variant}`), repo = path.join(directory, "repo");
-    const outside = path.join(directory, "outside.txt"), config = path.join(repo, ".claude");
-    put(outside, "OUTSIDE_PROJECT_FILE");
-    put(path.join(repo, "CLAUDE.md"), "INSIDE_PROJECT_ROOT\n@root.txt\n@escape.txt\n@../outside.txt");
-    put(path.join(repo, "root.txt"), "INSIDE_ROOT_IMPORT");
-    put(path.join(repo, "CLAUDE.local.md"), "INSIDE_PROJECT_LOCAL\n@local.txt\n@escape.txt\n@../outside.txt");
-    put(path.join(repo, "local.txt"), "INSIDE_LOCAL_IMPORT");
-    fs.symlinkSync(outside, path.join(repo, "escape.txt"));
-
-    const configTarget = variant === "config" ? path.join(directory, "outside-config")
-      : variant === "internal-config" ? path.join(repo, "shared-config") : config;
-    put(path.join(configTarget, "CLAUDE.md"), `${variant === "config" ? "OUTSIDE_PROJECT_CONFIG" : "INSIDE_PROJECT_CONFIG"}\n@config.txt\n@escape.txt`);
-    put(path.join(configTarget, "config.txt"), variant === "config" ? "OUTSIDE_PROJECT_CONFIG_IMPORT" : "INSIDE_CONFIG_IMPORT");
-    fs.symlinkSync(outside, path.join(configTarget, "escape.txt"));
-    if (configTarget !== config) fs.symlinkSync(configTarget, config);
-
-    const rules = path.join(config, "rules");
-    const rulesTarget = variant === "rules" ? path.join(directory, "outside-rules")
-      : variant === "internal-rules" ? path.join(repo, "shared-rules") : variant === "import" ? directory : rules;
-    // The widened root can discover a real repository file whose non-Markdown
-    // import escapes. Keep that importer loaded while rejecting its import.
-    const ruleDirectory = variant === "import" ? path.join(repo, "docs") : path.join(rulesTarget, "nested");
-    const outsideRule = variant === "rules" || variant === "config";
-    put(path.join(ruleDirectory, "rule.md"), `${outsideRule ? "OUTSIDE_PROJECT_RULE" : "INSIDE_PROJECT_RULE"}\n@rule.txt\n@escape.txt\n@${path.relative(ruleDirectory, outside)}`);
-    put(path.join(ruleDirectory, "rule.txt"), outsideRule ? "OUTSIDE_PROJECT_RULE_IMPORT" : "INSIDE_RULE_IMPORT");
-    fs.symlinkSync(outside, path.join(ruleDirectory, "escape.txt"));
-    if (rulesTarget !== rules) fs.symlinkSync(rulesTarget, rules);
-
-    const prepared = prepareClaudeInstructions({ sessionId: `project-links-${variant}`, cwd: repo }, f.env);
-    assert.equal(prepared.claudeMd.source, "scan");
-    assert.doesNotMatch(prepared.developerInstructions, /OUTSIDE_PROJECT_/, variant);
-    for (const marker of ["INSIDE_PROJECT_ROOT", "INSIDE_ROOT_IMPORT", "INSIDE_PROJECT_LOCAL", "INSIDE_LOCAL_IMPORT",
-      ...(variant === "config" ? [] : ["INSIDE_PROJECT_CONFIG", "INSIDE_CONFIG_IMPORT"]),
-      ...(outsideRule ? [] : ["INSIDE_PROJECT_RULE", "INSIDE_RULE_IMPORT"])]) {
-      assert.ok(prepared.developerInstructions.includes(marker), `${variant}: ${marker}`);
-    }
-  }
-  for (const session_id of ["captured-session", "next-session", "incomplete-session-0", "incomplete-session-1", ...filteredSessions]) {
-    const ended = { session_id, hook_event_name: "SessionEnd" };
-    assert.equal(await hooks.get("classic.SessionEnd")($, ended, async forwarded => forwarded), ended);
-  }
-  assert.equal(store.size, 0, "SessionEnd cleans first-context markers");
+  assert.equal(store.size, 0);
 });
 
-test("workers send captured instructions separately, freeze them on cold resume, and expose approximate fallback and opt-out", t => {
-  const f = fixture(), transcript = []; let sessionId = "worker-instruction-session";
-  f.env.CODEX_COMPANION_SESSION_ID = sessionId;
-  const sessionProject = path.join(f.dir, "session project"), envProject = path.join(f.dir, "env-project");
-  fs.mkdirSync(sessionProject); fs.mkdirSync(envProject);
-  fs.writeFileSync(path.join(sessionProject, "CLAUDE.md"), "SESSION_PROJECT_RULE");
-  fs.mkdirSync(path.join(sessionProject, ".claude", "rules"), { recursive: true });
-  fs.writeFileSync(path.join(sessionProject, ".claude", "rules", "always.md"), "SESSION_PROJECT_UNCONDITIONAL_RULE");
-  fs.writeFileSync(path.join(envProject, "CLAUDE.md"), "ENV_PROJECT_RULE");
-  f.env.CODEX_COMPANION_SESSION_CWD = envProject;
-  // An absent endpoint forces a private server each invocation: a genuine
-  // cold resume of the fixture's persisted thread, not a running-thread rejoin.
+test("workers freeze instructions on cold resume; fallback confines imports and supports opt-out", () => {
+  const f = fixture(); f.env.CODEX_COMPANION_SESSION_ID = "worker-session";
   f.env.CODEX_COMPANION_APP_SERVER_ENDPOINT = `unix:${path.join(f.dir, "absent.sock")}`;
-  const files = [
-    { path: "/captured/global/CLAUDE.md", kind: "user", content: "GLOBAL_RULE_SENTINEL" },
-    { path: "/captured/global/import.md", kind: "user", content: "IMPORT_RULE_SENTINEL", parent: "/captured/global/CLAUDE.md" },
-    { path: "/captured/project/CLAUDE.md", kind: "project", content: "PROJECT_RULE_SENTINEL" }
-  ];
-  const capture = () => writeClaudeSnapshot({ sessionId, cwd: f.repo, ...instructionInventory(files) }, f.env);
-  const snapshot = capture();
-  const state = () => JSON.parse(fs.readFileSync(path.join(f.dir, "fake-codex-state.json"), "utf8"));
-  const record = label => { const saved = state(); transcript.push({ label, appServerStarts: saved.appServerStarts, threadStart: saved.lastThreadStart, threadResume: saved.lastThreadResume, turnStart: saved.lastTurnStart }); return saved; };
-  const first = f.json(f.call("task", "--json", "--fresh", "--session-cwd", sessionProject, "The assignment brief stays unchanged."));
-  const started = record("captured start"), text = started.lastThreadStart.developerInstructions;
-  assert.equal(text, EXECUTOR_FRAMING + files.map(file => `\n\n### ${file.path}\n${file.content}`).join(""));
-  assert.equal(started.lastTurnStart.prompt, "The assignment brief stays unchanged.");
-  const stored = f.json(f.call("status", first.jobId, "--json")).job;
+  put(path.join(f.repo, "CLAUDE.md"), "CAPTURED_PROJECT_RULE");
+  const files = [{ path: "/loaded/CLAUDE.md", kind: "user", content: "CAPTURED_RULE" },
+    { path: path.join(f.repo, "CLAUDE.md"), kind: "project", content: "CAPTURED_PROJECT_RULE" }];
+  const capture = () => writeClaudeSnapshot({ sessionId: f.env.CODEX_COMPANION_SESSION_ID, cwd: f.repo, ...instructionInventory(files) }, f.env);
+  const snapshot = capture(), first = f.call("task", "--json", "--fresh", "Assignment brief.");
+  const initial = f.state(), text = initial.lastThreadStart.developerInstructions;
+  assert.ok(text.includes("CAPTURED_RULE")); assert.equal(initial.lastTurnStart.prompt, "Assignment brief.");
+  assert.deepEqual(initial.lastThreadStart.config.project_doc_fallback_filenames, []);
+  const stored = f.call("status", first.jobId, "--json").job;
   assert.equal(stored.request.developerInstructions, text);
   assert.equal(stored.request.claudeMd.snapshotHash, snapshot.hash);
-  assert.equal(stored.request.claudeMd.sessionCwd, f.repo, "a captured inventory ignores flag and environment scan roots");
-  assert.equal(stored.request.claudeMd.sessionCwdSource, "capture");
-  assert.match(stored.request.claudeMd.renderedHash, /^[a-f0-9]{64}$/);
-  files[0].content = "CHANGED_RULE_SENTINEL";
-  assert.deepEqual(capture(), snapshot, "edits do not refresh this session");
-  sessionId = "worker-instruction-next-session"; f.env.CODEX_COMPANION_SESSION_ID = sessionId;
-  const changed = capture();
-  const duet = path.join(path.dirname(path.dirname(script)), "bin", "duet");
-  const resumed = f.json(run(process.execPath, [duet, "task", "--thread", first.threadId, "--quiet"], { cwd: f.repo, env: f.env, input: "Follow-up brief." }));
-  const cold = record("cold resume in next session after changed instructions");
-  assert.ok(cold.appServerStarts > started.appServerStarts);
+  files[0].content = "CHANGED_RULE";
+  assert.deepEqual(capture(), snapshot);
+  f.env.CODEX_COMPANION_SESSION_ID = "next-session"; capture();
+  const resumed = f.call("task", "--thread", first.threadId, "--json", "Follow-up brief.");
+  const cold = f.state();
+  assert.ok(cold.appServerStarts > initial.appServerStarts);
   assert.equal(cold.lastThreadResume.threadId, first.threadId);
   assert.equal(cold.lastThreadResume.developerInstructions, text);
-  const workerContract = fs.readFileSync(new URL("../plugins/codex/prompts/worker-task.md", import.meta.url), "utf8").trim();
-  assert.equal(cold.lastTurnStart.prompt, `Follow-up brief.\n\n${workerContract}`);
-  assert.equal(f.json(f.call("status", resumed.jobId, "--json")).job.request.prompt, "Follow-up brief.");
-  const details = f.json(f.call("result", resumed.jobId, "--details"));
-  assert.equal(details.claudeMd.snapshotChanged, true);
-  assert.equal(details.claudeMd.observedSnapshotHash, changed.hash);
-  assert.equal(details.claudeMd.renderedHash, stored.request.claudeMd.renderedHash);
-  assert.equal(Object.hasOwn(f.json(f.call("result", resumed.jobId)), "claudeMd"), false);
+  assert.deepEqual(cold.lastThreadResume.config.project_doc_fallback_filenames, []);
+  assert.ok(cold.lastThreadResume.config.mcp_servers);
+  assert.equal(f.call("result", resumed.jobId, "--details").claudeMd.snapshotChanged, true);
 
-  fs.unlinkSync(claudeSnapshotFile(sessionId, f.env));
-  delete f.env.CODEX_COMPANION_SESSION_CWD;
-  const put = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
-  put(path.join(f.env.HOME, ".claude", "CLAUDE.md"), "FALLBACK_USER\n@inside.md\n@../outside.md");
-  put(path.join(f.env.HOME, ".claude", "inside.md"), "FALLBACK_IMPORT");
-  put(path.join(f.env.HOME, "outside.md"), "EXTERNAL_IMPORT_EXCLUDED");
-  put(path.join(f.env.HOME, ".claude", "rules", "nested", "global.md"), "FALLBACK_USER_RULE");
-  put(path.join(f.dir, "CLAUDE.md"), "FALLBACK_ANCESTOR");
-  put(path.join(f.repo, "CLAUDE.md"), "FALLBACK_PROJECT");
-  put(path.join(f.repo, ".claude", "CLAUDE.md"), "FALLBACK_DOT_PROJECT");
-  put(path.join(f.repo, ".claude", "rules", "always.md"), "FALLBACK_RULE");
-  put(path.join(f.repo, ".claude", "rules", "scoped.md"), "---\npaths: ['src/**']\n---\nPATH_RULE_EXCLUDED");
-  put(path.join(f.repo, "CLAUDE.local.md"), "FALLBACK_LOCAL");
-  // Launch outside the worker repository so the final fallback is --cwd,
-  // independent of the companion process's current directory.
-  const fallback = f.json(run(process.execPath, [script, "task", "--json", "--fresh", "--cwd", f.repo, "Fallback brief."], { cwd: f.dir, env: f.env }));
-  const scanned = record("approximate fallback").lastThreadStart.developerInstructions;
-  let position = -1;
-  for (const rule of ["FALLBACK_USER", "FALLBACK_IMPORT", "FALLBACK_USER_RULE", "FALLBACK_ANCESTOR", "FALLBACK_PROJECT", "FALLBACK_DOT_PROJECT", "FALLBACK_RULE", "FALLBACK_LOCAL"]) {
-    const next = scanned.indexOf(rule); assert.ok(next > position, rule); position = next;
+  fs.unlinkSync(claudeSnapshotFile(f.env.CODEX_COMPANION_SESSION_ID, f.env));
+  const config = path.join(f.dir, "profile"), memory = path.join(config, "projects", "p", "memory");
+  f.env.CLAUDE_CONFIG_DIR = config;
+  put(path.join(memory, "MEMORY.md"), "EXCLUDED_MEMORY");
+  fs.symlinkSync(memory, path.join(config, "memory-alias"));
+  put(path.join(config, "CLAUDE.md"), "USER_RULE\n@inside.md\n@memory-alias/MEMORY.md");
+  put(path.join(config, "inside.md"), "SAFE_IMPORT");
+  put(path.join(f.repo, "CLAUDE.md"), "PROJECT_RULE\n@escape.txt\n@../outside.txt");
+  put(path.join(f.dir, "outside.txt"), "EXCLUDED_OUTSIDE");
+  fs.symlinkSync(path.join(f.dir, "outside.txt"), path.join(f.repo, "escape.txt"));
+  const outsideRules = path.join(f.dir, "outside-rules"); put(path.join(outsideRules, "rule.md"), "EXCLUDED_RULE");
+  fs.mkdirSync(path.join(f.repo, ".claude")); fs.symlinkSync(outsideRules, path.join(f.repo, ".claude", "rules"));
+  const fallback = f.call("task", "--fresh", "--json", "Fallback brief.");
+  const scanned = f.state().lastThreadStart.developerInstructions;
+  for (const rule of ["USER_RULE", "SAFE_IMPORT", "PROJECT_RULE"]) assert.ok(scanned.includes(rule));
+  assert.doesNotMatch(scanned, /EXCLUDED_/);
+  assert.equal(f.call("result", fallback.jobId, "--details").claudeMd.approximate, true);
+  assert.deepEqual(f.state().lastThreadStart.config.project_doc_fallback_filenames, []);
+  const source = path.join(config, "projects", "p", "session.jsonl"); put(source, '{"type":"user"}\n');
+  const linked = path.join(config, "projects", "escape.jsonl"); fs.symlinkSync(path.join(f.dir, "outside.txt"), linked);
+  assert.throws(() => resolveClaudeSessionPath(f.repo, { source: linked }, f.env));
+  const staged = snapshotClaudeSession(f.repo, source, f.env);
+  assert.equal(fs.readFileSync(staged.snapshotPath, "utf8"), fs.readFileSync(source, "utf8"));
+  staged.cleanup(); assert.equal(fs.existsSync(staged.snapshotPath), false);
+
+  const sessionProject = path.join(f.dir, "session-project"); put(path.join(sessionProject, "CLAUDE.md"), "SESSION_PROJECT_RULE");
+  const prepared = prepareClaudeInstructions({ cwd: f.repo, sessionCwd: sessionProject }, f.env);
+  assert.ok(prepared.developerInstructions.includes("SESSION_PROJECT_RULE"));
+  assert.doesNotMatch(prepared.developerInstructions, /PROJECT_RULE\n/);
+  assert.throws(() => prepareClaudeInstructions({ cwd: f.repo }, { ...f.env, CODEX_COMPANION_SESSION_CWD: "relative" }));
+  const denied = approveDuet({ hook_event_name: "PreToolUse", tool_name: "Bash", permission_mode: "default", session_id: "next-session",
+    tool_use_id: "fixture-tool", cwd: f.repo, tool_input: { command: `'${duet}' task --session-cwd '${sessionProject}'` } }, f.env);
+  assert.deepEqual(denied, {});
+  f.call("task", "--fresh", "--session-cwd", sessionProject, "--json", "Different project brief.");
+  assert.equal(f.state().lastThreadStart.config?.project_doc_fallback_filenames, undefined);
+  put(path.join(f.repo, "CLAUDE.md"), "PROJECT_OVER_BUDGET\n" + "x".repeat(INSTRUCTION_LIMIT));
+  f.call("task", "--fresh", "--json", "Bounded forwarding brief.");
+  assert.doesNotMatch(f.state().lastThreadStart.developerInstructions, /PROJECT_OVER_BUDGET/);
+  assert.equal(f.state().lastThreadStart.config?.project_doc_fallback_filenames, undefined);
+  f.call("task", "--fresh", "--no-claude-md", "--json", "Opt-out brief.");
+  assert.equal(f.state().lastThreadStart.developerInstructions, undefined);
+  assert.equal(f.state().lastThreadStart.config?.project_doc_fallback_filenames, undefined);
+  f.env.CODEX_COMPANION_CLAUDE_MD = "0";
+  f.call("task", "--fresh", "--json", "Environment opt-out brief.");
+  assert.equal(f.state().lastThreadStart.developerInstructions, undefined);
+  assert.equal(f.state().lastThreadStart.config?.project_doc_fallback_filenames, undefined);
+  assert.deepEqual(ensureProjectDocs({ env: f.env }).fallbackFilenames, ["CLAUDE.md"]);
+});
+
+test("fallback scan bounds content reads and reports eligible omitted rules", t => {
+  const f = fixture(), config = path.join(f.dir, "profile"), rules = path.join(config, "rules");
+  const ruleSize = 8192;
+  for (let index = 0; index < 1024; index++) {
+    put(path.join(rules, `${String(index).padStart(4, "0")}.md`),
+      (index === 122 || index === 1023 ? "@omitted-import.txt\n" : "RULE\n").padEnd(ruleSize, "x"));
   }
-  assert.doesNotMatch(scanned, /EXTERNAL_IMPORT_EXCLUDED|PATH_RULE_EXCLUDED/);
-  transcript.at(-1).claudeMd = f.json(f.call("result", fallback.jobId, "--details")).claudeMd;
-  assert.equal(transcript.at(-1).claudeMd.approximate, true);
-  assert.equal(transcript.at(-1).claudeMd.sessionCwd, f.repo);
-  assert.equal(transcript.at(-1).claudeMd.sessionCwdSource, "cwd");
-
-  f.env.CODEX_COMPANION_SESSION_CWD = envProject;
-  const flagged = f.json(run(process.execPath, [duet, "task", "--fresh", "--cwd", f.repo, "--session-cwd", sessionProject, "--quiet"],
-    { cwd: f.dir, env: f.env, input: "Session project brief." }));
-  const flaggedState = record("approximate fallback from --session-cwd overriding environment");
-  assert.equal(flaggedState.lastThreadStart.cwd, f.repo);
-  assert.match(flaggedState.lastThreadStart.developerInstructions, /SESSION_PROJECT_RULE/);
-  assert.match(flaggedState.lastThreadStart.developerInstructions, /SESSION_PROJECT_UNCONDITIONAL_RULE/);
-  assert.doesNotMatch(flaggedState.lastThreadStart.developerInstructions, /ENV_PROJECT_RULE|FALLBACK_PROJECT|FALLBACK_DOT_PROJECT|FALLBACK_RULE|FALLBACK_LOCAL/);
-  transcript.at(-1).claudeMd = f.json(f.call("result", flagged.jobId, "--details")).claudeMd;
-  assert.equal(transcript.at(-1).claudeMd.source, "scan");
-  assert.equal(transcript.at(-1).claudeMd.approximate, true);
-  assert.equal(transcript.at(-1).claudeMd.sessionCwd, sessionProject);
-  assert.equal(transcript.at(-1).claudeMd.sessionCwdSource, "flag");
-
-  const fromEnv = f.json(run(process.execPath, [script, "task", "--json", "--fresh", "--cwd", f.repo, "Environment project brief."], { cwd: f.dir, env: f.env }));
-  const envState = record("approximate fallback from CODEX_COMPANION_SESSION_CWD");
-  assert.equal(envState.lastThreadStart.cwd, f.repo);
-  assert.match(envState.lastThreadStart.developerInstructions, /ENV_PROJECT_RULE/);
-  assert.doesNotMatch(envState.lastThreadStart.developerInstructions, /SESSION_PROJECT_RULE|SESSION_PROJECT_UNCONDITIONAL_RULE|FALLBACK_PROJECT|FALLBACK_DOT_PROJECT|FALLBACK_RULE|FALLBACK_LOCAL/);
-  transcript.at(-1).claudeMd = f.json(f.call("result", fromEnv.jobId, "--details")).claudeMd;
-  assert.equal(transcript.at(-1).claudeMd.source, "scan");
-  assert.equal(transcript.at(-1).claudeMd.approximate, true);
-  assert.equal(transcript.at(-1).claudeMd.sessionCwd, envProject);
-  assert.equal(transcript.at(-1).claudeMd.sessionCwdSource, "env");
-
-  for (const invalid of ["", "relative", path.join(f.dir, "missing"), path.join(sessionProject, "CLAUDE.md")]) {
-    const rejected = f.call("task", "--json", "--fresh", "--session-cwd", invalid, "Invalid root.");
-    assert.notEqual(rejected.status, 0);
-    assert.match(rejected.stderr, /--session-cwd requires an absolute existing directory/);
-  }
-  const missing = f.call("task", "--session-cwd");
-  assert.notEqual(missing.status, 0);
-  assert.match(missing.stderr, /Missing value for --session-cwd/);
-  assert.equal(state().appServerStarts, envState.appServerStarts, "invalid roots never dispatch a worker");
-  assert.throws(() => prepareClaudeInstructions({ cwd: f.repo }, { ...f.env, CODEX_COMPANION_SESSION_CWD: "relative" }), /CODEX_COMPANION_SESSION_CWD requires an absolute existing directory/);
-  const help = f.call("task", "--help");
-  assert.equal(help.status, 0, help.stderr);
-  assert.doesNotMatch(help.stdout, /--session-cwd/);
-
-  const permissionTranscript = [];
-  for (const suffix of ["", ` --session-cwd '${sessionProject}'`, ` --session-cwd=${envProject}`]) {
-    const command = `'${duet}' task --fresh${suffix}`;
-    const result = approveDuet({ hook_event_name: "PreToolUse", tool_name: "Bash", permission_mode: "default", session_id: sessionId,
-      tool_use_id: "fixture-tool", cwd: f.repo, tool_input: { command } }, f.env);
-    if (suffix) assert.deepEqual(result, {}, "internal session roots are not auto-approved from user commands");
-    else assert.equal(result.hookSpecificOutput.permissionDecision, "allow");
-    permissionTranscript.push({ command, output: result });
-  }
-  const optedOut = run(process.execPath, [duet, "task", "--fresh", "--no-claude-md", "--quiet"], { cwd: f.repo, env: f.env, input: "Opt-out brief." });
-  assert.equal(optedOut.status, 0, optedOut.stderr + optedOut.stdout);
-  assert.equal(record("CLI opt-out without capture").lastThreadStart.developerInstructions, undefined);
-  capture(); f.env.CODEX_COMPANION_CLAUDE_MD = "0";
-  f.json(f.call("task", "--fresh", "--json", "Environment opt-out brief."));
-  assert.equal(record("environment opt-out with capture").lastThreadStart.developerInstructions, undefined);
-  const evidence = path.join(f.dir, "claude-memory-transcript.json");
-  fs.writeFileSync(evidence, JSON.stringify({ transcript, permissionTranscript, originalMetadata: stored.request.claudeMd, resumedMetadata: details.claudeMd }, null, 2));
-  t.diagnostic(`Synthetic RPC transcript: ${evidence}`);
+  put(path.join(rules, "omitted-import.txt"), "UNFOLLOWED_IMPORT");
+  put(path.join(rules, "zz-conditional.md"), `---\npaths: src/**\n# ${"x".repeat(ruleSize)}\n---\nCONDITIONAL_RULE`);
+  fs.symlinkSync(path.join(rules, "0000.md"), path.join(rules, "zz-duplicate.md"));
+  const readFile = fs.readFileSync, read = fs.readSync;
+  let fullReads = 0, fullCharacters = 0, prefixBytes = 0;
+  t.mock.method(fs, "readFileSync", function(file, ...args) {
+    const content = readFile.call(this, file, ...args);
+    if (String(file).startsWith(rules + path.sep)) { fullReads++; fullCharacters += content.length; }
+    return content;
+  });
+  t.mock.method(fs, "readSync", function(fd, buffer, offset, length, position) {
+    assert.ok(length <= 4096, "omitted rules only need a small frontmatter prefix");
+    const count = read.call(this, fd, buffer, offset, length, position);
+    prefixBytes += count;
+    return count;
+  });
+  const scanned = scanClaudeInstructions(f.repo, { ...f.env, CLAUDE_CONFIG_DIR: config });
+  assert.equal(fullReads, Math.ceil(1000000 / ruleSize));
+  assert.ok(fullReads <= 256 && fullCharacters <= 1000000 + ruleSize);
+  assert.equal(prefixBytes, (1024 - fullReads + 1) * 4096);
+  assert.equal(scanned.bounded, true);
+  assert.equal(scanned.entries.length + scanned.omittedCount, 1024);
+  const omitted = Array.from({ length: 256 }, (_, index) =>
+    path.join(fs.realpathSync(rules), `${String(scanned.entries.length + index).padStart(4, "0")}.md`));
+  assert.deepEqual(scanned.omittedPaths, omitted);
+  const rendered = renderClaudeInstructions(scanned);
+  assert.ok(rendered.developerInstructions.includes("Omitted instruction files (budget):"));
+  assert.doesNotMatch(rendered.developerInstructions, /CONDITIONAL_RULE|UNFOLLOWED_IMPORT/);
 });

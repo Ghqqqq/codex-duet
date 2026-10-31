@@ -7,6 +7,7 @@ export { classifyBrowserBlocker };
 
 const shorten = (text, max = 240) => redactActivity(text).replace(/\s+/g, " ").trim().slice(0, max);
 const lines = text => String(text ?? "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+const unfinishedOpening = /^(?:I(?:'ll| will|’ll)|I(?: am|'m|’m) (?:working|starting|going|waiting)|Let me|Next I|Working on|Still (?:working|running)|Starting|In progress|我将|我会|正在)/i;
 
 // Outcome statuses: completed; blocked (a known runtime refusal or a final
 // answer that declares itself blocked); needs_input (a question or unfinished
@@ -21,7 +22,7 @@ export function classifyWorkerOutcome(text, exitCode = 0) {
   const delivered = /\b(?:implemented|fixed|changed|verified|passed|completed|found|tested|results?)\b|已(?:完成|修复|实现|验证)/i.test(body);
   const asks = /[?？]\s*$/.test(body) || /\b(?:please (?:provide|confirm|choose|specify)|need (?:your|more) (?:input|confirmation|information)|awaiting (?:input|approval))\b|请(?:提供|确认|选择)/i.test(body);
   const startsRequest = /^(?:which|what|where|when|why|how|who|can you|could you|would you|should I|please (?:provide|confirm|choose|specify)|I need (?:your|more)|请(?:提供|确认|选择))\b/i.test(body);
-  const unfinished = /^(?:I(?:'ll| will|’ll)|I(?: am|'m|’m) (?:working|starting|going|waiting)|Let me|Next I|Working on|Still (?:working|running)|Starting|In progress|我将|我会|正在)/i.test(body) || /\b(?:not yet (?:finished|complete|implemented)|work remains|awaiting input)\b/i.test(body);
+  const unfinished = unfinishedOpening.test(body) || /\b(?:not yet (?:finished|complete|implemented)|work remains|awaiting input)\b/i.test(body);
   return unfinished || (asks && (startsRequest || !delivered)) ? "needs_input" : "completed";
 }
 
@@ -53,7 +54,8 @@ export function parseStructuredReport(rawOutput) {
       ...(assumptions.length > 500 ? { assumptionsOmitted: assumptions.length - 500 } : {}),
       verification: verification.slice(0, 500),
       ...(verification.length > 500 ? { verificationOmitted: verification.length - 500 } : {}),
-      blockers: (Array.isArray(value.blockers) ? value.blockers : []).filter(b => b && typeof b === "object" && typeof b.code === "string" && b.code.trim()).slice(0, 6)
+      // Persist every declared blocker; only display projections are budgeted.
+      blockers: (Array.isArray(value.blockers) ? value.blockers : []).filter(b => b && typeof b === "object" && typeof b.code === "string" && b.code.trim())
         .map(b => ({ code: b.code.trim().slice(0, 64), message: stringOrNull(b.message), app: stringOrNull(b.app), tabId: stringOrNull(b.tab_id ?? b.tabId), sessionId: stringOrNull(b.session_id ?? b.sessionId) })),
       question: stringOrNull(value.question)
     };
@@ -86,18 +88,21 @@ function fitBudget(report) {
 }
 
 // Declared blockers and essential questions outrank a successful declaration.
-// A plan-only summary also contradicts "completed", as for unstructured prose.
+// Only an unfinished-work opening contradicts a structured "completed";
+// other summary content does not override the declared fields.
 function declaredStatus(structured) {
   if (structured.blockers.length) return "blocked";
   if (structured.question) return "needs_input";
   if (structured.status !== "completed") return structured.status;
-  return classifyWorkerOutcome(structured.summary, 0);
+  return unfinishedOpening.test(structured.summary.trim()) ? "needs_input" : "completed";
 }
 
 export function buildWorkerReport(payload, meta = {}) {
-  const text = `${payload.rawOutput ?? ""}\n${payload.error ?? ""}`;
-  const browserBlocker = classifyBrowserBlocker(text);
   const structured = payload.structured && WORKER_REPORT_STATUSES.includes(payload.structured.status) ? payload.structured : null;
+  // Structured summaries describe the work; captured errors and blockers supply
+  // runtime evidence. Schema-less final answers retain prose classification.
+  const text = `${structured ? "" : payload.rawOutput ?? ""}\n${payload.error ?? ""}`;
+  const browserBlocker = classifyBrowserBlocker(text);
   const runtimeBlocker = payload.interruptionReason === "codex_runtime_restarted"
     ? { code: "codex_runtime_restarted", message: "The Codex runtime exited mid-turn (for example, during an app update). The thread and saved work persist; only the running turn was interrupted. Continue this worker when the runtime is available." }
     : payload.status !== 0 ? classifyCodexError(payload.codexErrorInfo, payload.error) : null;

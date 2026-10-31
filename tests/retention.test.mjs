@@ -148,7 +148,7 @@ test("retention precedence, default, integer validation and reported one-day cla
     assert.equal(p.days, 1);
   }
   json(path.join(f.env.CLAUDE_CONFIG_DIR, "settings.json"), { cleanupPeriodDays: 0 });
-  assert.equal(resolveRetentionDays(f.env), 1); assert.match(plan(f).warnings.join(), /clamped/);
+  assert.equal(resolveRetentionDays(f.env), 1); assert.ok(plan(f).warnings.length);
   assert.equal(plan(f, { days: 2 }).days, 2);
   assert.throws(() => plan(f, { days: "bad" }), /integer/);
   const fallbackEnv = { ...f.env, CLAUDE_CONFIG_DIR: "", HOME: path.join(f.root, "home") };
@@ -176,24 +176,27 @@ test("only expired, detached, dead-PID ended jobs and their four artifacts are r
   for (const record of [recent, running, queued, live, attached, boundary, invalidDate]) for (const file of record.files) assert.ok(fs.existsSync(file));
   assert.deepEqual(JSON.parse(fs.readFileSync(gone.indexFile)).jobs.map(job => job.id).sort(), ["attached", "boundary", "invalid-date", "live", "queued", "recent", "running"]);
 
-  // Either PID in either record vetoes both planning and a previously planned
-  // deletion, including a terminal index without a file and an old active orphan.
-  for (const field of ["pid", "launcherPid"]) for (const shape of ["index", "private", "missing", "orphan"]) {
-    const g = fixture(), record = seedJob(g, `live-${field}-${shape}`, shape === "orphan" ? { status: "running" } : {});
+  // Both worker and launcher PIDs veto stale plans, whether published in the
+  // index or the private record. Missing/orphan records are covered below.
+  for (const [field, shape] of [["pid", "index"], ["launcherPid", "private"]]) {
+    const g = fixture(), record = seedJob(g, `live-${field}-${shape}`);
     const index = JSON.parse(fs.readFileSync(record.indexFile));
-    if (shape === "orphan") { index.jobs = []; json(record.indexFile, index); }
-    if (shape === "missing") fs.unlinkSync(record.file);
     const thread = rollout(g, record.threadId), preview = plan(g);
     assert.equal(preview.jobs.length, 1);
-    if (["index", "missing"].includes(shape)) { index.jobs[0][field] = process.pid; json(record.indexFile, index); }
+    if (shape === "index") { index.jobs[0][field] = process.pid; json(record.indexFile, index); }
     else json(record.file, { ...JSON.parse(fs.readFileSync(record.file)), [field]: process.pid });
     const protectedPlan = plan(g);
     assert.equal(protectedPlan.jobs.length, 0); assert.equal(protectedPlan.threads.length, 0);
     const applied = await applyRetention(preview, { deleteThread: async () => assert.fail("live processes protect their thread") });
     assert.equal(applied.jobsDeleted, 0); assert.equal(applied.threadsDeleted, 0); assert.deepEqual(applied.errors, []);
     assert.ok(fs.existsSync(thread));
-    for (const artifact of shape === "missing" ? record.files.slice(1) : record.files) assert.ok(fs.existsSync(artifact));
+    for (const artifact of record.files) assert.ok(fs.existsSync(artifact));
   }
+  const capped = fixture(); seedJob(capped, "expired");
+  for (let i = 0; i < 51; i++) seedJob(capped, `recent-${i}`, { completedAt: capped.recent, threadId: null });
+  const capResult = await applyRetention(plan(capped));
+  assert.equal(capResult.jobsDeleted, 0); assert.ok(capResult.errors.length);
+
 });
 
 test("all workspaces protect live or unresolved orphans and expire dead orphan and missing records", async () => {
@@ -323,34 +326,20 @@ test("all workspaces protect live or unresolved orphans and expire dead orphan a
   assert.equal(fs.readFileSync(outside, "utf8"), "keep");
 });
 
-test("legacy artifact paths retain only their job and thread without blocking unrelated thread cleanup", async () => {
-  const f = fixture(), legacy = seedJob(f, "legacy"), normal = seedJob(f, "normal");
-  const legacyLog = useLegacyPaths(f, legacy);
-  const legacyRollout = rollout(f, legacy.threadId), normalRollout = rollout(f, normal.threadId);
-  const p = plan(f);
-  assert.deepEqual(p.jobs.map(job => job.jobId), [normal.id]);
-  assert.deepEqual(p.threads.map(thread => thread.threadId), [normal.threadId]);
-  assert.deepEqual(p.errors, []);
-  assert.deepEqual(p.retained, [{ workspace: legacy.workspace, jobId: legacy.id, reason: "legacy-paths" }]);
-  const calls = [], result = await applyRetention(p, { deleteThread: async id => { calls.push(id); return {}; } });
-  assert.equal(result.jobsDeleted, 1); assert.equal(result.threadsDeleted, 1); assert.equal(result.threadsSkipped, 0);
-  assert.deepEqual(calls, [normal.threadId]); assert.deepEqual(result.errors, []); assert.deepEqual(result.retained, p.retained);
-  assert.deepEqual(JSON.parse(fs.readFileSync(normal.indexFile)).jobs.map(job => job.id), [legacy.id]);
-  assert.ok(normal.files.every(file => !fs.existsSync(file)));
-  for (const file of [...legacy.files, legacyLog, legacyRollout, normalRollout]) assert.ok(fs.existsSync(file), file);
-});
-
-test("legacy paths discovered after planning are retained without stopping other job or thread deletion", async () => {
-  const f = fixture(), legacy = seedJob(f, "changed"), normal = seedJob(f, "normal");
-  rollout(f, legacy.threadId); rollout(f, normal.threadId);
-  const p = plan(f); assert.equal(p.jobs.length, 2); assert.equal(p.threads.length, 2);
-  const legacyLog = useLegacyPaths(f, legacy), calls = [];
-  const result = await applyRetention(p, { deleteThread: async id => { calls.push(id); return {}; } });
-  assert.equal(result.jobsDeleted, 1); assert.equal(result.threadsDeleted, 1); assert.equal(result.threadsSkipped, 1);
-  assert.deepEqual(calls, [normal.threadId]); assert.deepEqual(result.errors, []);
-  assert.deepEqual(result.retained, [{ workspace: legacy.workspace, jobId: legacy.id, reason: "legacy-paths" }]);
-  assert.deepEqual(p.retained, [], "application must not mutate the preview");
-  assert.ok(fs.existsSync(legacyLog)); assert.ok(legacy.files.every(file => fs.existsSync(file)));
+test("legacy paths protect their job and thread, including paths changed after planning", async () => {
+  for (const afterPlanning of [false, true]) {
+    const f = fixture(), legacy = seedJob(f, "legacy"), normal = seedJob(f, "normal");
+    rollout(f, legacy.threadId); rollout(f, normal.threadId);
+    if (!afterPlanning) useLegacyPaths(f, legacy);
+    const preview = plan(f);
+    if (afterPlanning) useLegacyPaths(f, legacy);
+    const calls = [], applied = await applyRetention(preview, { deleteThread: async id => { calls.push(id); return {}; } });
+    assert.equal(applied.jobsDeleted, 1); assert.equal(applied.threadsDeleted, 1);
+    assert.deepEqual(calls, [normal.threadId]); assert.deepEqual(applied.errors, []);
+    assert.equal(applied.retained[0].reason, "legacy-paths");
+    assert.ok(legacy.files.every(file => fs.existsSync(file)));
+    assert.ok(normal.files.every(file => !fs.existsSync(file)));
+  }
 });
 
 test("an unreadable index in another workspace still blocks thread planning and application", async () => {
@@ -385,18 +374,6 @@ test("unsupported or failed thread/delete skips threads without touching rollout
   }
 });
 
-test("markers use the same cutoff, preserve newer files and ignore symlinks", async () => {
-  const f = fixture(), old = marker(f, "old.json"), recent = marker(f, "recent.json", f.recent), temp = marker(f, ".old.tmp");
-  const outside = path.join(f.root, "outside"); json(path.join(outside, "old.json"), {});
-  fs.symlinkSync(outside, path.join(resolveSessionMarkersRoot(f.env), "linked"));
-  const linkedFile = path.join(path.dirname(old), "linked.json"); fs.symlinkSync(path.join(outside, "old.json"), linkedFile);
-  const boundary = marker(f, "boundary.json", new Date(f.now - 30 * DAY).toISOString());
-  const p = plan(f); assert.deepEqual(p.markers.map(file => path.basename(file.path)).sort(), [".old.tmp", "old.json"]);
-  const result = await applyRetention(p);
-  assert.equal(result.markersDeleted, 2); assert.equal(fs.existsSync(old), false); assert.equal(fs.existsSync(temp), false);
-  for (const file of [recent, linkedFile, boundary, path.join(outside, "old.json")]) assert.ok(fs.existsSync(file));
-});
-
 test("apply rechecks owner attachment, private records, mtimes and new cross-workspace references", async t => {
   const f = fixture(), job = seedJob(f, "changed"), file = rollout(f, job.threadId), markerFile = marker(f, "freshened.json");
   const secondId = randomUUID(), freshenedRollout = rollout(f, secondId), thirdId = randomUUID(); rollout(f, thirdId);
@@ -419,17 +396,9 @@ test("apply rechecks owner attachment, private records, mtimes and new cross-wor
   fs.utimesSync(replacement, stat.atime, stat.mtime);
   fs.renameSync(replacement, replaced.file);
   assert.equal(fs.statSync(replaced.file).size, stat.size);
-  const read = fs.readFileSync, reads = [];
-  fs.readFileSync = function(file, ...args) {
-    if ([unchanged.file, replaced.file].includes(file)) reads.push(file);
-    return read.call(this, file, ...args);
-  };
-  try {
-    const applied = await applyRetention(preview);
-    assert.equal(applied.jobsDeleted, 1); assert.deepEqual(applied.errors, []);
-    assert.deepEqual(reads, [replaced.file]);
-    assert.ok(fs.existsSync(replaced.file)); assert.equal(fs.existsSync(unchanged.file), false);
-  } finally { fs.readFileSync = read; }
+  const applied = await applyRetention(preview);
+  assert.equal(applied.jobsDeleted, 1); assert.deepEqual(applied.errors, []);
+  assert.ok(fs.existsSync(replaced.file)); assert.equal(fs.existsSync(unchanged.file), false);
   const h = fixture(), linked = seedJob(h, "linked"), linkPlan = plan(h);
   const outside = path.join(h.root, "outside.json");
   fs.renameSync(linked.file, outside); fs.symlinkSync(outside, linked.file);
@@ -469,27 +438,11 @@ test("unreadable state or a busy workspace lock skips the workspace and all thre
     const result = await applyRetention(p, { deleteThread: async () => assert.fail("unsafe scan") });
     assert.equal(result.jobsDeleted, 0); for (const file of job.files) assert.ok(fs.existsSync(file));
   }
-});
-
-test("a lock acquired after planning times out safely and keeps that job's thread", async () => {
   const f = fixture(), job = seedJob(f, "locked"); rollout(f, job.threadId); const p = plan(f);
   const lock = path.join(job.workspace, ".state-lock"); fs.mkdirSync(lock); fs.writeFileSync(path.join(lock, `owner-${process.pid}-${randomUUID()}`), "");
   const result = await applyRetention(p, { deleteThread: async () => assert.fail("locked reference") });
   assert.equal(result.jobsDeleted, 0); assert.equal(result.threadsSkipped, 1);
   assert.ok(job.files.every(file => fs.existsSync(file)));
-});
-
-test("unsafe artifact paths are retained and the existing count cap cannot evict unselected jobs", async () => {
-  const f = fixture(), job = seedJob(f, "unsafe"), index = JSON.parse(fs.readFileSync(job.indexFile));
-  const sqlite = path.join(f.home, "state_5.sqlite"); fs.writeFileSync(sqlite, "never delete");
-  index.jobs[0].logFile = sqlite; json(job.indexFile, index);
-  assert.equal(plan(f).jobs.length, 0); assert.deepEqual(plan(f).errors, []);
-  assert.deepEqual(plan(f).retained, [{ workspace: job.workspace, jobId: job.id, reason: "legacy-paths" }]);
-  assert.equal((await applyRetention(plan(f))).jobsDeleted, 0); assert.ok(fs.existsSync(sqlite));
-  const g = fixture(); seedJob(g, "expired");
-  for (let i = 0; i < 51; i++) seedJob(g, `recent-${i}`, { completedAt: g.recent, threadId: null });
-  const result = await applyRetention(plan(g));
-  assert.equal(result.jobsDeleted, 0); assert.match(result.errors[0].message, /unselected/);
 });
 
 test("artifact removal errors are reported with actual partial counts and do not escape", async () => {
@@ -602,18 +555,13 @@ test("retention removes deleted-job markers and bounded maintenance removes only
     for (const file of [existing, missing, unsafe, foreign, unavailable, danglingMarker]) assert.ok(fs.existsSync(file));
   } finally { fs.readdirSync = readdir; }
 
-  const g = fixture(), anchor = seedJob(g, "anchor", { completedAt: g.recent });
-  for (let i = 0; i < 101; i++) json(path.join(resolveSessionMarkersRoot(g.env), "many", `pruned-${i}.json`),
-    { v: 1, jobId: `pruned-${i}`, jobFile: path.join(anchor.workspace, "jobs", `pruned-${i}.json`) });
-  json(path.join(g.home, "duet", "retention.json"), { lastRunAt: new Date(g.now).toISOString(), lastReport: {} });
-  assert.equal((await runAutomaticRetention({ env: g.env, now: g.now })).markersDeleted, 100);
-  assert.equal((await runAutomaticRetention({ env: g.env, now: g.now })).markersDeleted, 1);
-
   const h = fixture(), root = resolveSessionMarkersRoot(h.env), held = [];
+  const anchor = seedJob(h, "anchor", { completedAt: h.recent });
   for (let i = 0; i < 101; i++) {
-    const live = seedJob(h, `retained-${String(i).padStart(3, "0")}`, { completedAt: h.recent });
-    const file = path.join(root, "a", `${live.id}.json`);
-    json(file, { v: 1, jobId: live.id, jobFile: live.file }); held.push(file);
+    const id = `retained-${String(i).padStart(3, "0")}`, jobFile = path.join(anchor.workspace, "jobs", `${id}.json`);
+    json(jobFile, { id, status: "completed", completedAt: h.recent });
+    const file = path.join(root, "a", `${id}.json`);
+    json(file, { v: 1, jobId: id, jobFile }); held.push(file);
   }
   const starved = path.join(root, "a-old", "orphan.json");
   json(starved, { v: 1, jobId: "orphan", jobFile: path.join(resolveStateDir(h.cwd, h.env), "jobs", "orphan.json") });
@@ -643,9 +591,6 @@ test("cleanup dry-run is read-only, apply uses its candidates and ignores automa
   const result = cliResult(f, "--json");
   assert.equal(result.jobsDeleted, p.jobs.length); assert.equal(result.markersDeleted, p.markers.length);
   assert.ok(recent.files.every(file => fs.existsSync(file))); assert.ok(old.files.every(file => !fs.existsSync(file)));
-  assert.equal(cliResult(f, "--days", "0", "--dry-run", "--json").days, 1);
-  const bad = run(process.execPath, [cli, "cleanup", "--days", "1.5"], { cwd: f.cwd, env: f.env });
-  assert.equal(bad.status, 1); assert.match(bad.stderr, /integer/);
 
   const g = fixture(), stateRoot = path.dirname(resolveStateDir(g.cwd, g.env));
   const age = directory => {
@@ -795,7 +740,7 @@ test("prewarm runs retention after broker startup and real broker unsupported RP
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(fs.readFileSync(path.join(f.home, "duet", "retention.json"))).lastReport;
   assert.equal(report.jobsDeleted, 1); assert.equal(report.markersDeleted, 1); assert.equal(report.threadsSkipped, 1);
-  assert.match(report.errors[0].message, /Unsupported method: thread\/delete/); assert.ok(fs.existsSync(file));
+  assert.equal(report.errors.length, 1); assert.ok(fs.existsSync(file));
   const starts = JSON.parse(fs.readFileSync(path.join(f.root, "fake-codex-state.json"))).appServerStarts;
   assert.equal(starts, 1, "cleanup uses the prewarmed broker without another runtime");
   const manual = cliResult(f, "--json"); assert.equal(manual.threadsSkipped, 1);

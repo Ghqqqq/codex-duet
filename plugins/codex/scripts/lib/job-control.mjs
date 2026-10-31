@@ -2,15 +2,20 @@ import { leaseSnapshot, leaseExpiryReport } from "./job-runtime.mjs";
 import fs from "node:fs";
 
 import { getSessionRuntimeStatus } from "./codex.mjs";
+import { formatActivity, snippet } from "./activity.mjs";
+import { summarizeUsage } from "./run-journal.mjs";
 import { getConfig, importLegacyJob, listJobs, readJobFile, resolveJobFile, unresolvedTask, visibleJobs, withoutPrivateActivity } from "./state.mjs";
 import { SESSION_ID_ENV } from "./tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 export const DEFAULT_MAX_STATUS_JOBS = 8;
 export const DEFAULT_MAX_PROGRESS_LINES = 4;
+export const DEFAULT_MAX_ACTIVITY_EVENTS = 8;
 
-export function sortJobsNewestFirst(jobs) {
-  return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+export function sortJobsNewestFirst(jobs, { byDispatch = false } = {}) {
+  const timestamp = job => String((byDispatch ? job.createdAt ?? job.startedAt : null) ?? job.updatedAt ?? "");
+  return [...jobs].sort((left, right) => timestamp(right).localeCompare(timestamp(left)) ||
+    (byDispatch ? right.id.localeCompare(left.id) : 0));
 }
 
 function getCurrentSessionId(options = {}) {
@@ -161,11 +166,18 @@ function inferLegacyJobPhase(job, progressPreview = []) {
 
 export function enrichJob(job, options = {}) {
   const maxProgressLines = options.maxProgressLines ?? DEFAULT_MAX_PROGRESS_LINES;
+  const { activity, ...visible } = withoutPrivateActivity(job);
+  const activityPreview = (activity ?? []).slice(-(options.maxActivityEvents ?? DEFAULT_MAX_ACTIVITY_EVENTS))
+    .map(event => snippet(formatActivity(event, { root: job.workspaceRoot }) +
+      (event.type === "commandExecution" && event.exitCode === 0 ? " · exit 0" : ""), 300));
   const enriched = {
-    ...withoutPrivateActivity(job),
+    ...visible,
+    model: job.model ?? job.request?.model ?? null,
+    effort: job.effort ?? job.request?.effort ?? null,
+    sandbox: job.sandbox ?? job.request?.sandbox ?? null,
     kindLabel: getJobTypeLabel(job),
     ...leaseSnapshot(job), ...leaseExpiryReport(job),
-    progressPreview:
+    progressPreview: activityPreview.length ? activityPreview :
       job.status === "queued" || job.status === "running" || job.status === "failed"
         ? readJobProgressPreview(job.logFile, maxProgressLines)
         : [],
@@ -183,6 +195,8 @@ export function enrichJob(job, options = {}) {
 }
 
 export function readStoredJob(workspaceRoot, jobId) {
+  // A malformed lookup reference is absent, never a job-file path.
+  if (typeof jobId !== "string" || !/^[A-Za-z0-9_-]+$/.test(jobId)) return null;
   let jobFile = resolveJobFile(workspaceRoot, jobId);
   // Unknown here: it may have been written under an earlier release's state
   // location (for example before the plugin was renamed). Merge it in once.
@@ -191,6 +205,14 @@ export function readStoredJob(workspaceRoot, jobId) {
     return null;
   }
   return readJobFile(jobFile);
+}
+
+export function summarizeJobUsage(workspaceRoot, jobs) {
+  return summarizeUsage(jobs.map(job => {
+    if (job.usage !== undefined && (job.usage !== null || ["queued", "running"].includes(job.status))) return job;
+    try { return readStoredJob(workspaceRoot, job.id) ?? job; }
+    catch { return null; }
+  }));
 }
 
 const referenceMatches = (job, reference) => job.id === reference || job.threadId === reference || job.id.startsWith(reference);
@@ -232,7 +254,11 @@ function matchJobReference(jobs, reference, predicate = () => true) {
 export function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const config = getConfig(workspaceRoot);
-  const recordForJob = job => job.jobClass === "task" ? readStoredJob(workspaceRoot, job.id) ?? job : job;
+  const recordForJob = job => {
+    if (job.jobClass !== "task") return job;
+    try { return readStoredJob(workspaceRoot, job.id) ?? job; }
+    catch { return job; }
+  };
   // Tasks need their private record to be observable. Keep legacy index-only
   // review listings; retention removes dangling entries under the state lock.
   const workspaceJobs = listJobs(workspaceRoot).filter(job =>
@@ -268,6 +294,7 @@ export function buildStatusSnapshot(cwd, options = {}) {
     running,
     latestFinished,
     recent,
+    usageTotals: summarizeJobUsage(workspaceRoot, [...running, ...(latestFinished ? [latestFinished] : []), ...recent]),
     historyOmitted: scopedJobs.length - running.length - Number(Boolean(latestFinished)) - recent.length,
     needsReview: Boolean(config.stopReviewGate)
   };
@@ -283,7 +310,7 @@ export function buildSingleJobSnapshot(cwd, reference, options = {}) {
 
   return {
     workspaceRoot,
-    job: enrichJob(selected, { maxProgressLines: options.maxProgressLines })
+    job: enrichJob({ ...selected, activity: readStoredJob(workspaceRoot, selected.id)?.activity }, { maxProgressLines: options.maxProgressLines })
   };
 }
 

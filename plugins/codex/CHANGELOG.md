@@ -1,5 +1,92 @@
 # Changelog
 
+## 1.4.12
+
+### Features
+
+- `duet setup --dispatch auto|native|bash|default` sets how Claude is told to dispatch workers. `bash` selects background `duet task` from the first dispatch; `auto` (the default) does the same for 24 hours after the host last failed to deliver a native turn start, or until `--dispatch` is set again; `native` always advertises native dispatch.
+- `--default-model` and `--ultra-routine-model` are checked against the isolated Codex model cache (hidden models count). An unknown name is refused when the cache was fetched within the last 24 hours, with a hint to refresh it through `duet models`; with an older or missing cache the name is accepted with a warning.
+- `duet runtime status` shows the selected Codex binary, its source and version, and the workspace's shared runtime (pid, endpoint, whether it runs the current binary) without starting anything. `duet runtime restart` retires the shared runtime when it is idle and otherwise lists the running workers; the next task starts a fresh one.
+- `duet cancel --all` cancels every active job of the current Claude session in the workspace and prints each outcome; a job adopted by another session meanwhile is skipped. The permission hook auto-approves `duet runtime status|restart` and `duet cancel --all` like other simple `duet` commands.
+- `duet status <worker>` shows the worker's recent commands (with exit status), file changes and messages, plus its name, model, effort and sandbox; the job list shows worker names and model/effort. `duet status` and `duet journal show` print token totals for the listed jobs and how many lacked usage.
+- When another writable job ran in the same workspace at the same time (including one whose turn outlived its wrapper), a report with changed files marks `changedFilesShared` and notes that `changedFiles` may include other workers' edits. The native view now lists changed files and shows that note.
+- A project's CLAUDE.md reaches a worker once, with Duet's executor framing: when every CLAUDE.md on the path was forwarded and the fallback list is Duet's default, the worker thread turns off Codex's own CLAUDE.md fallback. Custom fallback lists, `--no-claude-md` and incomplete forwarding keep Codex's discovery.
+- The Stop review gate runs on a thread that `--resume-last` never selects, is skipped when the Git working tree is clean or a writable Duet task is still running in the workspace, and a BLOCK keeps up to four lines with the review job ID and its `duet result` command.
+- `/codex:review` and `/codex:adversarial-review` accept `--effort`. Without `--model`/`--effort` they now use the saved worker defaults (built-in gpt-6-astra/xhigh), as tasks do; previously they used Codex's own default.
+- `/codex:rescue` forwards through a Haiku agent that passes the request verbatim instead of rewriting it.
+
+### Stability fixes
+
+A stability pass ran live flows in Claude Code plus fake-runtime chaos, concurrency, fuzz, hook, native-adapter, upgrade, review and codex-live probes. These defects were fixed:
+
+- Briefs piped into `duet task`/`duet answer` no longer fail with `EAGAIN` when the producer is slow or the input is large; heredoc and file input were never affected.
+- Hooks read their JSON input without waiting for the host to close stdin: they stop at the first complete JSON value, or give up after 2 s. Large prompts keep the mode reminder and permission-hook approval, and a retained stdin no longer stalls a hook.
+- SessionStart always emits its guidance even if `CLAUDE_ENV_FILE` cannot be written. SessionEnd shares one deadline across all cleanup and stays under its 5 s timeout. A malformed job record no longer stops SessionEnd or the Stop gate from processing valid jobs. Mode files are refused under a symlinked mode directory.
+- The native `DUET:` line is honoured with leading spaces or tabs. A first line that looks like a broken header (`duet` followed by a colon) is refused rather than silently dispatched with default settings. A failed native fork now suggests recovery steps that native dispatch supports.
+- The CLI rejects malformed input before any side effect:
+  - boolean flags accept only `true` or `false` (`--write=garbage` no longer widens the sandbox);
+  - empty option values such as `--thread=` are refused (they previously could select another job);
+  - surplus positional arguments are refused for mutating commands;
+  - empty or whitespace-only briefs write nothing and start no worker;
+  - a missing `--cwd` directory gets a clear error;
+  - control characters in diagnostics are escaped.
+- Concurrent `duet setup` writers no longer fail with a raw `ENOENT` when a lock file disappears mid-check.
+- Review auto-scope detects submodules whose only changes are untracked files, including nested submodules hidden by an intermediate `ignore=all`. Such submodules are listed for the reviewer to inspect instead of being summarised as zero changes.
+- codex-live shows `Done · exit unknown` in a warning colour for commands without an exit code, and counts more than 200 tool uses in legacy jobs. Command truncation never splits an emoji or grapheme. The native run log keeps regional-indicator order, shows indented headers compactly, and marks unfinished commands interrupted or cancelled once the turn's stop is confirmed.
+
+### Review fixes
+
+A pre-release review (16 area × lens cells, each finding checked by a second reviewer) and a check of an external review's claims led to these fixes:
+
+- Reports and status:
+  - A structured report keeps its declared status; words such as `status: pending` or "blocked" in its summary no longer turn a completed job into needs_input or blocked. Every declared blocker is kept.
+  - Compact reports keep failed checks and test/lint/build commands when trimming, keep each entry's exit status, and add `checks.failed`.
+  - Recovered jobs keep runtime refusals found in their saved tool calls and provider refusals, instead of reporting completed or a generic failure.
+  - `duet wait` reports a recovered, still-running turn as running instead of failed; waiting on an older job no longer changes what `--resume-last` continues; a session keeps its worker name after another session continues the thread; `--thread` selects by thread only.
+- Native agents:
+  - SendMessage follow-ups are unwrapped from the host's "coordinator sent a message" framing, so a `DUET:` header and exact approval answers such as `Allow this call` now work.
+  - A completed report survives a failing final cache write.
+  - A host that never delivers the native turn start gets `native_adapter_unavailable` with Bash-fallback guidance.
+  - Parked questions and unfinished records left by ended sessions no longer fill the 128-agent native budget: under pressure, bindings whose question expired or whose job ended or vanished are reclaimed; running, answerable and newly admitted ones are kept. Each admission spends at most eight lookups and 3 s on this.
+  - The native view keeps blockers and questions ahead of the changed-file list.
+- Runtime:
+  - After the Codex CLI is updated, a broker still running the old binary no longer fails new tasks: they retry on a private runtime, and an idle stale broker retires.
+  - With newer Codex runtimes that lock a thread to the app-server holding it, a follow-up started while the workspace's shared runtime is busy now waits for it (up to 10 minutes, `CODEX_COMPANION_BROKER_WAIT_MS`) instead of failing with "worker exited before starting its turn"; on timeout it reports `thread_busy`.
+  - Tasks started at the same moment in a workspace without a shared runtime now start one shared runtime instead of one each. Before, follow-ups to threads held by the extra, unregistered runtimes failed with "already has an active writer" until those runtimes idled out; a follow-up whose thread is still held by another runtime now waits for it the same way.
+  - A follow-up that fails before its turn is submitted (for example, the runtime does not know the thread) now ends as failed at once; previously its wait could poll the runtime about ten times a second for the whole wait budget. Unreachable recovery reads back off up to 30 s.
+  - A task records that it is submitting its turn before sending turn/start. Recovery of a dead wrapper treats a job with no such record as never started (its follow-up proceeds at once, whatever the runtime metadata says), and never infers "not started" from an empty thread read for a job that did submit: such a follow-up reports `thread_busy` instead of risking a second turn. This also holds for a job cancelled before its start was accepted, until the cancellation is confirmed. An explicit rejection of turn/start by the runtime clears the record, so a corrected follow-up can run. Jobs written by earlier versions keep the previous inference.
+  - Runtimes that reject per-thread `config` get one retry without it for every start and resume, including reviews.
+  - The Stop gate defers to a writable task that is still running or whose turn is unresolved within its lease, and bounds the Git calls of its clean check by the hook budget; when that check cannot finish or fails, the review runs.
+  - thread/start and thread/resume acceptance are bounded (120 s, `CODEX_COMPANION_ACCEPTANCE_TIMEOUT_MS`). turn/start keeps waiting, so a slow start can never run twice.
+- State and journal:
+  - Legacy state is imported only from directories and files owned by the user (not world-writable; the shared temp root must not be group-writable either), and only well-formed job IDs are used in file paths.
+  - A job finishing just after a backward clock change is no longer pruned; a stale observer with a different outcome can no longer overwrite a recovered journal result; a rolled-back dispatch is still journaled as failed.
+  - Runs auto-link only jobs from their own Claude session; automatic linkage failures are logged.
+  - The orchestration mode survives a normal exit for `claude --resume`.
+- Hooks and setup:
+  - Resume and compaction re-emit the active mode's reminder; the Stop gate's review timeout stays inside the hook budget; fallback instruction scanning reports omitted files.
+  - `/codex:setup` passes arguments without shell expansion; login steps print a terminal-ready command; missing npm is explained.
+  - Tool sync reads valid TOML that Codex itself writes (floats, multiline strings); the `chrome` profile no longer imports the desktop computer-use route.
+- Review and transfer: `transfer --session` imports the selected session; adversarial branch review includes committed submodule changes under `ignore=all`; invalid scopes fail with `--base`; single-quoted backslashes stay literal in raw slash-command arguments.
+- Portability: the launcher runs on Node 18.18 and 20.0–20.9; on Windows, npm `codex.cmd` shims and paths with spaces launch correctly, trusted-path lists use `;`, and preference writes skip directory fsync.
+- Display: worker text is cleaned of terminal control and bidi characters in human-readable CLI output, the native display and codex-live; codex-live shows finished questions, marks truncated messages and keeps caches and visibility consistent.
+- Docs: Computer Use ask mode, `.output.txt`, sandbox-bypass permissions, the journal's malformed-line rule, the Codex version tested (0.146.0), uninstall cleanup, and the protocol re-read rule now match the code. SessionEnd (any reason, including `/clear`) cancels the session's running workers; this is now documented.
+
+### Known limits
+
+- In one session, a named `off` racing an `on` for a different mode can leave no mode active (last writer wins).
+- After an owner wait is killed right after a report is printed, a redundant completion reminder can appear; delivery markers are best effort.
+- The Windows launch changes were verified with platform simulations, not on a Windows host.
+- A non-Git workspace reached through a symlink with a different name keeps a separate job history.
+- When recovery keeps the same status and turn but finds better evidence, an earlier observer's journal entry for that job can remain.
+- A runtime that never answers turn/start still holds its job until the owner stops or cancels it.
+- `changedFilesShared` is based on overlapping run windows; it cannot say which worker changed which file. `duet runtime status` reports busy as unknown.
+- The Stop gate's clean check visits nested submodules one by one, so very deep nesting costs more Git calls; it stays within the hook budget and runs the review when the budget is spent. Repositories whose index exceeds the check's metadata limit always get the review.
+- If a worker dies after submitting its turn and the runtime loses that start before it appears in the thread, follow-ups on that thread keep reporting `thread_busy`; start a fresh task instead.
+- A structured `blocked` or `needs_input` answer inferred before the runtime ends its turn is treated as finished by cancel, SessionEnd and the Stop gate, while follow-ups on that thread report `thread_busy` until the turn ends; start a fresh task if it does not.
+- After a host regains native dispatch, `auto` can keep recommending the Bash route for up to 24 hours; `duet setup --dispatch auto` clears the observation at once.
+- Per-worker diffs, token budgets and syncing other MCP servers are not implemented.
+
 ## 1.4.11
 
 ### Features

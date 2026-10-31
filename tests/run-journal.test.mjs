@@ -47,6 +47,57 @@ function linked(f, runId, jobId = "job-fixture") {
   assert.deepEqual(linkedRun, { runId, runStateDir: f.state });
   return { ...job, ...linkedRun };
 }
+
+test("status and journal show total known job usage and count jobs without usage after pruning", t => {
+  const f = fixture(), runId = f.start("Account for worker usage", []);
+  const usages = [
+    { inputTokens: 100, cachedInputTokens: 20, outputTokens: 10, totalTokens: 110 },
+    { inputTokens: 200, cachedInputTokens: 30, outputTokens: 20, totalTokens: 220 },
+    null
+  ];
+  const jobs = usages.map((usage, index) => {
+    const job = { ...linked(f, runId, `job-usage-${index}`), updatedAt: `2026-10-01T00:00:0${index}Z`,
+      result: { ...(usage ? { usage } : {}) } };
+    fs.mkdirSync(path.join(f.state, "jobs"), { recursive: true });
+    fs.writeFileSync(path.join(f.state, "jobs", `${job.id}.json`), JSON.stringify(job));
+    assert.equal(finishJournalJob(job, { status: "completed", ...(usage ? { usage } : {}) }, f.env), true);
+    return job;
+  });
+  const foreign = { ...jobs[0], id: "job-other-session", sessionId: "other-session" };
+  fs.writeFileSync(path.join(f.state, "jobs", `${foreign.id}.json`), JSON.stringify(foreign));
+  fs.writeFileSync(path.join(f.state, "state.json"), JSON.stringify({ version: 1, config: {},
+    jobs: [...jobs, foreign].map(({ result, ...job }) => job) }));
+  const expected = { inputTokens: 300, cachedInputTokens: 50, outputTokens: 30, totalTokens: 330,
+    jobsWithUsage: 2, jobsWithoutUsage: 1 };
+  assert.deepEqual(json(f.call(["status", "--json"])).usageTotals, expected);
+  assert.deepEqual(json(f.call(["status", "--all", "--json"])).usageTotals,
+    { inputTokens: 400, cachedInputTokens: 70, outputTokens: 40, totalTokens: 440, jobsWithUsage: 3, jobsWithoutUsage: 1 });
+  assert.deepEqual(json(f.call(["status", "--all", "--json", "--dispatch-nonce", "absent"])).usageTotals,
+    { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0, jobsWithUsage: 0, jobsWithoutUsage: 0 });
+  const human = f.call(["status"]);
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(human.stdout, /input 300.*cached 50.*output 30.*total 330/);
+  assert.match(human.stdout, /1 job\(s\) without usage/);
+  // Journal totals must survive the job retention policy using saved reports.
+  fs.rmSync(path.join(f.state, "jobs"), { recursive: true });
+  fs.rmSync(path.join(f.state, "state.json"));
+  assert.deepEqual(json(f.journal(["show"])).usageTotals, expected);
+  const journal = f.call(["journal", "show"]);
+  assert.equal(journal.status, 0, journal.stderr);
+  assert.match(journal.stdout, /input 300.*cached 50.*output 30.*total 330/);
+  assert.match(journal.stdout, /1 job\(s\) without usage/);
+  const open = fs.openSync;
+  let reportReads = 0, view;
+  const guard = t.mock.method(fs, "openSync", function(file, ...args) {
+    if (String(file).endsWith(".report.json")) reportReads++;
+    return open.call(this, file, ...args);
+  });
+  try { view = showRun(f.cwd, SESSION, runId, f.env); }
+  finally { guard.mock.restore(); }
+  assert.deepEqual({ usageTotals: view.usageTotals, issues: view.issues.map(issue => issue.kind), reportReads },
+    { usageTotals: expected, issues: jobs.map(() => "no_verdict"), reportReads: jobs.length });
+});
+
 test("journal validation is read-only and passed close preserves state until verdict and criterion evidence exist", t => {
   const f = fixture(), runId = f.start(), job = linked(f, runId);
   assert.equal(finishJournalJob(job, { status: "completed", summary: "Synthetic retained report" }, f.env), true);
@@ -368,7 +419,18 @@ test("session run selection spans workspaces and recovers across sessions withou
   assert.equal(json(call(["journal", "show", "--json"])).runId, winner.runId);
   json(call(["journal", "close"], { judgment: "passed", summary: "Only one active run" }));
 
-  const recoveredRun = f.start(), oldJob = linked(f, recoveredRun, "old-session-job");
+  const recoveredRun = f.start();
+  fs.unlinkSync(f.pointer);
+  const beforeFallback = snapshot(f.runs);
+  assert.equal(linkJournalJob({ id: "foreign-session-job", workspaceRoot: f.cwd, sessionId: "resumed-session" }, "Different session", f.env), null);
+  assert.deepEqual(snapshot(f.runs), beforeFallback, "another session cannot attach to the sole open workspace run");
+  const oldJob = linked(f, recoveredRun, "old-session-job");
+  assert.equal(fs.existsSync(f.pointer), false, "same-session fallback does not recreate its pointer");
+  const legacy = fixture(), legacyRun = legacy.start(), legacyRows = legacy.rows(legacyRun);
+  delete legacyRows[0].sessionId;
+  fs.writeFileSync(legacy.file(legacyRun), legacyRows.map(row => JSON.stringify(row)).join("\n") + "\n");
+  fs.unlinkSync(legacy.pointer);
+  assert.deepEqual(linkJournalJob({ id: "legacy-session-job", workspaceRoot: legacy.cwd, sessionId: "resumed-session" }, "Legacy run", legacy.env), { runId: legacyRun, runStateDir: legacy.state });
   assert.equal(finishJournalJob(oldJob, { status: "completed" }, f.env), true);
   json(f.journal(["add", "verdict"], verdict(oldJob.id, "REWORK")));
   const resumedSession = "resumed-session", resumedEnv = { CODEX_COMPANION_SESSION_ID: resumedSession };
@@ -376,7 +438,7 @@ test("session run selection spans workspaces and recovers across sessions withou
   const resumedPointer = path.join(f.sessions, `${resumedSession}.json`);
   assert.equal(json(resumed(["add", "criteria"], { criteria: ["Recover after compaction"] })).runId, recoveredRun);
   assert.equal(fs.existsSync(resumedPointer), false, "fallback does not adopt the run implicitly");
-  const resumedJob = json(f.call(["task", "--direct", "--sandbox", "read-only"], "Resume in the only open workspace run.", resumedEnv));
+  const resumedJob = json(f.call(["task", "--run", recoveredRun, "--direct", "--sandbox", "read-only"], "Explicitly resume the open workspace run.", resumedEnv));
   assert.equal(JSON.parse(fs.readFileSync(path.join(f.state, "jobs", `${resumedJob.jobId}.json`))).runId, recoveredRun);
   json(resumed(["add", "verdict"], { ...verdict(resumedJob.jobId), resolves: [oldJob.id] }));
   assert.deepEqual(json(resumed(["validate"])), { runId: recoveredRun, ok: true, issues: [] });
@@ -403,7 +465,7 @@ test("session run selection spans workspaces and recovers across sessions withou
     [["journal", "close"], { judgment: "abandoned", summary: "Ambiguous" }]
   ]) assert.equal(f.call(args, input, unselectedEnv).status, 1);
   // Automatic task linkage never guesses and never blocks dispatch: the job stays unlinked.
-  assert.equal(linkJournalJob({ id: "ambiguous-job", workspaceRoot: f.cwd, sessionId: unselectedSession }, "Ambiguous", f.env), null);
+  assert.match(linkJournalJob({ id: "ambiguous-job", workspaceRoot: f.cwd, sessionId: unselectedSession }, "Ambiguous", f.env).journalWarning, /Automatic journal linkage failed \(RUN_SELECTION_AMBIGUOUS\)/);
   assert.deepEqual(snapshot(f.runs), unchanged);
   assert.equal(json(f.call(["journal", "show", "--json"], undefined, unselectedEnv)).runId, secondRun);
   assert.deepEqual(json(f.call(["journal", "validate", "--json"], undefined, unselectedEnv)), { runId: secondRun, ok: true, issues: [] });
@@ -606,9 +668,9 @@ test("direct tasks link exact worker brief and one terminal compact report; unli
       if (typeof file === 'number' && typeof data === 'string') {
         try { const row = JSON.parse(data); if (row.type === 'job_started') armedJob = row.jobId; } catch {}
       }
-      if (armedJob && !thrown && typeof file === 'string' && file.includes('/jobs/.' + armedJob + '.json.')) {
+      if (armedJob && !thrown && typeof file === 'string' && require('node:path').basename(file).startsWith('.state.json.')) {
         thrown = true;
-        const error = new Error('Injected post-link job-file failure'); error.code = 'EIO'; throw error;
+        const error = new Error('Injected post-link index failure'); error.code = 'EIO'; throw error;
       }
       return write.call(this, file, data, ...args);
     };
@@ -665,12 +727,24 @@ test("a recovered terminal status keeps both reports and show uses the latest fi
   assert.equal(JSON.parse(fs.readFileSync(completedPath)).summary, recovered.report.summary);
   assert.equal(fs.statSync(completedPath).mode & 0o777, 0o600);
   const before = snapshot(path.join(f.runs, runId));
-  assert.equal(finishJournalJob(job, { status: "failed", summary: "Duplicate failure" }, f.env), true);
+  assert.equal(finishJournalJob(job, { status: "failed", summary: "Duplicate failure" }, f.env), false);
   assert.equal(finishJournalJob(recovered, { status: "completed", summary: "Duplicate success" }, f.env), true);
   assert.deepEqual(snapshot(path.join(f.runs, runId)), before, "earlier statuses and duplicate reports stay immutable");
   const view = json(f.journal(["show", "--run", runId]));
   assert.equal(view.jobs[0].status, "completed");
   assert.equal(view.jobs[0].report, finishes[1].report);
+
+  // Recovery can publish the first finish before an observer holding the old
+  // failed snapshot gets the journal lock. The stale finish must be refused.
+  const g = fixture(), otherRun = g.start(), stale = { ...linked(g, otherRun), status: "failed", result: { status: 1 }, report: { status: "failed", summary: "Stale wrapper failure" } };
+  storeJob(g, stale);
+  const current = observe(g, stale, { status: "completed", recovered: true, result: { status: 0 }, report: { status: "completed", summary: "Recovered first" } });
+  assert.equal(finishJournalJob(stale, stale.report, g.env), false);
+  const staleObserver = run(process.execPath, ["--input-type=module", "-e", `import {recordFinishedJob} from ${JSON.stringify(runtimeModule)}; recordFinishedJob(${JSON.stringify(stale)});`], { cwd: g.cwd, env: g.env });
+  assert.equal(staleObserver.status, 0, staleObserver.stderr);
+  assert.equal(json(g.journal(["show"])).jobs[0].status, "completed");
+  assert.deepEqual(g.rows(otherRun).filter(row => row.type === "job_finished").map(row => row.status), ["completed"]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(g.state, "jobs", `${current.id}.json`))).journalFinishedStatus, "completed");
 });
 
 test("persisted terminal observations skip journal locks and reads on status and result", () => {
@@ -736,6 +810,12 @@ test("journal write failures never change direct task outcome, and terminal writ
   const before = snapshot(f.runs);
   const denied = f.call(["task", "--direct", "--sandbox", "read-only"], "Check write failure.", { NODE_OPTIONS: `--import=${preload}` });
   const report = json(denied); assert.equal(report.status, baseline.status); assert.equal(report.summary, baseline.summary); assert.deepEqual(snapshot(f.runs), before);
+  const deniedJob = JSON.parse(fs.readFileSync(path.join(f.state, "jobs", `${report.jobId}.json`)));
+  assert.equal(deniedJob.runId, undefined);
+  assert.match(deniedJob.journalWarning, /Automatic journal linkage failed \(EACCES\)/);
+  const diagnostics = fs.readFileSync(deniedJob.logFile, "utf8").split("\n").filter(line => line.includes("Automatic journal linkage failed"));
+  assert.equal(diagnostics.length, 1, "automatic linkage failure is logged once across launcher and worker");
+  assert.ok(diagnostics[0].endsWith(deniedJob.journalWarning));
   fs.writeFileSync(preload, `import fs from 'node:fs'; const write = fs.writeFileSync; fs.writeFileSync = function(file, ...rest) { if (String(file).includes('.report.json.')) throw Object.assign(new Error('fixture report copy denied'), {code:'EACCES'}); return write.call(this,file,...rest); };`);
   const terminalDenied = json(f.call(["task", "--direct", "--sandbox", "read-only"], "Check write failure.", { NODE_OPTIONS: `--import=${preload}` }));
   assert.equal(terminalDenied.status, baseline.status); assert.equal(terminalDenied.summary, baseline.summary);
@@ -890,7 +970,7 @@ test("closed runs, finished links and missing or unreadable job records still ex
   for (const scenario of ["closed", "finished", "missing", "unreadable"]) {
     const f = fixture(), runId = f.start(), job = linked(f, runId);
     if (scenario !== "missing") {
-      const file = storeJob(f, { ...job, status: "running" });
+      const file = storeJob(f, { ...job, status: scenario === "finished" ? "completed" : "running" });
       if (scenario === "unreadable") fs.writeFileSync(file, "not JSON");
     }
     if (scenario === "closed") json(f.journal(["close"], { judgment: "abandoned", summary: "Closed with a live worker" }));

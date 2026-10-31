@@ -3,10 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { ensureStateDir, listJobs, listSessionJobs, loadState, resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateDirForRoot, resolveStateFile, resolveStateRoot, saveState, updateJob, updateState, writeJobFile } from "../plugins/codex/scripts/lib/state.mjs";
+import { ensureStateDir, listJobs, listSessionJobs, loadState, resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateDirForRoot, resolveStateFile, resolveStateRoot, saveState, updateJob, updateState, upsertJob, writeJobFile } from "../plugins/codex/scripts/lib/state.mjs";
 
 test("resolveStateDir is a per-workspace directory under the isolated home, independent of CLAUDE_PLUGIN_DATA and the temp dir", () => {
   const workspace = makeTempDir();
@@ -39,6 +40,49 @@ test("resolveStateDir is a per-workspace directory under the isolated home, inde
   assert.deepEqual(listSessionJobs(nested, "root-mapping").map(job => job.id).sort(), jobs.map(job => job.id));
   fs.rmSync(repo, { recursive: true, force: true });
   assert.equal(resolveStateDirForRoot(repo), repoState);
+
+  const physical = makeTempDir(), aliasRoot = makeTempDir(), nonGitAlias = path.join(aliasRoot, "other-name");
+  fs.symlinkSync(physical, nonGitAlias, process.platform === "win32" ? "junction" : "dir");
+  const canonicalDir = resolveStateDir(physical);
+  const aliasKey = `other-name-${createHash("sha256").update(fs.realpathSync(physical)).digest("hex").slice(0, 16)}`;
+  const aliasDir = path.join(resolveStateRoot(), aliasKey);
+  assert.equal(resolveStateDir(nonGitAlias), aliasDir);
+  assert.equal(resolveStateDirForRoot(nonGitAlias), aliasDir);
+  assert.notEqual(aliasDir, canonicalDir);
+  writeJobFile(physical, "task-physical-job", { id: "task-physical-job", status: "completed" });
+  saveState(physical, { jobs: [{ id: "task-physical-job", status: "completed" }] });
+  writeJobFile(nonGitAlias, "task-alias-job", { id: "task-alias-job", status: "completed" });
+  saveState(nonGitAlias, { jobs: [{ id: "task-alias-job", status: "completed" }] });
+  assert.deepEqual(listJobs(nonGitAlias).map(job => job.id), ["task-alias-job"], "an existing physical-path history does not hide alias history");
+  assert.deepEqual(listJobs(physical).map(job => job.id), ["task-physical-job"]);
+  const legacyRoot = path.join(process.env.CLAUDE_PLUGIN_DATA, "state");
+  fs.mkdirSync(legacyRoot, { recursive: true });
+  fs.renameSync(aliasDir, path.join(legacyRoot, aliasKey));
+  const stateModule = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
+  const migrated = run(process.execPath, ["--input-type=module", "-e", `import {listJobs} from ${JSON.stringify(stateModule)}; console.log(JSON.stringify(listJobs(${JSON.stringify(nonGitAlias)}).map(job => job.id)));`]);
+  assert.equal(migrated.status, 0, migrated.stderr);
+  assert.deepEqual(JSON.parse(migrated.stdout), ["task-alias-job"], "legacy alias history migrates under its original key");
+  assert.equal(resolveStateDir(nonGitAlias), aliasDir);
+  assert.deepEqual(listJobs(physical).map(job => job.id), ["task-physical-job"]);
+});
+
+test("completion after a backward clock correction preserves the published job and artifacts", () => {
+  const workspace = makeTempDir(), future = new Date(Date.now() + 3600000).toISOString();
+  const jobs = Array.from({ length: 200 }, (_, i) => ({ id: `anchor-${i}`, workspaceRoot: workspace, jobClass: "task", status: "completed",
+    threadId: `thread-${i}`, turnId: `turn-${i}`, createdAt: future, updatedAt: future, result: { status: 0, turnEnded: true } }));
+  for (const job of jobs) writeJobFile(workspace, job.id, job);
+  saveState(workspace, { jobs });
+  const job = { id: "just-finished", workspaceRoot: workspace, jobClass: "task", status: "running", threadId: "new-thread", turnId: "new-turn" };
+  writeJobFile(workspace, job.id, job);
+  updateState(workspace, state => { state.jobs.unshift(job); });
+  const artifacts = [resolveJobLogFile(workspace, job.id), resolveJobFile(workspace, job.id).replace(/\.json$/, ".output.txt"), resolveJobFile(workspace, job.id).replace(/\.json$/, ".result.json")];
+  for (const file of artifacts) fs.writeFileSync(file, "finished artifact");
+  updateJob(workspace, job.id, () => ({ status: "completed", completedAt: new Date().toISOString(), result: { status: 0, turnEnded: true } }));
+  assert.equal(JSON.parse(fs.readFileSync(resolveJobFile(workspace, job.id))).status, "completed");
+  upsertJob(workspace, { id: job.id, summary: "Updated terminal index entry" });
+  assert.equal(fs.existsSync(resolveJobFile(workspace, job.id)), true);
+  assert.ok(loadState(workspace).jobs.some(record => record.id === job.id));
+  assert.ok(artifacts.every(file => fs.existsSync(file)));
 });
 
 test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", () => {
@@ -190,7 +234,7 @@ test("unreadable indexes degrade for reads and are rebuilt, never emptied, by wr
   const legacyDir = path.join(process.env.CLAUDE_PLUGIN_DATA, "state", path.basename(stateDir));
   ensureStateDir(workspace);
   fs.mkdirSync(path.join(legacyDir, "jobs"), { recursive: true });
-  fs.writeFileSync(path.join(legacyDir, "state.json"), JSON.stringify({ jobs: [{ id: "legacy", status: "completed" }] }));
+  fs.writeFileSync(path.join(legacyDir, "state.json"), JSON.stringify({ jobs: [{ id: "task-legacy-state", status: "completed" }] }));
   const damaged = '{"jobs":[';
   fs.writeFileSync(stateFile, damaged);
   const marker = path.join(stateDir, ".legacy-migration.json");
@@ -211,6 +255,6 @@ test("unreadable indexes degrade for reads and are rebuilt, never emptied, by wr
 
   updateState(workspace, () => {});
   assert.deepEqual(keptFiles(workspace).map(name => fs.readFileSync(path.join(stateDir, name), "utf8")), [damaged]);
-  assert.deepEqual(loadState(workspace).jobs.map(job => job.id), ["legacy"]);
+  assert.deepEqual(loadState(workspace).jobs.map(job => job.id), ["task-legacy-state"]);
   assert.equal(fs.existsSync(marker), true);
 });

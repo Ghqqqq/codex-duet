@@ -34,26 +34,63 @@ const selected = keys => keys[0] === "marketplaces" ||
 
 // A conservative TOML reader for tool settings. Unrelated statements are kept
 // byte-for-byte. Unsupported selected values fail closed, never copied as text.
-function tokens(text) {
+function stringToken(text, start) {
+  const quote = text[start], multiline = text.slice(start, start + 3) === quote.repeat(3);
+  const width = multiline ? 3 : 1;
+  for (let i = start + width; i < text.length;) {
+    if (quote === '"' && text[i] === "\\") { i += 2; continue; }
+    if (text[i] !== quote) { i++; continue; }
+    let end = i + 1;
+    if (multiline) {
+      while (text[end] === quote) end++;
+      if (end - i < 3) { i = end; continue; }
+      if (end - i > 5) throw new Error("Unsupported TOML string delimiter; no values included in diagnostics.");
+    }
+    return { end, quote, multiline, content: text.slice(start + width, end - width) };
+  }
+  throw new Error("Unterminated tool config string.");
+}
+
+function stringValue({ content, quote, multiline }) {
+  content = content.replace(/\r\n/g, "\n");
+  if (multiline && content.startsWith("\n")) content = content.slice(1);
+  const reject = () => { throw new Error("Unsupported TOML string; no values included in diagnostics."); };
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\r]/.test(content) || (!multiline && content.includes("\n"))) reject();
+  if (quote === "'") return content;
+  const escapes = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", '"': '"', "\\": "\\" };
+  let result = "";
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] !== "\\") { result += content[i]; continue; }
+    const continuation = multiline && /^[ \t]*\n[ \t\n]*/.exec(content.slice(i + 1));
+    if (continuation) { i += continuation[0].length; continue; }
+    const escape = content[++i];
+    if (Object.hasOwn(escapes, escape)) result += escapes[escape];
+    else if (escape === "u" || escape === "U") {
+      const width = escape === "u" ? 4 : 8, digits = content.slice(i + 1, i + 1 + width);
+      if (digits.length !== width || !/^[\da-f]+$/i.test(digits)) reject();
+      const code = Number.parseInt(digits, 16);
+      if (code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) reject();
+      result += String.fromCodePoint(code); i += width;
+    } else reject();
+  }
+  return result;
+}
+
+function tokens(text, keys = false) {
   const out = [];
+  const punctuation = keys ? "[].={}," : "[]={},";
   for (let i = 0; i < text.length;) {
     if (/\s/.test(text[i])) { i++; continue; }
     if (text[i] === "#") { while (i < text.length && text[i] !== "\n") i++; continue; }
     const quote = text[i];
     if (quote === '"' || quote === "'") {
-      const start = i++;
-      while (i < text.length && text[i] !== quote) {
-        if (quote === '"' && text[i] === "\\") i++;
-        i++;
-      }
-      if (i === text.length) throw new Error("Unterminated tool config string.");
-      const raw = text.slice(start, ++i);
-      try { out.push({ value: quote === '"' ? JSON.parse(raw) : raw.slice(1, -1), string: true }); }
-      catch { throw new Error("Unsupported TOML basic string; no values are included in diagnostics."); }
-    } else if ("[].={},".includes(text[i])) out.push({ value: text[i++] });
+      const token = stringToken(text, i);
+      out.push({ value: stringValue(token), string: true, multiline: token.multiline });
+      i = token.end;
+    } else if (punctuation.includes(text[i])) out.push({ value: text[i++] });
     else {
       const start = i;
-      while (i < text.length && !/[\s\[\].={},#]/.test(text[i])) i++;
+      while (i < text.length && !/\s/.test(text[i]) && !punctuation.includes(text[i]) && text[i] !== "#") i++;
       out.push({ value: text.slice(start, i) });
     }
   }
@@ -61,8 +98,8 @@ function tokens(text) {
 }
 
 export function keyPath(text) {
-  const parts = tokens(text);
-  if (!parts.length || parts.some((t, i) => i % 2 ? t.value !== "." || t.string : !t.string && !/^[\w-]+$/.test(t.value)) || parts.length % 2 === 0) throw new Error("Unsupported TOML tool key.");
+  const parts = tokens(text, true);
+  if (!parts.length || parts.some((t, i) => t.multiline || (i % 2 ? t.value !== "." || t.string : !t.string && !/^[\w-]+$/.test(t.value))) || parts.length % 2 === 0) throw new Error("Unsupported TOML tool key.");
   return parts.filter((_, i) => i % 2 === 0).map(t => t.value);
 }
 
@@ -75,6 +112,10 @@ export function valueOf(text) {
     if (t.string) return t.value;
     if (t.value === "true" || t.value === "false") return t.value === "true";
     if (/^\d+$/.test(t.value)) return Number(t.value);
+    if (/^[+-]?(?:0|[1-9](?:_?\d)*)(?:\.\d(?:_?\d)*(?:[eE][+-]?\d(?:_?\d)*)?|[eE][+-]?\d(?:_?\d)*)$/.test(t.value)) {
+      const number = Number(t.value.replaceAll("_", ""));
+      if (Number.isFinite(number)) return number;
+    }
     if (t.value === "[") {
       const result = [];
       while (parts[i]?.value !== "]") {
@@ -97,7 +138,7 @@ export function valueOf(text) {
       if (parts[i++]?.value !== "}") throw new Error("Unsupported TOML tool inline table.");
       return result;
     }
-    throw new Error("Unsupported TOML tool value; use strings, booleans, integers, arrays or inline tables.");
+    throw new Error("Unsupported TOML tool value; use strings, booleans, finite numbers, arrays or inline tables.");
   }
   const result = value();
   if (i !== parts.length) throw new Error("Unsupported TOML tool value suffix.");
@@ -107,18 +148,10 @@ export function valueOf(text) {
 // Mask comments for parsing while retaining their original offsets and bytes.
 export function maskTomlComments(text) {
   const comments = [];
-  let quote = null, triple = false;
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
-    if (quote) {
-      if (c === "\\" && quote === '"') { i++; continue; }
-      if (c === quote && (!triple || text.slice(i, i + 3) === quote.repeat(3))) {
-        if (triple) i += 2;
-        quote = null;
-      }
-    } else if (c === '"' || c === "'") {
-      quote = c; triple = text.slice(i, i + 3) === c.repeat(3);
-      if (triple) i += 2;
+    if (c === '"' || c === "'") {
+      i = stringToken(text, i).end - 1;
     } else if (c === "#") {
       let start = i;
       while (start > 0 && /[ \t]/.test(text[start - 1])) start--;
@@ -133,28 +166,19 @@ export function maskTomlComments(text) {
 // Split only at top-level newlines (including unrelated multiline strings).
 export function statements(text) {
   const result = [];
-  let start = 0, quote = null, triple = false, depth = 0, comment = false;
+  let start = 0, depth = 0, comment = false;
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (comment && c !== "\n") continue;
     if (comment) comment = false;
-    if (quote) {
-      if (c === "\\" && quote === '"') { i++; continue; }
-      if (c === quote && (!triple || text.slice(i, i + 3) === quote.repeat(3))) {
-        if (triple) i += 2;
-        quote = null;
-      }
-      continue;
-    }
     if (c === "#") comment = true;
     else if (c === '"' || c === "'") {
-      quote = c; triple = text.slice(i, i + 3) === c.repeat(3);
-      if (triple) i += 2;
+      i = stringToken(text, i).end - 1;
     } else if (c === "[" || c === "{") depth++;
     else if (c === "]" || c === "}") depth--;
     if (c === "\n" && depth === 0) { result.push(text.slice(start, i)); start = i + 1; }
   }
-  if (quote || depth) throw new Error("Unbalanced TOML config; no tool settings changed.");
+  if (depth) throw new Error("Unbalanced TOML config; no tool settings changed.");
   result.push(text.slice(start));
   return result;
 }
@@ -298,6 +322,10 @@ export function syncToolConfig({ env = process.env, dryRun = false, cuaTemplate,
   }
   for (const name of TOOL_PLUGINS) {
     const id = `${name}@openai-bundled`;
+    if (profile === "chrome" && ["computer-use", "unified-computer-use"].includes(name)) {
+      if (source.plugins?.[id]) skipped.push(`plugins.${id}: excluded by chrome profile`);
+      continue;
+    }
     if (typeof source.plugins?.[id]?.enabled === "boolean") add(["plugins", id], { enabled: source.plugins[id].enabled });
   }
   const repl = source.mcp_servers?.node_repl;
@@ -316,11 +344,23 @@ export function syncToolConfig({ env = process.env, dryRun = false, cuaTemplate,
         continue;
       }
       if (key === "CODEX_HOME") continue;
+      if (profile === "chrome" && ["SKY_CUA_SERVICE_PATH", "NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE"].includes(key)) {
+        skipped.push(`mcp_servers.node_repl.env.${key}: excluded by chrome profile`);
+        continue;
+      }
       if (key === "NODE_REPL_TRUSTED_CODE_PATHS") {
         // Trust code in the existing plugin cache and app modules without
         // redirecting asset paths to nonexistent copies in the isolated home.
-        const sources = value.split(":").filter(v => v && v !== paths.normal && v !== "~/.codex");
-        safe.env[key] = [...new Set([paths.isolated, ...sources])].join(":");
+        const sources = value.split(path.delimiter).filter(v => v && v !== paths.normal && v !== "~/.codex");
+        safe.env[key] = [...new Set([paths.isolated, ...sources])].join(path.delimiter);
+      } else if (profile === "chrome" && key === "BROWSER_USE_AVAILABLE_BACKENDS") {
+        safe.env[key] = "chrome";
+      } else if (profile === "chrome" && key === "NODE_REPL_TRUSTED_SERVICES") {
+        let services;
+        try { services = JSON.parse(value); } catch { /* Invalid service maps are not imported. */ }
+        if (services && !Array.isArray(services) && typeof services.browser === "string") {
+          safe.env[key] = JSON.stringify({ browser: services.browser });
+        } else skipped.push(`mcp_servers.node_repl.env.${key}: no browser service to import`);
       } else safe.env[key] = value;
     }
     safe.env.NODE_REPL_TRUSTED_CODE_PATHS ??= paths.isolated;

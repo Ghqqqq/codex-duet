@@ -32,7 +32,8 @@ export const COMMAND_OPTIONS = {
     internalValueOptions: ["dispatch-nonce"],
     booleanOptions: ["json", "all", "wait"]
   },
-  cancel: { valueOptions: ["cwd"], booleanOptions: ["json"] }
+  runtime: { valueOptions: ["cwd"], booleanOptions: ["json"] },
+  cancel: { valueOptions: ["cwd"], booleanOptions: ["json", "all"] }
 };
 
 // The duet launcher implies direct mode for these verbs.

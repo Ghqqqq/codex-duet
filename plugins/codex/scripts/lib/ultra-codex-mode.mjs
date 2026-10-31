@@ -33,7 +33,19 @@ export function effectiveMaxWorkers(setting, cpuCount = os.availableParallelism?
   return setting === "auto" ? Math.min(16, Math.max(1, cpuCount - 2)) : setting;
 }
 
-function modeDir(env) { return path.join(path.dirname(resolveStateRoot(env)), MODE_DIR); }
+function modeDir(env) {
+  const root = resolveStateRoot(env), home = path.dirname(path.dirname(root));
+  const directory = path.join(path.dirname(root), MODE_DIR);
+  // Missing directories may be created by setMode, but every existing ancestor
+  // through the canonical isolated home must be real, just like legacy dirs.
+  for (let current = directory; ; current = path.dirname(current)) {
+    if (fs.lstatSync(current, { throwIfNoEntry: false }) && !realDirectory(current)) {
+      throw new Error(`Unsafe orchestration mode directory (symlink or non-directory): ${current}`);
+    }
+    if (current === home) break;
+  }
+  return directory;
+}
 function realDirectory(directory) {
   try { return fs.lstatSync(directory).isDirectory() && fs.realpathSync(directory) === directory; } catch { return false; }
 }
@@ -111,13 +123,15 @@ export function clearMode(cwd, sessionId, env = process.env) {
   try { fs.rmSync(file); return true; } catch { return false; }
 }
 
-// Mode files outlive a session only when SessionEnd never ran (crash, kill);
-// SessionStart removes stale ones so a reused session id cannot inherit a mode.
+// SessionEnd preserves mode files for resume; SessionStart bounds retained
+// records by age and resets its own mode on a fresh start.
 export function pruneModes(cwd, maxAgeMs = 30 * 24 * 60 * 60 * 1000, env = process.env) {
   let removed = 0;
+  let directory;
+  try { directory = modeDir(env); } catch { return removed; }
   // Include untouched legacy sessions, even if their workspace is no longer
   // used. This keeps the existing 30-day SessionStart policy for mode records.
-  for (const dir of [modeDir(env), ...legacyModeDirs(env)].filter(realDirectory)) {
+  for (const dir of [directory, ...legacyModeDirs(env)].filter(realDirectory)) {
     let names;
     try { names = fs.readdirSync(dir); } catch { continue; }
     for (const name of names) {
@@ -151,7 +165,7 @@ export function reminderText(mode, protocolPath = PROTOCOL_PATH, models = BUILTI
   const version = protocolVersion(fs.readFileSync(protocolPath, "utf8"));
   const { model, effort, routineModel } = models;
   const name = mode.name ?? "ultra", options = mode.options ?? mode;
-  const suffix = `v${version} to substantive tasks; re-read ${protocolPath} only if v${version} is not in your context.`;
+  const suffix = `v${version} to substantive tasks; re-read ${protocolPath} unless its full text (first line: <!-- Ultra-codex protocol v${version} -->) is already in context from an earlier Read. Reminder/preamble version mentions do not count.`;
   if (name === "pair") return `Pair mode on (one primary Codex worker on ${model}/${effort}, max ${PAIR_MAX_REWORK_ROUNDS} rework rounds). Apply pair protocol ${suffix}`;
   if (name === "duel") return `Duel mode on (Claude vs Codex on ${model}/${effort}, max ${options.rounds} rounds). Apply duel protocol ${suffix}`;
   const cap = options.maxWorkers === "unlimited" ? "no worker cap" : `max ${effectiveMaxWorkers(options.maxWorkers)} workers${options.maxWorkers === "auto" ? " (auto)" : ""}`;

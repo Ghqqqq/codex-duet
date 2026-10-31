@@ -53,6 +53,12 @@ active. List returns that workspace's runs newest first. Invalid
 JSON, missing fields, invalid enum
 values and unknown entry types fail before journal writes.
 
+`duet journal show` also prints input, cached-input, output and total token usage
+for the run's linked jobs, with counts of jobs with and without usage. JSON has
+`usageTotals`. Saved reports or available job records supply the usage; a job
+without usable usage is counted as unknown rather than zero. `duet status`
+provides the same totals for its displayed job list.
+
 | Input | Fields |
 | --- | --- |
 | `start [--switch]` | Non-empty `goal` string, `criteria` array of non-empty strings |
@@ -132,9 +138,10 @@ a verdict instead of showing it as queued.
 The override does not change the session's active run and follow-ups do not
 inherit it: repeat `--run` when needed. Without it, a dispatch links to the
 session's current active run, even when its predecessor used another run. When
-none is active, the sole open run in the dispatch workspace is used; several
-open runs leave the task unlinked. Use `journal use <runId>` to select one for
-the session, or repeat an explicit `--run <id>` per task. Automatic fallback
+none is active, the sole open run in the dispatch workspace is used only if it
+belongs to the dispatching Claude session or has no recorded session. Otherwise,
+or with several open runs, the task stays unlinked. Use `journal use <runId>` to
+select one for the session, or repeat an explicit `--run <id>` per task. Automatic fallback
 does not set the session pointer.
 
 ## Validate before closing
@@ -272,14 +279,20 @@ Automatic linking first uses the Claude session's active run, including tasks
 using other workspaces or worktrees as `--cwd`. Another session can select that
 open run with `journal use <runId>`, or use `task --run <id>` for one dispatch.
 Without an active run, automatic linking uses the sole open run in the dispatch
-workspace even if another session started it; several open runs leave tasks
-unlinked. A new continuation uses the same selection rules, not its predecessor's
-run or per-dispatch override. Without an active run, explicit selection or a
-sole open workspace run, tasks make no journal writes. `--run none` also skips them.
-Automatic journal failures are swallowed and never change a worker's report or
-exit code; explicit selection/linkage errors stop dispatch. Missing artifacts/events
-can therefore indicate a storage failure. Later terminal observers retry a missing finish.
-Unreadable or malformed journals are retained rather than repaired. Journal
-entries are an audit trail, not independent verification, automatic task replay
+workspace only if its recorded session matches the dispatching task's Claude
+session, or it has no recorded session (legacy). A sole run from another session
+or several open runs leave tasks unlinked. A new continuation uses the same
+selection rules, not its predecessor's run or per-dispatch override. Without an
+active run, explicit selection or an eligible sole open workspace run, tasks make
+no journal writes. `--run none` also skips them.
+Automatic linkage failures leave the task running and emit one short diagnostic
+in its job log, with a `journalWarning` on the stored job record. They never change
+a worker's outcome or exit code; explicit selection/linkage errors stop dispatch.
+Missing artifacts/events can indicate a storage failure. Later terminal observers
+retry a missing finish.
+Unreadable or malformed journals are retained rather than repaired, except that
+the next append drops a malformed final line before writing the new entry.
+Other damage is retained; reads do not repair the file. Journal entries are an
+audit trail, not independent verification, automatic task replay
 or a permanent archive. Ordinary continuation commands still need retained job
 records and an available Codex thread.

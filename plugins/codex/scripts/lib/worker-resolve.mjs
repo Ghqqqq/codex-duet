@@ -80,17 +80,36 @@ function target(job, cwd, snapshot = false) {
   return { job: record, reference: record.id, cwd: record.request?.cwd ?? record.workspaceRoot ?? cwd };
 }
 
+export function escapeDiagnosticControls(value) {
+  return String(value).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, character => {
+    const escaped = JSON.stringify(character).slice(1, -1);
+    return escaped === character ? `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}` : escaped;
+  });
+}
+
 function resolutionError(reference, reason, candidates, command) {
-  const listing = candidates.map(job => `${job.agentName ?? "(unnamed)"} | jobId=${job.id} | threadId=${job.threadId ?? "none"} | cwd=${job.request?.cwd ?? job.workspaceRoot ?? "unknown"} | status=${job.status}`).join("\n");
+  const listing = candidates.map(job => `${job.agentName ?? "(unnamed)"} | jobId=${job.id} | threadId=${job.threadId ?? "none"} | cwd=${job.request?.cwd ?? job.workspaceRoot ?? "unknown"} | status=${job.status}`).join("; ");
   const guidance = ["wait", "answer", "cancel"].includes(command)
     ? `Pass an exact positional job ID: duet ${command} <jobId>. Find job IDs with duet status --all.`
     : "Pass a jobId or --thread <id>.";
-  return new Error(`Worker "${reference}": ${reason}. ${guidance} Candidates:\n${listing || "(none in the current session/workspace)"}`);
+  return new Error(escapeDiagnosticControls(`Worker ${JSON.stringify(reference)}: ${reason}. ${guidance} Candidates: ${listing || "(none in the current session/workspace)"}`));
 }
 
 // Names are scoped; explicit legacy IDs/threads remain usable in their workspace.
 // Repeated jobs on one thread represent one worker. Reused names across threads do not.
-export function resolveWorkerTarget(cwd, reference, { command = "task", pending = false, nameState = null, legacyReferences = false, sessionId = process.env.CODEX_COMPANION_SESSION_ID?.trim(), jobs: snapshot = null } = {}) {
+export function resolveWorkerTarget(cwd, reference, { command = "task", pending = false, nameState = null, legacyReferences = false, selector = "worker", sessionId = process.env.CODEX_COMPANION_SESSION_ID?.trim(), jobs: snapshot = null } = {}) {
+  // An explicit --thread is an exact thread handle, never a name or job ID.
+  // Keep its existing workspace-wide scope, including legacy thread records.
+  if (selector === "thread") {
+    const workspace = resolveWorkspaceRoot(cwd);
+    let jobs = newest(snapshot ?? listJobs(workspace));
+    if (!snapshot && !jobs.some(job => job.threadId === reference) && importLegacyJob(workspace, reference)) {
+      jobs = newest(listJobs(workspace));
+    }
+    const selected = jobs.find(job => job.threadId === reference);
+    if (!selected) throw resolutionError(reference, "no matching thread", jobs, command);
+    return target(selected, cwd, snapshot !== null);
+  }
   const jobs = scopedJobs(cwd, sessionId, snapshot);
   const named = jobs.filter(job => job.agentName?.toLowerCase() === reference.toLowerCase());
   let matches = jobs.filter(job => job.id === reference);

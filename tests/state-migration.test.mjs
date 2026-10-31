@@ -8,6 +8,7 @@ import { spawnOwned } from "../plugins/codex/scripts/lib/process.mjs";
 import { legacyStateRoots, resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url).pathname;
+const stateModule = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
 
 // Earlier releases stored jobs under CLAUDE_PLUGIN_DATA (whose value followed the
 // plugin id: it changed when the marketplace was renamed) or, outside Claude,
@@ -199,7 +200,7 @@ test("SessionEnd after an upgrade still interrupts a session's job that lives in
   const legacyDir = f.relocate(f.legacyRoots.pluginData);
   const worker = spawnOwned(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
   try {
-    const id = "task-legacy-session", now = Date.now();
+    const id = "task-legacy-owner", now = Date.now();
     const record = { id, status: "running", jobClass: "task", title: "Codex Task", workspaceRoot: f.repo, ownerId: "old-owner", sessionId: "fixture-session", pid: worker.pid,
       threadId: "thr_session", turnId: "turn_session", leaseSec: 180, leaseRenewedAt: now, leaseExpiresAt: now + 180000, createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(),
       logFile: path.join(legacyDir, "jobs", `${id}.log`), request: {} };
@@ -233,4 +234,94 @@ test("after migration, a job that an older session writes later is still found b
   assert.equal(found.job.summary, "late");
   assert.ok(fs.existsSync(path.join(f.stateDir, "jobs", `${late.id}.json`)));
   assert.equal(f.json(f.call(["status", "thr_later", "--json"])).job.id, late.id, "thread references resolve too");
+});
+
+test("migration and later imports require owned legacy paths with root-specific safe permissions", { skip: process.platform === "win32" }, () => {
+  const f = fixture(), foreign = [];
+  f.env.TMPDIR = path.join(f.dir, "tmp");
+  f.legacyRoots.tmp = path.join(f.env.TMPDIR, "codex-companion-isolated");
+  const put = (root, jobs, config = {}) => {
+    const directory = path.join(root, f.key);
+    fs.mkdirSync(path.join(directory, "jobs"), { recursive: true, mode: 0o700 });
+    fs.chmodSync(root, 0o700); fs.chmodSync(directory, 0o700);
+    fs.writeFileSync(path.join(directory, "state.json"), JSON.stringify({ config, jobs }), { mode: 0o600 });
+    for (const job of jobs) fs.writeFileSync(path.join(directory, "jobs", `${job.id}.json`), JSON.stringify(job), { mode: 0o600 });
+    return directory;
+  };
+  const record = id => ({ id, status: "completed", workspaceRoot: f.repo, updatedAt: "2999-01-01T00:00:00.000Z" });
+  const tmp = put(f.legacyRoots.tmp, [record("task-loose-root")], { stopReviewGate: true });
+  fs.chmodSync(f.legacyRoots.tmp, 0o775);
+  const workspace = put(f.legacyRoots.oldPluginId, [record("task-loose-dir")]);
+  put(f.legacyRoots.pluginData, [record("task-alien-root")]); foreign.push(f.legacyRoots.pluginData);
+  const trusted = put(f.legacyRoots.newPluginId, [record("task-private-ok"), record("task-loose-file"), record("task-alien-file"),
+    { ...record("task-private-live"), status: "running", pid: process.pid }], { homeGroupWrite: true });
+  for (const directory of [f.legacyRoots.newPluginId, trusted, path.join(trusted, "jobs")]) fs.chmodSync(directory, 0o775);
+  for (const file of ["state.json", "jobs/task-private-ok.json", "jobs/task-private-live.json"]) fs.chmodSync(path.join(trusted, file), 0o664);
+  fs.chmodSync(path.join(trusted, "jobs", "task-loose-file.json"), 0o666);
+  foreign.push(path.join(trusted, "jobs", "task-alien-file.json"));
+  // A foreign workspace is simulated through stat; no chown or shared /tmp writes.
+  fs.chmodSync(workspace, 0o700); foreign.push(workspace);
+  const source = `
+    import fs from 'node:fs';
+    import * as state from ${JSON.stringify(stateModule)};
+    const lstat = fs.lstatSync, foreign = new Set(${JSON.stringify(foreign)});
+    fs.lstatSync = function(file, ...args) { const stat = lstat.call(this, file, ...args); if (stat && foreign.has(String(file))) return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid: process.getuid() + 1 }); return stat; };
+    const cwd = ${JSON.stringify(f.repo)};
+    const first = state.listJobs(cwd).map(job => job.id).sort();
+    const config = state.getConfig(cwd);
+    fs.chmodSync(${JSON.stringify(trusted)}, 0o777);
+    const pendingFile = state.resolveJobFile(cwd, 'task-private-live');
+    const clock = Date.now;
+    Date.now = () => clock() + 2000;
+    state.loadState(cwd); // Force the pending recheck without a timed sleep.
+    Date.now = clock;
+    const pending = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(f.stateDir, ".legacy-migration.json"))}, 'utf8')).pending;
+    const unsafeImport = state.importLegacyJob(cwd, 'task-loose-root');
+    fs.chmodSync(${JSON.stringify(f.legacyRoots.tmp)}, 0o700);
+    fs.chmodSync(${JSON.stringify(tmp)}, 0o770);
+    const writableWorkspaceImport = state.importLegacyJob(cwd, 'task-loose-root');
+    fs.chmodSync(${JSON.stringify(tmp)}, 0o700);
+    const privateImport = state.importLegacyJob(cwd, 'task-loose-root');
+    const movedRoot = ${JSON.stringify(f.legacyRoots.tmp + ".moved")};
+    fs.renameSync(${JSON.stringify(f.legacyRoots.tmp)}, movedRoot);
+    fs.symlinkSync(movedRoot, ${JSON.stringify(f.legacyRoots.tmp)});
+    const symlinkRootAccepted = state.legacyStateRoots().includes(movedRoot);
+    console.log(JSON.stringify({ first, config, pendingFile, pending, unsafeImport, writableWorkspaceImport, privateImport, symlinkRootAccepted }));
+  `;
+  const result = run(process.execPath, ["--input-type=module", "-e", source], { cwd: f.repo, env: f.env });
+  const view = f.json(result);
+  assert.deepEqual(view.first, ["task-private-live", "task-private-ok"]);
+  assert.equal(view.config.stopReviewGate, false);
+  assert.equal(view.config.homeGroupWrite, true, "group-writable home indexes still migrate their config");
+  assert.equal(view.pendingFile.startsWith(trusted + path.sep), false, "pending paths are revalidated before serving a legacy record");
+  assert.deepEqual(view.pending, [], "settling drops a source that became writable");
+  assert.equal(view.unsafeImport, false);
+  assert.equal(view.writableWorkspaceImport, false);
+  assert.equal(view.privateImport, true, "a now-private root is eligible for a later import");
+  assert.equal(view.symlinkRootAccepted, false);
+  assert.ok(fs.existsSync(path.join(tmp, "jobs", "task-loose-root.json")));
+});
+
+test("legacy ingestion rejects malformed job IDs and mismatched private records before path use", () => {
+  const f = fixture(), directory = path.join(f.legacyRoots.tmp, f.key), jobsDir = path.join(directory, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true, mode: 0o700 });
+  const valid = ["task-m123-abc123", "review-m123-abc", "job-m123-"];
+  const invalid = ["../escaped", "task-m123-../escape", "task-m123-foo\\bar", "..", "ordinary", "task-m123-tooLong", "task-m123-abc1234"];
+  const record = id => ({ id, status: "completed", workspaceRoot: f.repo, updatedAt: "2999-01-01T00:00:00.000Z" });
+  fs.writeFileSync(path.join(directory, "state.json"), JSON.stringify({ jobs: [...valid, ...invalid].map(record) }), { mode: 0o600 });
+  for (const id of valid) fs.writeFileSync(path.join(jobsDir, `${id}.json`), JSON.stringify(record(id)), { mode: 0o600 });
+  fs.writeFileSync(path.join(jobsDir, "task-m123-other.json"), JSON.stringify(record("../private-escape")), { mode: 0o600 });
+  const source = `
+    import assert from 'node:assert/strict';
+    import * as state from ${JSON.stringify(stateModule)};
+    const cwd = ${JSON.stringify(f.repo)};
+    console.log(JSON.stringify(state.listJobs(cwd).map(job => job.id).sort()));
+    for (const id of ${JSON.stringify(invalid.slice(0, 4))}) {
+      for (const operation of [() => state.resolveJobFile(cwd, id), () => state.resolveJobLogFile(cwd, id), () => state.writeJobFile(cwd, id, { id }), () => state.updateJob(cwd, id, () => ({}))]) assert.throws(operation, /Invalid.*job.*ID/i);
+    }
+  `;
+  const result = run(process.execPath, ["--input-type=module", "-e", source], { cwd: f.repo, env: f.env });
+  assert.deepEqual(f.json(result), valid.sort());
+  assert.equal(fs.existsSync(path.join(f.stateDir, "escaped.json")), false);
+  assert.equal(fs.existsSync(path.join(f.stateDir, "private-escape.json")), false);
 });

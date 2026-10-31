@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { cleanDisplayText } from "./display-text.mjs";
 
 export const ACTIVITY_RETAINED_MAX = 500;
 export const ACTIVITY_PENDING_MAX = 100;
@@ -58,23 +59,40 @@ export function appendActivity(stored, events, at = new Date().toISOString()) {
 // deliberately (it blanked ordinary `NAME=value` text such as `ANSWER=Yes`);
 // the parent and the worker report see Codex's text as written.
 export function redactActivity(value) {
-  return String(value ?? "")
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, " ");
+  return cleanDisplayText(value, { preserveCarriageReturn: true });
 }
-export const snippet = (value, length) => redactActivity(value).replace(/\s+/g, " ").trim().slice(0, length);
+const segmenter = typeof Intl.Segmenter === "function" ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : undefined;
+// Keep the existing UTF-16 size budgets, but never cut inside a grapheme (or
+// a code point on older runtimes). ASCII keeps the inexpensive slice path.
+function limitChars(text, length) {
+  if (text.length <= length) return text;
+  if (/^[\x00-\x7f]*$/.test(text)) return text.slice(0, length);
+  let end = 0;
+  for (const part of segmenter ? segmenter.segment(text) : text) {
+    const cluster = typeof part === "string" ? part : part.segment;
+    if (end + cluster.length > length) break;
+    end += cluster.length;
+  }
+  return text.slice(0, end);
+}
+export const snippet = (value, length) => limitChars(redactActivity(value).replace(/\s+/g, " ").trim(), length);
+const markedLimit = (text, length) => text.length <= length ? text : `${limitChars(text, length - 1)}…`;
 const statusOf = (item, lifecycle) => ["inProgress", "completed", "failed", "declined", "cancelled"].includes(item.status) ? item.status : lifecycle;
 
 // A worker's final message is the worker-report JSON (schemas/worker-report.schema.json);
-// the live feed shows its status and summary rather than the envelope.
-function reportText(text, summaryOnly = false) {
+// the live feed shows its status, summary and terminal question rather than the envelope.
+function reportMessage(text) {
   const trimmed = String(text).trim();
-  if (!trimmed.startsWith("{")) return text;
+  if (!trimmed.startsWith("{")) return { text, body: text };
   try {
     const value = JSON.parse(trimmed);
-    if (value && typeof value.status === "string" && typeof value.summary === "string") return summaryOnly ? value.summary : `[${value.status}] ${value.summary}`;
+    if (value && typeof value.status === "string" && typeof value.summary === "string") return {
+      text: `[${value.status}] ${value.summary}`, body: value.summary,
+      ...(value.status === "needs_input" && typeof value.question === "string"
+        ? { question: markedLimit(redactActivity(value.question), 2000) } : {})
+    };
   } catch { /* ordinary message */ }
-  return text;
+  return { text, body: text };
 }
 function changeLineCounts(change) {
   const kind = change.kind?.type ?? change.kind;
@@ -107,15 +125,18 @@ export function itemActivity(item, lifecycle, starts, key, now = Date.now()) {
   const durationMs = lifecycle === "completed" ? (Number.isFinite(item.durationMs) && item.durationMs >= 0 ? item.durationMs : start == null ? null : Math.max(0, now - start)) : null;
   const base = { type: item.type, status: statusOf(item, lifecycle), lifecycle };
   switch (item.type) {
-    case "agentMessage":
-      return lifecycle === "completed" && item.text ? [{ ...base, text: snippet(reportText(item.text), 600), body: redactActivity(reportText(item.text, true)).slice(0, 4000) }] : [];
+    case "agentMessage": {
+      if (lifecycle !== "completed" || !item.text) return [];
+      const message = reportMessage(item.text);
+      return [{ ...base, ...message, text: snippet(message.text, 600), body: markedLimit(redactActivity(message.body), 4000) }];
+    }
     case "commandExecution": {
       const [first, ...rest] = redactActivity(item.command).split(/\r?\n/);
       const command = commandExcerpt(first, true);
       // The fold classifier must see that executable text was omitted, even
       // if later display cleanup removes a shell wrapper from the excerpt.
       const incomplete = rest.some(line => line.trim()) || command.length > 160;
-      return [{ ...base, command: incomplete ? `${command.slice(0, 159)}…` : command, exitCode: Number.isInteger(item.exitCode) ? item.exitCode : null, durationMs }];
+      return [{ ...base, command: incomplete ? `${limitChars(command, 159)}…` : command, exitCode: Number.isInteger(item.exitCode) ? item.exitCode : null, durationMs }];
     }
     case "fileChange":
       return lifecycle === "completed" ? (item.changes ?? []).map(change => ({ ...base, status: typeof item.status === "string" ? item.status : "unknown", path: snippet(change.path, 180), kind: ["add", "delete", "update"].includes(change.kind?.type ?? change.kind) ? (change.kind?.type ?? change.kind) : "unknown", ...changeLineCounts(change) })) : [];
@@ -216,7 +237,7 @@ export function formatActivity(event, options = {}) {
       // a long command must never hide a failure's exit code.
       const limit = Math.max(0, Math.min(160, 200 - `[${event.seq}] Bash() · ${result}`.length));
       const command = commandExcerpt(event.command);
-      const excerpt = command.length > limit ? `${command.slice(0, Math.max(0, limit - 1))}…` : command;
+      const excerpt = command.length > limit ? `${limitChars(command, Math.max(0, limit - 1))}…` : command;
       detail = `Bash(${excerpt}) · ${result}`;
       break;
     }

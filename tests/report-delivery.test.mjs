@@ -28,6 +28,7 @@ test("delivery correlates real output/job files, preserves whole C2, and fails c
     workspaceRoot, request: { cwd: workspaceRoot }, threadId: "thread-fixture", createdAt: new Date().toISOString() };
   job.report = { status: "completed", jobId, summary: "s".repeat(8000),
     blockers: [{ code: "example", message: "detail" }], touchedFiles: ["src/a.js"], verification: ["node --test: passed"],
+    changedFilesShared: true, changedFilesNote: "changedFiles may include other workers' edits.",
     claimedVerification: ["worker check"], assumptions: ["fixture"], keyFindings: Array(20).fill("x".repeat(240)) };
   const index = record => fs.writeFileSync(path.join(stateDir, "state.json"), JSON.stringify({ version: 1, config: {}, jobs: [record] }));
   index(job);
@@ -63,6 +64,7 @@ test("delivery correlates real output/job files, preserves whole C2, and fails c
   store.set(`${prefix}${session}-other:recent`, now);
   store.set("native:unrelated", { keep: true });
   const delivered = await submit();
+  assert.deepEqual(delivered.context?.map(entry => JSON.parse(entry.split("\n")[1]).changedFilesNote), [job.report.changedFilesNote]);
   assert.equal(delivered.context.length, 1);
   assert.equal(store.get(`${prefix}${session}:${task}`), now);
   assert.equal(store.has(`${prefix}old:timestamp`), false);

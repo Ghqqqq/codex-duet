@@ -32,6 +32,7 @@ Execution mode rules:
   - `Run in background`
 
 Argument handling:
+- `--model <model>` and `--effort <effort>` override the saved worker defaults; omitted values use those defaults.
 - Pass the raw `$ARGUMENTS` unchanged through the single-quoted heredoc below, without shell expansion. Do not split, reorder, unquote or rewrite the arguments; the companion parses them deterministically.
 - If an argument line is exactly `DUET_ARGS`, choose a delimiter absent from the arguments and change both heredoc delimiters together.
 - Do not strip `--wait` or `--background` yourself.

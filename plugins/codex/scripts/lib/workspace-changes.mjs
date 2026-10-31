@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { getRepoRoot } from "./git.mjs";
+import { readJobFile, resolveJobFile, unresolvedTask } from "./state.mjs";
 
 function git(cwd, args) {
   const result = spawnSync("git", args, {
@@ -117,4 +118,39 @@ export function compareWorkspaceSnapshots(before, after, eventFiles = []) {
       basis: "Before/after content, mode and index hashes plus turn file-change events. Concurrent workspace edits cannot be attributed to one worker; ignored files and submodule contents are not hashed."
     }
   };
+}
+
+export function workspaceChangeAttribution(job, jobs) {
+  const started = Date.parse(job.startedAt ?? job.createdAt ?? ""), completed = Date.parse(job.completedAt ?? job.updatedAt ?? "");
+  const start = Number.isFinite(started) ? started : -Infinity;
+  const end = Number.isFinite(completed) ? Math.max(start, completed) : Infinity;
+  const overlapping = jobs.filter(other => {
+    if (other.id === job.id || other.workspaceRoot !== job.workspaceRoot || other.status === "queued") return false;
+    const sandbox = other.sandbox ?? other.request?.sandbox;
+    const writable = sandbox ? ["workspace-write", "danger-full-access"].includes(sandbox) : other.write === true || other.request?.write === true;
+    if (!writable) return false;
+    const otherStart = Date.parse(other.startedAt ?? other.createdAt ?? "");
+    if (Number.isFinite(otherStart) && otherStart >= end) return false;
+    if (other.status === "running") return true;
+    const otherEnd = Date.parse(other.completedAt ?? other.updatedAt ?? "");
+    if (Number.isFinite(otherEnd) && start < Math.max(Number.isFinite(otherStart) ? otherStart : -Infinity, otherEnd)) return true;
+    if (other.jobClass !== "task" || other.recovered || !["failed", "interrupted", "cancelled", "completed"].includes(other.status)) return false;
+    const activity = [other.updatedAt, other.completedAt].map(value => Date.parse(value ?? "")).filter(Number.isFinite);
+    const leaseSec = Number(other.leaseSec ?? 1800);
+    const possiblyUnresolved = other.result || (other.turnSubmission && !other.turnId) ||
+      (other.turnResolution && !["completed", "failed", "interrupted", "notStarted"].includes(other.turnResolution)) ||
+      (other.interruptionReason && other.interruptionConfirmed !== true);
+    if (!possiblyUnresolved && activity.length && Math.max(...activity) < start - (Number.isFinite(leaseSec) && leaseSec >= 0 ? leaseSec : 1800) * 1000) return false;
+    // The index omits result, including inferred completion. Read recent or
+    // explicitly uncertain candidates, keeping ordinary old history bounded.
+    try {
+      const peer = other.result ? other : readJobFile(resolveJobFile(other.workspaceRoot, other.id));
+      return unresolvedTask(peer);
+    } catch { return false; }
+  });
+  return overlapping.length ? {
+    changedFilesShared: true,
+    changedFilesNote: "changedFiles may include other workers' edits.",
+    changedFilesSharedWith: overlapping.map(other => ({ worker: other.agentName ?? null, jobId: other.id }))
+  } : {};
 }

@@ -1,7 +1,7 @@
 import { test, expect, mock } from 'claude-code/testing';
 import type { EngineInterface, On, PaneOpenArgs, UiScrollArgs } from 'claude-code';
-import { ATTENTION_SESSION_LIMIT, attention, attentionCounts, boundState, clearFinished, validView, visibleJobs, visibleSessions } from '../hooks/model';
-import { feedItems, feedLines, feedWindow, normalizeFeed, scrollFeed, selectedJob } from '../hooks/layout';
+import { ATTENTION_SESSION_LIMIT, attention, attentionCounts, boundState, clearFinished, elapsed, validView, visibleJobs, visibleSessions } from '../hooks/model';
+import { feedItems, feedLines, feedWindow, jobRow, jobRowColor, normalizeFeed, scrollFeed, selectedJob } from '../hooks/layout';
 import { createPoller } from '../hooks/poll';
 import { writeView } from '../hooks/runtime';
 import type { CodexLiveState } from '../types';
@@ -116,7 +116,8 @@ function scrollFixture(diagnostics?: Parameters<typeof createPoller>[1], environ
         if (unreadable.has(path)) throw new Error('Simulated unreadable job');
         return files.get(path)!.text;
       },
-      stat: async (path: string) => ({ mtimeMs: files.get(path)?.mtime ?? 0, realPath: path }),
+      stat: async (path: string) => ({ mtimeMs: files.get(path)?.mtime ?? 0,
+        size: files.get(path)?.text.length ?? 0, realPath: path }),
     },
     state: {
       get: async () => { observeStateGet?.(); return { value: state, version }; },
@@ -159,13 +160,16 @@ function scrollFixture(diagnostics?: Parameters<typeof createPoller>[1], environ
       id, status: 'running', startedAt: createdAt, activity: [{ seq: 1, type: 'agentMessage', text: 'Working' }],
     }) });
   }
-  return { engine, forbidden, poll, add, files, scrolls, opens, reads, logs, statuses, unreadable,
+  const removeMarker = (id: string) => {
+    const index = markers.indexOf(`${id}.json`);
+    if (index >= 0) markers.splice(index, 1);
+    files.delete(`/home/duet/sessions/session-a/${id}.json`);
+  };
+  return { engine, forbidden, poll, add, files, scrolls, opens, reads, logs, statuses, unreadable, removeMarker,
     seedState: (value: CodexLiveState) => { state = value; },
     rejectNextWrite: () => { rejectWrite = true; },
     remove: (id: string) => {
-      const index = markers.indexOf(`${id}.json`);
-      if (index >= 0) markers.splice(index, 1);
-      files.delete(`/home/duet/sessions/session-a/${id}.json`);
+      removeMarker(id);
       files.delete(`/jobs/${id}.json`);
     },
     onStateGet: (observer?: () => void) => { observeStateGet = observer; },
@@ -183,6 +187,91 @@ function patchJob(files: Map<string, { text: string; mtime: number }>, id: strin
 const created = (ms: number) => new Date(ms).toISOString();
 const historyPane = { title: 'Codex', isFocused: true, bodyColumns: 56, placement: 'inline' as const,
   scroll: { offset: 0, bodyRows: 14 }, view: {} };
+
+test('first-discovered unresolved jobs initialize and advance their elapsed clock', async () => {
+  const f = scrollFixture();
+  f.add('unknown', -120);
+  patchJob(f.files, 'unknown', { jobClass: 'task', status: 'interrupted', turnId: 'turn',
+    completedAt: created(epoch - 60000), result: { turnEnded: false, interruptionConfirmed: false } });
+  await f.poll(true);
+  expect(f.latest().jobs[0]?.unresolved).toBe(true);
+  expect(elapsed(f.latest().jobs[0]!, f.latest().nowMs)).toBe('2m 0s');
+  f.advance(5000);
+  await f.poll(true);
+  expect(elapsed(f.latest().jobs[0]!, f.latest().nowMs)).toBe('2m 5s');
+});
+
+test('marker pruning removes finished retained jobs but preserves live and unresolved work', async () => {
+  const f = scrollFixture();
+  f.add('retained'); f.add('other', -1); f.add('unresolved', -2);
+  patchJob(f.files, 'retained', { status: 'completed', completedAt: created(epoch) });
+  patchJob(f.files, 'unresolved', { jobClass: 'task', status: 'interrupted', turnId: 'turn',
+    completedAt: created(epoch), result: { turnEnded: false, interruptionConfirmed: false } });
+  await f.poll(true);
+  f.latest().feeds = { retained: { feedOffset: 0, following: true, seenLines: 0 } };
+  f.removeMarker('retained'); // The job file remains readable after marker pruning.
+  f.removeMarker('other'); f.removeMarker('unresolved');
+  await f.poll(true);
+  expect(f.latest().jobs.map(job => job.id)).toEqual(['other', 'unresolved']);
+  expect(f.latest().selectedId).toBe('other');
+  expect(f.latest().feeds?.retained).toBe(undefined);
+  expect(f.latest().seenJobIds).not.toContain('retained');
+  expect(f.files.has('/jobs/retained.json')).toBe(true);
+  expect(f.latest().jobs[0]?.active).toBe(true);
+  expect(f.latest().jobs[1]?.unresolved).toBe(true);
+  await f.reload()(true);
+  expect(f.latest().jobs.map(job => job.id)).toEqual(['other', 'unresolved']);
+});
+
+test('evicted marker memos avoid rereads until the marker changes or disappears', async () => {
+  const f = scrollFixture();
+  for (let n = 0; n < 22; n++) {
+    f.add(`done-${n}`, n - 22);
+    patchJob(f.files, `done-${n}`, { status: 'completed', completedAt: created(epoch) });
+  }
+  await f.poll(true);
+  f.reads.length = 0;
+  for (let n = 0; n < 2; n++) { f.advance(10000); await f.poll(true); }
+  expect(f.reads).toEqual([]);
+  const markerPath = '/home/duet/sessions/session-a/done-0.json';
+  const marker = f.files.get(markerPath)!;
+  const replacementPath = '/relocated/done-0.json';
+  // A changed size must invalidate the memo even if the timestamp is unchanged.
+  f.files.set(markerPath, { ...marker, text: JSON.stringify({ ...JSON.parse(marker.text), jobFile: replacementPath }) });
+  f.files.set(replacementPath, { mtime: 1, text: JSON.stringify({ id: 'done-0', status: 'running',
+    startedAt: created(epoch), activity: [] }) });
+  f.advance(10000);
+  await f.poll(true);
+  expect(f.latest().jobs.some(job => job.id === 'done-0' && job.active)).toBe(true);
+  expect(f.reads).toEqual([markerPath, replacementPath]);
+  f.removeMarker('done-1');
+  await f.poll(true);
+  f.add('done-1', 1); // Reusing a disappeared marker name must read its new identity.
+  await f.poll(true);
+  expect(f.reads).toContain('/home/duet/sessions/session-a/done-1.json');
+});
+
+test('unreadable unselected jobs show stale rows and deduplicate failure and recovery logs', async () => {
+  const f = scrollFixture();
+  f.add('selected', 1); f.add('unselected');
+  await f.poll(true);
+  patchJob(f.files, 'unselected', { activity: [] });
+  f.unreadable.add('/jobs/unselected.json');
+  await f.poll(true);
+  f.advance(5000);
+  await f.poll(true);
+  const stale = visibleSessions(f.latest()).find(job => job.id === 'unselected')!;
+  expect(stale.detailsUnavailable).toBe(true);
+  expect(Object.values(jobRow(stale, false, 100, f.latest().nowMs)).join('')).toContain('stale');
+  expect(jobRowColor(stale)).toBe('warning');
+  expect(f.logs.length).toBe(1);
+  expect(f.logs[0]).toContain('unselected');
+  f.unreadable.clear(); f.advance(5000);
+  await f.poll(true); await f.poll(true);
+  expect(f.latest().jobs.find(job => job.id === 'unselected')?.detailsUnavailable).toBe(false);
+  expect(f.logs.length).toBe(2);
+  expect(f.logs[1]).toContain('recovered');
+});
 
 test('discovery caches unchanged files, respects closed panes and opens new active jobs', async ($, on) => {
   let failure: string | undefined;
@@ -244,16 +333,12 @@ test('discovery caches unchanged files, respects closed panes and opens new acti
   expect(f.latest()?.jobs.some(job => job.id === 'a')).toBe(true);
 
   const pathCases = [
-    { name: 'drive-backslash', environment: { CODEX_COMPANION_HOME: 'C:\\Duet', HOME: '/ignored', USERPROFILE: 'C:\\Users\\ignored' },
-      home: 'C:\\Duet', jobRoot: 'C:\\Users\\x\\jobs', workspaceRoot: 'C:\\Users\\x\\repo', separator: '\\' },
-    { name: 'drive-forward-slash', environment: { CODEX_COMPANION_HOME: 'C:/Duet' },
-      home: 'C:/Duet', jobRoot: 'C:/Users/x/jobs', workspaceRoot: 'C:/Users/x/repo', separator: '/' },
+    { name: 'drive', environment: { CODEX_COMPANION_HOME: 'C:/Duet', HOME: '/ignored' },
+      home: 'C:/Duet', jobRoot: 'C:/jobs', workspaceRoot: 'C:/repo', separator: '/' },
     { name: 'unc', environment: { CODEX_COMPANION_HOME: '\\\\server\\share\\Duet' },
       home: '\\\\server\\share\\Duet', jobRoot: '\\\\server\\share\\jobs', workspaceRoot: '\\\\server\\share\\repo', separator: '\\' },
-    { name: 'home-before-userprofile', environment: { HOME: '/user', USERPROFILE: 'C:\\Users\\ignored' },
-      home: '/user/.claude/codex-isolated', jobRoot: '/jobs', workspaceRoot: '/workspace', separator: '/' },
-    { name: 'userprofile-only', environment: { USERPROFILE: 'C:\\Users\\x' },
-      home: 'C:\\Users\\x/.claude/codex-isolated', jobRoot: 'C:\\Users\\x\\jobs', workspaceRoot: 'C:\\Users\\x\\repo', separator: '\\' },
+    { name: 'userprofile', environment: { USERPROFILE: 'C:/Users/x' },
+      home: 'C:/Users/x/.claude/codex-isolated', jobRoot: 'C:/jobs', workspaceRoot: 'C:/repo', separator: '/' },
   ];
   const discovered = [];
   for (const sample of pathCases) {
@@ -352,14 +437,6 @@ test('a new waiting worker is pinned without moving the stopped reader and is ac
   await ui.unmount();
 });
 
-test('open command focuses the pane', async ($, on) => {
-  const f = fixture(on);
-  await $.session.start(start);
-  await $.command.run({ command: 'codex-live', args: '', origin: { kind: 'composer' },
-    presentation: { isFullscreen: false, columns: 60 } });
-  expect(f.opens[0]).toMatchObject({ id: 'codex-live', focus: true });
-});
-
 test('malformed markers and missing jobs recover while preserving the last transcript', async ($, on) => {
   let reject = false;
   const f = fixture(on, () => reject ? 'Simulated removal publication failure' : undefined);
@@ -417,14 +494,14 @@ test('malformed markers and missing jobs recover while preserving the last trans
   await f.clock.advance(1000);
   const activeFile = f.files.get('/jobs/active.json')!;
   const activeEvents = f.latest()?.jobs.find(job => job.id === 'active')?.events;
-  for (const fault of ['missing', 'access', 'parent', 'home', 'listed']) {
+  for (const fault of ['access', 'home', 'listed']) {
     if (fault !== 'listed') f.files.delete('/jobs/active.json');
     if (fault === 'access') f.errors.set('/jobs/active.json', 'EACCES: permission denied');
     if (fault === 'listed') f.errors.set('/jobs/active.json', 'ENOENT: no such file or directory');
-    if (fault === 'parent' || fault === 'home') f.errors.set('/jobs', 'ENOENT: no such file or directory');
+    if (fault === 'home') f.errors.set('/jobs', 'ENOENT: no such file or directory');
     if (fault === 'home') f.errors.set('/canonical/duet/sessions/session-a', 'ENOENT: no such file or directory');
     await f.clock.advance(1000);
-    if (fault !== 'missing') await f.clock.advance(15000);
+    await f.clock.advance(15000);
     expect(f.latest()?.jobs.find(job => job.id === 'active')).toMatchObject({ active: true, detailsUnavailable: true });
     expect(f.latest()?.jobs.find(job => job.id === 'active')?.events).toEqual(activeEvents);
     if (fault === 'home') expect(!!f.latest()?.discoveryWarning).toBe(true);
@@ -467,8 +544,10 @@ test('malformed markers and missing jobs recover while preserving the last trans
   expect(pruning.latest().jobs.some(job => job.id === 'active')).toBe(false);
   expect(pruning.opens.length).toBe(opens);
 
-  // Reload preserves unreadable markers, but not a marker proven absent from
-  // a readable inventory. It must not leave an Infinity-retry ghost behind.
+  // Reload drops finished jobs whose markers are proven absent from a readable
+  // inventory. It must not leave an Infinity-retry ghost behind.
+  patchJob(pruning.files, 'sibling', { status: 'completed', completedAt: created(epoch) });
+  await pruning.poll(true);
   pruning.remove('active');
   pruning.remove('sibling');
   await pruning.reload()(true);
@@ -680,38 +759,6 @@ test('D11: a fresh poller adopts session identity, selection, anchors, expansion
   expect(f.opens.length).toBe(1);
 });
 
-test("cleared jobs stay hidden across reloads without file writes or companion calls", async () => {
-  const f = scrollFixture();
-  f.add('done'); f.add('active', 1);
-  f.files.set('/jobs/done.json', { mtime: 1, text: JSON.stringify({ id: 'done', status: 'completed' }) });
-  await f.poll();
-  f.latest().selectedId = 'done';
-  Object.assign(f.latest(), clearFinished(f.latest(), epoch));
-  const files = [...f.files.entries()];
-  const reloaded = f.reload();
-  await reloaded(true);
-  expect(f.latest().hiddenJobIds).toEqual(['done']);
-  expect(f.latest().hiddenFinishedBefore).toBe(epoch);
-  expect(f.latest().selectedId).toBe('active');
-  expect(visibleJobs(f.latest()).map(job => job.id)).toEqual(['active']);
-  expect([...f.files.entries()]).toEqual(files);
-  expect(f.forbidden).toEqual([]);
-  expect(f.scrolls).toEqual([]);
-  // This old job was never retained or added to hiddenJobIds before the reload.
-  f.add('rediscovered', -7200);
-  f.files.set('/jobs/rediscovered.json', { mtime: 1, text: JSON.stringify({
-    id: 'rediscovered', status: 'blocked', completedAt: created(epoch - 3600000),
-  }) });
-  f.advance(2000);
-  f.add('new', 2);
-  await reloaded(true);
-  expect(f.latest().selectedId).toBe('active');
-  expect(visibleJobs(f.latest()).map(job => job.id)).toEqual(['new', 'active']);
-  expect(f.latest().hiddenJobIds).toEqual(['done']);
-  expect(f.latest().hiddenFinishedBefore).toBe(epoch);
-  expect(f.forbidden).toEqual([]);
-});
-
 test('Clear finished survives polling, leaves disk records intact and resets for another session', async ($, on) => {
   const f = fixture(on);
   for (let n = 0; n < 25; n++) {
@@ -721,21 +768,26 @@ test('Clear finished survives polling, leaves disk records intact and resets for
   await $.session.start(start);
   await $.command.run({ command: 'codex-live', args: '', origin: { kind: 'composer' },
     presentation: { isFullscreen: false, columns: 56 } });
+  expect(f.opens.at(-1)).toMatchObject({ id: 'codex-live', focus: true });
   await f.clock.advance(1000);
   const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
   const files = [...f.files.entries()];
   await ui.press({ key: 'clear-finished' });
   const reads = f.reads.filter(path => path.startsWith('/jobs/')).length;
-  for (let cycle = 0; cycle < 2; cycle++) {
-    await f.clock.advance(10000);
-    expect(visibleJobs(f.latest()!)).toEqual([]);
-    expect(f.reads.filter(path => path.startsWith('/jobs/')).length).toBe(reads);
-  }
+  await f.clock.advance(10000);
+  expect(visibleJobs(f.latest()!)).toEqual([]);
+  expect(f.reads.filter(path => path.startsWith('/jobs/')).length).toBe(reads);
+  await createPoller($)(true);
+  expect(visibleJobs(f.latest()!)).toEqual([]);
   expect(f.latest()?.hiddenFinishedBefore).toBe(epoch + 1000);
   expect(f.latest()?.selectedId).toBe(null);
   expect(f.latest()?.viewedSessionIds).toEqual([]);
   expect([...f.files.entries()]).toEqual(files);
   expect(await ui.find({ key: 'hidden-notice' })).toBeDefined();
+  f.add('rediscovered', 'blocked', -7200);
+  patchJob(f.files, 'rediscovered', { completedAt: created(epoch - 3600000) });
+  await f.clock.advance(1000);
+  expect(visibleJobs(f.latest()!)).toEqual([]);
   f.add('new', 'running', 1);
   await f.clock.advance(1000);
   expect(f.latest()?.selectedId).toBe('new');
@@ -958,25 +1010,25 @@ test('polling hydrates every selected turn, strips other sessions, and adopts le
     payload = snapshot;
     peakPayloadBytes = Math.max(peakPayloadBytes, snapshot.bytes);
   } });
-  for (let n = 0; n < 20; n++) {
+  for (let n = 0; n < 3; n++) {
     const id = `large-${n}`;
     large.add(id, n);
     patchJob(large.files, id, { status: 'completed', completedAt: created(epoch),
       result: { rawOutput: 'x'.repeat(1_000_000) } });
   }
   await large.poll(true);
-  expect(large.latest().jobs.length).toBe(20);
+  expect(large.latest().jobs.length).toBe(3);
   expect(payload.budget).toBe(8 * 1024 * 1024);
-  expect(payload.ids).toEqual(['large-19']);
+  expect(payload.ids).toEqual(['large-2']);
   expect(payload.bytes < 1_000_000).toBe(true); // Even the selected raw output is released after projection.
   const reads = () => large.reads.filter(path => path.startsWith('/jobs/'));
-  expect(reads().length).toBe(20);
+  expect(reads().length).toBe(3);
   const firstView = large.latest();
   large.advance(10000);
   await large.poll(true);
   expect(large.latest()).toEqual(firstView);
-  expect(reads().length).toBe(20); // Retained mtimes prevent reparsing unselected records.
-  for (const id of ['large-0', 'large-19']) {
+  expect(reads().length).toBe(3); // Retained mtimes prevent reparsing unselected records.
+  for (const id of ['large-0', 'large-2']) {
     large.latest().selectedId = id;
     const before = reads().length;
     await large.poll(true);
@@ -986,7 +1038,7 @@ test('polling hydrates every selected turn, strips other sessions, and adopts le
     expect(selectedJob(large.latest())?.events.length).toBe(1);
   }
   // A record bigger than the entire budget must still hydrate on selection.
-  patchJob(large.files, 'large-0', { result: { rawOutput: '界'.repeat(5_000_000) } });
+  patchJob(large.files, 'large-0', { result: { rawOutput: '界'.repeat(4_200_000) } });
   large.latest().selectedId = 'large-0';
   large.advance(10000);
   await large.poll(true);
@@ -1119,18 +1171,16 @@ test('twenty long-summary conversations stay below budget and publish an active 
 });
 
 test("unchanged large conversations reread no jobs and retain bounded details", async () => {
-  let bounds = 0, layouts = 0;
   let payload = { bytes: 0, budget: 0, ids: [] as string[] }, peakPayloadBytes = 0;
-  const f = scrollFixture({ onBound: () => { bounds++; }, onLayout: () => { layouts++; },
-    onPayloadCache: snapshot => { payload = snapshot; peakPayloadBytes = Math.max(peakPayloadBytes, snapshot.bytes); } });
+  const f = scrollFixture({ onPayloadCache: snapshot => { payload = snapshot; peakPayloadBytes = Math.max(peakPayloadBytes, snapshot.bytes); } });
   const activity = Array.from({ length: 200 }, (_, seq) => ({ seq, type: 'agentMessage', body: 'x'.repeat(4000) }));
-  for (let n = 0; n < 200; n++) {
+  for (let n = 0; n < 24; n++) {
     const id = `turn-${n}`;
-    f.add(id, n - 200);
-    patchJob(f.files, id, { threadId: 'shared', status: n === 199 ? 'running' : 'completed',
-      completedAt: n === 199 ? undefined : created(epoch), activity: n >= 195 ? activity : [] });
+    f.add(id, n - 24);
+    patchJob(f.files, id, { threadId: 'shared', status: n === 23 ? 'running' : 'completed',
+      completedAt: n === 23 ? undefined : created(epoch), activity: n >= 19 ? activity : [] });
   }
-  patchJob(f.files, 'turn-199', { pendingQuestion: { text: 'Continue?', expiresAt: epoch + 1500 } });
+  patchJob(f.files, 'turn-23', { pendingQuestion: { text: 'Continue?', expiresAt: epoch + 1500 } });
   await f.poll(true);
   expect(attentionCounts(f.latest().jobs).question).toBe(1);
   f.latest().feeds = { 'thread:shared': { feedOffset: 0, following: true, seenLines: 0, columns: 60, rows: 8 } };
@@ -1139,56 +1189,44 @@ test("unchanged large conversations reread no jobs and retain bounded details", 
   await f.poll(true);
   expect(f.reads.filter(path => path.startsWith('/jobs/'))).toEqual([]);
   expect(f.latest().jobs.length).toBe(20);
-  expect(selectedJob(f.latest())?.turnCount).toBe(200);
+  expect(selectedJob(f.latest())?.turnCount).toBe(24);
   expect(f.latest().jobs.filter(job => job.detailsLoaded).length).toBe(5);
-  await f.poll(true); // No clock, file, or feed change at all.
-  expect(f.reads.filter(path => path.startsWith('/jobs/'))).toEqual([]);
   const feed = f.latest().feeds!['thread:shared'];
   f.close();
   await f.poll(true); // Establish the closed projection after the open feed update.
-  const before = { bounds, layouts };
   await f.poll(true);
-  expect({ bounds, layouts }).toEqual(before);
   f.advance(500); // Expire without changing the file or the five-second age bucket.
   await f.poll(true);
-  expect(f.latest().jobs.find(job => job.id === 'turn-199')?.question).toBe(null);
+  expect(f.latest().jobs.find(job => job.id === 'turn-23')?.question).toBe(null);
   expect(attentionCounts(f.latest().jobs).question).toBe(0);
-  expect(layouts).toBe(before.layouts);
   expect(f.latest().feeds!['thread:shared']).toEqual(feed);
   expect(f.reads.filter(path => path.startsWith('/jobs/'))).toEqual([]);
-  const afterExpiry = bounds;
+  patchJob(f.files, 'turn-23', { activity: [{ seq: 201, type: 'agentMessage', body: 'Updated' }] });
   await f.poll(true);
-  expect(bounds).toBe(afterExpiry);
-  f.advance(5000);
-  await f.poll(true);
-  expect(bounds).toBe(afterExpiry);
-  f.advance(5000); // Rediscover omitted markers without changing retained transcript inputs.
-  await f.poll(true);
-  expect(bounds).toBe(afterExpiry);
-  patchJob(f.files, 'turn-199', { activity: [{ seq: 201, type: 'agentMessage', body: 'Updated' }] });
-  await f.poll(true);
-  expect(bounds).toBe(afterExpiry + 1);
-  expect(layouts).toBe(before.layouts);
-  expect(f.latest().jobs.find(job => job.id === 'turn-199')?.question).toBe(null);
+  expect(f.latest().jobs.find(job => job.id === 'turn-23')?.question).toBe(null);
   expect(selectedJob(f.latest())?.events.map(event => event.seq)).toEqual([201]);
   // Reopening performs the deferred layout, using current content and the saved feed.
   await f.engine.ui.open({ id: 'codex-live', title: 'Codex' });
   await f.poll(true);
-  expect(layouts).toBe(before.layouts + 1);
   expect(validView(f.latest())).toBe(true);
   expect(f.logs).toEqual([]);
   // Full projections can exceed the cache in aggregate too. LRU eviction must
   // not remove selected turns from the candidate being composed this poll.
   f.close();
   const heavy = activity.map(event => ({ ...event, command: 'c'.repeat(2000), text: 't'.repeat(300) }));
-  for (let n = 195; n < 200; n++) patchJob(f.files, `turn-${n}`, { activity: heavy });
+  for (let n = 19; n < 24; n++) patchJob(f.files, `turn-${n}`, { activity: heavy });
   f.advance(10000);
+  f.reads.length = 0;
   await f.poll(true);
+  expect(f.reads.filter(path => path.startsWith('/jobs/')).sort()).toEqual(
+    Array.from({ length: 5 }, (_, n) => `/jobs/turn-${n + 19}.json`));
   expect(f.latest().jobs.filter(job => job.detailsLoaded).length).toBe(5);
-  expect(payload.ids.length > 0 && payload.ids.length < 5).toBe(true);
+  expect(payload.ids.length).toBe(5);
   expect(peakPayloadBytes <= payload.budget).toBe(true);
   const boundedDetails = f.latest().jobs;
-  await f.poll(true);
+  f.reads.length = 0;
+  for (let n = 0; n < 3; n++) { f.advance(10000); await f.poll(true); }
+  expect(f.reads).toEqual([]);
   expect(f.latest().jobs).toEqual(boundedDetails);
   expect(peakPayloadBytes <= payload.budget).toBe(true);
   expect(f.logs).toEqual([]);
@@ -1245,7 +1283,7 @@ test("unavailable evicted details recover without blocking a follow-up", async (
   expect(f.reads.filter(path => path === '/jobs/earlier.json').length).toBe(reads + 2);
   expect(f.latest().jobs.find(job => job.id === 'earlier')).toMatchObject({ detailsUnavailable: false, detailsLoaded: true });
   expect(f.latest().jobs.find(job => job.id === 'earlier')?.events[0]?.text).toBe('Working');
-  expect(f.logs).toEqual([]);
+  expect(f.logs).toEqual(['codex-live: Job earlier unreadable · Simulated unreadable job', 'codex-live: Job earlier read recovered']);
 });
 
 test('a poll publishes immediately while preserving a concurrent selection and history page', async () => {

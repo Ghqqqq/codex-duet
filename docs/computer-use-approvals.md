@@ -77,8 +77,10 @@ isolated allowed = (current − previously mirrored − revoked)
 
 `setup --computer-use-approval ask` stops the sync and removes previously
 mirrored apps from the isolated file. Explicitly allowed and hand-written entries
-stay. Apps without an approval are denied by the runtime and reported as
-blockers.
+stay. In owned jobs, including a plain foreground `duet task`, an app without an
+approval pauses the tool call and asks the parent. The job is blocked only after
+Deny, an invalid answer, timeout or a runtime/policy refusal; choosing `ask` does
+not itself deny app requests.
 
 ### Individual apps
 
@@ -127,8 +129,9 @@ overriding approval flags. The job record, status and
 
 ### Forwarded approvals (owned jobs)
 
-A detached or `--follow` job has an owner polling it, so a Computer Use request
-that no flag covers is not refused outright: the helper parks it as a pending
+Owned jobs, including native workers, plain foreground `duet task` and legacy
+detached or `--follow` jobs, have an owner, so a Computer Use request that no
+grant covers is not refused outright: the helper parks it as a pending
 question with `question.kind: "approval"` and the fixed options `Allow this
 call`, `Allow for this task`, `Allow always (isolated Codex home)`, `Deny`. The
 worker relays the `questionMessage` to the parent like any other question; the
@@ -155,9 +158,12 @@ The effect of each choice:
 
 The reply never carries `_meta.persist`, so Codex's own runtime records nothing;
 the user's `~/.codex` is never written. The question uses the job's question
-timeout (default 15 minutes). A plain foreground `task` (no `--detached`,
-`--background` or `--follow`) has nobody to ask and keeps `approvalPolicy:
-"never"`: the request fails closed at once, as before.
+timeout (default 15 minutes). The `duet` launcher always adds `--direct` to
+`task`, `answer` and `wait`, so a plain foreground `duet task` also forwards
+approval questions under `never+elicitations`. Only legacy non-direct foreground
+calls to `codex-companion.mjs task` without `--detached`, `--background` or
+`--follow` have nobody to ask and keep `approvalPolicy: "never"`, failing closed
+at once.
 
 The job log records the decision without the request payload:
 `"kind":"computer-use-app","decision":"pending","reason":"ask-parent"` followed

@@ -46,7 +46,7 @@ The `UserPromptSubmit` hook appends one versioned reminder to normal prompts.
 **Reminder template** (placeholders, not a current version or path):
 
 ```text
-Ultra-codex mode on (<scale>, max <n> workers (auto), routine <routineModel>, strong <model>). Apply protocol v<hash> to substantive tasks; re-read <absolute-protocol-path> only if v<hash> is not in your context.
+Ultra-codex mode on (<scale>, max <n> workers (auto), routine <routineModel>, strong <model>). Apply protocol v<hash> to substantive tasks; re-read <absolute-protocol-path> unless its full text (first line: <!-- Ultra-codex protocol v<hash> -->) is already in context from an earlier Read. Reminder/preamble version mentions do not count.
 ```
 
 An explicit integer renders `max <n> workers`; `unlimited` renders `no worker cap`.
@@ -59,8 +59,9 @@ hash. An edit to any mode or shared section invalidates the version for all mode
 Control-only invocations do not use Claude's Read tool or load the protocol
 body into context; the CLI reads it internally to compute the hash. Task
 invocations read the file before orchestration, then use only shared sections
-and **Ultra mode**. A reminder asks for a re-read only if that version is absent
-from context. The hook suppresses reminders for any of the three mode commands
+and **Ultra mode**. A reminder asks for a re-read unless the complete current
+protocol text is already in context from an earlier Read; a version mentioned in
+a reminder or command preamble does not count. The hook suppresses reminders for any of the three mode commands
 and stays silent without valid active state/session ID or on errors. The slash
 preamble runs the fixed `ultra-codex status --for-command`; raw task text never
 enters executable shell arguments.
@@ -73,16 +74,19 @@ scale to `auto` unless supplied and keeps the cap unless explicitly changed.
 After off or replacement, activation gets fresh defaults; inactive-mode options
 are not retained. Workspace-keyed legacy records are discarded, never adopted.
 
-SessionEnd, a fresh SessionStart and `/clear` clear the active mode; resume and
-compaction preserve it. After clearing, fresh sessions and `/clear` apply the
-opt-in default saved with `duet setup --default-mode off|ultra|pair|duel`, using
-standard mode options (new installs default to off). Per-session changes never
-change that [saved default](configuration.md#default-orchestration-mode).
+The active mode persists when resuming (`claude --resume`) or compacting the
+same session, including after a normal exit: SessionEnd keeps the mode record.
+A new session or `/clear` clears the active mode and applies the opt-in default
+saved with `duet setup --default-mode off|ultra|pair|duel`, using standard mode
+options (new installs default to off). Per-session changes never change that
+[saved default](configuration.md#default-orchestration-mode).
 SessionStart also prunes mode records older than 30 days,
 separately from job retention. See [mode state](state-and-retention.md#orchestration-mode-state).
+Ending a session still requests cancellation of its running workers, including
+on `/clear` or logout; see [worker cleanup](worker-lifecycle.md#ownership-and-cleanup).
 Natural-language stop ends new dispatch immediately: Claude reports in-flight
-workers and clears the active mode when requested. Jobs are cancelled or
-user-stopped work continued only with the user's consent.
+workers and clears the active mode when requested. Outside session-end cleanup,
+jobs are cancelled or user-stopped work continued only with the user's consent.
 
 Use the plugin names `/codex:ultra-codex`, `/codex:pair` and `/codex:duel`.
 Bare aliases require user-level configuration outside this plugin.
@@ -123,7 +127,11 @@ or background Bash and direct Codex jobs, so it works at any effort level withou
 Use the [dispatch recipe](direct-mode.md): a named native agent with an optional
 first prompt line `DUET: <flags>`, or `duet task` with a single-quoted `DUET_TASK`
 heredoc in background Bash. Investigators and reviewers use `--sandbox read-only`.
-SessionStart supplies native-first guidance. The registered adapter's readiness
+SessionStart honors the saved [worker dispatch](configuration.md#worker-dispatch)
+route: `bash` selects background Bash immediately, while `auto` prefers it for
+24 hours after the last native-unavailable observation, or until
+`duet setup --dispatch` is run without `--dry-run`; otherwise native
+dispatch comes first. The registered adapter's readiness
 notice is informational; dispatch does not wait for it. Each fresh native call
 reserves a scientist pool name before spawn, replacing a passed label unless it
 is a free pool name. The Agent result's context carries a `Codex worker named X`
@@ -231,9 +239,10 @@ worker brief and final compact report. `task --run <id|none>` overrides linkage
 for one dispatch; follow-ups do not inherit it. An explicit run must be open in
 the same isolated home, including across workspaces; invalid/closed runs fail
 before a worker starts, and `none` skips linkage.
-Without an active run, add, close and task linking use the sole open workspace
-run. With several open runs, tasks stay unlinked and add/close require
-`journal use <runId>` or `--run <id>`.
+Without an active run, add and close use the sole open workspace run. Automatic
+task linking uses it only if it belongs to the dispatching Claude session or has
+no recorded session. With several open runs, tasks stay unlinked and add/close
+require `journal use <runId>` or `--run <id>`.
 Claude records each acceptance with `journal add verdict`,
 consequential decisions and accepted assumptions with `journal add decision`,
 then runs `journal validate` before `journal close` (`passed`, `blocked` or

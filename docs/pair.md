@@ -111,7 +111,7 @@ an edit anywhere invalidates that common version.
 **Reminder template** (placeholders):
 
 ```text
-Pair mode on (one primary Codex worker on <model>/<effort>, max 2 rework rounds). Apply pair protocol v<hash> to substantive tasks; re-read <absolute-protocol-path> only if v<hash> is not in your context.
+Pair mode on (one primary Codex worker on <model>/<effort>, max 2 rework rounds). Apply pair protocol v<hash> to substantive tasks; re-read <absolute-protocol-path> unless its full text (first line: <!-- Ultra-codex protocol v<hash> -->) is already in context from an earlier Read. Reminder/preamble version mentions do not count.
 ```
 
 Round limits are protocol-managed, not runtime counters. Native-first dispatch,

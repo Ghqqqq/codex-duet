@@ -33,6 +33,26 @@ function fixture(behavior = "review-ok") {
 }
 const allowedIn = file => fs.existsSync(file) ? JSON.parse(/"allowed" = (\[.*\])/.exec(fs.readFileSync(file, "utf8"))?.[1] ?? "[]") : null;
 
+test("Windows approval mirroring syncs files and commits provenance in order without syncing directories", t => {
+  const f = fixture(), events = [], fsync = fs.fsyncSync, rename = fs.renameSync;
+  t.mock.method(fs, "fsyncSync", fd => {
+    if (fs.fstatSync(fd).isDirectory()) throw Object.assign(new Error("Directory flush is unsupported"), { code: "EPERM" });
+    events.push("file-sync");
+    return fsync(fd);
+  });
+  t.mock.method(fs, "renameSync", (from, to) => {
+    if (!to.endsWith(".duet-lock")) events.push(to);
+    return rename(from, to);
+  });
+  const result = ensureComputerUseApproval({ env: f.env, platform: "win32" });
+  const preference = path.join(f.env.CODEX_COMPANION_HOME, "duet", "config.toml");
+  assert.deepEqual(events, ["file-sync", preference, "file-sync", f.isolatedFile, "file-sync", preference]);
+  assert.deepEqual(result.allowed, ["com.google.Chrome", "com.apple.finder"]);
+  assert.deepEqual(readTomlField(fs.readFileSync(preference, "utf8"), ["computer_use_mirrored_apps"]), result.allowed);
+  assert.equal(readTomlField(fs.readFileSync(preference, "utf8"), ["computer_use_mirrored_pending_apps"]), undefined);
+  assert.deepEqual(ensureComputerUseApproval({ env: f.env, platform: "win32" }).changedFiles, []);
+});
+
 test("mirror copies only the user's always-allowed apps, idempotently and without touching ~/.codex", t => {
   const f = fixture();
   assert.equal(normalCodexHome(f.env), f.env.CODEX_HOME);
