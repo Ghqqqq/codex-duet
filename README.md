@@ -173,10 +173,15 @@ accepts their own work. The Claude participant uses your Claude quota.
 
 Claude calls `Agent(subagent_type: "codex:codex-native", prompt: "<brief>")`.
 An optional first line such as `DUET: --sandbox read-only --effort xhigh` sets
-Codex flags. Each worker gets a name from a scientist pool (Ada, Noether,
-Turing, …) that the agent, `codex-live` and the report all share. A SendMessage
-to that name continues the thread or answers a pending question; stop a worker
-from `/tasks`. → [Native dispatch](docs/direct-mode.md#native-subagent-default)
+Codex flags. A valid, free caller name is kept; otherwise the worker gets a
+scientist pool name (Ada, Noether, Turing, …). The agent, `codex-live`
+and report share that name. `codex:codex-reviewer` and `codex:codex-investigator`
+are read-only presets; `codex:codex-implementer` uses workspace-write. They keep
+the usual model, effort and speed settings; plan mode stays read-only.
+SendMessage from the main conversation steers a running turn, continues an ended
+thread or answers a parked question; stop from `/tasks`. In-process agent
+teammates support bounded work and parent follow-ups.
+→ [Native dispatch](docs/direct-mode.md#native-subagent-default)
 
 ### Fallback: background workers
 
@@ -204,6 +209,8 @@ left open is reconciled automatically about 15 seconds later.
 `codex-live` is a read-only pane that draws every worker the way Claude Code
 draws its own transcript. It shows prompts, tool calls, file changes, plans and
 pending questions, and keeps follow-ups on one thread in one conversation.
+Provider-tagged Codex token counts stay separate from Claude usage. Native
+notices offer `Open Codex activity: /codex-live <name>` when the pane is installed.
 Status labels make it clear what needs you: **Question for Claude**, **Needs your
 attention** or **Outcome unknown**. `/codex-live` opens it at any width. `/tasks`
 shows compact progress such as `Bash(npm test) · Done (21.1s)`. The native agent
@@ -243,6 +250,10 @@ stay available through `result --details`. → [Commands](docs/commands.md)
 | Model · effort · speed | configured; built-in `gpt-6-astra` · `xhigh` · normal (ultra uses the configured routine model, default `gpt-6.1-sol`, or worker model by stage) | `duet models` lists what your account offers; `setup --default-model …`, `--default-effort …`, `--ultra-routine-model …`; `--model`, `--effort`, `--fast` per call |
 | Orchestration mode in a fresh session | off | `setup --default-mode ultra\|pair\|duel` |
 | Codex sandbox | full access, like the Codex app's own full-access mode | `setup --default-sandbox …`, or `--sandbox` per call |
+| Claude permission mapping | off | `setup --permission-mapping claude` maps native modes to Codex sandbox/approvals |
+| Task time · token budgets | off · off | `setup --default-max-minutes <n\|off>`, `--default-max-tokens <n\|off>`; `--max-minutes`, `--max-tokens` per task |
+| Agent memory · Duet-wide concurrency cap | off · off | `setup --agent-memory on`, `--max-concurrent <n\|off>` |
+| Git context at dispatch | bounded status preamble on | `CODEX_COMPANION_GIT_CONTEXT=0` |
 | Browser | any site, no per-origin prompt | `setup --browser-approval ask` |
 | Computer Use apps | mirror your Codex app's "always allow" list | `setup --computer-use-approval ask` |
 | Claude instructions | loaded CLAUDE.md/rules forwarded to Codex | `--no-claude-md`, `CODEX_COMPANION_CLAUDE_MD=0` |
@@ -273,8 +284,14 @@ of each setting:
 
 ## Known limitations
 
-- Codex edits bypass Claude Code's permission prompts and rewind. The report's
-  touched-file snapshot, the Codex sandbox and `git diff` are the controls.
+- By default Codex edits bypass Claude Code's permission prompts and rewind; the
+  report's touched-file snapshot, the Codex sandbox and `git diff` are the
+  controls. Opt-in permission mapping forwards Codex command and file approvals,
+  but Claude allow/deny rules, the auto-mode classifier and PreToolUse still do
+  not apply to Codex actions.
+- Codex tokens appear in Duet reports and `codex-live`, not Claude's `/usage`.
+- Team task claiming, plan approval, peer/unverified mailboxes and remote
+  isolation are unsupported; teammates need a local in-process loop.
 - File attribution is unreliable when several writers share one checkout. Give
   parallel writers disjoint paths or separate worktrees.
 - Sixteen read-only workers were measured in flight together; larger or heavy

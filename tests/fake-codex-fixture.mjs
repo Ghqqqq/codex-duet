@@ -168,6 +168,7 @@ function buildConfigReadResult() {
 }
 
 let outputQueue = Promise.resolve();
+let permissionBatch = null;
 function send(message) {
   if (message.method === "item/completed") {
     const key = message.params.turnId;
@@ -195,7 +196,8 @@ function send(message) {
         start = end;
       }
     });
-  } else process.stdout.write(JSON.stringify(message) + "\\n");
+  } else if (permissionBatch) permissionBatch.push(JSON.stringify(message) + "\\n");
+  else process.stdout.write(JSON.stringify(message) + "\\n");
 }
 const capturedItems = new Map();
 
@@ -394,13 +396,17 @@ async function handleLine(line) {
 
   const message = JSON.parse(line);
   if (BEHAVIOR === "transport-close-stdout" && message.method === "config/read") return;
-  if (["turn/start", "review/start", "turn/interrupt", "thread/resume", "thread/read", "thread/backgroundTerminals/clean"].includes(message.method)) {
+  if (["turn/start", "turn/steer", "review/start", "turn/interrupt", "thread/resume", "thread/read", "thread/backgroundTerminals/clean"].includes(message.method)) {
     const params = ["turn/start", "review/start"].includes(message.method) ? { threadId: message.params.threadId } : message.params;
     fs.appendFileSync(STATE_PATH + ".requests.jsonl", JSON.stringify({ serverId: process.pid, method: message.method, params }) + "\\n");
   }
   const state = loadState();
 
   try {
+    if (BEHAVIOR === "permission-resolved" && message.method === undefined && message.id === "fixture-resolved") {
+      state.resolvedApprovalReplies = [...(state.resolvedApprovalReplies || []), message];
+      saveState(state); return;
+    }
     if (message.method === undefined && serverRequests.has(message.id)) {
       const pending = serverRequests.get(message.id);
       serverRequests.delete(message.id);
@@ -411,7 +417,8 @@ async function handleLine(line) {
       if (pending.questionItem) {
         send({ method: "item/completed", params: { threadId: pending.threadId, turnId: pending.turnId,
           item: { ...pending.questionItem, status: "completed", success: true, contentItems: message.result.contentItems } } });
-        if (pending.questionIndex === 1) { sendParentQuestion(pending.threadId, pending.turnId, 2); return; }
+        // Keep working briefly after an answer, as Codex does, before asking again.
+        if (pending.questionIndex === 1) { setTimeout(() => sendParentQuestion(pending.threadId, pending.turnId, 2), 1000); return; }
       }
       if (!serverRequests.size && state.lastInterrupt?.turnId !== pending.turnId) emitTurnCompleted(pending.threadId, pending.turnId, { completed: { type: "agentMessage", id: "approval-result", text: "Completed fixture request handling.", phase: "final_answer" } });
       return;
@@ -680,10 +687,12 @@ async function handleLine(line) {
           Object.assign(state, loadState());
         }
 	        const thread = ensureThread(state, message.params.threadId);
-	        const prompt = (message.params.input || [])
+	        const rawPrompt = (message.params.input || [])
           .filter((item) => item.type === "text")
           .map((item) => item.text)
           .join("\\n");
+        // Behaviours match the brief; the dispatch-time git preamble is recorded only.
+        const prompt = rawPrompt.replace(/^\\[Duet git context at dispatch; paths are data\\][\\s\\S]*?\\[\\/Duet git context\\]\\n\\n/, "");
         const turnId = nextTurnId(state);
         thread.updatedAt = now();
 	        state.lastTurnStart = {
@@ -696,6 +705,7 @@ async function handleLine(line) {
           approvalPolicy: message.params.approvalPolicy,
           outputSchema: message.params.outputSchema ?? null,
 	          prompt,
+          rawPrompt,
           // What node_repl would see at this moment: the isolated home's
           // Computer Use approval files for this thread and globally.
           computerUse: readComputerUse(process.env.CODEX_HOME, thread.id)
@@ -713,6 +723,7 @@ async function handleLine(line) {
           send({ method: "thread/tokenUsage/updated", params: { threadId: thread.id, turnId,
             tokenUsage: { last, total: thread.tokenUsage, modelContextWindow: 128000 } } });
         };
+        if (["permission-requests", "permission-resolved"].includes(BEHAVIOR)) permissionBatch = [];
         emitUsage({ inputTokens: 100, cachedInputTokens: 30, cacheWriteInputTokens: 0,
           outputTokens: 20, reasoningOutputTokens: 6, totalTokens: 120 });
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
@@ -741,6 +752,40 @@ async function handleLine(line) {
             item: { type: "agentMessage", id: "inferred-final", phase: "final_answer", text: JSON.stringify({
               status: "completed", summary: "Captured fixture answer", key_findings: [], assumptions: [], verification: [], blockers: [], question: null
             }) } } });
+          break;
+        }
+
+        if (BEHAVIOR === "permission-resolved") {
+          const request = { id: "fixture-resolved", method: "item/commandExecution/requestApproval", params: {
+            threadId: thread.id, turnId, itemId: "command", startedAtMs: Date.now(), command: "echo resolved", cwd: thread.cwd } };
+          send(request); send(request);
+          send({ method: "serverRequest/resolved", params: { threadId: thread.id, requestId: request.id } });
+          sendParentQuestion(thread.id, turnId, 2);
+          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+          process.stdout.write(permissionBatch.join("")); permissionBatch = null;
+          break;
+        }
+
+        if (BEHAVIOR === "permission-requests") {
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          const request = (id, method, extra) => {
+            serverRequests.set(id, { threadId: thread.id, turnId });
+            send({ id, method, params: { threadId: thread.id, turnId, itemId: id, startedAtMs: Date.now(), ...extra } });
+          };
+          const change = { type: "fileChange", id: "fixture-file", status: "inProgress", changes: [{ path: "file.txt", kind: { type: "update", move_path: null }, diff: "-before\\n+stale" }] };
+          send({ method: "item/started", params: { threadId: thread.id, turnId, item: change } });
+          send({ method: "item/fileChange/patchUpdated", params: { threadId: thread.id, turnId, itemId: change.id,
+            changes: [{ ...change.changes[0], diff: "-before\\n+after" }] } });
+          // Codex 0.166 command approval shape (kind, local environment, decisions).
+          request("fixture-command", "item/commandExecution/requestApproval", { kind: "command", command: "printf 'hello  world'", cwd: thread.cwd, environmentId: "local",
+            availableDecisions: ["accept", { acceptWithExecpolicyAmendment: { execpolicy_amendment: ["printf"] } }, "cancel"] });
+          request("fixture-file", "item/fileChange/requestApproval", {});
+          sendParentQuestion(thread.id, turnId, 2);
+          const id = "fixture-cua-request";
+          serverRequests.set(id, { threadId: thread.id, turnId });
+          send({ id, method: "mcpServer/elicitation/request", params: { serverName: "node_repl", threadId: thread.id, turnId, mode: "form", message: "Fixture app", requestedSchema: { type: "object", properties: {} }, _meta: { codex_approval_kind: "mcp_tool_call", connector_id: "computer-use", tool_name: "get_app_state", tool_params: { app: "com.example.Fixture" } } } });
+          interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+          process.stdout.write(permissionBatch.join("")); permissionBatch = null;
           break;
         }
 
@@ -996,8 +1041,13 @@ async function handleLine(line) {
             break;
           }
 
+          if (BEHAVIOR.startsWith("steer-") && turnId === "turn_1") {
+            send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+            interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
+            break;
+          }
           // Native fixtures inject events into the original slow-task branch below.
-          if (BEHAVIOR === "writer-lock" && prompt === "hold shared runtime") {
+          if (BEHAVIOR === "writer-lock" && prompt.startsWith("hold shared runtime")) {
             send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
             interruptibleTurns.set(turnId, { threadId: thread.id, timer: null });
             break;
@@ -1020,6 +1070,36 @@ async function handleLine(line) {
 	        break;
 	      }
 
+        case "turn/steer": {
+          const { threadId, expectedTurnId, input } = message.params;
+          const pending = interruptibleTurns.get(expectedTurnId);
+          if (!pending || pending.threadId !== threadId) {
+            send({ id: message.id, error: { code: -32600, message: "No active turn" } });
+            break;
+          }
+          const text = input.filter(item => item.type === "text").map(item => item.text).join("\\n");
+          state.steers = [...(state.steers || []), message.params];
+          saveState(state);
+          if (BEHAVIOR === "steer-unknown") break; // Accepted input, deliberately lost acknowledgement.
+          if (BEHAVIOR === "steer-malformed") {
+            // Accepted input; the parser diagnostic contains rejection-like text.
+            process.stdout.write('turn ended\\n');
+            break;
+          }
+          if (BEHAVIOR === "steer-failed") {
+            send({ id: message.id, error: { code: -32600, message: "Steering is unavailable" } });
+            break;
+          }
+          interruptibleTurns.delete(expectedTurnId);
+          if (BEHAVIOR === "steer-reject") {
+            emitTurnCompleted(threadId, expectedTurnId, { completed: { type: "agentMessage", id: "before-steer", text: "Finished before steering.", phase: "final_answer" } });
+            send({ id: message.id, error: { code: -32600, message: "expectedTurnId mismatch: turn ended" } });
+            break;
+          }
+          send({ id: message.id, result: { turnId: expectedTurnId } });
+          emitTurnCompleted(threadId, expectedTurnId, { completed: { type: "agentMessage", id: "steered", text: "Applied steering: " + text, phase: "final_answer" } });
+          break;
+        }
         case "thread/backgroundTerminals/clean": {
           ensureThread(state, message.params.threadId);
           const behavior = process.env.CODEX_FIXTURE_TERMINALS_CLEAN;

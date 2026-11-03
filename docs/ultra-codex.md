@@ -133,9 +133,9 @@ route: `bash` selects background Bash immediately, while `auto` prefers it for
 `duet setup --dispatch` is run without `--dry-run`; otherwise native
 dispatch comes first. The registered adapter's readiness
 notice is informational; dispatch does not wait for it. Each fresh native call
-reserves a scientist pool name before spawn, replacing a passed label unless it
-is a free pool name. The Agent result's context carries a `Codex worker named X`
-note for an assigned or replaced name; use that name for SendMessage. Reservation
+reserves a name before spawn: a valid, free caller name is kept; otherwise a
+scientist pool name is assigned. The Agent result's context carries a
+`Codex worker named X` note when the name changes; use that name for SendMessage. Reservation
 failure leaves the call unchanged; resumptions keep their name. Bash dispatch
 can request a fresh name with `--name <label>`; collisions
 fall back to the pool and job-ID prefixes are reserved. If `duet` is not on PATH,
@@ -382,7 +382,8 @@ file evidence. Read `rawOutputFile` only when a report field is insufficient.
 
 ## Approvals during orchestration
 
-Workers run with approval policy `never+elicitations`: command, sandbox, rule
+With [permission mapping](configuration.md#claude-permission-mapping-opt-in) off,
+workers run with approval policy `never+elicitations`: command, sandbox, rule
 and permission prompts are rejected as before, and MCP elicitations are
 forwarded. A Computer Use app request that no `--approve-computer-app` flag
 covers reaches the parent as a pending question with four fixed options (`Allow

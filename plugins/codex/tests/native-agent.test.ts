@@ -1,10 +1,20 @@
 import { test, expect, mock } from 'claude-code/testing';
-import { captures } from './native-captures.mjs';
+import { captures as recordedCaptures } from './native-captures.mjs';
 import { register as registerNative } from '../hooks/native-agent.mjs';
 
 const root = '/private/tmp/duet14-g-fixture';
 const TYPE = 'codex:codex-native';
 const clone = (value: any) => JSON.parse(JSON.stringify(value));
+// Migrate only the two captured usage labels; preserve the recorded execution.
+const captures = recordedCaptures.map(capture => {
+  const started = capture.notices.find((notice: any) => notice.message.content[0].text.includes('started · job '));
+  const model = started?.message.content[0].text.match(/ · ([^ ]+) \/ /)?.[1] ?? 'unknown';
+  return JSON.parse(JSON.stringify(capture)
+    .replaceAll('Codex usage · 150 input (40 cached) · 30 output tokens',
+      `Codex tokens (provider: OpenAI Codex, model ${model}) · 150 input · 40 cached · 30 output · 180 total`)
+    .replaceAll('Codex usage · 12,345 input (8,000 cached) · 678 output tokens',
+      `Codex tokens (provider: OpenAI Codex, model ${model}) · 12,345 input · 8,000 cached · 678 output · 13,023 total`));
+});
 async function drain(stream: any) {
   const chunks = []; let item;
   do { item = await stream.next(); if (!item.done) chunks.push(item.value); } while (!item.done);
@@ -295,6 +305,7 @@ async function displayReplay(exercise?: (api: any) => Promise<void>) {
 
 function fixture(on: any, observeProgress?: (notices: any) => Promise<void>) {
   let agents: any[] = [], store = new Map(), processes: any[] = [], expectedPrompt: string;
+  let permissionMode = 'unknown';
   let modelCalls = 0, calls = 0, listFailure = false, processFailure = false, getFailure = false, missingNode = false;
   let sessionId = 'native-session';
   const problems: string[] = [];
@@ -328,6 +339,7 @@ function fixture(on: any, observeProgress?: (notices: any) => Promise<void>) {
   on('tool.call', () => ({ result: {} }));
   on('agent.spawn', (_: any, e: any) => {
     if (e.subagentType === TYPE) {
+      permissionMode = e.permissionMode ?? 'unknown';
       expect(e.prompt).toBe(expectedPrompt);
       agents = [{ id: 'native-agent', type: TYPE, name: e.name, description: e.description, status: 'running' }];
     }
@@ -346,6 +358,14 @@ function fixture(on: any, observeProgress?: (notices: any) => Promise<void>) {
     calls++;
     const expected = processes.shift();
     const normalized = clone(request);
+    // Historical captures predate internal permission context. Assert its
+    // exact host values, then compare the unchanged legacy request. Fresh
+    // integration captures contain these fields and are compared in full.
+    if (expected && !expected.request.argv.includes('--claude-permission-mode') && normalized.argv.includes('--claude-permission-mode')) {
+      const at = normalized.argv.indexOf('--claude-permission-mode');
+      expect(normalized.argv.slice(at, at + 4)).toEqual(['--claude-permission-mode', permissionMode, '--native-cwd', root + '/repo']);
+      normalized.argv.splice(at, 4);
+    }
     // The engine supplies this checkout's plugin root; capture paths are portable.
     if (normalized.argv[1]?.endsWith('/plugins/codex/scripts/codex-companion.mjs') && normalized.argv[2] === 'reserve-name') {
       if (normalized.argv[0] !== 'node') normalized.argv[0] = '/host/node';
@@ -431,7 +451,16 @@ function fixture(on: any, observeProgress?: (notices: any) => Promise<void>) {
         .map((row: any) => ({ agentId: row.agentId, message: { type: row.message.type, content: row.message.content } }))).toEqual(capture.notices);
       expect(processes).toHaveLength(0);
       expect(problems).toEqual([]);
-      expect(Object.fromEntries(store)).toEqual(capture.store);
+      const stored: any = clone(Object.fromEntries(store));
+      for (const [key, value] of Object.entries(stored) as any) {
+        if (value.nativeHostCwd !== undefined && capture.store[key]?.nativeHostCwd === undefined) {
+          expect(value.nativeHostCwd).toBe(root + '/repo'); delete value.nativeHostCwd;
+        }
+        if (value.claudePermissionMode !== undefined && capture.store[key]?.claudePermissionMode === undefined) {
+          expect(value.claudePermissionMode).toBe(value.permissionMode ?? 'unknown'); delete value.claudePermissionMode;
+        }
+      }
+      expect(stored).toEqual(capture.store);
       expect(modelCalls).toBe(0);
       listFailure = false;
       return replayedChunks;
@@ -599,7 +628,7 @@ test('progress is bounded, split lines survive, duplicate notices collapse, and 
   ];
   const start = capture.notices[0];
   // The final usage notice is exempt from the progress cap.
-  const usage = capture.notices.filter((n: any) => n.message.content[0].text.startsWith('Codex usage'));
+  const usage = capture.notices.filter((n: any) => n.message.content[0].text.startsWith('Codex tokens (provider: OpenAI Codex,'));
   capture.notices = [start, ...['repeat', longLine.slice(0, 200), ...lines.slice(0, 197)].map(text => ({ agentId: 'native-agent',
     message: { type: 'system', content: [{ type: 'text', text }] } })), ...usage];
   step.chunks = [...capture.notices.slice(0, 200).map((notice: any) => ({ kind: 'thinking', index: 0,

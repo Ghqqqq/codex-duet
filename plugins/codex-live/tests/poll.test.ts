@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing';
 import type { EngineInterface, On, PaneOpenArgs, UiScrollArgs } from 'claude-code';
-import { ATTENTION_SESSION_LIMIT, attention, attentionCounts, boundState, clearFinished, elapsed, validView, visibleJobs, visibleSessions } from '../hooks/model';
+import { ATTENTION_SESSION_LIMIT, attention, attentionCounts, boundState, clearFinished, elapsed, usageLines, validView, visibleJobs, visibleSessions } from '../hooks/model';
 import { feedItems, feedLines, feedWindow, jobRow, jobRowColor, normalizeFeed, scrollFeed, selectedJob } from '../hooks/layout';
 import { createPoller } from '../hooks/poll';
 import { writeView } from '../hooks/runtime';
@@ -187,6 +187,65 @@ function patchJob(files: Map<string, { text: string; mtime: number }>, id: strin
 const created = (ms: number) => new Date(ms).toISOString();
 const historyPane = { title: 'Codex', isFocused: true, bodyColumns: 56, placement: 'inline' as const,
   scroll: { offset: 0, bodyRows: 14 }, view: {} };
+
+test('Codex usage replaces per-job snapshots across polls, follow-ups, retention and reload', async () => {
+  const f = scrollFixture();
+  const usage = { inputTokens: 100, cachedInputTokens: 60, outputTokens: 20, totalTokens: 120 };
+  for (let i = 0; i < 22; i++) {
+    const id = `usage-${i}`;
+    f.add(id, i - 22);
+    patchJob(f.files, id, { status: 'completed', threadId: 'codex-thread', completedAt: created(epoch),
+      request: { model: 'gpt-6-astra' }, result: { usage }, report: { usage } });
+  }
+  await f.poll(true);
+  await f.poll(true);
+  expect(f.latest().jobs.length).toBe(20);
+  expect(Object.keys(f.latest().usageByJob!).length).toBe(22);
+  const total = 'Codex session total (provider: OpenAI Codex, model gpt-6-astra): 2,200 input · 1,320 cached · 440 output · 2,640 total';
+  expect(usageLines(f.latest().usageByJob!)).toEqual([total]);
+  const selected = selectedJob(f.latest())!;
+  expect(feedItems(selected, epoch).some(item => item.results.some(result => result.text.includes('100 input · 60 cached · 20 output · 120 total')))).toBe(true);
+  expect(feedItems(selected, epoch).at(-1)?.title).toBe('Codex session total');
+  const reloaded = f.reload();
+  f.advance(10000);
+  await reloaded(true);
+  expect(usageLines(f.latest().usageByJob!)).toEqual([total]);
+  patchJob(f.files, 'usage-21', { result: { usage: { ...usage, outputTokens: 30, totalTokens: 130 } } });
+  f.advance(10000);
+  await reloaded(true);
+  expect(usageLines(f.latest().usageByJob!)[0]).toContain('450 output · 2,650 total');
+  expect(validView(f.latest())).toBe(true);
+  expect(f.forbidden).toEqual([]);
+});
+
+test('a person can focus a named native agent through the shared job mapping', async ($, on) => {
+  const f = fixture(on);
+  f.add('old', 'completed', -2); f.add('follow-up', 'completed', -1); f.add('other', 'running');
+  for (const id of ['old', 'follow-up']) patchJob(f.files, id, { threadId: 'codex-thread', completedAt: created(epoch - 1000) });
+  on('state.get', { plugin: 'codex', key: 'nativeAgents' }, () => ({ value: { value: {
+    'agent-1': { name: 'Ada', jobId: 'follow-up', threadId: 'codex-thread', workspace: '/workspace', model: 'gpt-6-astra' },
+  }, version: 1 } }));
+  await $.session.start(start);
+  await f.clock.advance(1000);
+  await writeView($, state => clearFinished(state, epoch));
+  const command = { command: 'codex-live', args: 'Ada', origin: { kind: 'composer' as const },
+    presentation: { isFullscreen: false, columns: 56 } };
+  await $.command.run(command);
+  expect(f.opens.at(-1)).toMatchObject({ id: 'codex-live', focus: true });
+  expect(f.latest()?.selectedId).toBe('thread:codex-thread');
+  expect(selectedJob(f.latest()!)?.turns.map(job => job.id)).toEqual(['old', 'follow-up']);
+  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
+  expect((await ui.find({ key: 'transcript' }))?.text).toContain('Working');
+  await ui.unmount();
+  const count = f.opens.length;
+  await $.command.run({ ...command, args: 'missing' });
+  expect(f.opens.length).toBe(count);
+  await $.command.run({ ...command, args: 'agent-1' });
+  expect(f.opens.length).toBe(count + 1);
+  // Calls made by a plugin have a host-stamped plugin origin.
+  await $.command.run({ ...command, origin: { kind: 'plugin', name: 'example' } });
+  expect(f.opens.length).toBe(count + 1);
+});
 
 test('first-discovered unresolved jobs initialize and advance their elapsed clock', async () => {
   const f = scrollFixture();

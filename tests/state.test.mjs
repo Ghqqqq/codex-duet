@@ -120,6 +120,11 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
     "utf8"
   );
 
+  const steeringFile = resolveJobFile(workspace, "job-0").replace(/\.json$/, ".steering.json");
+  fs.writeFileSync(steeringFile, JSON.stringify({ version: 1, deliveries: [] }));
+  fs.mkdirSync(`${steeringFile}.lock`);
+  fs.writeFileSync(path.join(`${steeringFile}.lock`, "owner-2147483647-stale"), "");
+
   saveState(workspace, {
     version: 1,
     config: { stopReviewGate: false },
@@ -134,6 +139,8 @@ test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", 
 
   assert.equal(fs.existsSync(retainedJobFile), true);
   assert.equal(fs.existsSync(retainedLogFile), true);
+  assert.equal(fs.existsSync(steeringFile), false);
+  assert.equal(fs.existsSync(`${steeringFile}.lock`), false);
 
   const savedState = JSON.parse(fs.readFileSync(stateFile, "utf8"));
   assert.equal(savedState.jobs.length, 50);

@@ -282,7 +282,8 @@ function recordRetention(retained, workspace, jobId, reason) {
 }
 function artifactFiles(workspace, job) {
   const directory = path.join(workspace, "jobs");
-  const files = [path.join(directory, `${job.id}.json`)];
+  const steeringLock = path.join(directory, `${job.id}.steering.json.lock`);
+  const files = [path.join(directory, `${job.id}.json`), path.join(directory, `${job.id}.steering.json`), steeringLock];
   // Do not follow legacy/out-of-home paths or permit a corrupt record to name
   // Codex's rollouts, databases, another job's artifacts, or symlinks.
   for (const [key, suffix] of [["logFile", ".log"], ["rawOutputFile", ".output.txt"], ["resultFile", ".result.json"]]) {
@@ -293,8 +294,8 @@ function artifactFiles(workspace, job) {
   }
   return files.map(file => {
     const stat = fs.lstatSync(file, { throwIfNoEntry: false });
-    if (stat && !stat.isFile()) throw artifactPathRetention();
-    return { path: file, bytes: stat?.size ?? 0 };
+    if (stat && !(file === steeringLock ? stat.isDirectory() : stat.isFile())) throw artifactPathRetention();
+    return { path: file, bytes: stat?.isFile() ? stat.size : 0 };
   });
 }
 function workspaceRecords(workspace, { state = null, locked = false, cache = null } = {}) {
@@ -317,7 +318,7 @@ function workspaceRecords(workspace, { state = null, locked = false, cache = nul
   try {
     realDirectory(jobsDir);
     for (const entry of fs.readdirSync(jobsDir, { withFileTypes: true })) {
-      if (!entry.name.endsWith(".json") || entry.name.endsWith(".result.json")) continue;
+      if (!entry.name.endsWith(".json") || entry.name.endsWith(".result.json") || entry.name.endsWith(".steering.json")) continue;
       const record = readJson(path.join(jobsDir, entry.name), cache);
       validateJob(record);
       if (entry.name !== `${record.id}.json`) throw new Error("Job file id does not match its name.");
@@ -538,7 +539,10 @@ export async function applyRetention(plan, { deleteThread } = {}) {
                 // Still unindexed after rechecking under the publication lock:
                 // remove the expired orphan without ever admitting it as a job.
                 for (const file of artifacts) {
-                  try { fs.unlinkSync(file.path); } catch (error) { if (error.code !== "ENOENT") throw error; }
+                  try {
+                    if (file.path.endsWith(".steering.json.lock")) fs.rmSync(file.path, { recursive: true, force: true });
+                    else fs.unlinkSync(file.path);
+                  } catch (error) { if (error.code !== "ENOENT") throw error; }
                 }
                 report.jobsDeleted += 1;
               }

@@ -8,6 +8,24 @@ export type CodexLiveMarker = {
   workspaceRoot?: string;
 };
 
+// Published by the native adapter; this is navigation metadata, never ownership.
+export type CodexNativeActivity = {
+  jobId: string;
+  threadId: string;
+  workspace: string;
+  name: string;
+  model: string;
+  models?: Record<string, string>;
+};
+
+export type CodexLiveUsage = {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+export type CodexLiveUsageEntry = { model: string; usage: CodexLiveUsage };
+
 export type CodexLiveEvent = {
   seq: number;
   at?: string;
@@ -45,6 +63,7 @@ export type CodexLiveJob = {
   startedAt: string;
   completedAt: string;
   model: string;
+  usage?: CodexLiveUsage;
   effort: string;
   fast: boolean;
   sandbox: string;
@@ -71,7 +90,8 @@ export type CodexLiveJob = {
 };
 
 // Derived from flat persisted jobs; live/unresolved owners outrank later refusals.
-export type CodexLiveSession = CodexLiveJob & { turns: CodexLiveJob[]; turnCount: number; lifecycleJobId: string };
+export type CodexLiveSession = CodexLiveJob & { turns: CodexLiveJob[]; turnCount: number; lifecycleJobId: string;
+  sessionUsage?: Record<string, CodexLiveUsageEntry>; usagePartial?: boolean };
 
 export type CodexLiveFeedView = {
   feedOffset: number;
@@ -90,6 +110,8 @@ export type CodexLiveState = {
   jobs: CodexLiveJob[];
   // Thread session ID, or a legacy/unthreaded job ID.
   selectedId: string | null;
+  // Explicit navigation can reveal one job hidden by Clear finished.
+  openedJobId?: string;
   // Conversation discovery is separate from selection/read acknowledgement.
   newSessionIds?: string[];
   viewedSessionIds?: string[];
@@ -114,10 +136,14 @@ export type CodexLiveState = {
   discoveryWarning?: string;
   // Uncleared terminal attention outside the retention/state budgets.
   attentionOmitted?: number;
+  // Per-turn snapshots keyed by job, replaced rather than accumulated on polls.
+  usageByJob?: Record<string, CodexLiveUsageEntry>;
+  usagePartial?: boolean;
 };
 
 declare module 'claude-code' {
   interface PluginState {
     'codex-live': { view: CodexLiveState };
+    codex: { nativeAgents: Record<string, CodexNativeActivity> };
   }
 }

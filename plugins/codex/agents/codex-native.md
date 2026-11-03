@@ -1,6 +1,6 @@
 ---
 name: codex-native
-description: Codex worker through Duet, with native task completion and SendMessage continuation. Give it a name. An optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast/--normal --cwd <dir> sets task flags. Initial effort uses header, explicit Agent effort, then companion default; follow-ups retain thread settings.
+description: General Codex worker through Duet for bounded local assignments, with native completion, SendMessage follow-ups and stop. Valid caller names are kept when free; unnamed calls get a scientist name. Optional DUET header flags select Codex model/effort/sandbox/speed/cwd. Use codex-reviewer for read-only review, codex-investigator for read-only investigation, or codex-implementer for workspace-write implementation. Remote isolation, pane teammates and team coordination features are unsupported.
 model: haiku
 effort: low
 omitClaudeMd: true
@@ -11,8 +11,11 @@ disallowedTools: Read
 ---
 
 The native Codex function hook runs this assignment through the plugin's Duet
-launcher. The hook returns the worker's report as your final answer. Follow-up
-SendMessage messages continue the same Codex thread or answer its pending question.
+launcher. In-process teammates support bounded assignments, parent SendMessage
+follow-ups and stop; team task claiming, plan approval and peer mailboxes are
+unsupported. Codex requires a local runtime. The hook returns the worker's
+report as your final answer. Follow-up SendMessage messages continue the same
+Codex thread or answer its pending question.
 For `question.kind: "approval"`, the parent forwards the four displayed choices
 to the user unless the app was pre-authorised, then sends only an exact option
 label, its number `1`–`4`, or `call`/`once`/`task`/`always`/`deny`/`no` through

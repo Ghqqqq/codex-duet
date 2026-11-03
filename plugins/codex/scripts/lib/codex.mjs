@@ -1,4 +1,5 @@
 import { itemActivity, planActivity } from "./activity.mjs";
+import { startSteeringDrain } from "./steering.mjs";
 import { bestEffortDiagnostic } from "./tracked-jobs.mjs";
 /**
  * @typedef {import("./app-server-protocol").AppServerNotification} AppServerNotification
@@ -45,7 +46,7 @@ import { bestEffortDiagnostic } from "./tracked-jobs.mjs";
  *   onProgress: ProgressReporter | null
  * }} TurnCaptureState
  */
-import { ACTIVE, ASK_PARENT, PARENT_BRIDGE_ENV, PARENT_BRIDGE_SERVER, recordBackgroundTerminals, recordedThreadJobs, turnInJobStartWindow, uniqueTurnAttribution, safeItem } from "./job-runtime.mjs";
+import { ACTIVE, ASK_PARENT, PARENT_BRIDGE_ENV, PARENT_BRIDGE_SERVER, recordBackgroundTerminals, recordTurnTokenUsage, recordedThreadJobs, turnInJobStartWindow, uniqueTurnAttribution, safeItem } from "./job-runtime.mjs";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { resolveIsolatedCodexHome, resolveCodexBinary, isolatedCodexEnv } from "./codex-home.mjs";
@@ -60,9 +61,13 @@ import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable } from "./process.mjs";
 import { classifyRuntimeError } from "./runtime-errors.mjs";
 import { computerUseSetup, computerUseSessionFile, grantComputerAppsForThread, readTomlField, setTomlField } from "./setup-config.mjs";
-import { withJournalLock, tryAcquirePidLock, updateJob, unresolvedTask } from "./state.mjs";
+import { withJournalLock, tryAcquirePidLock, updateJob, unresolvedTask, resolveJobFile } from "./state.mjs";
 import { APPROVAL_CHOICES } from "./server-requests.mjs";
+import { mappedSandboxConfig, mappedSandboxPolicy } from "./permission-policy.mjs";
 import { dedupeBlockers, normalizeCodexErrorInfo, toolCallBlockers } from "./blockers.mjs";
+
+import { acquireConcurrency } from "./concurrency.mjs";
+import { advanceBudget, budgetEnabled } from "./job-budget.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
@@ -155,6 +160,7 @@ function cleanCodexStderr(stderr) {
 export const FORWARDED_APPROVALS = Object.freeze({ granular: Object.freeze({ mcp_elicitations: true, rules: false, sandbox_approval: false, request_permissions: false, skill_approval: false }) });
 export const FORWARDED_APPROVALS_LABEL = "never+elicitations";
 export function approvalPolicyFor(options) {
+  if (options.permissionPolicy) return options.onApprovalRequest ? options.permissionPolicy.approvalPolicy : "never";
   return options.onApprovalRequest ? FORWARDED_APPROVALS : "never";
 }
 export function approvalPolicyLabel(policy) {
@@ -188,7 +194,7 @@ function forwardedProjectDocsConfig(cwd, options) {
 
 /** @returns {ThreadStartParams} */
 function buildThreadParams(cwd, options = {}) {
-  const config = { ...forwardedProjectDocsConfig(cwd, options),
+  const config = { ...forwardedProjectDocsConfig(cwd, options), ...mappedSandboxConfig(options.permissionPolicy),
     ...(options.parentQuestions && options.parentBridge ? parentBridgeConfig(options.parentBridge) : {}),
     ...(options.effort != null ? { model_reasoning_effort: options.effort } : {}) };
   return {
@@ -232,7 +238,7 @@ export function parentBridgeConfig(bridge) {
 
 /** @returns {ThreadResumeParams} */
 function buildResumeParams(threadId, cwd, options = {}) {
-  const config = { ...forwardedProjectDocsConfig(cwd, options),
+  const config = { ...forwardedProjectDocsConfig(cwd, options), ...mappedSandboxConfig(options.permissionPolicy),
     ...(options.parentBridge ? parentBridgeConfig({ ...options.parentBridge, threadId }) : {}) };
   return {
     threadId,
@@ -246,8 +252,15 @@ function buildResumeParams(threadId, cwd, options = {}) {
 }
 
 /** @returns {UserInput[]} */
-function buildTurnInput(prompt) {
-  return [{ type: "text", text: prompt, text_elements: [] }];
+export function buildTurnInput(prompt, skills = []) {
+  /** @type {UserInput[]} */
+  const input = [{ type: "text", text: prompt, text_elements: [] }];
+  for (const skill of Array.isArray(skills) ? skills.slice(0, 16) : []) {
+    if (typeof skill?.name === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(skill.name) && typeof skill.path === "string" && skill.path.length <= 4096 && path.isAbsolute(skill.path)) {
+      input.push({ type: "skill", name: skill.name, path: skill.path });
+    }
+  }
+  return input;
 }
 
 function shorten(text, limit = 72) {
@@ -717,6 +730,7 @@ function applyTurnNotification(state, message) {
       }
       state.usageBaseline ??= /** @type {TurnTokenUsage} */ (Object.fromEntries(keys.map(key => [key, total[key] - last[key]])));
       state.usage = /** @type {TurnTokenUsage} */ (Object.fromEntries(keys.map(key => [key, total[key] - state.usageBaseline[key]])));
+      recordTurnTokenUsage(state.rootThreadId, state.turnId, state.usage);
       break;
     }
     case "thread/started":
@@ -1571,13 +1585,26 @@ export async function interruptAppServerTurn(cwd, { threadId, turnId }) {
   }
 }
 
+// Shared by task and native review turns; never hold runtime locks while queued.
+function acquireTurnConcurrency(cwd, options) {
+  return acquireConcurrency({ jobFile: options.jobId ? resolveJobFile(cwd, options.jobId) : null, signal: options.signal,
+    onQueued: () => {
+      if (options.jobId) updateJob(cwd, options.jobId, () => ({ status: "queued", phase: "queued (concurrency limit)" }));
+      emitProgress(options.onProgress, "Queued (concurrency limit).", "queued (concurrency limit)");
+    },
+    onAdmitted: () => { if (options.jobId) updateJob(cwd, options.jobId, () => ({ status: "running", phase: "starting" })); }
+  });
+}
+
 export async function runAppServerReview(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
     throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
   }
 
-  return withAppServer(cwd, async (client) => {
+  const reservation = await acquireTurnConcurrency(cwd, options);
+  try {
+  const result = await withAppServer(cwd, async (client) => {
     emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
     const thread = await startThread(client, cwd, {
       model: options.model,
@@ -1595,12 +1622,14 @@ export async function runAppServerReview(cwd, options = {}) {
     const turnState = await captureTurn(
       client,
       sourceThreadId,
-      () =>
-        client.request("review/start", {
+      () => {
+        // Reviews have no durable turn-end recovery; their slot follows the wrapper.
+        return client.request("review/start", {
           threadId: sourceThreadId,
           delivery,
           target: options.target
-        }),
+        });
+      },
       {
         onProgress: options.onProgress,
         signal: options.signal,
@@ -1630,6 +1659,10 @@ export async function runAppServerReview(cwd, options = {}) {
       stderr: cleanCodexStderr(client.stderr)
     };
   }, { signal: options.signal, onServerRequestLog: summary => emitProgress(options.onProgress, `Server request ${JSON.stringify(summary)}`, null) });
+  return result;
+  } finally {
+    reservation.release();
+  }
 }
 
 export async function importExternalAgentSession(cwd, options = {}) {
@@ -1715,7 +1748,8 @@ export async function runAppServerTurn(cwd, options = {}) {
     } else if (summary.kind !== "computer-use-app" && ["cancelled", "unsupported"].includes(summary.decision)) {
       // The message repeats only these safe identifiers, never request content.
       serverRequestBlockers.push({ code: summary.decision === "cancelled" ? "approval_denied" : "approval_unsupported",
-        message: `Codex request ${summary.method} (${summary.kind})${summary.server ? ` from ${summary.server}` : ""}${summary.origin ? ` for ${summary.origin}` : ""} was ${summary.decision === "cancelled" ? "declined" : "not supported"}; Duet workers cannot approve it.`,
+        message: summary.kind === "action-approval" ? `Codex action approval was denied (${summary.reason}).`
+          : `Codex request ${summary.method} (${summary.kind})${summary.server ? ` from ${summary.server}` : ""}${summary.origin ? ` for ${summary.origin}` : ""} was ${summary.decision === "cancelled" ? "declined" : "not supported"}; Duet workers cannot approve it.`,
         method: summary.method, kind: summary.kind, requestId: summary.requestId,
         ...(summary.app ? { app: summary.app } : {}),
         ...(summary.server ? { server: summary.server } : {}),
@@ -1724,7 +1758,11 @@ export async function runAppServerTurn(cwd, options = {}) {
   };
   const approvalPolicy = approvalPolicyFor(options);
   let taskClient = null;
-  return withAppServer(cwd, async (client) => {
+  // Reserve before broker/thread admission, under the job's lease and signal.
+  const reservation = await acquireTurnConcurrency(cwd, options);
+  let concurrencySubmitted = false, concurrencyEnded = false;
+  try {
+  const result = await withAppServer(cwd, async (client) => {
     taskClient = client;
     // A busy broker can retry this callback with a private client. Each
     // attempt owns its approval closure and grants, including late answers.
@@ -1733,16 +1771,17 @@ export async function runAppServerTurn(cwd, options = {}) {
     const grantOwner = { token: crypto.randomUUID(), jobId: options.jobId ?? null, cwd };
     let turnFinishing = false;
     const onApprovalRequest = options.onApprovalRequest ? async request => {
-      if (turnFinishing) return { action: "cancel", reason: "turn-ended" };
+      if (turnFinishing || request.signal?.aborted) return { action: "cancel", reason: "turn-ended" };
       const choice = await options.onApprovalRequest(request);
-      if (turnFinishing) return { action: "cancel", reason: "turn-ended" };
+      if (turnFinishing || request.signal?.aborted) return { action: "cancel", reason: "turn-ended" };
+      if (request.kind === "action-approval") return { action: choice === "once" ? "accept" : "cancel", reason: choice === "once" ? "parent-once" : "parent-denied" };
       if (!APPROVAL_CHOICES.includes(choice) || choice === "deny") return { action: "cancel", reason: choice === "deny" ? "parent-denied" : "parent-unavailable" };
       if (choice === "task") taskGrants.push(grantTaskComputerApps(request.threadId, [request.app], grantOwner));
       if (choice === "always") computerUseSetup({ allow: [request.app] });
       emitProgress(options.onProgress, `Computer Use app ${request.app} approved by the parent (${choice}).`, null);
       return { action: "accept", reason: `parent-${choice}` };
     } : undefined;
-    client.options = { ...client.options, onApprovalRequest };
+    client.options = { ...client.options, onApprovalRequest, permissionPolicy: options.permissionPolicy };
     if (options.signal?.aborted) throw new Error("Task interrupted during startup.");
     let threadId;
     let threadPolicy;
@@ -1756,6 +1795,7 @@ export async function runAppServerTurn(cwd, options = {}) {
         claudeMd: options.claudeMd,
         model: options.model,
         sandbox: options.sandbox,
+        permissionPolicy: options.permissionPolicy,
         approvalPolicy,
         ephemeral: false,
         onProgress: options.onProgress,
@@ -1771,6 +1811,7 @@ export async function runAppServerTurn(cwd, options = {}) {
         claudeMd: options.claudeMd,
         model: options.model,
         sandbox: options.sandbox,
+        permissionPolicy: options.permissionPolicy,
         approvalPolicy,
         ephemeral: options.persistThread ? false : true,
         threadName: options.persistThread ? options.threadName : options.threadName ?? null,
@@ -1804,15 +1845,15 @@ export async function runAppServerTurn(cwd, options = {}) {
     if (sandbox !== (options.sandbox ?? "read-only")) {
       throw new Error("Codex did not acknowledge the requested sandbox policy; refusing to start the turn.");
     }
-    // The sandbox limits what Codex may write, never where it may connect: a
-    // narrowed read-only/workspace-write call keeps full network access, so web
-    // research, package installs and browser work never hit an egress approval.
-    const turnPolicy = threadPolicy.type === "dangerFullAccess" ? threadPolicy : { ...threadPolicy, networkAccess: true };
+    // Legacy tasks keep full network access. Mapped tasks use their explicit
+    // roots, tmp exclusions and network policy rather than runtime defaults.
+    const turnPolicy = options.permissionPolicy ? mappedSandboxPolicy(options.permissionPolicy) : threadPolicy.type === "dangerFullAccess" ? threadPolicy : { ...threadPolicy, networkAccess: true };
     // Per-call Computer Use approval: node_repl consults the isolated home's
     // sessions/<thread>.toml on every app request, so the listed apps are
     // allowed for this thread while the turn runs and withdrawn afterwards.
     const approvedComputerApps = options.approvedComputerApps ?? [];
     let turnState;
+    let stopSteering = async () => {};
     let releaseAdmission = null;
     const busy = turnIds => {
       const blocker = options.onThreadBusy?.(threadId, turnIds) ?? {
@@ -1858,30 +1899,37 @@ export async function runAppServerTurn(cwd, options = {}) {
           // never make a submitted turn look like one that was never sent.
           if (options.jobId) updateJob(cwd, options.jobId, () => ({ threadId,
             turnSubmission: { at: new Date().toISOString(), transport: client.transport, threadId } }));
+          reservation.submitted();
+          concurrencySubmitted = true;
           return requestAcceptance(client, "turn/start", {
             threadId,
-            input: buildTurnInput(prompt),
+            input: buildTurnInput(prompt, options.skills),
             model: options.model ?? null,
             effort: options.effort ?? null,
             serviceTier: options.serviceTier ?? null,
             outputSchema: options.outputSchema ?? null,
             approvalPolicy,
-            ...(options.explicitSandbox ? { sandboxPolicy: turnPolicy } : {})
+            ...(options.explicitSandbox || options.permissionPolicy ? { sandboxPolicy: turnPolicy } : {})
           }, () => {
+            concurrencySubmitted = false;
             if (options.jobId) updateJob(cwd, options.jobId, () => ({ turnSubmission: null }));
           });
         },
         { onProgress: options.onProgress, safeProgress: true, onTiming, signal: options.signal,
           onStarted: turnId => {
             if (!turnId) throw new Error("Codex did not return a turn handle; recover this job before continuing.");
-            if (options.jobId) updateJob(cwd, options.jobId, job => job.threadId === threadId && job.turnId === turnId ? null : { threadId, turnId });
+            if (options.jobId) updateJob(cwd, options.jobId, job => job.threadId === threadId && job.turnId === turnId && !budgetEnabled(job.budget) ? null : { threadId, turnId,
+              ...(budgetEnabled(job.budget) ? { budget: advanceBudget({ ...job, threadId, turnId }, Date.now()) } : {}) });
+            if (options.jobId) stopSteering = startSteeringDrain(cwd, options.jobId, { threadId, turnId,
+              request: params => client.request("turn/steer", params, { timeoutMs: 3000 }) });
             releaseAdmission?.();
             releaseAdmission = null;
           } }
       );
     } finally {
-      releaseAdmission?.();
       turnFinishing = true;
+      await stopSteering();
+      releaseAdmission?.();
       // The durable journal restores this attempt's baseline once; subsequent
       // releases are no-ops, including the per-call grant below.
       for (const release of taskGrants.reverse()) release();
@@ -1941,6 +1989,14 @@ export async function runAppServerTurn(cwd, options = {}) {
       blockers: error.code === "BROKER_THREAD_BUSY" ? [{ code: "thread_busy", message: error.message, ...(recoveryCommand ? { recoveryCommand } : {}) }] : [],
       startupTimings, startupWarning };
   });
+  concurrencyEnded = result.turnEnded === true || result.turnStatus === "notStarted";
+  return result;
+  } catch (error) {
+    concurrencyEnded = error.turnStatus === "notStarted";
+    throw error;
+  } finally {
+    if (!concurrencySubmitted || concurrencyEnded) reservation.release();
+  }
 }
 
 // Recovery is read-only: never resume a thread or submit another turn.

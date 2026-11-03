@@ -30,6 +30,21 @@ const sameFile = (left, right) => left.dev === right.dev && left.ino === right.i
 const contentBytes = value => Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value));
 const toolPlaceholder = bytes => `[Duet: tool output trimmed for fork import, ${bytes} bytes]`;
 
+// Keep the source format at one boundary; slicing never discovers or reads
+// another session. The snapshot reader enforces the existing source byte cap.
+export function parseClaudeTranscript(source) {
+  const entries = [];
+  for (const [index, line] of source.split("\n").entries()) {
+    if (!line.trim()) continue;
+    let entry;
+    try { entry = JSON.parse(line); }
+    catch { throw new Error(`Invalid Claude transcript JSON at line ${index + 1}. Retry --fork after the session finishes writing.`); }
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error(`Invalid Claude transcript entry at line ${index + 1}.`);
+    entries.push(entry);
+  }
+  return entries;
+}
+
 /**
  * Slice JSONL text, or an array of lines (each assumed newline-terminated).
  * Returned lines omit terminators; slicedBytes includes one LF per line.
@@ -47,12 +62,7 @@ export function sliceClaudeTranscript(lines, {
   const entries = [], parents = new Map(), replays = new Map(), ambiguous = new Set();
   const validUuid = value => typeof value === "string" && value.length > 0 && value.length <= 256;
   let start = 0, sourceEntries = 0;
-  for (const [index, line] of source.split("\n").entries()) {
-    if (!line.trim()) continue;
-    let entry;
-    try { entry = JSON.parse(line); }
-    catch { throw new Error(`Invalid Claude transcript JSON at line ${index + 1}. Retry --fork after the session finishes writing.`); }
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error(`Invalid Claude transcript entry at line ${index + 1}.`);
+  for (const entry of parseClaudeTranscript(source)) {
     sourceEntries++;
     if (typeof entry.uuid === "string" && entry.uuid) {
       // Fingerprint source entries, before any repair. Canonical keys also

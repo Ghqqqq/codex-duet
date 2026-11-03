@@ -48,8 +48,9 @@ For orchestration in every fresh session without a CLAUDE.md, use
 - Honor the dispatch route in SessionStart guidance; use native dispatch from
   the first task when that route selects it:
   `Agent(subagent_type: "codex:codex-native", description: "<purpose>", prompt: "DUET: --model <model> --effort <effort> --normal [--sandbox <mode>] [--cwd <dir>]\n<brief>")`.
-  Omit `name`; use the assigned name from the Agent result for `SendMessage`
-  follow-ups and answers. Wait for the actual result; never poll or treat a launch
+  A valid, free caller `name` is kept; otherwise Duet assigns a scientist pool
+  name. Use the returned name for SendMessage steering, follow-ups and answers.
+  Wait for the actual result; never poll or treat a launch
   receipt or a `running` payload as completed work.
 - If native dispatch returns `native_adapter_unavailable` or `native_capacity`,
   needs a per-call option the `DUET:` line rejects, or a Bash-launched worker needs

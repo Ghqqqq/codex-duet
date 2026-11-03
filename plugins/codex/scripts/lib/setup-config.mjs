@@ -8,6 +8,7 @@ import { normalizeBrowserOrigin, normalizeBrowserOrigins, normalizeBundleId, nor
 import { resolveIsolatedCodexHome } from "./codex-home.mjs";
 import { cachedReasoningEfforts, readModelCache } from "./models.mjs";
 import { BUILTIN_WORKER_DEFAULTS, MODE_NAMES } from "./ultra-codex-mode.mjs";
+import { BUDGET_NOTE, budgetLimit } from "./job-budget.mjs";
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function scan(text) {
@@ -103,6 +104,20 @@ function origins(text, key) {
 // from a plain terminal, so the default a user configures is the default every
 // worker actually applies.
 const duetConfig = env => { const root = path.join(resolveIsolatedCodexHome(env), "duet"); return { root, file: path.join(root, "config.toml") }; };
+
+// Context memory and admission limits are opt-in, shared by every workspace.
+export function contextSetup({ agentMemory = undefined, maxConcurrent = undefined, env = process.env, dryRun = false } = {}) {
+  if (agentMemory !== undefined && !["on", "off"].includes(agentMemory)) throw new Error("--agent-memory must be on or off.");
+  const limit = value => value === "off" ? "off" : typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value
+    : typeof value === "string" && /^[1-9][0-9]*$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
+  if (maxConcurrent !== undefined && limit(maxConcurrent) === null) throw new Error("--max-concurrent must be a positive integer or off.");
+  const { root, file } = duetConfig(env), before = read(root, file);
+  let after = agentMemory === undefined ? before : setTomlField(before, ["agent_memory"], agentMemory);
+  if (maxConcurrent !== undefined) after = setTomlField(after, ["max_concurrent"], limit(maxConcurrent));
+  const memory = readTomlField(after, ["agent_memory"]) ?? "off", concurrent = readTomlField(after, ["max_concurrent"]) ?? "off";
+  if (!["on", "off"].includes(memory) || limit(concurrent) === null) throw new Error("Invalid saved context settings; repair with setup --agent-memory / --max-concurrent.");
+  return { file, agentMemory: memory, maxConcurrent: limit(concurrent), ...apply(root, [{ file, before, after }], dryRun) };
+}
 
 export const BROWSER_APPROVAL_MODES = ["never-ask", "ask"];
 // Workers browse like the user's own Codex app: any website, no per-origin
@@ -373,6 +388,18 @@ export function defaultSandboxSetup({ mode, env = process.env, dryRun = false } 
   return { file, defaultSandbox, ...apply(root, [{ file, before, after }], dryRun) };
 }
 
+/** @param {{ maxMinutes?: string | number, maxTokens?: string | number, env?: NodeJS.ProcessEnv, dryRun?: boolean }} [options] */
+export function budgetDefaultsSetup({ maxMinutes, maxTokens, env = process.env, dryRun = false } = {}) {
+  const { root, file } = duetConfig(env), before = read(root, file);
+  let after = before;
+  for (const [key, value, name] of [["default_max_minutes", maxMinutes, "default-max-minutes"], ["default_max_tokens", maxTokens, "default-max-tokens"]]) {
+    if (value !== undefined) after = setTomlField(after, [key], budgetLimit(value, name, { allowOff: true }) ?? "off");
+  }
+  const defaultMaxMinutes = budgetLimit(readTomlField(after, ["default_max_minutes"]) ?? "off", "default-max-minutes", { allowOff: true }) ?? "off";
+  const defaultMaxTokens = budgetLimit(readTomlField(after, ["default_max_tokens"]) ?? "off", "default-max-tokens", { allowOff: true }) ?? "off";
+  return { defaultMaxMinutes, defaultMaxTokens, budgetNote: BUDGET_NOTE, ...apply(root, [{ file, before, after }], dryRun) };
+}
+
 function savedDefaultMode(text) {
   try {
     const value = readTomlField(text, ["defaultMode"]);
@@ -389,6 +416,16 @@ export function defaultModeSetup({ mode, env = process.env, dryRun = false } = {
 }
 
 const DISPATCH_ROUTES = ["auto", "native", "bash"];
+/** @param {{ mode?: string, env?: NodeJS.ProcessEnv, dryRun?: boolean }} [options] */
+export function permissionMappingSetup({ mode, env = process.env, dryRun = false } = {}) {
+  if (mode !== undefined && !["off", "claude"].includes(mode)) throw new Error("--permission-mapping must be claude or off.");
+  const { root, file } = duetConfig(env), before = read(root, file);
+  const after = mode === undefined ? before : setTomlField(before, ["permission_mapping"], mode);
+  const permissionMapping = readTomlField(after, ["permission_mapping"]) ?? "off";
+  if (!["off", "claude"].includes(permissionMapping)) throw new Error("Invalid saved permission_mapping; repair it with setup --permission-mapping.");
+  return { file, permissionMapping, ...apply(root, [{ file, before, after }], dryRun) };
+}
+
 function savedDispatch(text) {
   const value = readTomlField(text, ["dispatch"]);
   return DISPATCH_ROUTES.includes(value) ? value : "auto";

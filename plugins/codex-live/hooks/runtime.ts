@@ -1,6 +1,6 @@
 import { atom, update } from 'claude-code';
 import type { EngineInterface } from 'claude-code';
-import type { CodexLiveState } from '../types';
+import type { CodexLiveState, CodexNativeActivity } from '../types';
 import { boundState, clean, validView } from './model';
 import { limitChars } from './text';
 // The host scanner requires atom declarations at their read/write call sites.
@@ -37,6 +37,18 @@ async function saveView($: EngineInterface, change: (state: CodexLiveState) => C
 
 export function writeView($: EngineInterface, change: (state: CodexLiveState) => CodexLiveState): Promise<boolean> {
   return saveView($, change);
+}
+
+// Only a person-run command calls this; reading another plugin's metadata does
+// not grant permission to dispatch, resume or alter a Codex job.
+export async function nativeActivity($: EngineInterface, target: string): Promise<CodexNativeActivity | undefined> {
+  const agents = { plugin: 'codex', key: 'nativeAgents' } as const;
+  const { value } = await $.state.get(agents);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const matches = Object.entries(value).filter(([id, entry]) => entry && typeof entry === 'object' &&
+    (id === target || entry.name === target) && typeof entry.jobId === 'string' && entry.jobId &&
+    typeof entry.threadId === 'string' && typeof entry.workspace === 'string');
+  return matches.length === 1 ? matches[0]![1] : undefined;
 }
 
 // Polling has already bounded and laid out this candidate. Reuse it during the

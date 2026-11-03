@@ -4,9 +4,9 @@ import type { CodexLiveState } from '../types';
 import { feedLines, feedWindow, fit, footerLayout, paneLayout, jobRow, jobRowColor,
   messageLines, scrollFeed, selectedJob, togglePrompt, width } from './layout';
 import type { FeedLines, Span } from './layout';
-import { clearFinished, jobLifecycle, normalizeSessions, visibleSessions } from './model';
+import { clearFinished, jobLifecycle, normalizeSessions, usageLines, visibleSessions } from './model';
 import { createPoller } from './poll';
-import { checkedView, updateFailure, viewports, writeView } from './runtime';
+import { checkedView, nativeActivity, updateFailure, viewports, writeView } from './runtime';
 
 const view = atom({ plugin: 'codex-live', key: 'view' } as const,
   { jobs: [], selectedId: null, nowMs: 0 } as CodexLiveState);
@@ -23,8 +23,20 @@ export const register: Register = on => {
     return next(e);
   });
 
-  on('command.run', { command: 'codex-live' }, async $ => {
+  on('command.run', { command: 'codex-live' }, async ($, e) => {
+    if (!['composer', 'bridge', 'sdk'].includes(e.origin.kind)) return { text: 'Open Codex activity by running /codex-live yourself.' };
+    const target = e.args.trim();
+    if (target) {
+      const activity = await nativeActivity($, target).catch(() => undefined);
+      if (!activity) return { text: `No unique Codex activity found for ${limitChars(target, 100)}.` };
+      const selectedId = activity.threadId ? `thread:${activity.threadId}` : activity.jobId;
+      if (!await writeView($, latest => ({ ...latest, selectedId, openedJobId: activity.jobId,
+        feeds: { ...latest.feeds, [selectedId]: { feedOffset: 0, following: true, seenLines: 0 } } }))) {
+        return { text: 'Codex activity could not be selected.' };
+      }
+    }
     await $.ui.open({ id: 'codex-live', title: 'Codex', focus: true });
+    await poll?.(true);
     return { text: 'Codex pane opened.' };
   });
 
@@ -60,7 +72,8 @@ export const register: Register = on => {
     const engineOffset = Math.max(0, Math.floor(e.props.scroll.offset));
     const jobs = visibleSessions(state);
     const lines: FeedLines = selected ? feedLines(selected, state.nowMs, columns, state.feeds?.[selected.id])
-      : messageLines(state.discoveryWarning ?? 'No Codex jobs in this session yet. They appear here when Claude starts one.', columns)
+      : messageLines([state.discoveryWarning ?? 'No Codex jobs in this session yet. They appear here when Claude starts one.',
+        ...usageLines(state.usageByJob ?? {}, state.usagePartial ? 'Codex session total (partial history)' : 'Codex session total')].join('\n'), columns)
         .map((spans, i) => ({ key: `empty-${i}`, spans: spans.map(span => ({ ...span, color: 'subtle' as const })) }));
     if (!selected && (state.hiddenFinishedBefore !== undefined || state.hiddenJobIds?.length)) lines.push(
       ...messageLines('Finished jobs are hidden. Their records follow your Duet cleanup settings.', columns)

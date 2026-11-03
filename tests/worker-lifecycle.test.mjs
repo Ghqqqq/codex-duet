@@ -632,6 +632,12 @@ test("worker names survive exhaustion, concurrent reservations, follow-ups and l
   const names = await Promise.all([reserve(native.repo), reserve(remote)]);
   assert.equal(new Set(names.map(name => name.toLowerCase())).size, 2);
   assert.ok(names.includes("demo-1"));
+  const collision = json(native.call("reserve-name", "--session-cwd", remote, "--preferred", "DEMO-1")).name;
+  assert.notEqual(collision.toLowerCase(), "demo-1", "caller names share the case-insensitive session reservation namespace");
+  const invalid = json(native.call("reserve-name", "--session-cwd", native.repo, "--preferred", "invalid caller label")).name;
+  assert.ok(AGENT_NAMES.includes(invalid), "invalid caller labels fall back to the pool before spawn");
+  const reservedPrefix = json(native.call("reserve-name", "--session-cwd", native.repo, "--preferred", "ReViEw-helper")).name;
+  assert.ok(AGENT_NAMES.includes(reservedPrefix), "reserved job-id prefixes fall back to the pool before spawn");
   assert.equal(fs.existsSync(path.join(native.dir, "fake-codex-state.json.requests.jsonl")), false);
   const bash = direct(run(process.execPath, ["--import", preload, script, "task", "--fresh", "--direct", "fixture"],
     { cwd: remote, env: native.env }));
@@ -675,6 +681,18 @@ test("worker names survive exhaustion, concurrent reservations, follow-ups and l
     { cwd: native.repo, env: { ...native.env, CODEX_COMPANION_SESSION_ID: "" } });
   assert.equal(noSession.status, 1);
 
+});
+
+test("internal native agent types select the declared role and reject other types before dispatch", () => {
+  const f = fixture("review-ok");
+  const invalid = f.call("task", "--agent-name", "typed-worker", "--agent-type", "Explore", "--direct", "fixture");
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /native agent type/i);
+  assert.equal(fs.existsSync(path.join(f.dir, "fake-codex-state.json")), false);
+  const first = direct(f.call("task", "--agent-name", "typed-worker", "--agent-type", "codex:codex-reviewer", "--direct", "fixture"));
+  assert.equal(job(f, first.jobId).request.agentType, "codex:codex-reviewer");
+  const second = direct(f.call("task", "--to", first.worker, "--agent-type", "codex:codex-implementer", "--direct", "fixture"));
+  assert.equal(job(f, second.jobId).request.agentType, "codex:codex-reviewer", "continuations retain the original role context");
 });
 
 test("cancel --all confirms each active session job and leaves another session's worker running", async () => {
@@ -1242,6 +1260,8 @@ test("pause adjustment excludes suspended time, caps timestamps and preserves ow
       assert.equal(ownerLost(shifted, now + 5000), true);
       const renewedFirst = { ...record, leaseRenewedAt: now, leaseExpiresAt: now + 6000 };
       assert.equal(pauseAdjustment(renewedFirst, gap, now).leaseRenewedAt, now);
+      // A host pause shifts a running-time budget like the lease; it never counts as work.
+      assert.equal(pauseAdjustment({ ...record, budget: { maxMinutes: 1, consumedMs: 250, runningSince: now - gap - 250 } }, gap, now).budget.runningSince, now - 250);
       assert.equal(pauseAdjustment({ ...record, cancelRequested: {} }, gap, now), null);
       assert.equal(pauseAdjustment({ ...record, status: "completed" }, gap, now), null);
     } finally { runtime.close(); }

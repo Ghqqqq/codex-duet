@@ -17,6 +17,9 @@ and `details`. `checks.ran` is captured evidence; `checks.claimed` is Codex's
 account. Use `duet result <worker> --details` for shortened fields, full handles,
 settings, file-tracking basis and artifact paths. A suggested `next` command is
 not permission to continue user-stopped work.
+Details also expose fork import omissions as `forkSlice`. A `budget_exceeded`
+blocker can accompany an `interrupted` status; report the limit and remaining
+work. Codex usage belongs to the Codex provider, not Claude's `/usage`.
 
 For `running`, background `duet wait <worker>`; for `needs_answer`, background
 the report's `next` command verbatim, or `duet answer <worker> --question '<questionId>'`
@@ -34,6 +37,11 @@ case-insensitive; exact labels allow a trailing period. Anything else, including
 `yes`, negations or qualified replies, denies the request. Do not add an
 explanation or infer permission from ambiguous text. This also applies to native
 SendMessage; see [approval choices](https://github.com/Ghqqqq/codex-duet/blob/main/docs/computer-use-approvals.md#forwarded-approvals-owned-jobs).
+
+For `question.kind: "action-approval"` (opt-in Claude permission mapping), use
+the displayed `Allow once` / `Deny` choices and send only the selected label.
+Only exact `Allow once` approves that action; numbers, added prose, timeout and
+stale answers deny. These choices differ from Computer Use app approvals.
 
 When the helper returns Codex output:
 - Preserve the helper's verdict, summary, findings, and next steps structure.

@@ -30,7 +30,7 @@ async function sessionStartContext() {
       ? 'The saved dispatch preference is bash: dispatch through background Bash `duet task`; load the `codex:native-fallback` skill and follow it. Do not use codex:codex-native.'
       : `Native dispatch was unavailable on this host at ${unavailable.at} (missing turn start); prefer background Bash \`duet task\` through the \`codex:native-fallback\` skill. This observation is honored for 24 hours after the last observation, or until \`duet setup --dispatch\` is run without \`--dry-run\`.`
   ] : [
-    'Dispatch Codex natively by default from the first dispatch: Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (the plugin assigns a scientist name, replacing a passed label unless it is a free pool name; the assigned name appears in the Agent result); an optional first prompt line DUET: <flags> sets task flags. The agent result is the Duet report; use SendMessage to the named agent for follow-ups and answers.',
+    'Dispatch Codex natively by default from the first dispatch: Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (a valid caller name is kept when free; otherwise the plugin assigns a scientist name; the name appears in the Agent result); an optional first prompt line DUET: <flags> sets task flags. The agent result is the Duet report; use SendMessage to the named agent for follow-ups and answers.',
     "If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it."
   ];
   return [

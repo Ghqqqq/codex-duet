@@ -17,6 +17,7 @@ import { EXECUTOR_FRAMING, writeClaudeSnapshot } from '../scripts/lib/claude-mem
 import { isC2Report } from '../scripts/lib/report-delivery.mjs';
 import { updateJob } from '../scripts/lib/state.mjs';
 import { register as reportHooks } from '../hooks/report-delivery.mjs';
+import { lifecycleStoreSize } from '../hooks/lifecycle-hooks.mjs';
 
 const plugin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const captures = [];
@@ -96,6 +97,7 @@ function fixture(behavior, name = 'native-worker', { mutable = false, memoryStor
     }) : [];
   };
   const capture = { behavior, events: [], processes: [], notices: [] };
+  const pluginState = new Map();
   let now = 1800000000000;
   const timers = new Set();
   let controller = new AbortController(), agents = [], hooks;
@@ -105,6 +107,16 @@ function fixture(behavior, name = 'native-worker', { mutable = false, memoryStor
     session: { id: async () => 'native-session', cwd: async () => `${root}/repo`, root: async () => `${root}/repo`,
       append: async notice => { capture.notices.push(clone(notice)); return { message: notice.message, uuid: String(capture.notices.length) }; } },
     agent: { list: async () => agents },
+    state: {
+      get: async ref => clone(pluginState.get(`${ref.plugin}:${ref.key}`) ?? { version: 0 }),
+      set: async (ref, value, { ifVersion } = {}) => {
+        const key = `${ref.plugin}:${ref.key}`, version = pluginState.get(key)?.version ?? 0;
+        if (ifVersion !== undefined && ifVersion !== version) return { isSet: false, version };
+        pluginState.set(key, { value: clone(value), version: version + 1 });
+        return { isSet: true, version: version + 1 };
+      },
+    },
+    settings: { read: async () => ({}) },
     env: { get: async name => env[name], set: async (name, value) => { env[name] = value; } },
     clock: { now: async () => now, every(ms, fn) {
       const timer = { ms, due: now + ms, fn }; timers.add(timer);
@@ -251,21 +263,24 @@ function fixture(behavior, name = 'native-worker', { mutable = false, memoryStor
     controller = new AbortController();
     let rewritten;
     const agentId = options.agentId ?? 'native-agent';
+    const agentType = options.agentType ?? AGENT_TYPE;
     const toolUseId = options.agentId ? `spawn-${agentId}-${number}` : `spawn-${number}`;
-    let agentName = number > 1 ? agents.find(agent => agent.id === agentId)?.name ?? name : name;
-    if (options.toolCall || options.effort || agentName === null) await invoke('tool.call', { tool: 'Agent', tool_use_id: toolUseId,
-      subagent_type: AGENT_TYPE, description: 'Native fake task', prompt: text, effort: options.effort,
+    let agentName = options.name ?? (number > 1 ? agents.find(agent => agent.id === agentId)?.name ?? name : name);
+    if (options.toolCall || options.effort || options.isolation || agentName === null) await invoke('tool.call', { tool: 'Agent', tool_use_id: toolUseId,
+      subagent_type: agentType, description: 'Native fake task', prompt: text, effort: options.effort, isolation: options.isolation,
       ...(agentName === null ? {} : { name: agentName }), ...(number > 1 ? { resume: agentId } : {}) },
     async e => { agentName = e.name; return options.toolResult ?? { result: {} }; });
     const spawnInput = { tool_use_id: toolUseId, prompt: text, description: 'Native fake task',
-      subagentType: AGENT_TYPE, provider: { plugin: 'codex', tier: 'user' }, parentModel: 'haiku',
+      subagentType: agentType, provider: { plugin: 'codex', tier: 'user' }, parentModel: 'haiku',
       background: options.background ?? true, permissionMode: options.permissionMode ?? 'default',
       fork: false, name: agentName, cwd: `${root}/repo`,
+      ...(options.teammate ? { isTeammate: true } : {}),
       ...(number > 1 ? { resume: { agentId } } : {}) };
-    const spawning = invoke('agent.spawn', spawnInput, async e => {
+    const spawning = options.wake ? Promise.resolve(rewritten = text) : invoke('agent.spawn', spawnInput, async e => {
       rewritten = e.prompt;
-      agents = [...agents.filter(agent => agent.id !== agentId), { id: agentId, type: AGENT_TYPE, name: e.name, description: e.description, status: 'running' }];
-      return { model: 'haiku', agentId };
+      agents = [...agents.filter(agent => agent.id !== agentId), { id: agentId, type: agentType, name: e.name, description: e.description, status: 'running',
+        ...(options.teammate ? { teammateId: `${e.name}@fixture` } : {}) }];
+      return { model: 'haiku', agentId, ...(options.teammateId ? { teammateId: options.teammateId } : {}) };
     });
     await spawning;
     await options.afterSpawn?.();
@@ -315,6 +330,478 @@ function fixture(behavior, name = 'native-worker', { mutable = false, memoryStor
     stopOnWait: (beforeStop = async () => {}) => { onWait = async () => { await advance(1500); await beforeStop(); controller.abort(); }; },
   };
 }
+
+function steeringInbox(f, job) {
+  const marker = JSON.parse(fs.readFileSync(`${f.root}/isolated/duet/sessions/native-session/${job.id}.json`, 'utf8'));
+  return JSON.parse(fs.readFileSync(marker.jobFile.replace(/\.json$/, '.steering.json'), 'utf8'));
+}
+function steer(f, job, deliveryId, text) {
+  const result = spawnSync(process.execPath, [plugin + '/bin/duet', 'steer', job.id,
+    '--delivery-id', deliveryId, '--cwd', `${f.root}/repo`, '--session', 'native-session'],
+  { env: f.env, input: text, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+test('native steering applies to the running turn without a continuation', async () => {
+  const f = fixture('steer-applied');
+  const pending = f.turn('Work until steered.', 1);
+  try {
+    const job = await until(() => f.jobs().find(job => job.turnId));
+    await f.advance(1500);
+    const peer = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import { CodexAppServerClient } from ${JSON.stringify(new URL('../scripts/lib/app-server.mjs', import.meta.url).href)};
+      const client = await CodexAppServerClient.connect(process.cwd(), { reuseExistingBroker: true });
+      try {
+        assert.equal(client.transport, 'broker');
+        await assert.rejects(client.request('turn/steer', ${JSON.stringify({ threadId: job.threadId, expectedTurnId: job.turnId, input: [{ type: 'text', text: 'Foreign steer.', text_elements: [] }] })}),
+          error => error.rpcCode === -32001);
+      } finally { await client.close(); }
+    `], { cwd: `${f.root}/repo`, env: f.env, encoding: 'utf8' });
+    assert.equal(peer.status, 0, peer.stderr);
+    let queued = 0;
+    const receipt = await f.invoke('session.send', { to: 'native-agent', text: 'Use the revised requirement.', origin: { kind: 'model' } },
+      async () => { queued++; return { isDelivered: true }; });
+    assert.equal(queued, 0);
+    assert.equal(receipt.isDelivered, true);
+    const result = await pending;
+    assert.match(result.summary, /Applied steering: Use the revised requirement\./);
+    assert.equal(f.jobs().length, 1);
+    assert.equal(f.codexState().nextTurnId, 2);
+    assert.equal(f.codexState().steers.length, 1);
+    assert.equal(f.codexState().steers[0].expectedTurnId, f.jobs()[0].turnId);
+    assert.equal(f.jobs()[0].turnSubmission.transport, 'broker');
+    const delivery = steeringInbox(f, f.jobs()[0]).deliveries[0];
+    assert.equal(delivery.text, undefined);
+    assert.equal(delivery.textHash, createHash('sha256').update('Use the revised requirement.').digest('hex'));
+    assert.equal(steer(f, f.jobs()[0], delivery.deliveryId, 'Use the revised requirement.').status, 'applied');
+    assert.equal(f.codexState().steers.length, 1);
+  } finally { f.abort(); await pending; }
+});
+
+test('native steering rejection queues one ordinary continuation on the same thread', async () => {
+  const f = fixture('steer-reject');
+  const pending = f.turn('Work until steered.', 1);
+  try {
+    await until(() => f.jobs().find(job => job.turnId));
+    await f.advance(1500);
+    const queued = [];
+    await f.invoke('session.send', { to: 'native-agent', text: 'Continue with the revised requirement.', origin: { kind: 'model' } },
+      async e => { queued.push(e.text); return { isDelivered: true }; });
+    assert.deepEqual(queued, ['Continue with the revised requirement.']);
+    const first = await pending;
+    const continued = await f.turn(queued.shift(), 2);
+    assert.equal(continued.status, 'completed');
+    assert.equal(f.jobs().length, 2);
+    assert.equal(new Set(f.jobs().map(job => job.threadId)).size, 1);
+    assert.notEqual(first.jobId, continued.jobId);
+    assert.equal(f.codexState().nextTurnId, 3);
+    assert.equal(f.codexState().steers.length, 1);
+    const job = f.jobs().find(job => job.id === first.jobId), delivery = steeringInbox(f, job).deliveries[0];
+    assert.equal(delivery.reason, 'turn_rejected');
+    assert.equal(steer(f, job, delivery.deliveryId, 'Continue with the revised requirement.').fallback, false);
+  } finally { f.abort(); await pending; }
+});
+
+test('native steering delivery IDs are idempotent, including lost acknowledgements', async () => {
+  const f = fixture('steer-unknown');
+  // A missing explicitly supplied socket takes the supported direct path.
+  f.env.CODEX_COMPANION_APP_SERVER_ENDPOINT = `unix:${f.root}/absent.sock`;
+  const pending = f.turn('Work until steered.', 1, true);
+  try {
+    const job = await until(() => f.jobs().find(job => job.turnId));
+    await f.advance(1500);
+    let queued = 0;
+    const receipt = await f.invoke('session.send', { to: 'native-agent', text: 'Apply this once.', origin: { kind: 'model' } },
+      async () => { queued++; return { isDelivered: true }; });
+    assert.equal(queued, 0);
+    assert.equal(receipt.isDelivered, false);
+    assert.equal(receipt.reason, 'Codex steering outcome unknown; the message may or may not have reached the running turn and will not be resent automatically. Inspect the Duet job before resending.');
+    assert.ok(f.capture.notices.some(notice => notice.message.content.some(item => item.text?.includes('Codex steering unknown'))));
+    const inbox = steeringInbox(f, job);
+    assert.equal(inbox.deliveries.length, 1);
+    assert.equal(inbox.deliveries[0].status, 'unknown');
+    assert.equal(inbox.deliveries[0].text, undefined);
+    assert.equal(steer(f, job, inbox.deliveries[0].deliveryId, 'Apply this once.').status, 'unknown');
+    assert.equal(job.turnSubmission.transport, 'direct');
+    assert.equal(f.codexState().steers.length, 1);
+    assert.equal(f.codexState().nextTurnId, 2);
+    assert.equal(f.jobs().length, 1);
+  } finally { f.abort(); await pending; }
+});
+
+test('native steering never queues a failed delivery, even with a stale fallback flag', async () => {
+  const f = fixture('steer-failed');
+  const pending = f.turn('Work until steered.', 1, true);
+  try {
+    const job = await until(() => f.jobs().find(job => job.turnId));
+    await f.advance(1500);
+    const run = f.$.process.run;
+    f.$.process.run = async (...args) => {
+      const result = await run(...args);
+      if (args[0][2] === 'steer') {
+        const receipt = JSON.parse(result.stdout);
+        assert.equal(receipt.status, 'failed');
+        assert.equal(receipt.fallback, false);
+        return { ...result, stdout: JSON.stringify({ ...receipt, fallback: true }) };
+      }
+      return result;
+    };
+    const receipt = await f.invoke('session.send', { to: 'native-agent', text: 'Failed steering.', origin: { kind: 'model' } },
+      async () => assert.fail('Failed steering must never enter the host queue'));
+    assert.equal(receipt.isDelivered, false);
+    assert.match(receipt.reason, /steer_rejected.*Inspect the Duet job before resending/);
+    assert.equal(steeringInbox(f, job).deliveries[0].text, undefined);
+    assert.equal(f.codexState().steers.length, 1);
+  } finally { f.abort(); await pending; }
+});
+
+test('native steering treats a broker-wrapped malformed acknowledgement as unknown without replay', async () => {
+  const f = fixture('steer-malformed');
+  const pending = f.turn('Work until steered.', 1, true);
+  try {
+    const job = await until(() => f.jobs().find(job => job.turnId));
+    await f.advance(1500);
+    const receipt = await f.invoke('session.send', { to: 'native-agent', text: 'Applied before malformed acknowledgement.', origin: { kind: 'model' } },
+      async () => assert.fail('A parser error cannot prove rejection'));
+    assert.equal(receipt.isDelivered, false);
+    assert.match(receipt.reason, /outcome unknown/);
+    const delivery = steeringInbox(f, job).deliveries[0];
+    assert.equal(delivery.status, 'unknown');
+    assert.equal(delivery.reason, 'acknowledgement_missing');
+    assert.equal(steer(f, job, delivery.deliveryId, 'Applied before malformed acknowledgement.').fallback, false);
+    assert.equal(job.turnSubmission.transport, 'broker');
+    assert.equal(f.codexState().steers.length, 1);
+    assert.equal(f.codexState().nextTurnId, 2);
+    assert.equal(f.jobs().length, 1);
+  } finally { f.abort(); await pending; }
+});
+
+test('native steering delivery IDs survive same-clock sends and hook reloads without store writes', async () => {
+  const f = fixture('unused', 'steering-ids', { hostOnly: true, memoryStore: true });
+  f.$.agent.list = async () => [{ id: 'native-agent', name: 'steering-ids', type: AGENT_TYPE, status: 'running' }];
+  f.setStore({ 'native:v2:native-session:native-agent': { session: 'native-session', cwd: `${f.root}/repo`, jobId: 'job', ownerId: 'owner' } });
+  const before = f.readStore(), ids = [];
+  f.$.process.run = async argv => {
+    const id = argv[argv.indexOf('--delivery-id') + 1]; ids.push(id);
+    return { exitCode: 0, stdout: JSON.stringify({ jobId: 'job', deliveryId: id, status: 'applied', fallback: false }) };
+  };
+  const send = () => f.invoke('session.send', { to: 'native-agent', text: 'Same clock.', origin: { kind: 'model' } },
+    async () => assert.fail('Expected steering'));
+  await Promise.all([send(), send()]);
+  f.reload(); await send();
+  assert.equal(new Set(ids).size, 3);
+  assert.ok(ids.every(id => /^native-session:native-agent:1800000000000:[a-z0-9]+$/.test(id)));
+  assert.deepEqual(f.readStore(), before);
+});
+
+test('native steering inbox retains hashed receipts and refuses new deliveries beyond 256', () => {
+  const f = fixture('unused', 'steering-cap', { hostOnly: true });
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    import { writeJobFile } from ${JSON.stringify(new URL('../scripts/lib/state.mjs', import.meta.url).href)};
+    import { handoffSteering } from ${JSON.stringify(new URL('../scripts/lib/steering.mjs', import.meta.url).href)};
+    const cwd = process.cwd(), jobId = 'capped', sessionId = 'native-session';
+    const file = writeJobFile(cwd, jobId, { id: jobId, status: 'completed', sessionId, ownerId: 'owner' }).replace(/\\.json$/, '.steering.json');
+    const send = (deliveryId, text = 'Private steering text') => handoffSteering(cwd, jobId, { deliveryId, text, sessionId });
+    // An old terminal row is compacted on read, preserving its idempotency key.
+    fs.writeFileSync(file, JSON.stringify({ version: 1, deliveries: [{ deliveryId: '0', text: 'Private steering text', status: 'applied' }] }));
+    for (let i = 1; i < 256; i++) assert.equal((await send(String(i))).status, 'deferred');
+    const before = fs.readFileSync(file, 'utf8'), inbox = JSON.parse(before);
+    assert.equal(inbox.deliveries.length, 256);
+    assert.ok(inbox.deliveries.every(row => row.text === undefined && /^[a-f0-9]{64}$/.test(row.textHash)));
+    assert.ok(!before.includes('Private steering text'));
+    assert.equal((await send('0')).status, 'applied');
+    await assert.rejects(send('0', 'Different text'), /different text/);
+    const refused = await send('overflow');
+    assert.deepEqual(refused, { jobId, deliveryId: 'overflow', status: 'failed', fallback: false, reason: 'inbox_full' });
+    assert.deepEqual(await send('overflow'), refused);
+    assert.equal(fs.readFileSync(file, 'utf8'), before);
+  `], { cwd: `${f.root}/repo`, env: f.env, encoding: 'utf8', timeout: 30000 });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('native steering defers permission-mapped jobs once and re-derives permissions on continuation', async () => {
+  const f = fixture('steer-applied');
+  const setup = spawnSync(process.execPath, [plugin + '/bin/duet', 'setup', '--permission-mapping', 'claude', '--json'],
+    { cwd: `${f.root}/repo`, env: f.env, encoding: 'utf8' });
+  assert.equal(setup.status, 0, setup.stderr);
+  const pending = f.turn('Work until interrupted.', 1, true);
+  try {
+    const job = await until(() => f.jobs().find(job => job.turnId));
+    assert.ok(job.request.permissionPolicy);
+    await f.advance(1500);
+    const queued = [];
+    await f.invoke('session.send', { to: 'native-agent', text: 'Continue planning.', origin: { kind: 'model' } },
+      async e => { queued.push(e.text); return { isDelivered: true }; });
+    assert.deepEqual(queued, ['Continue planning.']);
+    const delivery = steeringInbox(f, job).deliveries[0];
+    assert.equal(delivery.status, 'deferred');
+    assert.equal(delivery.reason, 'permission_mapping');
+    assert.equal(steer(f, job, delivery.deliveryId, queued[0]).fallback, false);
+    assert.equal(f.codexState().steers, undefined);
+    f.abort(); await pending;
+    const continued = await f.turn(queued.shift(), 2, false, { permissionMode: 'plan' });
+    assert.equal(continued.status, 'completed');
+    assert.equal(new Set(f.jobs().map(job => job.threadId)).size, 1);
+    assert.equal(f.codexState().lastTurnStart.sandboxPolicy.type, 'readOnly');
+    assert.equal(f.codexState().steers, undefined);
+  } finally { f.abort(); await pending; }
+});
+
+test('native steering drain cancels a late always-approval after turn completion', () => {
+  const f = fixture('steer-applied');
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    import { writeJobFile } from ${JSON.stringify(new URL('../scripts/lib/state.mjs', import.meta.url).href)};
+    import { CodexAppServerClient } from ${JSON.stringify(new URL('../scripts/lib/app-server.mjs', import.meta.url).href)};
+    import { runAppServerTurn } from ${JSON.stringify(new URL('../scripts/lib/codex.mjs', import.meta.url).href)};
+    const cwd = process.cwd(), jobId = 'late-approval', sessionId = 'native-session';
+    const file = writeJobFile(cwd, jobId, { id: jobId, status: 'running', sessionId, ownerId: 'owner' });
+    fs.writeFileSync(file.replace(/\\.json$/, '.steering.json'), JSON.stringify({ version: 1,
+      deliveries: [{ deliveryId: 'steer', text: 'Finish the turn.', status: 'queued', sessionId, ownerId: 'owner' }] }));
+    let answer, releaseSteer, approval, decision;
+    const choice = new Promise(resolve => { answer = resolve; });
+    const drainGate = new Promise(resolve => { releaseSteer = resolve; });
+    const connect = CodexAppServerClient.connect;
+    CodexAppServerClient.connect = async (...args) => {
+      const client = await connect(...args), request = client.request.bind(client), context = client.setServerRequestContext.bind(client);
+      client.request = async (method, ...params) => {
+        if (method !== 'turn/steer') return request(method, ...params);
+        approval = client.options.onApprovalRequest({ kind: 'computer-use-app', app: 'com.example.Late', threadId: params[0].threadId });
+        const response = await request(method, ...params);
+        await drainGate;
+        return response;
+      };
+      client.setServerRequestContext = (threadId, turnId) => {
+        context(threadId, turnId);
+        if (threadId !== null || turnId !== null || !approval) return;
+        // The next event-loop turn runs after runAppServerTurn enters its
+        // finally and waits on the outstanding steering acknowledgement.
+        setImmediate(async () => { answer('always'); decision = await approval; releaseSteer(); });
+      };
+      return client;
+    };
+    const result = await runAppServerTurn(cwd, { jobId, prompt: 'Work until steered.', sandbox: 'read-only',
+      persistThread: true, onApprovalRequest: () => choice });
+    assert.equal(result.turnEnded, true);
+    assert.deepEqual(decision, { action: 'cancel', reason: 'turn-ended' });
+    const config = process.env.CODEX_COMPANION_HOME + '/computer-use/config.toml';
+    assert.ok(!fs.existsSync(config) || !fs.readFileSync(config, 'utf8').includes('com.example.Late'));
+  `], { cwd: `${f.root}/repo`, env: f.env, encoding: 'utf8', timeout: 30000 });
+  assert.equal(result.status, 0, result.error?.message || result.stderr);
+});
+
+test('native teammate identity survives named classic events, SendMessage wakes and stop', async () => {
+  const f = fixture('review-ok', 'identity-scout');
+  f.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+  const classic = () => f.invoke('classic.SubagentStart', { session_id: 'native-session', agent_id: 'native-agent',
+    agent_type: 'identity-scout' }, async () => ({}));
+  const first = await f.turn('Investigate through an in-process teammate.', 1, false, { teammate: true, afterSpawn: classic });
+  assert.equal(first.status, 'completed');
+  f.reload();
+  f.$.agent.list = async () => { throw new Error('Fixture discovery outage'); };
+  const second = await f.turn('The coordinator sent a message while you were working:\nContinue the investigation.\n\nAddress this before completing your current task.',
+    2, false, { wake: true, afterSpawn: classic });
+  assert.equal(second.status, 'completed');
+  assert.equal(f.jobs().find(job => job.id === first.jobId).threadId, f.jobs().find(job => job.id === second.jobId).threadId);
+  const stopped = fixture('interruptible-slow-task', 'identity-stopped');
+  stopped.stopOnWait();
+  const report = await stopped.turn('Wait for the owner stop.', 1, true, { teammate: true, afterSpawn: () =>
+    stopped.invoke('classic.SubagentStart', { session_id: 'native-session', agent_id: 'native-agent', agent_type: 'identity-stopped' }, async () => ({})) });
+  assert.ok(['interrupted', 'cancelled', 'owner_stopped'].includes(report.status));
+  assert.equal(stopped.jobs()[0].result.interruptionConfirmed, true);
+});
+
+test('reused host ids pass non-native spawns and classic starts through during discovery outages', async () => {
+  const f = fixture('review-ok', 'reused-worker');
+  await f.turn('Finish the native assignment.', 1);
+  f.$.agent.list = async () => { throw new Error('Fixture discovery outage'); };
+  const original = f.readStore()['native:v2:native-session:native-agent'];
+  const explore = { session_id: 'native-session', agent_id: 'native-agent', agent_type: 'Explore' };
+  await f.invoke('classic.SubagentStart', explore, async () => ({ additionalContext: ['Explore context'] }));
+  const start = { agentId: 'native-agent', turnId: 'explore-turn', text: 'Explore without Codex.' };
+  await f.invoke('turn.start', start, async e => ({ turnId: e.turnId }));
+  assert.deepEqual(f.readStore()['native:v2:native-session:native-agent'], original);
+  // The next spawn's actual type must also fence the old binding before a
+  // classic start arrives, even when that cached start still says native.
+  await f.invoke('classic.SubagentStart', { ...explore, agent_type: AGENT_TYPE }, async () => ({}));
+  await f.invoke('agent.spawn', { subagentType: 'Explore', tool_use_id: 'explore-spawn' },
+    async () => ({ model: 'haiku', agentId: 'native-agent' }));
+  await f.invoke('turn.start', start, async e => ({ turnId: e.turnId }));
+  const answer = 'Explore handled the assignment.';
+  assert.equal((await f.invoke('turn.step', { ...start, index: 0 }, async function* () {
+    yield { kind: 'text', index: 0, text: answer };
+    yield { kind: 'stop', stopReason: 'end_turn', usage: null };
+    return { answer, usage: null };
+  })).answer, answer);
+  assert.deepEqual(f.readStore()['native:v2:native-session:native-agent'], original);
+  assert.equal(f.readStore()['native:lifecycle:v1:native-session:native-agent'], undefined);
+  assert.equal(f.jobs().length, 1);
+});
+
+test('native teammate suffix from the spawn address survives discovery outages', async () => {
+  const f = fixture('review-ok', 'scout');
+  const report = await f.turn('Use the host-assigned teammate address.', 1, false, {
+    teammate: true, teammateId: 'scout-2@fixture', afterSpawn: async () => {
+      f.$.agent.list = async () => { throw new Error('Fixture discovery outage'); };
+      await f.invoke('classic.SubagentStart', { session_id: 'native-session', agent_id: 'native-agent', agent_type: 'scout-2' }, async () => ({}));
+    }
+  });
+  assert.equal(report.worker, 'scout-2');
+  assert.equal(f.readStore()['native:v2:native-session:native-agent'].name, 'scout-2');
+  const task = f.capture.processes.find(p => p.kind === 'spawn' && p.request.argv[2] === 'task');
+  assert.equal(task.request.argv[task.request.argv.indexOf('--agent-name') + 1], 'scout-2');
+});
+
+test('Agent worktree isolation reaches custom host paths and durable permission mapping', async () => {
+  const f = fixture('review-ok', 'worktree-worker');
+  const custom = `${f.root}/custom-worktree`;
+  fs.mkdirSync(custom); initGitRepo(custom);
+  const setup = spawnSync(process.execPath, [plugin + '/bin/duet', 'setup', '--permission-mapping', 'claude'],
+    { env: f.env, cwd: `${f.root}/repo`, encoding: 'utf8' });
+  assert.equal(setup.status, 0, setup.stderr);
+  f.$.session.cwd = async () => custom;
+  const first = await f.turn('Stay in the custom worktree.', 1, false, { isolation: 'worktree' });
+  assert.equal(first.status, 'completed');
+  const request = f.jobs().find(job => job.id === first.jobId).request;
+  assert.equal(request.permissionPolicy.worktree, custom);
+  assert.deepEqual(request.permissionPolicy.writableRoots, [custom]);
+  assert.equal(f.readStore()['native:v2:native-session:native-agent'].isolation, 'worktree');
+  const task = f.capture.processes.find(p => p.kind === 'spawn' && p.request.argv[2] === 'task');
+  assert.equal(task.request.argv[task.request.argv.indexOf('--native-isolation') + 1], 'worktree');
+  f.reload();
+  const escape = await f.turn(`DUET: --cwd ${f.root}/repo\nRefuse the main checkout.`, 2, false, { wake: true });
+  assert.equal(escape.status, 'blocked');
+  assert.equal(f.jobs().length, 1);
+});
+
+test('native remote isolation refuses before names, jobs or host spawn', async () => {
+  const f = fixture('review-ok', 'remote-worker', { hostOnly: true });
+  const response = await f.invoke('tool.call', { tool: 'Agent', tool_use_id: 'remote-call', subagent_type: AGENT_TYPE,
+    name: 'remote-worker', prompt: 'Never start remotely.', isolation: 'remote' }, () => { throw new Error('Remote host spawn reached'); });
+  const report = JSON.parse(response.deny);
+  assert.equal(report.status, 'blocked');
+  assert.equal(report.blockers[0].code, 'native_remote_isolation');
+  assert.match(report.summary, /local runtime/i);
+  assert.equal(report.next, 'Start a local native agent, optionally with isolation: "worktree".');
+  assert.equal(f.capture.processes.length, 0);
+  assert.equal(f.jobs().length, 0);
+  assert.deepEqual(f.readStore(), {});
+});
+
+test('native teammate mailbox guard rejects peers and unverified deliveries, preserving coordinator and other loops', async () => {
+  const f = fixture('review-ok', 'mailbox-worker', { hostOnly: true });
+  f.$.agent.list = async () => [{ id: 'native-agent', type: AGENT_TYPE, name: 'mailbox-worker', teammateId: 'mailbox-worker@fixture' },
+    { id: 'other-agent', type: 'Explore' }];
+  const input = { agentId: 'native-agent', text: 'Bounded mailbox assignment.', origin: { kind: 'coordinator', teammate: 'team-lead', isVerified: true } };
+  let queued = 0;
+  const receive = (value = input) => f.invoke('session.receive', value, async e => {
+    queued++; assert.deepEqual(e, value); return { text: e.text };
+  });
+  assert.deepEqual(await receive(), { text: input.text });
+  const peer = await receive({ ...input, origin: { kind: 'peer', teammate: 'peer-worker', isVerified: true } });
+  assert.equal(JSON.parse(peer.consumed).blockers[0].code, 'native_teammate_unsupported');
+  const unverified = await receive({ ...input, origin: { ...input.origin, isVerified: false } });
+  assert.equal(JSON.parse(unverified.consumed).status, 'blocked');
+  assert.deepEqual(await receive({ ...input, agentId: 'other-agent', origin: { kind: 'peer', teammate: 'peer-worker', isVerified: true } }), { text: input.text });
+  f.$.session.id = async () => { throw new Error('Mailbox identity unavailable'); };
+  const unavailable = await receive({ ...input, origin: { kind: 'peer', teammate: 'peer-worker', isVerified: true } });
+  assert.equal(JSON.parse(unavailable.consumed).blockers[0].code, 'native_teammate_unsupported');
+  assert.equal(queued, 2);
+  assert.equal(f.capture.processes.length, 0);
+});
+
+test('native pane teammates refuse explicitly and auto panes return a teams-specific blocked report', async () => {
+  const f = fixture('review-ok', 'pane-worker', { hostOnly: true });
+  f.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+  f.$.settings = { read: async () => ({ teammateMode: 'tmux' }) };
+  const input = { tool: 'Agent', tool_use_id: 'pane-call', subagent_type: AGENT_TYPE, name: 'pane-worker', prompt: 'Never use panes.' };
+  const refused = await f.invoke('tool.call', input, () => { throw new Error('Pane host spawn reached'); });
+  assert.equal(JSON.parse(refused.deny).blockers[0].code, 'native_teammate_unsupported');
+  assert.match(JSON.parse(refused.deny).next, /in-process teammate mode/);
+  assert.equal(f.capture.processes.length, 0);
+  f.$.settings.read = async () => ({ teammateMode: 'auto' });
+  f.$.process.run = async argv => argv[0] === 'node' ? { exitCode: 0, stdout: process.execPath }
+    : { exitCode: 0, stdout: '{"name":"pane-worker"}' };
+  const automatic = await f.invoke('tool.call', input, async e => {
+    const address = `${e.name}@fixture`;
+    await f.invoke('agent.spawn', { subagentType: AGENT_TYPE, tool_use_id: input.tool_use_id, isTeammate: true,
+      name: e.name, prompt: e.prompt }, async () => ({ model: 'haiku', agentId: address, teammateId: address }));
+    return { result: { status: 'teammate_spawned', agentId: address, agent_id: address, teammate_id: address, name: e.name, prompt: e.prompt } };
+  });
+  assert.equal(JSON.parse(automatic.deny).blockers[0].code, 'native_teammate_unsupported');
+  assert.match(JSON.parse(automatic.deny).next, /stop any pane teammate/);
+  assert.deepEqual(f.readStore(), {});
+  assert.equal(f.jobs().length, 0);
+  assert.equal(fs.existsSync(`${f.root}/isolated/duet/native-unavailable.json`), false);
+  const missing = fixture('review-ok', 'missing-loop', { hostOnly: true });
+  await missing.invoke('agent.spawn', { subagentType: AGENT_TYPE, tool_use_id: 'missing-loop-call', isTeammate: true,
+    name: 'missing-loop', prompt: 'No local start.' }, async () => ({ model: 'haiku', agentId: 'missing-loop' }));
+  missing.reload();
+  const noStart = await missing.invoke('turn.step', { agentId: 'missing-loop', turnId: 'missing-loop-turn', index: 0 },
+    async function* () { throw new Error('Missing teammate loop reached Claude'); });
+  assert.equal(JSON.parse(noStart.answer).blockers[0].code, 'native_teammate_unsupported');
+  assert.equal(missing.capture.processes.length, 0);
+  assert.equal(fs.existsSync(`${missing.root}/isolated/duet/native-unavailable.json`), false);
+});
+
+test('native caller names survive reservation, case collisions and resume', async () => {
+  const f = fixture('review-ok', 'identity-review');
+  const original = { result: {}, context: ['Original context'] };
+  const first = await f.turn('Keep the caller label.', 1, false, { toolCall: true, toolResult: original });
+  assert.equal(first.worker, 'identity-review');
+  assert.deepEqual(f.capture.events.find(event => event.event === 'tool.call').result, original);
+  const second = await f.turn('Avoid the same name.', 1, false, { toolCall: true, agentId: 'second-review', name: 'IDENTITY-REVIEW' });
+  assert.notEqual(second.worker.toLowerCase(), first.worker.toLowerCase());
+  assert.match(f.capture.events.filter(event => event.event === 'tool.call').at(-1).result.context[0], /requested "IDENTITY-REVIEW"/);
+  f.reload();
+  const resumed = await f.turn('Keep the existing name on resume.', 2, false, { toolCall: true });
+  assert.equal(resumed.worker, first.worker);
+  assert.equal(f.capture.processes.filter(p => p.request.argv[2] === 'reserve-name').length, 2);
+  const reserved = fixture('review-ok', 'TaSk-review');
+  const named = await reserved.turn('Assign an admissible name before spawn.', 1, false, { toolCall: true });
+  const reserve = reserved.capture.processes.find(p => p.request.argv[2] === 'reserve-name');
+  assert.equal(reserve.request.argv.includes('--preferred'), false);
+  const spawned = reserved.capture.events.find(e => e.event === 'agent.spawn').input.name;
+  assert.ok(AGENT_NAMES.includes(spawned));
+  assert.equal(named.worker, spawned);
+  assert.equal(reserved.readStore()['native:v2:native-session:native-agent'].name, spawned);
+});
+
+test('native role presets dispatch and persist roles, sandbox ceilings and saved defaults', async () => {
+  for (const [role, sandbox] of [['reviewer', 'read-only'], ['implementer', 'workspace-write'], ['investigator', 'read-only']]) {
+    const type = `codex:codex-${role}`, f = fixture('review-ok', `preset-${role}`);
+    const first = await f.turn('DUET: --model fixture-model --effort high --fast\nFirst role assignment.', 1, false, { agentType: type });
+    assert.equal(first.status, 'completed');
+    const initial = f.jobs().find(job => job.id === first.jobId);
+    assert.equal(initial.request.sandbox, sandbox);
+    assert.equal(initial.request.agentType, type);
+    assert.equal(initial.request.model, 'fixture-model');
+    assert.equal(initial.request.effort, 'high');
+    assert.equal(initial.request.serviceTier, 'priority');
+    assert.match(initial.request.prompt, new RegExp(`Codex ${role} role`));
+    f.reload();
+    const second = await f.turn('Continue the role assignment.', 2, false, { wake: true });
+    const followup = f.jobs().find(job => job.id === second.jobId);
+    assert.equal(followup.threadId, initial.threadId);
+    assert.equal(followup.request.sandbox, sandbox);
+    assert.equal(followup.request.agentType, type);
+    assert.equal(followup.request.model, initial.request.model);
+    assert.equal(followup.request.effort, initial.request.effort);
+    assert.equal(followup.request.serviceTier, initial.request.serviceTier);
+    assert.match(followup.request.prompt, new RegExp(`Codex ${role} role`));
+    const conflict = await f.turn('DUET: --sandbox danger-full-access\nRefuse the sandbox override.', 3, false, { wake: true });
+    assert.equal(conflict.blockers[0].code, 'native_preset_sandbox');
+    assert.equal(f.jobs().length, 2);
+    const planned = await f.turn('Continue read-only planning.', 4, false, { agentType: type, permissionMode: 'plan' });
+    assert.equal(planned.status, 'completed');
+    assert.equal(f.jobs().find(job => job.id === planned.jobId).request.sandbox, 'read-only');
+  }
+});
 
 test('real companion: dispatch, completion and reload follow-up reuse the Codex thread/cwd without a model', async () => {
   const f = fixture('slow-recovery-task', 'f7-x');
@@ -508,10 +995,154 @@ test('real companion: dispatch, completion and reload follow-up reuse the Codex 
   assert.equal(Object.values(scoped.readStore())[0].cwd, sub);
 });
 
+test('SubagentStart context is bounded, injected after header parsing once, and late context waits for a follow-up', async () => {
+  const f = fixture('review-ok');
+  const start = { session_id: 'native-session', agent_id: 'native-agent', agent_type: AGENT_TYPE };
+  const early = { additionalContext: ['Use the fixture conventions.', 'Use the fixture conventions.'] };
+  assert.deepEqual(await f.invoke('classic.SubagentStart', start, async () => early), early);
+  f.reload();
+  let release, late;
+  const oversized = 'Late fixture guidance. ' + 'x'.repeat(20000);
+  await f.turn('DUET: --model fixture-model --effort high --fast\nFirst assignment.', 1, false, {
+    afterSpawn: () => { late = f.invoke('classic.SubagentStart', start, () => new Promise(resolve => { release = resolve; })); },
+    beforeComplete: async () => { release({ additionalContext: [oversized] }); await late; },
+  });
+  const tasks = () => f.capture.processes.filter(p => p.kind === 'spawn' && p.request.argv[2] === 'task');
+  assert.equal(tasks()[0].request.input, 'Context from SubagentStart hooks:\nUse the fixture conventions.\n\nFirst assignment.');
+  assert.ok(tasks()[0].request.argv.includes('fixture-model'));
+  assert.ok(tasks()[0].request.argv.includes('--fast'));
+  f.reload();
+  await f.invoke('classic.SubagentStart', start, async () => ({ additionalContext: [...early.additionalContext, oversized] }));
+  await f.turn('Second assignment.', 2);
+  assert.match(tasks()[1].request.input, /^Context from SubagentStart hooks:\nLate fixture guidance\./);
+  assert.ok(tasks()[1].request.input.length < 17000);
+  assert.ok(!tasks()[1].request.input.includes('Use the fixture conventions.'));
+  assert.ok(tasks()[1].request.input.endsWith('\n\nSecond assignment.'));
+  f.reload();
+  await f.invoke('classic.SubagentStart', start, async () => ({ additionalContext: [oversized] }));
+  await f.turn('Third assignment.', 3);
+  assert.equal(tasks()[2].request.input, 'Third assignment.');
+});
+
+test('refused starts release lifecycle context and abandoned sidecars expire after ten minutes', async () => {
+  const f = fixture('review-ok', 'refused-context', { hostOnly: true });
+  f.$.agent.list = async () => [{ id: 'refused', type: AGENT_TYPE }];
+  f.setStore({ 'native:v2:foreign:active': { v: 2, session: 'foreign', agentId: 'active', type: AGENT_TYPE,
+    incoming: { turnId: 'held', text: 'x'.repeat(524288) } } });
+  await f.invoke('agent.spawn', { subagentType: AGENT_TYPE, tool_use_id: 'refused-spawn', name: 'refused-context' },
+    async () => ({ model: 'haiku', agentId: 'refused' }));
+  const start = { session_id: 'native-session', agent_id: 'refused', agent_type: AGENT_TYPE };
+  const sidecar = 'native:lifecycle:v1:native-session:refused';
+  await f.invoke('classic.SubagentStart', start, async () => ({ additionalContext: ['x'.repeat(16384)] }));
+  await f.invoke('turn.start', { agentId: 'refused', turnId: 'full', text: 'No room.' }, async e => ({ turnId: e.turnId }));
+  assert.equal(f.readStore()[sidecar], undefined);
+  assert.equal(JSON.parse((await f.invoke('turn.step', { agentId: 'refused', turnId: 'full', index: 0 },
+    async function* () { throw new Error('Refused start reached Claude'); })).answer).blockers[0].code, 'native_capacity');
+  f.setStore({}); f.reload();
+  await f.invoke('agent.spawn', { subagentType: AGENT_TYPE, tool_use_id: 'resume-missing', resume: { agentId: 'refused' } },
+    async () => ({ model: 'haiku', agentId: 'refused' }));
+  await f.invoke('classic.SubagentStart', start, async () => ({ additionalContext: ['x'.repeat(16384)] }));
+  await f.invoke('turn.start', { agentId: 'refused', turnId: 'missing', text: 'No binding.' }, async e => ({ turnId: e.turnId }));
+  assert.equal(f.readStore()[sidecar], undefined);
+  assert.equal(JSON.parse((await f.invoke('turn.step', { agentId: 'refused', turnId: 'missing', index: 0 },
+    async function* () { throw new Error('Missing binding reached Claude'); })).answer).blockers[0].code, 'native_binding_gone');
+  const now = await f.$.clock.now(), prefix = 'native:lifecycle:v1:native-session:';
+  f.setStore({ [prefix + 'orphan']: { at: now - 600000, contexts: [{ text: 'Expired' }] },
+    [prefix + 'pending']: { at: now - 600000, contexts: [{ text: 'Pending' }] },
+    [prefix + 'bound']: { at: now - 600000, contexts: [{ text: 'Bound' }] },
+    'native:v2:native-session:bound': { type: AGENT_TYPE },
+    [prefix + 'recent']: { at: now - 599999, contexts: [{ text: 'Recent' }] } });
+  await lifecycleStoreSize(f.$, { keys: Object.keys(f.readStore()), now,
+    pending: key => key === 'native:v2:native-session:pending' });
+  assert.equal(f.readStore()[prefix + 'orphan'], undefined);
+  assert.ok(f.readStore()[prefix + 'pending']);
+  assert.ok(f.readStore()[prefix + 'bound']);
+  assert.ok(f.readStore()[prefix + 'recent']);
+});
+
+test('SubagentStop feedback gets one durable Codex attempt per job, on the same thread, up to the cap', async () => {
+  const f = fixture('review-ok');
+  f.withUsage({ inputTokens: 150, cachedInputTokens: 40, outputTokens: 30, totalTokens: 180 });
+  const journal = spawnSync(process.execPath, [plugin + '/bin/duet', 'journal', 'start', '--session', 'native-session',
+    '--cwd', `${f.root}/repo`, '--json'], { env: f.env, input: JSON.stringify({ goal: 'Lifecycle fixture', criteria: [] }), encoding: 'utf8' });
+  assert.equal(journal.status, 0, journal.stderr);
+  let report = await f.turn('Initial assignment.', 1);
+  const reports = [report], feedback = { block: 'Verify the fixture again.', additionalContext: ['Preserve this host field.'] };
+  const alreadyActive = await f.invoke('classic.SubagentStop', { session_id: 'native-session', agent_id: 'native-agent', agent_type: AGENT_TYPE,
+    stop_hook_active: true, last_assistant_message: JSON.stringify(report) }, async () => feedback);
+  assert.deepEqual(alreadyActive, { additionalContext: feedback.additionalContext });
+  const step = index => f.invoke('turn.step', { agentId: 'native-agent', turnId: 'turn-1', index, model: 'haiku', messageCount: index + 1 },
+    async function* () { throw new Error('Unexpected Claude request'); });
+  for (let index = 1; index <= 3; index++) {
+    const event = { session_id: 'native-session', agent_id: 'native-agent', agent_type: AGENT_TYPE,
+      stop_hook_active: index > 1, last_assistant_message: JSON.stringify(report) };
+    assert.deepEqual(await f.invoke('classic.SubagentStop', event, async () => feedback), feedback);
+    f.reload();
+    assert.deepEqual(await f.invoke('classic.SubagentStop', event, async () => feedback), feedback);
+    const simultaneous = await Promise.all([step(index), step(index)]);
+    assert.deepEqual(simultaneous[0], simultaneous[1]);
+    report = JSON.parse(simultaneous[0].answer);
+    assert.equal(report.status, 'completed');
+    reports.push(report);
+    const notices = f.capture.notices.map(n => n.message.content[0].text);
+    assert.equal(notices.filter(text => text.startsWith('Codex worker ')).length, reports.length);
+    assert.equal(notices.filter(text => text.startsWith('Codex tokens (provider:')).length, reports.length);
+    f.reload();
+    assert.deepEqual(JSON.parse((await step(index)).answer), report);
+    assert.equal(f.codexState().nextTurnId, index + 2);
+    const task = f.capture.processes.filter(p => p.kind === 'spawn' && p.request.argv[2] === 'task').at(-1);
+    assert.equal(task.request.input, 'Feedback from SubagentStop hooks:\nVerify the fixture again.');
+  }
+  const capped = await f.invoke('classic.SubagentStop', { session_id: 'native-session', agent_id: 'native-agent', agent_type: AGENT_TYPE,
+    stop_hook_active: true, last_assistant_message: JSON.stringify(report) }, async () => feedback);
+  assert.deepEqual(capped, { additionalContext: feedback.additionalContext });
+  assert.ok(f.capture.notices.some(n => /SubagentStop.*cap reached/.test(n.message.content[0].text)));
+  assert.deepEqual(JSON.parse((await step(4)).answer), report);
+  const jobs = f.jobs();
+  assert.equal(jobs.length, 4);
+  assert.equal(new Set(jobs.map(job => job.threadId)).size, 1);
+  assert.equal(new Set(jobs.map(job => job.dispatchNonce)).size, 4);
+  assert.equal(new Set(reports.map(result => result.jobId)).size, 4);
+  const run = jobs[0];
+  const entries = fs.readFileSync(path.join(run.runStateDir, 'runs', run.runId, 'journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(entries.filter(entry => entry.type === 'job_finished').map(entry => entry.jobId).sort(), reports.map(result => result.jobId).sort());
+});
+
+test('SubagentStop cannot answer a pending question or continue an unresolved Codex turn', async () => {
+  const f = fixture('parent-question-sequence');
+  const report = await f.turn('Ask the fixture parent.', 1);
+  assert.equal(report.status, 'needs_answer');
+  const feedback = { block: 'Keep working without an answer.', additionalContext: ['Preserve host context.'] };
+  const event = { session_id: 'native-session', agent_id: 'native-agent', agent_type: AGENT_TYPE,
+    stop_hook_active: false, last_assistant_message: JSON.stringify(report) };
+  assert.deepEqual(await f.invoke('classic.SubagentStop', event, async () => feedback), { additionalContext: feedback.additionalContext });
+  assert.ok(f.capture.notices.some(n => /SubagentStop.*question pending/.test(n.message.content[0].text)));
+  f.reload();
+  const step = await f.invoke('turn.step', { agentId: 'native-agent', turnId: 'turn-1', index: 1, model: 'haiku', messageCount: 2 },
+    async function* () { throw new Error('Unexpected Claude request'); });
+  assert.deepEqual(JSON.parse(step.answer), report);
+  assert.equal(f.codexState().nextTurnId, 2);
+  assert.equal(f.capture.processes.filter(p => p.request.argv[2] === 'answer').length, 0);
+  const state = f.readStore();
+  const binding = state['native:v2:native-session:native-agent'];
+  binding.status = 'unknown'; delete binding.answeredTurn;
+  binding.answer = { status: 'blocked', jobId: report.jobId, blockers: [{ code: 'thread_busy' }] };
+  f.setStore(state);
+  assert.deepEqual(await f.invoke('classic.SubagentStop', { ...event, last_assistant_message: JSON.stringify(binding.answer) }, async () => feedback),
+    { additionalContext: feedback.additionalContext });
+  assert.ok(f.capture.notices.some(n => /SubagentStop.*unresolved turn/.test(n.message.content[0].text)));
+  assert.equal(f.jobs().length, 1);
+  assert.equal(f.codexState().nextTurnId, 2);
+});
+
 test('real companion: question/answer stays on the job; abort interrupts fake Codex and persists cancellation', async t => {
   const question = fixture('parent-question-sequence');
   const asked = await question.turn('Ask the fake parent a question.', 1);
   assert.equal(asked.status, 'needs_answer'); assert.ok(asked.question.id);
+  const deferred = steer(question, question.jobs()[0], 'question-answer', 'Small');
+  assert.equal(deferred.status, 'deferred'); assert.equal(deferred.reason, 'pending_question');
+  assert.equal(deferred.fallback, true);
+  assert.equal(question.codexState().steers, undefined);
   assert.ok(question.capture.notices.some(n => n.message.content[0].text === `? Waiting for Claude: ${asked.question.text}`));
   question.reload();
   // Entering plan mode cannot answer into a previously writable live turn.
@@ -549,20 +1180,35 @@ test('real companion: question/answer stays on the job; abort interrupts fake Co
     assert.equal(response.status, 0, response.stderr);
   };
   externalAnswer(displayed.question);
-  const laterQuestion = await until(() => late.jobs().find(job => job.id === original.id)?.pendingQuestion?.id !== displayed.question.id
-    && late.jobs().find(job => job.id === original.id)?.pendingQuestion);
-  externalAnswer(laterQuestion);
+  // A late answer while Codex keeps working stays attached as the owner wait
+  // and returns the next real state, never a running snapshot.
+  const waited = await late.turn('Late Q1 answer', 2);
+  assert.equal(waited.jobId, original.id); assert.equal(waited.status, 'needs_answer');
+  assert.notEqual(waited.question.id, displayed.question.id);
+  assert.equal(late.capture.processes.filter(p => p.request.argv[2] === 'answer').length, 0);
+  externalAnswer(waited.question);
   await until(() => late.jobs().find(job => job.id === original.id)?.status === 'completed');
   late.reload();
-  const resolvedAnswer = await late.turn('Late Q1 answer', 2);
+  const resolvedAnswer = await late.turn('Late Q2 answer', 3);
   assert.equal(resolvedAnswer.jobId, original.id); assert.equal(resolvedAnswer.status, 'completed');
   assert.equal(late.codexState().nextTurnId, 2);
   assert.equal(late.capture.processes.filter(p => p.kind === 'spawn' && p.request.argv[2] === 'task').length, 1);
   late.reload();
-  const continuation = await late.turn('Start the next assignment.', 3);
+  const continuation = await late.turn('Start the next assignment.', 4);
   assert.notEqual(continuation.jobId, original.id);
   assert.equal(late.jobs().find(job => job.id === continuation.jobId).threadId, original.threadId);
   assert.equal(late.codexState().nextTurnId, 3);
+
+  // Plan mode never reattaches to a writable job, even only to wait.
+  const planLate = fixture('parent-question-sequence');
+  const planShown = await planLate.turn('Ask before a plan-mode late answer.', 1), planJob = planLate.jobs()[0];
+  const planAnswer = spawnSync(process.execPath, [plugin + '/scripts/codex-companion.mjs', 'answer', planJob.id,
+    '--question', planShown.question.id, '--owner', planJob.ownerId, '--json', '--session', 'native-session'],
+  { cwd: planJob.workspaceRoot, env: planLate.env, input: 'Small', encoding: 'utf8' });
+  assert.equal(planAnswer.status, 0, planAnswer.stderr);
+  const planned = await planLate.turn('Late answer from plan mode', 2, false, { permissionMode: 'plan' });
+  assert.equal(planned.blockers[0].code, 'native_plan_mode_read_only');
+  assert.equal(planLate.capture.processes.filter(p => ['wait', 'answer'].includes(p.request.argv[2])).length, 0);
 
   const approvals = fixture('server-requests');
   const denied = await approvals.turn('Run fixture approval requests.', 1);
@@ -855,6 +1501,28 @@ test('native middle truncation preserves regional-indicator suffix order', async
   assert.equal(f.jobs()[0].activity.find(event => event.type === 'commandExecution').command, command);
 });
 
+test('durable activity keeps failed exit codes and file summaries within its display bound', async () => {
+  const f = fixture('review-ok', 'native-worker', { mutable: true });
+  f.$.command = { list: async () => [{ name: 'codex-live' }] };
+  const file = `${f.root}/bin/codex`, source = fs.readFileSync(file, 'utf8');
+  const needle = 'if (BEHAVIOR.startsWith("lost-turn:") && turnId === "turn_1")';
+  const items = [{ completed: { type: 'commandExecution', id: 'failed', command: 'node ' + 'x'.repeat(300), status: 'failed', exitCode: 7 } },
+    { completed: { type: 'fileChange', id: 'changed', status: 'completed', changes: [
+      { path: '/workspace/' + 'long-path/'.repeat(22) + 'file.mjs', kind: 'update', diff: '@@ -1,2 +1,3 @@\n-old\n-old\n+new\n+new\n+new\n' },
+    ] } }];
+  assert.ok(source.includes(needle));
+  fs.writeFileSync(file, source.replace(needle, `items.unshift(...${JSON.stringify(items)});\n${needle}`));
+  const report = await f.turn('Capture bounded activity.', 1);
+  assert.equal(report.status, 'completed');
+  const texts = f.capture.notices.map(notice => notice.message.content[0].text);
+  assert.ok(texts.some(text => text.includes('Bash(') && text.endsWith('Error: exit 7') && text.length <= 200));
+  assert.ok(texts.some(text => text.includes('Update(') && text.endsWith('+3 −2') && text.length <= 200));
+  assert.ok(texts.some(text => text.includes('Open Codex activity: /codex-live native-worker')));
+  const markdown = renderLeaves(await f.invoke('ui.render', { component: 'AssistantMessage', props: { text: JSON.stringify(report) } },
+    async e => ({ type: 'Engine', props: { text: e.props.text } }))).join('');
+  assert.match(markdown, /Codex usage \(provider: OpenAI Codex, model gpt-6-astra\): 150 input · 40 cached · 30 output · 10 reasoning · 180 total tokens/);
+});
+
 test('native run logs settle unmatched starts after confirmed cancellation', async () => {
   const f = fixture('interruptible-slow-task', 'native-worker', { mutable: true }), text = 'Run until stopped.';
   const file = `${f.root}/bin/codex`, source = fs.readFileSync(file, 'utf8');
@@ -903,9 +1571,11 @@ test('native headers project flags, preserve ordinary briefs and reject malforme
   assert.equal(initialTask.request.argv.includes('--sandbox'), false);
   assert.equal(initialTask.request.argv.includes('--effort'), false);
   assert.ok(renderLeaves(await renderNativePrompt(literal, initial)).includes(initial));
-  const text = ` \tDUET:\t--sandbox danger-full-access --effort xhigh --model gpt-6-sol --fast\r\n${brief}`;
+  const text = ` \tDUET:\t--sandbox danger-full-access --effort xhigh --model gpt-6-sol --fast --max-minutes 5 --max-tokens=1000\r\n${brief}`;
   assert.equal((await f.turn(text, 1, false, appendRenderPrompt(f, text))).status, 'completed');
   const first = f.jobs()[0];
+  assert.equal(first.budget.maxMinutes, 5);
+  assert.equal(first.budget.maxTokens, 1000);
   assert.deepEqual(Object.fromEntries(['sandbox', 'effort', 'model', 'serviceTier', 'prompt'].map(key => [key, first.request[key]])),
     { sandbox: 'danger-full-access', effort: 'xhigh', model: 'gpt-6-sol', serviceTier: 'priority', prompt: brief });
   assert.ok(renderLeaves(await renderNativePrompt(f, text)).includes(brief));
@@ -1113,6 +1783,12 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   assert.equal(notices.length, 1);
   assert.ok(notices[0].message.content[0].text.includes('8,000'));
   assert.ok(notices[0].message.content[0].text.includes('678'));
+  assert.ok(notices[0].message.content[0].text.includes('13,023 total'));
+  assert.ok(notices[0].message.content[0].text.startsWith('Codex tokens (provider: OpenAI Codex, model gpt-6-astra)'));
+  const { value: activity } = await invalid.$.state.get({ plugin: 'codex', key: 'nativeAgents' });
+  assert.equal(activity['native-agent'].jobId, planned.jobId);
+  assert.equal(activity['native-agent'].threadId, continuedJob.threadId);
+  assert.equal(activity['native-agent'].workspace, `${invalid.root}/repo`);
 
   // Availability failure is a structured pre-reservation rejection too; its
   // wording is deliberately unrelated to invalid DUET flags.
@@ -1161,6 +1837,35 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   planFirst.reload();
   assert.equal((await planFirst.turn('Corrected first plan.', 2, false, { permissionMode: 'plan' })).status, 'completed');
   assert.equal(planFirst.jobs()[0].request.sandbox, 'read-only');
+
+  // Opt-in permission mapping captures host context before parsing --cwd,
+  // reapplies on resume, and refuses an already-live turn under a new mode.
+  const enableMapping = f => {
+    const setup = spawnSync(process.execPath, [plugin + '/scripts/codex-companion.mjs', 'setup', '--permission-mapping', 'claude', '--json'],
+      { cwd: `${f.root}/repo`, env: f.env, encoding: 'utf8' });
+    assert.equal(setup.status, 0, setup.stderr);
+  };
+  const mapped = fixture('review-ok'); enableMapping(mapped);
+  assert.equal((await mapped.turn('DUET: --sandbox danger-full-access\nMapped default.', 1)).status, 'completed');
+  assert.equal(mapped.codexState().lastTurnStart.sandboxPolicy.type, 'workspaceWrite');
+  assert.equal(mapped.codexState().lastTurnStart.approvalPolicy, 'untrusted');
+  mapped.reload();
+  assert.equal((await mapped.turn('Resume with read-only permissions.', 2, false, { permissionMode: 'plan' })).status, 'completed');
+  assert.equal(mapped.codexState().lastTurnStart.sandboxPolicy.type, 'readOnly');
+  assert.equal(mapped.codexState().lastTurnStart.approvalPolicy, 'never');
+  const confined = fixture('review-ok'); enableMapping(confined);
+  const isolated = `${confined.root}/repo/.claude/worktrees/fixture`;
+  fs.mkdirSync(isolated, { recursive: true }); confined.$.session.cwd = async () => isolated;
+  const outside = await confined.turn(`DUET: --cwd "${confined.root}/repo"\nCannot leave the worktree.`, 1);
+  assert.equal(outside.status, 'blocked');
+  assert.equal(confined.jobs().length, 0);
+  const liveMapped = fixture('parent-question-sequence'); enableMapping(liveMapped);
+  assert.equal((await liveMapped.turn('Park at a parent question.', 1)).status, 'needs_answer');
+  liveMapped.reload();
+  const tightened = await liveMapped.turn('Do not answer under a wider live policy.', 2, false, { permissionMode: 'auto' });
+  assert.equal(tightened.blockers[0].code, 'native_permission_mode_changed');
+  assert.equal(liveMapped.capture.processes.filter(p => p.request.argv[2] === 'answer').length, 0);
+  assert.ok(liveMapped.jobs()[0].cancelRequested);
 
   // The host can continue a spawned agent after the hook's binding write fails.
   // Memory recovers mode/effort; a reload with only the failure guard blocks.
@@ -2471,6 +3176,7 @@ function replayCaptures() {
       fs.mkdirSync(`${copy}/.claude-plugin`, { recursive: true });
       fs.mkdirSync(`${copy}/tests`);
       fs.copyFileSync(`${plugin}/.claude-plugin/plugin.json`, `${copy}/.claude-plugin/plugin.json`);
+      fs.cpSync(`${plugin}/types`, `${copy}/types`, { recursive: true });
       fs.cpSync(`${plugin}/hooks`, `${copy}/hooks`, { recursive: true });
       fs.mkdirSync(`${copy}/scripts/lib`, { recursive: true });
       fs.copyFileSync(`${plugin}/scripts/lib/agent-name-pool.mjs`, `${copy}/scripts/lib/agent-name-pool.mjs`);

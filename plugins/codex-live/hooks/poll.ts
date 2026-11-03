@@ -2,7 +2,7 @@ import { atom, read } from 'claude-code';
 import type { EngineInterface } from 'claude-code';
 import type { CodexLiveJob, CodexLiveMarker, CodexLiveState } from '../types';
 import { ATTENTION_SESSION_LIMIT, attention, boundState, clean, detailedTurns, expireQuestion, fitState, groupedSessions, jobSummary, jobView, markerView, normalizeSessions, oldestJob,
-  retainedTurns, sessionForId, sessionId, statusLine, unavailableJob, visibleSessions } from './model';
+  retainedTurns, sessionForId, sessionId, statusLine, unavailableJob, usageSnapshots, visibleSessions } from './model';
 import { feedLines, paneLayout, normalizeFeed, recentEndedJobIds, selectedJob } from './layout';
 import { checkedView, publishView, reportFailure, updateFailure, viewports } from './runtime';
 
@@ -432,6 +432,8 @@ export function createPoller($: EngineInterface, diagnostics?: {
         const stale = jobs.some(job => job.detailsUnavailable);
         const nowMs = stale || jobs.some(job => !job.finished) ? Math.floor(now / 5000) * 5000 : latest.nowMs;
         let candidate: CodexLiveState = { ...latest, jobs, selectedId, nowMs, sessionId: currentSession,
+          ...(latest.usageByJob || newest.some(entry => entry.job.usage) ? { usageByJob: usageSnapshots(
+            Object.fromEntries(Object.entries(latest.usageByJob ?? {}).filter(([id]) => !foreignJobs.has(id))), newest.map(entry => entry.job)) } : {}),
           turnCounts: Object.fromEntries(Object.entries(turnCounts).filter(([id]) => retainedSessions.has(id))),
           discoveryWarning, attentionOmitted,
           spinnerTick: active && (paneOpen || newlyActive.length) ? Math.floor(now / 1000) : latest.spinnerTick,

@@ -1,16 +1,19 @@
 // Native adapter for the early-access Claude Code 2.1.302 function-hook API.
 // No Node globals/imports in this sandbox; all host work goes through $.
-import { TIER_1_NAMES, TIER_2_NAMES, TIER_3_NAMES } from '../scripts/lib/agent-name-pool.mjs';
 import { cleanDisplayText } from '../scripts/lib/display-text.mjs';
-export const AGENT_TYPE = 'codex:codex-native';
-const PREFIX = 'native:v2:';
+import { lifecycleStoreSize, forgetLifecycle, pendingLifecycle, captureStartContext, lifecycleBrief, observeStop, prepareLifecycleStep, abandonLifecycleStop } from './lifecycle-hooks.mjs';
+import { registerSteering } from './steering.mjs';
+import { AGENT_TYPE, PRESETS, isNativeType, applyPreset } from './presets.mjs';
+import { PREFIX, BINDING_FAILED, keyFor, bindingFailedKey, startedTypes, knownTypes, ours } from './native-identity.mjs';
+import { register as teammateReceive, teammateUnsupported, paneTeammate } from './native-teams.mjs';
+export { AGENT_TYPE } from './presets.mjs';
 const ACTIVE = ['queued', 'running'];
 const WAIT_TIMEOUT_SEC = '3600';
 const HEARTBEAT_MS = 30000;
 const EARLY_HANDLES_MS = 1500;
 const READY = 'Native Codex workers ready: Agent(subagent_type: "codex:codex-native", prompt) — optional first line "DUET: <flags>"; SendMessage to continue or answer; stop from /tasks; live progress shows inside the agent and in codex-live.';
 const GUIDE_ID = 'codex:native-dispatch';
-const NATIVE_GUIDE = 'Native Codex workers are ready. Dispatch Codex with Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (the plugin assigns a scientist name, replacing a passed label unless it is a free pool name; the assigned name appears in the Agent result); an optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast|--normal --fork --cwd <dir> sets task flags. The agent result is the Duet report; continue a worker or answer its question with SendMessage. Browser work and Computer Use run natively: an app not yet approved arrives as an approval question answered through SendMessage. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.';
+const NATIVE_GUIDE = 'Native Codex workers are ready. Dispatch Codex with Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (a valid caller name is kept when free; otherwise the plugin assigns a scientist name and reports it in context); use codex:codex-reviewer for read-only review, codex:codex-investigator for read-only investigation, or codex:codex-implementer for workspace-write implementation. Presets inherit saved model/effort/speed defaults. An optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast|--normal --fork --cwd <dir> sets task flags; preset sandbox overrides are refused. The agent result is the Duet report; continue a worker or answer its question with SendMessage. In-process teammates support bounded assignments, parent follow-ups and stop; team task claiming, plan approval and peer mailboxes are unsupported. Browser work and Computer Use run natively: an app not yet approved arrives as an approval question answered through SendMessage. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.';
 const PERSON_ORIGINS = ['composer', 'bridge', 'sdk'];
 const GUIDANCE_TTL_MS = 60000;
 let guidanceCache = null;
@@ -64,7 +67,6 @@ async function nativeGuidanceEnabled($) {
 // cancelled and failed jobs need a confirmed cancellation instead.
 const ENDED = ['completed', 'needs_input', 'blocked'];
 const CLOSED = 'native:closed:v1:';
-const BINDING_FAILED = 'native:binding-failed:v1:';
 // Mirror state.mjs unresolvedTask's failed-result rule. A failed transport
 // without a confirmed end may still own its turn; a worker failure has ended.
 const failedEnded = job => job.status === 'failed' && (job.recovered || (job.result
@@ -79,12 +81,39 @@ const ended = (job, state) => (['interrupted', 'cancelled'].includes(job.status)
     && (ENDED.includes(job.status) || failedEnded(job)));
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_RECORDS = 128, MAX_STORE_SIZE = 2 * 1024 * 1024;
+const nativeAgents = { plugin: 'codex', key: 'nativeAgents' };
+// Display metadata only; the durable binding remains the execution authority.
+async function publishActivity($, state, job) {
+  try {
+    const current = await $.store.get(keyFor(state.session, state.agentId));
+    if (current && bindingTurn(current) !== bindingTurn(state)) return;
+    const entry = { jobId: job.id, threadId: job.threadId || '', workspace: job.request?.cwd || state.cwd || '',
+      name: job.agentName || state.name || state.agentId, model: job.request?.model || 'unknown' };
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const { value = {}, version } = await $.state.get(nativeAgents);
+      const models = { ...value[state.agentId]?.models, [entry.jobId]: entry.model };
+      entry.models = Object.fromEntries(Object.entries(models).slice(-20));
+      const next = { ...value, [state.agentId]: entry };
+      if (JSON.stringify(value[state.agentId]) === JSON.stringify(entry)) return;
+      const bounded = Object.fromEntries(Object.entries(next).slice(-MAX_RECORDS));
+      if ((await $.state.set(nativeAgents, bounded, { ifVersion: version })).isSet) return;
+    }
+  } catch { /* Optional pane metadata must never affect job ownership. */ }
+}
+async function activityModel($, jobId) {
+  try {
+    const { value = {} } = await $.state.get(nativeAgents);
+    for (const entry of Object.values(value)) {
+      if (typeof entry.models?.[jobId] === 'string') return entry.models[jobId];
+      if (entry.jobId === jobId && typeof entry.model === 'string') return entry.model;
+    }
+  } catch { /* Older hosts may not expose plugin state. */ }
+  return 'unknown';
+}
 const stateSize = state => JSON.stringify(state ?? null).length * 4;
 const finished = state => state?.finishedAt && !state.incoming
   && state.status !== 'needs_answer' && state.answer?.status !== 'needs_answer';
-const ALLOWED = '--model, --effort, --sandbox, --fast/--normal, --cwd, --fork';
-const startedTypes = new Map();
-const knownTypes = new Map();
+const ALLOWED = '--model, --effort, --sandbox, --fast/--normal, --cwd, --fork, --max-minutes, --max-tokens';
 // Display only: an entry exists only while this module owns a live flight.
 const liveProgress = new Map();
 const toolAgents = new Map(), agentDisplays = new Map();
@@ -485,16 +514,16 @@ function promptDisplay(text) {
     cwd?.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || cwd];
   return { text: brief, header: parts.filter(Boolean).map(part => part.replace(/\s+/g, ' ')).join(' · ') };
 }
-const keyFor = (session, id) => `${PREFIX}${session}:${id}`;
 const closedKey = (session, id) => `${CLOSED}${session}:${id}`;
-const bindingFailedKey = (session, id) => `${BINDING_FAILED}${session}:${id}`;
 const nonceFor = (session, agent, turn) => [session, agent, turn].map(encodeURIComponent).join(':');
 const nativeNext = (state, status, blockers = []) => {
   const blocker = status === 'blocked' && blockers.find(blocker =>
-    ['context_window_exceeded', 'provider_refused', 'auth_required'].includes(blocker.code));
+    ['context_window_exceeded', 'provider_refused', 'auth_required', 'native_remote_isolation', 'native_teammate_unsupported'].includes(blocker.code));
   if (blocker?.code === 'context_window_exceeded') return 'Start a new native agent with a shorter brief.';
   if (blocker?.code === 'provider_refused') return 'Start a new native agent with a reworded brief.';
   if (blocker?.code === 'auth_required') return 'Run /codex:setup, then start a new native agent.';
+  if (blocker?.code === 'native_remote_isolation') return 'Start a local native agent, optionally with isolation: "worktree".';
+  if (blocker?.code === 'native_teammate_unsupported') return 'Use in-process teammate mode or a local subagent; stop any pane teammate already started.';
   return `SendMessage to ${state.name || state.agentId} ${status === 'needs_answer' ? 'with the answer' : 'to continue'}`;
 };
 // Catch next is replay-safe (d.ts 1211-1213), even after a successful spawn.
@@ -523,7 +552,7 @@ const REPORT_FIELDS = new Set(['status', 'worker', 'jobId', 'summary', 'summaryT
   'changedFilesOmitted', 'keyFindingsOmitted', 'assumptionsOmitted', 'blockersOmitted',
   'verificationOmitted', 'claimedVerificationOmitted', 'touchedFilesOmitted', 'preExistingChangesOmitted',
   'approvedBrowserOriginsOmitted', 'approvedComputerAppsOmitted']);
-function reportMarkdown(props) {
+function reportMarkdown(props, model = 'unknown') {
   if (Object.hasOwn(props, 'isSummary') || typeof props.text !== 'string') return null;
   let report;
   try { report = JSON.parse(props.text.trim()); } catch { return null; }
@@ -583,7 +612,7 @@ function reportMarkdown(props) {
     ['reasoningOutputTokens', 'reasoning'], ['totalTokens', 'total']]
     .filter(([key]) => Number.isSafeInteger(report.usage?.[key]) && report.usage[key] >= 0)
     .map(([key, label]) => `${report.usage[key]} ${label}`);
-  if (usage.length) tail.push('', `Usage: ${usage.join(' · ')} tokens`);
+  if (usage.length) tail.push('', `Codex usage (provider: OpenAI Codex, model ${plain(model)}): ${usage.join(' · ')} tokens`);
   if (report.next) tail.push('', plain(report.next));
   // At most 60 lines, including all section/omission spacing and the next action.
   return [...(lines.length + tail.length > 60 ? [...lines.slice(0, 59 - tail.length), '…'] : lines), ...tail].join('\n');
@@ -591,27 +620,10 @@ function reportMarkdown(props) {
 // Details name the exact job: a worker name moves to its newest job after a follow-up.
 const nativeDetails = state => state.jobId ? `duet result '${state.jobId}' --details` : state.worker ? `duet result ${state.worker} --details` : null;
 function blocked(message, state = {}, code = 'native_adapter_error') {
-  const summary = boundedText(message, 1200);
+  const summary = boundedText(message, 1200), blockers = [{ code, message: summary }];
   return { status: 'blocked', worker: state.worker || null, jobId: state.jobId || null, summary,
-    blockers: [{ code, message: summary }], next: nativeNext(state, 'blocked'),
+    blockers, next: nativeNext(state, 'blocked', blockers),
     details: nativeDetails(state) };
-}
-
-async function ours($, id) {
-  if (!id) return null;
-  const session = await $.session.id(), key = keyFor(session, id);
-  const startedType = startedTypes.get(key);
-  if (startedType && startedType !== AGENT_TYPE) return null;
-  let row;
-  try { row = (await $.agent.list()).find(agent => agent.id === id); }
-  catch { /* SubagentStart identifies even a first turn during list outages. */ }
-  if (row) { knownTypes.set(id, row.type); return row.type === AGENT_TYPE ? row : null; }
-  // agent.spawn records the type as soon as the host returns the id; turn.start
-  // can arrive before the list shows the agent, and it writes the store itself.
-  if (startedType === AGENT_TYPE || knownTypes.get(id) === AGENT_TYPE) return { id };
-  const state = await $.store.get(key);
-  if (state?.type === AGENT_TYPE) return { id, name: state.name };
-  return await $.store.get(bindingFailedKey(session, id)) ? { id } : null;
 }
 
 // A small argv tokenizer, never a shell. Quotes/backslashes allow cwd with spaces;
@@ -640,7 +652,7 @@ function parsePrompt(text) {
   if (present) tokens.push(token);
   const flags = [], seen = new Set(); let cwd;
   for (let i = 0; i < tokens.length; i++) {
-    const match = /^(--[a-z]+)(?:=(.*))?$/.exec(tokens[i]);
+    const match = /^(--[a-z]+(?:-[a-z]+)*)(?:=(.*))?$/.exec(tokens[i]);
     if (!match) invalid();
     const [, flag, inline] = match;
     if (seen.has(flag)) invalid();
@@ -649,7 +661,7 @@ function parsePrompt(text) {
       if (inline !== undefined || (seen.has('--fast') && seen.has('--normal'))) invalid();
       flags.push(flag); continue;
     }
-    if (!['--model', '--effort', '--sandbox', '--cwd'].includes(flag)) invalid();
+    if (!['--model', '--effort', '--sandbox', '--cwd', '--max-minutes', '--max-tokens'].includes(flag)) invalid();
     const value = inline ?? tokens[++i];
     if (!value || value.startsWith('--') || value.includes('\0')) invalid();
     if (flag === '--cwd') cwd = value;
@@ -786,7 +798,7 @@ async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = 
     const at = missingSince.get(key).at + (parked ? timeout : 0);
     return now - at >= SPAWN_GRACE_MS ? { at } : null;
   };
-  let count = 0, active = 0, size = 0, keepSize = 0;
+  let count = 0, active = 0, size = await lifecycleStoreSize($, { keys, now, keepKey, pending }), keepSize = 0;
   // Spawn may publish only its guard before a host/store failure. Such orphans
   // still consume store space; reclaim them after ORPHAN_GUARD_MS.
   for (const key of keys) if (key.startsWith(BINDING_FAILED)) {
@@ -835,6 +847,7 @@ async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = 
     const expired = value => finished(value) && now - value.finishedAt > RETENTION_MS;
     const evictable = async value => {
       if (key === keepKey || dispatching.has(key) || pending(key)) return false;
+      if (await pendingLifecycle($, value)) return false;
       if (unstarted(value)) {
         if (!unstartedSince.has(key)) unstartedSince.set(key, now);
         if (now - unstartedSince.get(key) < SPAWN_GRACE_MS) return false;
@@ -872,6 +885,7 @@ async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = 
         missingSince.delete(key);
         if (state.agentId) {
           await $.store.delete(closedKey(state.session, state.agentId));
+          size -= await forgetLifecycle($, state.session, state.agentId);
           const guard = bindingFailedKey(state.session, state.agentId);
           await $.store.delete(guard);
           size -= guards.get(guard) || 0; guards.delete(guard);
@@ -915,7 +929,8 @@ async function command($, state, args, input = '', timing = {}) {
   // ProcessSpawnRequest.input writes the whole string and closes stdin (also
   // for an empty string). Do not use process.run's differently named stdin.
   return { argv: [await node($, timing.deadline === undefined ? 10000 : await processBudget($, { ...timing, timeoutMs: 500 })), `${$.plugin.root}/bin/duet`, ...args, '--cwd', state.cwd, '--session', state.session,
-    ...(args[0] === 'task' ? ['--session-cwd', await $.session.root()] : [])], cwd: state.cwd, input };
+    ...(['task', 'answer', 'wait'].includes(args[0]) ? ['--claude-permission-mode', state.claudePermissionMode ?? state.permissionMode ?? 'unknown', '--native-cwd', state.nativeHostCwd ?? state.cwd, ...(state.isolation ? ['--native-isolation', state.isolation] : [])] : []),
+    ...(args[0] === 'task' ? ['--session-cwd', await $.session.root(), ...(isNativeType(state.type) ? ['--agent-type', state.type] : [])] : [])], cwd: state.cwd, input };
 }
 async function companion($, state, args, input = '', progress) {
   let child;
@@ -1020,6 +1035,7 @@ const save = ($, state, { fields, valid = () => true, close = false,
     }
     // A main-path save must not roll back progress committed during its I/O.
     if (current?.notices && value.notices && current.notices.turnId === value.notices.turnId
+      && current.notices.attemptId === value.notices.attemptId
       && current.notices.count > value.notices.count) value.notices = current.notices;
     if (close) await $.store.set(closedKey(state.session, state.agentId), { turnId: state.intent.turnId, at: await $.clock.now() });
     else await $.store.set(key, value);
@@ -1047,6 +1063,7 @@ async function handles($, state, jobId, recovery = false, persist = true, { wait
     status: unresolved ? job.recovery?.status || 'unknown' : job.status });
   if (unresolved) delete state.finishedAt;
   updateDisplay($, state, job);
+  await publishActivity($, state, job);
   if (persist) await saveReport($, state, report);
   return job;
 }
@@ -1068,6 +1085,9 @@ async function reconcile($, state, recovery = false, allowAbsent = false, { pers
   return handles($, state, matches[0].id, recovery, persist, { ...timing, report });
 }
 async function drive($, e, state, progress) {
+  if (state.isTeammate && state.v === undefined && !state.incoming && !state.intent && !state.jobId) {
+    return blocked('The host delivered no local loop start for this Codex teammate; use in-process teammate mode or a local subagent.', state, 'native_teammate_unsupported');
+  }
   // Block only a binding known to have failed: permissionMode is optional in
   // the host API, and agents from earlier versions have none.
   if (state.bindingPending) return blocked('Native permission binding is unavailable; nothing was launched. Start a new agent.', state, 'native_binding_unavailable');
@@ -1098,7 +1118,7 @@ async function drive($, e, state, progress) {
     // Only later SendMessage turns carry host framing. An initial Agent brief
     // may contain that exact text as a literal example.
     const previousTurn = state.jobId || state.intent || state.answeredTurn;
-    let input = previousTurn ? coordinatorBody(state.incoming.text) : state.incoming.text, args, questionChanged = false;
+    let input = previousTurn ? coordinatorBody(state.incoming.text) : state.incoming.text, args, questionChanged = false, resumedWait = false;
     const answeringDisplayedQuestion = state.answer?.status === 'needs_answer';
     if (!input.trim()) return blocked('Empty native-agent message; nothing was dispatched.', state);
     // Overlapping stop handlers may have saved a stale status; the job record
@@ -1117,6 +1137,13 @@ async function drive($, e, state, progress) {
         // another answer path completed the job while the adapter was unloaded.
         state.intent = { session: state.session, agentId: e.agentId, turnId: e.turnId, kind: 'answer', nonce: nonceFor(state.session, e.agentId, e.turnId) };
         delete state.incoming;
+        // The question expired or was answered elsewhere while Codex kept
+        // working: attach this turn as the owner wait, never a new assignment.
+        if (ACTIVE.includes(job.status) && state.ownerId) resumedWait = true;
+      }
+      if (resumedWait) {
+        // Fall through to the shared wait below.
+      } else if (answeringDisplayedQuestion && !pending) {
         await save($, state);
         const current = await companion($, state, ['result', state.jobId, '--report']);
         if (current.jobId !== state.jobId) throw new Error('Duet report does not match the recorded job handle.');
@@ -1127,12 +1154,19 @@ async function drive($, e, state, progress) {
         return { ...current, next: nativeNext(state, current.status),
           notice: 'The earlier question was already resolved or ended. Send a new brief to start new work.' };
       }
-      if (state.status === 'needs_answer' && state.permissionMode === 'plan' && job.request?.sandbox !== 'read-only') {
+      if (job.request?.permissionPolicy && job.request.permissionPolicy.mode !== (state.claudePermissionMode ?? state.permissionMode ?? 'unknown')) {
+        await companion($, state, ['cancel', state.jobId, '--json']);
+        return blocked('Native permission mode changed; the live Codex turn must stop before continuing.', state, 'native_permission_mode_changed');
+      }
+      if ((state.status === 'needs_answer' || resumedWait) && state.permissionMode === 'plan' && job.request?.sandbox !== 'read-only') {
         return blocked('Plan mode cannot resume a writable Codex turn; answer outside plan mode or start a read-only agent.', state, 'native_plan_mode_read_only');
       }
     }
-    if (ACTIVE.includes(state.status)) return blocked('A Codex job is already running. Wait for completion before sending another assignment.', state);
-    if (state.status === 'needs_answer') {
+    if (resumedWait) {
+      args = ['wait', state.jobId, '--owner', state.ownerId, '--timeout-sec', WAIT_TIMEOUT_SEC];
+      input = '';
+    } else if (ACTIVE.includes(state.status)) return blocked('A Codex job is already running. Wait for completion before sending another assignment.', state);
+    else if (state.status === 'needs_answer') {
       // Headers are task settings only. A question answer's body is verbatim.
       state.intent = { session: state.session, agentId: e.agentId, turnId: e.turnId, kind: 'answer', nonce: nonceFor(state.session, e.agentId, e.turnId) };
       args = questionChanged
@@ -1140,7 +1174,10 @@ async function drive($, e, state, progress) {
         : ['answer', state.jobId, '--question', state.questionId, '--owner', state.ownerId, '--timeout-sec', WAIT_TIMEOUT_SEC];
       if (questionChanged) input = '';
     } else {
-      const parsed = parsePrompt(input);
+      let parsed = parsePrompt(input);
+      if (!parsed.brief.trim()) return blocked('Empty native-agent brief after DUET header; nothing was dispatched.', state);
+      try { parsed = applyPreset(parsed, state.preset, state.permissionMode); }
+      catch (error) { if (error.code === 'native_preset_sandbox') return blocked(error.message, state, error.code); throw error; }
       if (state.permissionMode === 'plan') {
         const sandboxAt = parsed.flags.indexOf('--sandbox');
         if (sandboxAt >= 0 && ['workspace-write', 'danger-full-access'].includes(parsed.flags[sandboxAt + 1])) {
@@ -1159,7 +1196,9 @@ async function drive($, e, state, progress) {
         if (state.threadId && directory.realPath !== state.cwd) throw new Error('A native worker continuation must keep its original cwd. Use a new native agent for another workspace.');
         state.cwd = directory.realPath;
       }
-      state.intent = { session: state.session, agentId: e.agentId, turnId: e.turnId, kind: 'task', nonce: nonceFor(state.session, e.agentId, e.turnId) };
+      const attemptId = state.incoming.attemptId;
+      state.intent = { session: state.session, agentId: e.agentId, turnId: e.turnId, kind: 'task',
+        ...(attemptId ? { attemptId } : {}), nonce: nonceFor(state.session, e.agentId, attemptId || e.turnId) };
       args = ['task', ...(state.threadId ? ['--thread', state.threadId] : ['--fresh', ...(state.name && state.name !== state.agentId ? ['--agent-name', state.name] : [])]), ...parsed.flags,
         '--dispatch-nonce', state.intent.nonce, '--timeout-sec', WAIT_TIMEOUT_SEC];
       delete state.jobId; delete state.ownerId; delete state.questionId; delete state.status;
@@ -1170,7 +1209,10 @@ async function drive($, e, state, progress) {
     try {
       try { await save($, state); }
       catch (error) { error.launchNotStarted = true; throw error; }
+      if (state.intent.kind === 'task') input = await lifecycleBrief($, state, input);
       report = await companion($, state, args, input, progress);
+      if (resumedWait && report && typeof report === 'object') report = { ...report,
+        notice: 'The earlier question had already expired or been answered; this message was not delivered to Codex. Waited for the running job instead.' };
     }
     catch (error) {
       if (error.launchNotStarted || (state.intent.kind === 'task' && error.launchRejected
@@ -1350,7 +1392,9 @@ function progressFor($, e, state, publish, currentFlight) {
   let enrichmentDeadline, enrichmentFailed = false;
   let noticing = Promise.resolve();
   const feed = liveProgress.get(e.agentId);
-  const notices = state.notices?.turnId === e.turnId ? state.notices : { turnId: e.turnId, count: 0 };
+  const attemptId = state.incoming?.attemptId ?? state.intent?.attemptId;
+  const notices = state.notices?.turnId === e.turnId && state.notices.attemptId === attemptId
+    ? state.notices : { turnId: e.turnId, ...(attemptId ? { attemptId } : {}), count: 0 };
   state.notices = notices;
   const active = () => !stopped && currentFlight() && bindingTurn(state) === e.turnId;
   const persist = (fields = ['notices']) => save($, state, { fields, valid: active });
@@ -1363,7 +1407,7 @@ function progressFor($, e, state, publish, currentFlight) {
     lastStreamedAt = await $.clock.now();
   };
   const notice = (value, final = false, alreadyStreamed = false) => {
-    const text = value.slice(0, value.startsWith('Codex:') ? 607 : 200);
+    const text = value.slice(0, final ? 1000 : value.startsWith('Codex:') ? 607 : 200);
     const pending = noticing.then(async () => {
       if (!active()) return;
       // The display log has its own short dedupe window. Command starts never
@@ -1423,9 +1467,21 @@ function progressFor($, e, state, publish, currentFlight) {
       await optional(() => lookup);
     },
     async usage(value) {
-      if (!active() || !value || notices.usage || !['inputTokens', 'cachedInputTokens', 'outputTokens'].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0)) return;
+      if (!active() || notices.usage) return;
       const count = number => String(number).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-      await notice(`Codex usage · ${count(value.inputTokens)} input (${count(value.cachedInputTokens)} cached) · ${count(value.outputTokens)} output tokens`, true);
+      const lines = [];
+      if (value && ['inputTokens', 'cachedInputTokens', 'outputTokens', 'totalTokens'].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0)) {
+        const model = cleanDisplayText(await activityModel($, state.jobId)).slice(0, 100);
+        lines.push(`Codex tokens (provider: OpenAI Codex, model ${model}) · ${count(value.inputTokens)} input · ${count(value.cachedInputTokens)} cached · ${count(value.outputTokens)} output · ${count(value.totalTokens)} total`);
+      }
+      try {
+        if ((await $.command.list()).some(command => command.name === 'codex-live')) {
+          const name = cleanDisplayText(state.worker || state.name || state.agentId).replace(/\s+/g, ' ').slice(0, 100);
+          lines.push(`Open Codex activity: /codex-live ${name}`);
+        }
+      } catch { /* The companion pane is optional. */ }
+      if (!lines.length) return;
+      await notice(lines.join('\n'), true);
       if (!active()) return;
       notices.usage = true;
       await optional(() => persist());
@@ -1471,10 +1527,12 @@ function progressFor($, e, state, publish, currentFlight) {
 }
 
 export function register(on) {
+  registerSteering(on);
   guidanceCache = null;
+  teammateReceive(on);
   let registered = false;
   const announcing = new Map(), announced = new Set();
-  const efforts = new Map(), spawning = new Map(), observedBindings = new Map(), refusals = new Map(), resumedSpawns = new Set();
+  const spawnOptions = new Map(), spawning = new Map(), observedBindings = new Map(), refusals = new Map(), resumedSpawns = new Set();
   const pendingBinding = (key, now) => {
     if (dispatching.has(key) || [...spawning].some(([session, bindings]) =>
       [...bindings].some(binding => binding.agentId && keyFor(session, binding.agentId) === key))) return true;
@@ -1491,7 +1549,13 @@ export function register(on) {
       state.permissionMode = binding.permissionMode;
       delete state.bindingPending;
     }
+    if (binding?.claudePermissionMode !== undefined) state.claudePermissionMode = binding.claudePermissionMode;
+    if (binding?.isolation !== undefined) state.isolation = binding.isolation;
     if (binding?.effort !== undefined) state.effort = binding.effort;
+    if (binding?.type) state.type = binding.type;
+    if (binding?.preset) state.preset = binding.preset;
+    if (binding?.isTeammate) state.isTeammate = true;
+    if (binding?.name && !resumedSpawns.has(key)) state.name = binding.name;
   };
   nodes.clear(); flights.clear(); startedTypes.clear(); knownTypes.clear(); dispatching.clear(); liveProgress.clear(); unstartedSince.clear();
   toolAgents.clear(); agentDisplays.clear(); promptTurns.clear(); promptPrefixes.clear(); ambiguousEchoes.clear(); turnPrompts.clear(); turnLogs.clear();
@@ -1539,7 +1603,7 @@ export function register(on) {
     ]);
   }).catch(passthrough);
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.props.tool !== 'Agent' || e.props.input?.subagent_type !== AGENT_TYPE) return next(e);
+    if (e.props.tool !== 'Agent' || !isNativeType(e.props.input?.subagent_type)) return next(e);
     const id = toolAgents.get(e.props.tool_use_id);
     if (!id) return next(e);
     const engine = await next(e), view = agentDisplays.get(id);
@@ -1557,28 +1621,43 @@ export function register(on) {
     if (view.question) rows.push(progressRow(e, `Question: ${view.question}`, '⎿ '));
     return { type: 'Box', props: { flexDirection: 'column' }, children: [engine, ...rows] };
   }).catch(passthrough);
-  on('ui.render', { component: 'AssistantMessage' }, ($, e, next) => {
-    const text = reportMarkdown(e.props);
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    let model;
+    try {
+      const report = JSON.parse(e.props.text);
+      if (report?.usage) model = await activityModel($, report.jobId);
+    } catch { /* Ordinary assistant message. */ }
+    const text = reportMarkdown(e.props, model);
     return text === null ? next(e) : next({ ...e, props: { ...e.props, text } });
   }).catch(passthrough);
   // 2.1.302 d.ts 13296-13304, 16715-16716: tool.call carries the flat Agent
-  // arguments, including explicit effort; turn.step's effective effort also
+  // arguments, including isolation and explicit effort; turn.step's effort also
   // includes the shell definition's low and cannot distinguish that default.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
-    if (e.tool === 'Agent' && e.subagent_type === AGENT_TYPE) {
+    const respond = async input => {
+      const response = await next(input);
+      if (paneTeammate(response?.result)) return { deny: JSON.stringify(blocked(
+        `The host started teammate ${response.result.name || input.name || response.result.teammate_id} in a separate pane without a local loop. No Codex job was dispatched; stop that teammate and select in-process mode.`, {}, 'native_teammate_unsupported')) };
+      return response;
+    };
+    if (e.tool === 'Agent' && isNativeType(e.subagent_type)) {
+      if (e.isolation === 'remote') return { deny: JSON.stringify(blocked(
+        'Codex needs a local runtime; isolation: "remote" is unsupported. Use a local agent or isolation: "worktree".', {}, 'native_remote_isolation')) };
+      const unsupported = await teammateUnsupported($, e);
+      if (unsupported) return { deny: JSON.stringify(blocked(unsupported, {}, 'native_teammate_unsupported')) };
       const session = await $.session.id(), key = keyFor(session, e.tool_use_id);
-      efforts.delete(key);
-      if (['low', 'medium', 'high', 'xhigh', 'max'].includes(e.effort)) efforts.set(key, e.effort);
+      spawnOptions.delete(key);
+      spawnOptions.set(key, {
+        ...(['low', 'medium', 'high', 'xhigh', 'max'].includes(e.effort) ? { effort: e.effort } : {}),
+        ...(e.isolation === 'worktree' ? { isolation: e.isolation } : {}) });
       // Denied calls have no spawn to consume their entry.
-      if (efforts.size > 128) efforts.delete(efforts.keys().next().value);
+      if (spawnOptions.size > 128) spawnOptions.delete(spawnOptions.keys().next().value);
       // AgentSpawnInput.name is pinned. Reserve through the shared companion
       // before the Agent tool creates that address; never rename a resumption.
       if (!e.resume && session) {
         const deadline = await $.clock.now() + 2000;
         const cwd = await $.session.root();
-        const base = typeof e.name === 'string' ? e.name.replace(/-(?:[2-9]|[1-9]\d+)$/, '').toLowerCase() : '';
-        const preferred = [TIER_1_NAMES, TIER_2_NAMES, TIER_3_NAMES]
-          .some(names => names.some(name => name.toLowerCase() === base));
+        const preferred = typeof e.name === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(e.name) && !/^(task|review|job)-/i.test(e.name);
         const timeoutMs = await processBudget($, { deadline, timeoutMs: 2000 });
         let timer;
         // A shared discovery may have started with another call's longer
@@ -1592,7 +1671,7 @@ export function register(on) {
         if (result.exitCode === 0 && !result.isStdoutTruncated) {
           const { name } = JSON.parse(result.stdout);
           if (typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(name)) {
-            const response = await next({ ...e, name });
+            const response = await respond({ ...e, name });
             // Background launch acknowledgements carry no content array, so tell
             // the model through context (read after the result, never shown)
             // and leave the result itself untouched. A deny stays as it is.
@@ -1603,14 +1682,21 @@ export function register(on) {
           }
         }
       }
+      return respond(e);
     }
     return next(e);
   }).catch(passthrough);
-  on('agent.spawn', { subagentType: AGENT_TYPE }, async ($, e, next) => {
-    if (e.subagentType !== AGENT_TYPE) return next(e);
+  on('agent.spawn', async ($, e, next) => {
+    if (!isNativeType(e.subagentType)) {
+      const result = await next(e);
+      if (result.agentId) knownTypes.set(result.agentId, e.subagentType);
+      return result;
+    }
+    const unsupported = await teammateUnsupported($, e);
+    if (unsupported) return { deny: JSON.stringify(blocked(unsupported, {}, 'native_teammate_unsupported')) };
     const session = await $.session.id(), callKey = keyFor(session, e.tool_use_id);
-    const effort = efforts.get(callKey);
-    efforts.delete(callKey);
+    const { effort, isolation } = spawnOptions.get(callKey) || {};
+    spawnOptions.delete(callKey);
     let release;
     const pending = new Promise(resolve => { release = resolve; });
     const spawnBinding = { pending, agentId: e.resume?.agentId };
@@ -1620,19 +1706,27 @@ export function register(on) {
       // AgentSpawnResult (d.ts 414-419) resolves at start, not completion.
       // A first turn waits below until settings are observed for its id.
       const result = await next(e);
+      if (paneTeammate(result)) return result; // tool.call reports the unsupported pane; never create a binding.
       if (result.agentId) {
         rememberDisplay(toolAgents, e.tool_use_id, result.agentId);
         invalidateProgress($);
         spawnBinding.agentId = result.agentId;
-        knownTypes.set(result.agentId, AGENT_TYPE);
+        knownTypes.set(result.agentId, e.subagentType);
+        const name = (typeof result.teammateId === 'string' && result.teammateId.split('@')[0]) || e.name;
+        const isTeammate = e.isTeammate || Boolean(result.teammateId);
         const key = keyFor(session, result.agentId);
         // Retain the observation before any store access can fail. start and
         // step run in separate dispatches, but share this module's bindings.
         observedBindings.set(key, { ...observedBindings.get(key), at: await $.clock.now(),
+          ...(!e.resume ? { type: e.subagentType,
+            ...(e.subagentType !== AGENT_TYPE ? { preset: PRESETS[e.subagentType] } : {}) } : {}),
+          ...(isTeammate ? { isTeammate: true } : {}),
+          claudePermissionMode: e.permissionMode ?? 'unknown',
+          ...(isolation ? { isolation } : {}),
           ...(e.permissionMode !== undefined ? { permissionMode: e.permissionMode } : {}),
           ...(!e.resume && effort ? { effort } : {}),
-          // The explicit Agent name survives agent-list discovery failures.
-          ...(e.name ? { name: e.name } : {}) });
+          // The host's suffixed teammate address wins over the input name.
+          ...(name ? { name } : {}) });
         // Return without store work: the host delivers this agent's turn.start
         // to us only after this hook returns (or its bound passes), and a slow
         // admission scan here made it skip turn.start entirely. turn.start
@@ -1640,7 +1734,8 @@ export function register(on) {
         if (e.resume) resumedSpawns.add(key); else resumedSpawns.delete(key);
         // One small durable guard (not the admission scan) until turn.start
         // persists the binding, so a reload in between still fails closed.
-        await $.store.set(bindingFailedKey(session, result.agentId), { bindingPending: true, at: await $.clock.now() }).catch(() => {});
+        await $.store.set(bindingFailedKey(session, result.agentId), { bindingPending: true, at: await $.clock.now(),
+          type: e.subagentType, ...(isTeammate ? { isTeammate: true } : {}) }).catch(() => {});
       }
       return result;
     } finally { bindings.delete(spawnBinding); if (!bindings.size) spawning.delete(session); release(); }
@@ -1652,9 +1747,20 @@ export function register(on) {
   // persists the normal binding; the in-memory one also lets .catch fail closed.
   on('classic.SubagentStart', async ($, e, next) => {
     startedTypes.set(keyFor(e.session_id, e.agent_id), e.agent_type);
-    knownTypes.set(e.agent_id, e.agent_type);
-    return next(e);
-  });
+    // A teammate reports its name here. Never overwrite its declared spawn
+    // type with that name; roster discovery and durable bindings retain it.
+    if (isNativeType(e.agent_type)) knownTypes.set(e.agent_id, e.agent_type);
+    const result = await next(e);
+    if (await ours($, e.agent_id)) await captureStartContext($, e, result);
+    return result;
+  }).catch(passthrough);
+  on('classic.SubagentStop', async ($, e, next) => {
+    const result = await next(e);
+    if (!await ours($, e.agent_id)) return result;
+    const key = keyFor(e.session_id, e.agent_id);
+    return observeStop($, e, result, { read: () => $.store.get(key), busy: () => dispatching.has(key),
+      inspect: state => handles($, state, state.jobId, false, false), ended });
+  }).catch(passthrough);
   on('turn.start', async ($, e, next) => {
     const agent = await ours($, e.agentId);
     if (!agent) return next(e);
@@ -1675,6 +1781,7 @@ export function register(on) {
         // spawn's guard so a later reload cannot mistake it for pending work.
         if (state && !state.v && !state.intent && !state.incoming) await $.store.delete(key);
         await $.store.delete(bindingFailedKey(session, e.agentId));
+        await forgetLifecycle($, session, e.agentId);
       };
       const prepared = await (async () => {
         state = await $.store.get(key);
@@ -1703,15 +1810,16 @@ export function register(on) {
           && !await recheck($, state).catch(() => false)) return;
         if (refusals.get(key)?.report.blockers[0].code === 'native_binding_gone') return await refuse('native_binding_gone');
         refusals.delete(key);
-        candidate = { ...(state || { type: AGENT_TYPE, session, agentId: e.agentId, name: (agent.name !== e.agentId && agent.name) || observedBindings.get(key)?.name,
+        candidate = { ...(state || { type: agent.type || AGENT_TYPE, session, agentId: e.agentId, name: (agent.name !== e.agentId && agent.name) || observedBindings.get(key)?.name,
           bindingPending: !observedBindings.has(key) }), turnId: e.turnId, incoming: { turnId: e.turnId, text: e.text } };
         bindingFailed = await $.store.get(bindingFailedKey(session, e.agentId));
         if (bindingFailed) candidate.bindingPending = true;
         restoreBinding(key, candidate);
         if (!candidate.v) {
-          const directory = await $.fs.stat(await $.session.cwd(), { resolve: true });
+          const hostCwd = await $.session.cwd();
+          const directory = await $.fs.stat(hostCwd, { resolve: true });
           if (directory.kind !== 'dir' || !directory.realPath) throw new Error('Native workspace must resolve to an existing directory.');
-          candidate.v = 2; candidate.cwd = directory.realPath;
+          candidate.v = 2; candidate.cwd = directory.realPath; candidate.nativeHostCwd = hostCwd;
         }
         delete candidate.finishedAt;
         return true;
@@ -1785,13 +1893,16 @@ export function register(on) {
             } catch { /* A display tick cannot affect the flight. */ }
           });
         } catch { /* Rendering still updates on progress if timers are unavailable. */ }
-        const state = await $.store.get(key) || { session, agentId: e.agentId, name: agent.name };
+        const state = await $.store.get(key) || { session, agentId: e.agentId, name: agent.name,
+          ...(agent.isTeammate || agent.teammateId ? { isTeammate: true } : {}) };
         // Display context only; never persist it or perform host I/O in render.
         running.feed.cwd = state.cwd;
         try { running.feed.home = await $.env.get('HOME'); } catch { /* Optional display shortening. */ }
         if (state.incoming?.turnId === e.turnId) rememberPrompt($, { ...e, text: state.incoming.text });
         if (await $.store.get(bindingFailedKey(session, e.agentId))) state.bindingPending = true;
         restoreBinding(key, state);
+        await prepareLifecycleStep($, e, state, { inspect: state => handles($, state, state.jobId, false, false),
+          ended, save: state => save($, state) });
         const progress = progressFor($, e, state, text => Promise.all([...running.listeners].map(item => item.push(text))),
           () => !running.done && dispatching.get(key) === running);
         await progress.begin();
@@ -1886,11 +1997,12 @@ export function register(on) {
       return yield* finish(e, await running.result);
     } finally { running.listeners.delete(listener); listener.close(); }
   }).catch(async function* ($, e, next) {
-    if (!e.agentId || (knownTypes.has(e.agentId) && knownTypes.get(e.agentId) !== AGENT_TYPE)) return yield* next(e);
+    if (!e.agentId || (knownTypes.has(e.agentId) && !isNativeType(knownTypes.get(e.agentId)))) return yield* next(e);
     return yield* finish(e, blocked('Native adapter hook failed; inspect duet status before retrying.', { agentId: e.agentId }));
   });
   on('turn.complete', async ($, e, next) => {
     if (e.isAborted && await ours($, e.agentId)) {
+      await abandonLifecycleStop($, e).catch(() => {});
       const sessionId = await $.session.id();
       const state = await $.store.get(keyFor(sessionId, e.agentId));
       // A cancelled wait may report owner_stopped before this callback. Still

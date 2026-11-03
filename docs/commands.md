@@ -370,6 +370,11 @@ setup changes, with `--dry-run` to preview. See
 `duet setup --dispatch auto|native|bash|default` selects Claude's dispatch
 guidance; run it separately from other setup changes. See
 [worker dispatch](configuration.md#worker-dispatch).
+The opt-in settings `--permission-mapping claude|off`,
+`--default-max-minutes <n|off>`, `--default-max-tokens <n|off>`,
+`--agent-memory on|off` and `--max-concurrent <n|off>` all default to `off`.
+Each supports `--dry-run`; see [configuration](configuration.md#claude-permission-mapping-opt-in)
+for examples, grouping rules, the permission mode table and limits.
 For a desktop-managed CLI, setup includes `codex.warning` with code
 `desktop_managed_codex_runtime` and a message, also shown in human next steps.
 The warning can appear while `ready` is true and never changes the selected pin.
@@ -452,6 +457,7 @@ the next task starts a fresh broker. Both commands accept `--cwd <dir>` and
 | `duet task --run <id\|none>` | Override journal linkage for this dispatch only; select an open run across workspaces or skip linking with `none`; follow-ups do not inherit it |
 | `duet task --to <worker>` | New turn on that worker's thread/cwd, inheriting recorded settings unless overridden |
 | `duet task --fork` | Import the current Claude transcript into a new thread, then run the stdin brief; fidelity not verified |
+| `duet task --max-minutes <n> --max-tokens <n>` | Per-turn running-time/token budgets; either flag can be used alone |
 | `duet answer <worker> --question '<questionId>'` | Answer the displayed question ID from stdin and keep waiting; prefer the report's `next` verbatim |
 | `duet wait <worker>` | Attach the sole owner wait and renew its lease |
 | `duet result <worker>` | Retrieve report v2 if missing from the completion notification |
@@ -462,6 +468,7 @@ the next task starts a fresh broker. Both commands accept `--cwd <dir>` and
 | `duet runtime status` | Inspect the selected binary and saved workspace broker without starting a runtime |
 | `duet runtime restart` | Retire an idle broker; refuse while busy; start fresh on the next task |
 | `duet setup` | Runtime readiness and configuration |
+| `duet steer <jobId> --delivery-id <id> --owner <ownerId>` | Internal native-hook steering handoff, message on stdin; use SendMessage for native agents |
 | `duet models [--json] [--all]` | Discover current account models and efforts, including hidden models with `--all`, and show effective tiers |
 | `duet ultra-codex [on\|off\|status]` | Ultra session controls; task text belongs in the slash command |
 | `duet pair [on\|off\|status]` | Pair session controls; one primary Codex thread |
@@ -482,10 +489,10 @@ or available job records; unknown usage remains unknown. See
 
 Worker names are reserved within a Claude session, including on adoption and
 cross-session `--thread` follow-ups; collisions receive a different name. Every
-fresh native Agent call reserves a scientist pool name before spawn through the
-internal `reserve-name` handshake, replacing a passed label unless it is a free
-pool name. An assigned or replaced name adds a `Codex worker named X` note to the
-Agent result's context (also on background launches); a preserved free pool name adds no note. Reservation
+fresh native Agent call reserves a name before spawn through the internal
+`reserve-name` handshake. A valid, free caller name is kept; otherwise a scientist
+pool name is assigned. A changed name adds a `Codex worker named X` note to the
+Agent result's context (also on background launches); a preserved caller name adds no note. Reservation
 failure leaves the Agent call unchanged, and resumptions keep their name.
 Public `--name` accepts 1–64 ASCII
 letters, digits, `_`, `.` or `-`, starting with a letter or digit. Names beginning

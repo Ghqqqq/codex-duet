@@ -5,7 +5,9 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { makeTempDir } from "./helpers.mjs";
-import { sliceClaudeTranscript, snapshotClaudeSession } from "../plugins/codex/scripts/lib/claude-session-transfer.mjs";
+import { sliceClaudeTranscript, snapshotClaudeSession, parseClaudeTranscript } from "../plugins/codex/scripts/lib/claude-session-transfer.mjs";
+
+import { fullReport } from "../plugins/codex/scripts/lib/job-runtime.mjs";
 
 const row = (type, uuid, parentUuid, extra = {}) => ({ type, uuid, parentUuid,
   isSidechain: false, sessionId: "synthetic-session", cwd: "/synthetic/repo", ...extra });
@@ -41,6 +43,9 @@ test("fork slices retain the latest compact summary, filter private entries and 
     { ...boundary("side"), isSidechain: true }
   ]);
   const original = [...source], result = sliceClaudeTranscript(source), parsed = inspect(result);
+  assert.equal(parseClaudeTranscript(source.join("\n")).length, source.length);
+  assert.equal(result.meta.droppedEntries, source.length - result.lines.length);
+  assert.deepEqual(fullReport({}, { request: { forkSlice: result.meta } }).forkSlice, result.meta);
   assert.deepEqual(source, original);
   assert.deepEqual(parsed.map(entry => entry.uuid), ["boundary", "summary", "call", "result"]);
   assert.deepEqual(parsed[0], boundary());

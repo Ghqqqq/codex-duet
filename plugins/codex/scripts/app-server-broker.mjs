@@ -101,6 +101,7 @@ async function main() {
   }
   const sockets = new Set();
   const staleProbes = new WeakSet();
+  const mappedOwners = new WeakSet();
   const requests = new ServerRequestRelay({ send, respond: message => {
     if (!appClient.closed && !appClient.exitResolved) appClient.sendMessage(message);
   }, log: summary => logServerRequest(summary) });
@@ -110,7 +111,7 @@ async function main() {
     const owner = activeStreamSocket ?? activeRequestSocket;
     // A callback may share the stdout chunk containing turn/start's response.
     // Let that response reach the task first so it knows the acknowledged turn.
-    queueMicrotask(() => requests.request(message, owner));
+    queueMicrotask(() => requests.request(message, owner, { trackActions: owner && mappedOwners.has(owner) }));
   };
 
   function forwardRequest(method, params) {
@@ -169,6 +170,12 @@ async function main() {
 
   function routeNotification(message) {
     const target = activeRequestSocket ?? activeStreamSocket;
+    if (message.method === "serverRequest/resolved" && target && mappedOwners.has(target)) {
+      // Registration is also deferred for callbacks sharing an RPC response.
+      // Preserve that wire order while translating the runtime's request ID.
+      queueMicrotask(() => requests.resolved(message));
+      return;
+    }
     if (message.method === "turn/completed") {
       const threadId = message.params?.threadId, turnId = message.params?.turn?.id;
       if (threadId && turnId) {
@@ -307,6 +314,15 @@ async function main() {
 
       const allowInterruptDuringActiveStream =
         isInterruptRequest(message) && activeStreamSocket && activeStreamSocket !== socket && !activeRequestSocket;
+      const allowOwnerSteer = message.method === "turn/steer" && activeStreamSocket === socket
+        && activeStreamThreadIds.has(message.params?.threadId) && !activeRequestSocket;
+
+      if (message.method === "turn/steer" && !allowOwnerSteer) {
+        const idle = !activeStreamSocket && !activeTurns.size && !activeRequestSocket;
+        send(socket, { id: message.id, error: buildJsonRpcError(idle ? -32600 : BROKER_BUSY_RPC_CODE,
+          idle ? "No active turn." : "Only the active stream owner may steer its turn.") });
+        return;
+      }
 
       if (
         ((activeTurns.size && !activeStreamSocket) || (activeRequestSocket && activeRequestSocket !== socket) || (activeStreamSocket && activeStreamSocket !== socket)) &&
@@ -319,7 +335,7 @@ async function main() {
         return;
       }
 
-      if (allowInterruptDuringActiveStream) {
+      if (allowInterruptDuringActiveStream || allowOwnerSteer) {
         try {
           const result = await forwardRequest(message.method, message.params ?? {});
           send(socket, { id: message.id, result });
@@ -338,6 +354,10 @@ async function main() {
       const completedBeforeResponse = new Set();
       if (isStreaming) pendingStreamStarts.add(completedBeforeResponse);
       activeRequestSocket = socket;
+      if (message.method === "turn/start") {
+        if (message.codexCompanionPermissionMapping === "claude") mappedOwners.add(socket);
+        else mappedOwners.delete(socket);
+      }
 
       try {
         const result = await forwardRequest(message.method, message.params ?? {});

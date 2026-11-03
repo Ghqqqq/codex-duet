@@ -16,7 +16,7 @@ import { ensureBrokerSession, loadBrokerSession } from "./broker-lifecycle.mjs";
 import { isolatedCodexArgs, isolatedCodexEnv, resolveCodexBinary, resolveCodexRuntimeIdentity, resolveIsolatedCodexHome } from "./codex-home.mjs";
 import { stopOwnedProcessGroup } from "./process.mjs";
 import { isParentQuestion } from "./job-runtime.mjs";
-import { decideServerRequest, logServerRequest, normalizeBrowserOrigins, normalizeBundleIds } from "./server-requests.mjs";
+import { decideServerRequest, actionApprovalRequest, isActionApproval, logServerRequest, normalizeBrowserOrigins, normalizeBundleIds } from "./server-requests.mjs";
 import { bestEffortDiagnostic } from "./tracked-jobs.mjs";
 
 const PLUGIN_MANIFEST_URL = new URL("../../.claude-plugin/plugin.json", import.meta.url);
@@ -175,6 +175,8 @@ class AppServerClientBase {
     this.readLines = createJsonLineReader(line => this.handleLine(line));
     this.transport = "unknown";
     this.serverRequestHandler = null;
+    this.approvalItems = new Map();
+    this.actionApprovals = new Map();
     this.serverRequestPolicy = { approvedBrowserOrigins: normalizeBrowserOrigins(options.approvedBrowserOrigins ?? []), approvedComputerApps: normalizeBundleIds(options.approvedComputerApps ?? []), threadId: null, turnId: null };
     // Concrete transports provide close().
     this.abortHandler = () => { this.abortTimer ??= setTimeout(() => { void /** @type {any} */ (this).close(); }, 4500); };
@@ -213,7 +215,7 @@ class AppServerClientBase {
       const threadId = params && typeof params === "object" && "threadId" in params ? params.threadId : null;
       if (method === "turn/start") this.setServerRequestContext(threadId, null);
       this.pending.set(id, { resolve: settle(resolve), reject: settle(reject), method, threadId });
-      try { this.sendMessage({ id, method, params }); }
+      try { this.sendMessage({ id, method, params, ...(this.transport === "broker" && method === "turn/start" && this.options.permissionPolicy ? { codexCompanionPermissionMapping: "claude" } : {}) }); }
       catch (error) { this.pending.delete(id); settle(reject)(error); }
     });
   }
@@ -244,7 +246,15 @@ class AppServerClientBase {
 
     if (!message || typeof message !== "object" || Array.isArray(message)) return;
     if (message.id !== undefined && message.method) {
-      this.handleServerRequest(message);
+      // A single frame batch can contain turn/start's reply and several
+      // callbacks. Let its promise chain bind the durable turn first, then
+      // deliver every question kind in wire order (including ask_parent/CUA).
+      if (this.options.permissionPolicy) {
+        const approval = isActionApproval(message) ? this.trackActionApproval(message) : null;
+        if (isActionApproval(message) && !approval) return;
+        setImmediate(() => { if (!this.closed && !approval?.finished) this.handleServerRequest(message, approval); });
+      }
+      else this.handleServerRequest(message);
       return;
     }
 
@@ -264,6 +274,21 @@ class AppServerClientBase {
       return;
     }
 
+    if (this.options.permissionPolicy) {
+      const p = message.params;
+      if ((message.method === "item/started" && p?.item?.type === "fileChange") || message.method === "item/fileChange/patchUpdated") {
+        this.rememberApprovalItem(p, message.method === "item/fileChange/patchUpdated");
+      }
+      if (message.method === "item/completed") {
+        this.approvalItems.delete(this.approvalItemKey({ ...p, itemId: p?.item?.id }));
+        this.invalidateChangedApprovals();
+      }
+      if (message.method === "serverRequest/resolved") {
+        const approval = this.actionApprovals.get(p?.requestId);
+        if (approval && approval.message.params?.threadId === p?.threadId) this.finishActionApproval(approval, false, "server-resolved", false);
+      }
+    }
+    if (this.options.permissionPolicy && message.method === "turn/completed" && message.params?.turn?.id === this.serverRequestPolicy.turnId) this.setServerRequestContext(this.serverRequestPolicy.threadId, null);
     if (message.method === "duet/runtime") this.options.onRuntimeEvent?.(message.params);
     if (message.method === "mcpServer/startupStatus/updated" && message.params?.status === "ready") this.options.onRuntimeEvent?.({ mcpReady: true });
     if (message.method && this.notificationHandler) {
@@ -271,8 +296,70 @@ class AppServerClientBase {
     }
   }
 
-  handleServerRequest(message) {
+  approvalItemKey(p) { return JSON.stringify([p?.threadId, p?.turnId, p?.itemId]); }
+
+  rememberApprovalItem(p, patch) {
+    const context = this.serverRequestPolicy;
+    if (p?.threadId !== context.threadId || typeof p?.turnId !== "string" || !p.turnId || (context.turnId && p.turnId !== context.turnId)) return;
+    const key = this.approvalItemKey({ ...p, itemId: patch ? p.itemId : p.item.id });
+    const previous = this.approvalItems.get(key);
+    const item = patch ? previous && { ...previous, changes: p.changes } : { ...p.item, threadId: p.threadId, turnId: p.turnId };
+    this.approvalItems.delete(key);
+    if (item && Buffer.byteLength(JSON.stringify(item)) <= 16000) {
+      if (this.approvalItems.size >= 32) this.approvalItems.delete(this.approvalItems.keys().next().value);
+      this.approvalItems.set(key, item);
+    }
+    this.invalidateChangedApprovals();
+  }
+
+  trackActionApproval(message) {
+    // Retain settled IDs until the turn changes, so duplicates cannot start a
+    // second question or produce a second reply, even after the first answer.
+    if (this.actionApprovals.has(message.id)) return null;
+    const approval = { message, controller: new AbortController(), finished: false, request: null, summary: null };
+    this.actionApprovals.set(message.id, approval);
+    return approval;
+  }
+
+  finishActionApproval(approval, accept, reason, reply = true) {
+    if (approval.finished) return;
+    approval.finished = true;
+    approval.controller.abort();
+    if (approval.summary) logServerRequest({ ...approval.summary, decision: reason === "server-resolved" ? "resolved" : accept ? "approved" : "cancelled", reason }, this.options.onServerRequestLog);
+    if (reply && !this.closed) this.sendMessage({ id: approval.message.id, result: { decision: accept ? "accept" : "decline" } });
+  }
+
+  invalidateChangedApprovals() {
+    for (const approval of this.actionApprovals.values()) {
+      if (approval.finished || !approval.request || approval.message.method !== "item/fileChange/requestApproval") continue;
+      const current = actionApprovalRequest(approval.message, this.serverRequestPolicy, this.options.permissionPolicy,
+        this.approvalItems.get(this.approvalItemKey(approval.message.params)));
+      if (current?.request?.question !== approval.request.question) this.finishActionApproval(approval, false, "operation-changed");
+    }
+  }
+
+  handleServerRequest(message, pendingApproval = null) {
     if (this.serverRequestHandler) { this.serverRequestHandler(message); return; }
+    const action = actionApprovalRequest(message, this.serverRequestPolicy, this.options.permissionPolicy, this.approvalItems.get(this.approvalItemKey(message.params)));
+    if (action) {
+      const approval = pendingApproval ?? this.trackActionApproval(message);
+      if (!approval || approval.finished) return;
+      const { summary, request } = action;
+      Object.assign(approval, { summary, request });
+      if (!request || !this.options.onApprovalRequest) {
+        this.finishActionApproval(approval, false, request ? "parent-unavailable" : summary.reason); return;
+      }
+      logServerRequest(summary, this.options.onServerRequestLog);
+      Promise.resolve().then(() => approval.finished ? null : this.options.onApprovalRequest({ ...request, signal: approval.controller.signal })).then(decision => {
+        if (this.closed || approval.finished) return;
+        this.invalidateChangedApprovals();
+        if (approval.finished) return;
+        const current = this.serverRequestPolicy;
+        const accept = !this.options.signal?.aborted && current.threadId === request.binding.threadId && current.turnId === request.binding.turnId && decision?.action === "accept";
+        this.finishActionApproval(approval, accept, accept ? "parent-once" : "parent-denied");
+      }).catch(() => this.finishActionApproval(approval, false, "parent-unavailable"));
+      return;
+    }
     if (this.options.onParentQuestion && isParentQuestion(message, this.serverRequestPolicy)) {
       const { summary } = decideServerRequest(message, this.serverRequestPolicy);
       logServerRequest({ ...summary, kind: "parent-question", decision: "pending", reason: "ask-parent" }, this.options.onServerRequestLog);
@@ -285,7 +372,7 @@ class AppServerClientBase {
     // The policy's shared Computer Use check has already bound this request to
     // a supported server and empty form. Only that shape may become an app
     // question; the reply never carries a persistence instruction to Codex.
-    if (summary.kind === "computer-use-app" && summary.decision !== "approved" && summary.reason !== "turn-mismatch" && this.options.onApprovalRequest) {
+    if (summary.kind === "computer-use-app" && summary.decision !== "approved" && summary.reason !== "turn-mismatch" && this.options.onApprovalRequest && this.options.permissionPolicy?.forwardActions !== false) {
       logServerRequest({ ...summary, decision: "pending", reason: "ask-parent" }, this.options.onServerRequestLog);
       const meta = message.params?._meta ?? {};
       Promise.resolve(this.options.onApprovalRequest({ kind: summary.kind, app: summary.app, threadId: message.params.threadId, toolName: typeof meta.tool_name === "string" ? meta.tool_name.slice(0, 80) : null }))
@@ -303,6 +390,21 @@ class AppServerClientBase {
   }
 
   setServerRequestContext(threadId, turnId) {
+    if (threadId !== this.serverRequestPolicy.threadId || turnId !== this.serverRequestPolicy.turnId || turnId === null) {
+      for (const [key, item] of this.approvalItems) {
+        if (item.threadId !== threadId || item.turnId !== turnId) this.approvalItems.delete(key);
+      }
+      for (const [id, approval] of this.actionApprovals) {
+        if (approval.message.params?.threadId === threadId && approval.message.params?.turnId === turnId) continue;
+        this.finishActionApproval(approval, false, "turn-ended");
+      }
+      // Settled IDs stay as tombstones until close, so a duplicate request that
+      // arrives after its turn ended still gets no second reply. Bounded.
+      for (const [id, approval] of this.actionApprovals) {
+        if (this.actionApprovals.size <= 256) break;
+        if (approval.finished) this.actionApprovals.delete(id);
+      }
+    }
     this.serverRequestPolicy.threadId = threadId;
     this.serverRequestPolicy.turnId = turnId;
   }
@@ -316,6 +418,9 @@ class AppServerClientBase {
 
     this.exitResolved = true;
     this.exitError = error ?? null;
+    for (const approval of this.actionApprovals.values()) this.finishActionApproval(approval, false, "transport-closed", false);
+    this.actionApprovals.clear();
+    this.approvalItems.clear();
 
     for (const pending of this.pending.values()) {
       pending.reject(this.exitError ?? new Error("codex app-server connection closed."));

@@ -136,6 +136,30 @@ test("automatic retention sweeps only stale owned import copies and leaves fresh
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(outside, "keep.jsonl"))), { keep: true });
 });
 
+test("steering sidecars do not block retention and expire with canonical job artifacts", async () => {
+  const f = fixture(), expired = seedJob(f, "steered"), orphan = seedJob(f, "orphan-steered"), kept = seedJob(f, "recent", { completedAt: f.recent });
+  const state = JSON.parse(fs.readFileSync(expired.indexFile));
+  state.jobs = state.jobs.filter(job => job.id !== orphan.id); json(expired.indexFile, state);
+  const artifacts = job => {
+    const file = job.file.replace(/\.json$/, ".steering.json"), lock = `${file}.lock`;
+    json(file, { version: 1, deliveries: [{ deliveryId: "steer", status: "applied", textHash: "fixture" }] });
+    fs.mkdirSync(lock); fs.writeFileSync(path.join(lock, "owner-2147483647-stale"), "");
+    return [file, lock];
+  };
+  const removed = [...artifacts(expired), ...artifacts(orphan)], retained = artifacts(kept);
+  rollout(f, expired.threadId); rollout(f, orphan.threadId);
+  const p = plan(f);
+  assert.deepEqual(p.errors, []);
+  assert.deepEqual(p.jobs.map(job => job.jobId).sort(), [expired.id, orphan.id].sort());
+  assert.equal(p.threads.length, 2);
+  const deleted = [], result = await applyRetention(p, { deleteThread: async id => { deleted.push(id); return {}; } });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.jobsDeleted, 2);
+  assert.deepEqual(deleted.sort(), [expired.threadId, orphan.threadId].sort());
+  assert.ok(removed.every(file => !fs.existsSync(file)));
+  assert.ok(retained.every(file => fs.existsSync(file)));
+});
+
 test("retention precedence, default, integer validation and reported one-day clamp", () => {
   const f = fixture();
   assert.equal(resolveRetentionDays(f.env), 30);

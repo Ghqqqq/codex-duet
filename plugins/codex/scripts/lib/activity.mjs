@@ -247,7 +247,10 @@ export function formatActivity(event, options = {}) {
         ? `+${event.added ?? (event.kind === "delete" ? 0 : "?")} −${event.removed ?? (event.kind === "add" ? 0 : "?")}`
         : ["failed", "error", "declined", "cancelled", "interrupted"].includes(event.status) ? `Error: ${event.status}`
         : ["started", "inProgress", "running", "queued"].includes(event.status) ? "running" : "outcome unknown";
-      detail = `${action}(${activityPath(event.path, root)}) · ${result}`;
+      const file = activityPath(event.path, root);
+      const limit = Math.max(0, 200 - `[${event.seq}] ${action}() · ${result}`.length);
+      const excerpt = file.length > limit ? `${limitChars(file, Math.max(0, limit - 1))}…` : file;
+      detail = `${action}(${excerpt}) · ${result}`;
       break;
     }
     case "mcpToolCall":

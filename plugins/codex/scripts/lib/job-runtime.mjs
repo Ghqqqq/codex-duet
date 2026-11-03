@@ -5,13 +5,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { listJobs, updateJob, readJobFile, resolveJobFile, resolveStateRoot, resolveStateDirForRoot, unresolvedTask } from "./state.mjs";
 import { inertIndexlessWorkspace } from "./indexless-state.mjs";
-import { APPROVAL_OPTIONS, parseApprovalAnswer } from "./server-requests.mjs";
+import { APPROVAL_OPTIONS, ACTION_APPROVAL_OPTIONS, parseApprovalAnswer } from "./server-requests.mjs";
 import { finishJournalJob } from "./run-journal.mjs";
 import { buildWorkerReport } from "./worker-report.mjs";
 import { dedupeBlockers } from "./blockers.mjs";
 import { reportJobs, reportWorkerTarget } from "./worker-resolve.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 import { reserveAgentName } from "./agent-names.mjs";
+import { advanceBudget, budgetEnabled, budgetReason } from "./job-budget.mjs";
 
 export const ACTIVE = new Set(["queued", "running"]);
 const INERT_INDEXLESS_MIN_AGE_MS = 24 * 60 * 60 * 1000;
@@ -161,6 +162,8 @@ export function pauseAdjustment(job, gapMs, now) {
   // the future or grant more than one full lease from this tick.
   if (Number.isFinite(job.leaseRenewedAt)) patch.leaseRenewedAt = Math.min(job.leaseRenewedAt + gapMs, now);
   if (Number.isFinite(job.leaseExpiresAt)) patch.leaseExpiresAt = Math.min(job.leaseExpiresAt + gapMs, now + (job.leaseSec ?? 180) * 1000);
+  // A suspended host does not consume a running-time budget either.
+  if (Number.isFinite(job.budget?.runningSince)) patch.budget = { ...job.budget, runningSince: Math.min(job.budget.runningSince + gapMs, now) };
   return patch;
 }
 export function renewLease(cwd, id, owner) {
@@ -199,10 +202,20 @@ export function continuationReport(job) {
 // The details view retains the full report and the old direct-mode commands,
 // summary and expanded lists. JSON/feed callers keep their existing payloads.
 export function fullReport(payload, job = {}) {
+  const reason = budgetReason(payload.interruptionReason ?? job.result?.interruptionReason ?? job.cancelRequested?.reason);
   const report = { ...payload,
+    ...(reason ? { reason: { ...reason, ...(job.budget ? {
+      maximum: reason.limit === "max_minutes" ? job.budget.maxMinutes * 60000 : job.budget.maxTokens,
+      consumed: reason.limit === "max_minutes" ? job.budget.consumedMs : job.budget.consumedTokens,
+      unit: reason.limit === "max_minutes" ? "milliseconds" : "tokens"
+    } : {}) } } : {}),
+    ...(!reason && job.budget?.exceeded && payload.status === "completed" ? {
+      budgetNote: `Completed turn exceeded the ${job.budget.exceeded === "max_minutes" ? "running-time" : "token"} budget (${job.budget.exceeded}) during final accounting.`
+    } : {}),
     ...((payload.usage ?? job.result?.usage) ? { usage: payload.usage ?? job.result.usage } : {}),
     ...(job.backgroundTerminals ? { backgroundTerminals: job.backgroundTerminals } : {}),
     ...(job.request?.claudeMd ? { claudeMd: job.request.claudeMd } : {}),
+    ...(job.request?.forkSlice ? { forkSlice: job.request.forkSlice } : {}),
     ...(job.request?.settingsInheritance ? { settingsInheritance: job.request.settingsInheritance } : {}),
     ...(payload.activityCount === undefined && (job.activityTotals || job.activity) ? { activityCount: job.activityTotals?.events ?? job.activity.length } : {}),
     ...(job.agentName ? { agentName: job.agentName } : {}) };
@@ -320,7 +333,7 @@ function briefCheck(value) {
   return text.length > 240 && suffix ? `${truncate(text, 239 - suffix.length)}…${suffix}` : truncate(text, 240);
 }
 const blockerIdentifiers = ["app", "tabId", "sessionId", "predecessorJobId", "predecessorStatus", "method", "kind", "server", "origin"];
-const compactQuestion = question => ({ id: question.id ?? null, kind: question.kind ?? "question", text: redactActivity(question.text),
+const compactQuestion = question => ({ id: question.id ?? null, kind: question.kind ?? "question", text: question.kind === "action-approval" ? question.text : redactActivity(question.text),
   options: (question.options ?? []).map(redactActivity),
   ...(question.optionsOmitted ? { optionsOmitted: question.optionsOmitted } : {}),
   expiresInSec: Number.isFinite(question.expiresAt) ? Math.max(0, Math.ceil((question.expiresAt - Date.now()) / 1000)) : question.expiresInSec ?? null });
@@ -331,7 +344,7 @@ function fitDirectEnvelope(report, checkPriorities) {
   const lists = [
     [report, "keyFindings"], [report, "assumptions"],
     [report.checks, "ran"], [report.checks, "claimed"], [report, "changedFiles"],
-    [report.question, "options"], ...(report.blockers ?? []).map(blocker => [blocker.question, "options"]),
+    ...(report.question?.kind === "action-approval" ? [] : [[report.question, "options"]]), ...(report.blockers ?? []).map(blocker => [blocker.question, "options"]),
     [report, "blockers", 1]
   ];
   while (envelopeBytes(report) > 2000) {
@@ -353,7 +366,7 @@ function fitDirectEnvelope(report, checkPriorities) {
   while (envelopeBytes(report) > 2000) {
     const strings = [
       ...(report.blockers ?? []).map(blocker => [blocker, "message"]),
-      ...[report.question, ...(report.blockers ?? []).map(blocker => blocker.question)].filter(Boolean)
+      ...[report.question, ...(report.blockers ?? []).map(blocker => blocker.question)].filter(question => question && question.kind !== "action-approval")
         .flatMap(question => [[question, "text"], ...question.options.map((_, i) => [question.options, i])])
     ].filter(([object, key]) => object[key].length > 8);
     if (!strings.length) break; // Valid job handles and fixed fields fit on their own.
@@ -366,8 +379,12 @@ function fitDirectEnvelope(report, checkPriorities) {
 
 export function directReport(payload, job = {}, env = process.env) {
   const full = fullReport(payload, job);
+  if (full.budgetNote) full.summary = `${full.budgetNote}\n${full.summary ?? full.headline ?? ""}`;
   // Only details expands stored blockers; retain the compact projection and its C2 field set.
   full.blockers = payload.blockers;
+  if (full.reason?.code === "budget_exceeded") full.blockers = [...(full.blockers ?? []), {
+    code: "budget_exceeded", message: `Stopped at the ${full.reason.limit === "max_minutes" ? "running-time" : "token"} budget (${full.reason.limit}).`
+  }];
   const worker = job.agentName ?? full.agentName ?? null;
   const jobId = full.jobId ?? job.id ?? null;
   let target = jobId;
@@ -532,14 +549,15 @@ export function leaseExpiryReport(job) {
   return { interruptionReason: "lease_expired", ...continuationReport(job) };
 }
 export function questionMessage(question) {
-  return `Question ${question.id}: ${snippet(question.text, 1000)} | Options: ${question.options?.length ? question.options.map(option => JSON.stringify(snippet(option, 160))).join("; ") : "(none)"}`;
+  return `Question ${question.id}: ${question.kind === "action-approval" ? question.text : snippet(question.text, 1000)} | Options: ${question.options?.length ? question.options.map(option => JSON.stringify(snippet(option, 160))).join("; ") : "(none)"}`;
 }
 export function requestCancel(cwd, id, reason = "cancelled_by_user", { expect = null, ...options } = {}) {
   let applied = false;
   const result = updateJob(cwd, id, job => {
     if (!(ACTIVE.has(job.status) || unresolvedTask(job)) || (expect && !expect(job))) return null;
     applied = true;
-    return { cancelRequested: { reason, at: new Date().toISOString() } };
+    return { cancelRequested: { reason, at: new Date().toISOString() },
+      ...(budgetEnabled(job.budget) ? { budget: advanceBudget(job, Date.now(), { running: false }) } : {}) };
   }, options);
   // Conditional callers must distinguish an unchanged record from cancellation.
   return expect && !applied ? null : result;
@@ -588,15 +606,54 @@ function questionCallerGone(previous, caller) {
   try { process.kill(previous.pid, 0); return false; }
   catch (error) { return error.code === "ESRCH"; }
 }
-export async function askParentQuestion(cwd, id, { question, options = [], kind = "question", callId = null }, { signal = null, onProgress = null, stopped = () => false, caller = questionCaller, turnId = null } = {}) {
+// Opt-in jobs serialize all question kinds across the worker and MCP bridge.
+// Tickets keep the existing slot's ownership/answer-transfer rules unchanged.
+export async function askParentQuestion(cwd, id, question, context = {}) {
+  const job = readJobFile(resolveJobFile(cwd, id));
+  if (job.request?.permissionPolicy?.mapping !== "claude") return askParentQuestionSlot(cwd, id, question, context);
+  const caller = context.caller ?? questionCaller, ticketId = randomUUID();
+  const turnId = context.turnId ?? job.turnId;
+  const deadline = Date.now() + (job.questionTimeoutSec ?? 900) * 1000;
+  let admitted = false;
+  try {
+    while (!context.signal?.aborted && !context.stopped?.() && !context.cancelled?.() && Date.now() < deadline) {
+      let ready = false, ended = false, full = false;
+      updateJob(cwd, id, current => {
+        if (!ACTIVE.has(current.status) || current.cancelRequested || current.turnId !== turnId) { ended = true; return {}; }
+        const queue = (current.questionQueue ?? []).filter(entry => entry.expiresAt > Date.now() && entry.turnId === turnId && !questionCallerGone(entry.caller, caller));
+        if (!queue.some(entry => entry.id === ticketId)) {
+          if (admitted) { ended = true; return {}; }
+          if (queue.length >= 32) { full = true; return {}; }
+          queue.push({ id: ticketId, caller, turnId, expiresAt: deadline }); admitted = true;
+        }
+        const pending = current.pendingQuestion;
+        const transfer = pending?.answer !== undefined && questionCallerGone(pending.caller, caller) &&
+          (question.kind ?? "question") === "question" && question.callId && pending.callId === question.callId &&
+          pending.kind === "question" && pending.turnId === turnId && pending.text === question.question &&
+          JSON.stringify(pending.options) === JSON.stringify(question.options ?? []);
+        ready = queue[0]?.id === ticketId && (!pending || transfer || (pending.expiresAt <= Date.now() && (pending.answer === undefined || questionCallerGone(pending.caller, caller))));
+        return queue.length === current.questionQueue?.length && queue.every((entry, index) => entry.id === current.questionQueue[index].id) ? null : { questionQueue: queue };
+      });
+      if (ended) return { text: "Task stopped or permission context changed.", resolution: "interrupted" };
+      if (full) return { text: "Parent question queue is full; no approval granted.", resolution: "busy" };
+      if (ready) return await askParentQuestionSlot(cwd, id, question, { ...context, caller, turnId });
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return { text: "No parent answer; no approval granted.", resolution: context.signal?.aborted || context.stopped?.() ? "interrupted" : context.cancelled?.() ? "cancelled" : "timeout" };
+  } finally {
+    if (admitted) updateJob(cwd, id, current => ({ questionQueue: (current.questionQueue ?? []).filter(entry => entry.id !== ticketId) }));
+  }
+}
+
+async function askParentQuestionSlot(cwd, id, { question, options = [], kind = "question", callId = null, binding = null }, { signal = null, onProgress = null, stopped = () => false, cancelled = () => false, caller = questionCaller, turnId = null } = {}) {
   let questionId = `${kind}-${randomUUID()}`;
   let askedAt = new Date(Date.now()).toISOString();
   // Tool call IDs come from the dynamic request or MCP _meta.callId. Approval
   // requests have no ask_parent item. Never guess a missing ID from question
   // order, text, or the MCP transport's independent request ID.
-  callId = kind === "approval" ? null : callId;
+  callId = kind === "question" ? callId : null;
   const historyPatch = (current, resolution, answer = undefined) => ({ questionHistory: [...(current.questionHistory ?? []).slice(-19), {
-    id: questionId, callId, kind, text: question, options, askedAt,
+    id: questionId, callId, kind, text: question, options, askedAt, ...(binding ? { binding: { ...binding, jobId: id } } : {}),
     answeredAt: answer === undefined ? null : new Date(Date.now()).toISOString(),
     answer: answer === undefined ? null : answer.slice(0, 2000), resolution
   }] });
@@ -632,8 +689,10 @@ export async function askParentQuestion(cwd, id, { question, options = [], kind 
     else if (current.pendingQuestion) admission = "busy";
     else {
       const pending = { id: questionId, callId, kind, text: question, options, askedAt, caller, turnId: current.turnId ?? null,
+        ...(binding ? { binding: { ...binding, jobId: id } } : {}),
         expiresAt: Date.now() + (current.questionTimeoutSec ?? 900) * 1000 };
-      return { ...patch, pendingQuestion: pending, phase: "needs_answer" };
+      return { ...patch, pendingQuestion: pending, phase: "needs_answer",
+        ...(budgetEnabled(current.budget) ? { budget: advanceBudget(current, Date.now(), { running: false }) } : {}) };
     }
     return { ...patch, ...historyPatch(current, admission) };
   });
@@ -650,7 +709,7 @@ export async function askParentQuestion(cwd, id, { question, options = [], kind 
   let resolution = "timeout";
   const aborted = () => signal?.aborted || stopped();
   try {
-    while (!aborted() && Date.now() < pending.expiresAt) {
+    while (!aborted() && !cancelled() && Date.now() < pending.expiresAt) {
       const current = readJobFile(resolveJobFile(cwd, id));
       if (!ACTIVE.has(current.status) || current.cancelRequested) break;
       if (!ownsQuestion(current)) break;
@@ -659,6 +718,7 @@ export async function askParentQuestion(cwd, id, { question, options = [], kind 
     }
     const current = readJobFile(resolveJobFile(cwd, id));
     if (aborted() || !ACTIVE.has(current.status) || current.cancelRequested) { resolution = "interrupted"; text = "The owner cancelled this task. Stop work and report interrupted."; }
+    else if (cancelled()) { resolution = "cancelled"; text = "Approval request is no longer pending; no approval granted."; }
     else if (ownsQuestion(current) && current.pendingQuestion.answer !== undefined) { text = current.pendingQuestion.answer; resolution = "answered"; }
     return { text, resolution };
   } finally {
@@ -669,7 +729,8 @@ export async function askParentQuestion(cwd, id, { question, options = [], kind 
         return current.pendingQuestion?.id === questionId || current.questionHistory?.some(entry => entry.id === questionId) ? {} : historyPatch(current, resolution);
       }
       return { ...historyPatch(current, resolution, current.pendingQuestion.answer), lastQuestion: { id: questionId, resolution },
-        pendingQuestion: null, phase: resolution === "interrupted" || current.cancelRequested ? "interrupting" : "running" };
+        pendingQuestion: null, phase: resolution === "interrupted" || current.cancelRequested ? "interrupting" : "running",
+        ...(budgetEnabled(current.budget) ? { budget: advanceBudget(current, Date.now(), { running: resolution !== "interrupted" && ACTIVE.has(current.status) }) } : {}) };
     });
     onProgress?.(`Parent question ${resolution}: ${questionId}.`);
   }
@@ -687,6 +748,12 @@ export function isParentQuestion(message, policy) {
 // The runtime owns the job record; the turn capture owns the live connection.
 // Associate them by signal so cleanup can be recorded even if capture throws.
 const runtimeJobs = new WeakMap();
+const budgetRuntimes = new Set();
+const BUDGET_TICK_MS = 5000;
+// Called only after Codex validates and subtracts the thread's pre-turn usage.
+export function recordTurnTokenUsage(threadId, turnId, usage) {
+  for (const runtime of budgetRuntimes) runtime.checkBudget(usage.totalTokens, { threadId, turnId });
+}
 export function recordBackgroundTerminals(signal, backgroundTerminals) {
   const runtime = runtimeJobs.get(signal);
   if (runtime) updateJob(runtime.cwd, runtime.id, () => ({ backgroundTerminals }));
@@ -698,6 +765,9 @@ export class JobRuntime {
     const startPpid = foreground ? parentPid ?? process.ppid : null;
     this.abort = new AbortController(); this.reason = null;
     runtimeJobs.set(this.abort.signal, this);
+    this.budgetActive = budgetEnabled(readJobFile(resolveJobFile(cwd, id)).budget);
+    this.budgetCheckedAt = 0;
+    if (this.budgetActive) budgetRuntimes.add(this);
     this.handlers = new Map();
     for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
       const handler = () => this.stop(`signal_${signal.toLowerCase()}`);
@@ -717,6 +787,8 @@ export class JobRuntime {
         const job = paused ? updateJob(cwd, id, current => pauseAdjustment(current, gap, now)) : readJobFile(resolveJobFile(cwd, id));
         const sameOwner = current => current.ownerId === job.ownerId && current.ownerAttachedAt === job.ownerAttachedAt;
         if (job.cancelRequested) this.stop(job.cancelRequested.reason);
+        // Evaluate every tick from this record; only persistence is throttled.
+        else if (this.budgetActive && this.checkBudget(undefined, null, job, now)) return;
         else if (!paused && job.leaseExpiresAt && now >= job.leaseExpiresAt) this.stop("lease_expired", {
           expect: current => sameOwner(current) && Boolean(current.leaseExpiresAt) && Date.now() >= current.leaseExpiresAt
         });
@@ -730,9 +802,46 @@ export class JobRuntime {
     };
     tick(); this.timer = setInterval(tick, 250);
   }
+  checkBudget(tokens = undefined, expected = null, current = null, now = Date.now()) {
+    if (!this.budgetActive) return false;
+    try {
+      current ??= readJobFile(resolveJobFile(this.cwd, this.id));
+      const matches = job => !expected || (job.threadId === expected.threadId && job.turnId === expected.turnId);
+      if (!matches(current)) return Boolean(this.reason);
+      if (!this.budgetCheckedAt) this.budgetCheckedAt = now;
+      if (tokens !== undefined) this.budgetTokens = Math.max(this.budgetTokens ?? 0, tokens);
+      const budget = advanceBudget(current, now, { tokens: this.budgetTokens });
+      const transition = (budget.runningSince == null) !== (current.budget.runningSince == null) || budget.exceeded !== current.budget.exceeded;
+      let job = current;
+      if (transition || now - this.budgetCheckedAt >= BUDGET_TICK_MS &&
+          (budget.consumedMs !== current.budget.consumedMs || budget.consumedTokens !== current.budget.consumedTokens)) {
+        job = updateJob(this.cwd, this.id, latest => matches(latest) ? { budget: advanceBudget(latest, Date.now(), { tokens: this.budgetTokens }) } : null);
+        this.budgetCheckedAt = now;
+      }
+      if (job.cancelRequested) this.stop(job.cancelRequested.reason);
+      else if (job.budget?.exceeded) this.stop(`budget_exceeded:${job.budget.exceeded}`, {
+        expect: current => !current.cancelRequested && current.budget?.exceeded === job.budget.exceeded
+      });
+    } catch { this.stop("owner_state_unavailable"); }
+    return Boolean(this.reason);
+  }
   stop(reason, { expect = null } = {}) {
     if (this.abort.signal.aborted) return;
-    if (!this.reason && expect && !requestCancel(this.cwd, this.id, reason, { expect })) return;
+    if (!this.reason && expect) {
+      try {
+        if (!requestCancel(this.cwd, this.id, reason, { expect })) {
+          const competing = readJobFile(resolveJobFile(this.cwd, this.id)).cancelRequested;
+          if (!competing) return;
+          reason = competing.reason;
+        }
+      } catch (error) {
+        if (!budgetReason(reason)) throw error;
+        // Exceedance is already durable. A failed cancellation write must not
+        // replace its cause, but an existing cancellation still wins.
+        try { reason = readJobFile(resolveJobFile(this.cwd, this.id)).cancelRequested?.reason ?? reason; }
+        catch { /* Keep the durable budget cause if the store is unavailable. */ }
+      }
+    }
     try {
       // A recorded reason can precede abort (including a reentrant stop).
       if (this.reason) return;
@@ -748,15 +857,32 @@ export class JobRuntime {
     if (resolution === "interrupted") this.stop(readJobFile(resolveJobFile(this.cwd, this.id)).cancelRequested?.reason ?? this.reason ?? "cancelled_by_user");
     return textReply(text);
   }
-  // A forwarded Computer Use request. Only an explicit answer grants anything;
-  // timeout, cancellation and a second pending question all deny.
+  // Only an explicit answer grants anything. Mapped jobs queue every kind;
+  // legacy Computer Use requests retain the single-slot fail-closed behavior.
   async approval(request) {
+    if (request.kind === "action-approval") {
+      const job = readJobFile(resolveJobFile(this.cwd, this.id));
+      if (request.signal?.aborted || job.threadId !== request.binding.threadId || job.turnId !== request.binding.turnId || !job.request?.permissionPolicy?.forwardActions) return "deny";
+      const { text, resolution } = await askParentQuestion(this.cwd, this.id,
+        { question: request.question, options: ACTION_APPROVAL_OPTIONS, kind: "action-approval", binding: request.binding },
+        { signal: this.abort.signal, cancelled: () => request.signal?.aborted, onProgress: this.onProgress, turnId: request.binding.turnId });
+      // Fixed labels only: numbers, prose, session grants and ambiguity deny.
+      const current = readJobFile(resolveJobFile(this.cwd, this.id));
+      return resolution === "answered" && text === "Allow once" && !request.signal?.aborted && !this.abort.signal.aborted && !current.cancelRequested && ACTIVE.has(current.status) &&
+        current.threadId === request.binding.threadId && current.turnId === request.binding.turnId ? "once" : "deny";
+    }
     const question = `Codex asks to control ${request.app}${request.toolName ? ` (Computer Use tool ${request.toolName})` : " via Computer Use"}. Allow? Nothing outside the isolated Codex home is changed by any choice.`;
     const { text, resolution } = await askParentQuestion(this.cwd, this.id, { question, options: APPROVAL_OPTIONS, kind: "approval" }, { signal: this.abort.signal, onProgress: this.onProgress });
     if (resolution === "interrupted") this.stop(readJobFile(resolveJobFile(this.cwd, this.id)).cancelRequested?.reason ?? this.reason ?? "cancelled_by_user");
     return resolution === "answered" ? parseApprovalAnswer(text) : "deny";
   }
-  close() { runtimeJobs.delete(this.abort.signal); clearInterval(this.timer); for (const [signal, handler] of this.handlers) process.off(signal, handler); }
+  close() {
+    budgetRuntimes.delete(this);
+    if (this.budgetActive) try {
+      updateJob(this.cwd, this.id, current => ({ budget: advanceBudget(current, Date.now(), { running: false, tokens: this.budgetTokens }) }));
+    } catch { /* Preserve the last durable consumption if the store is unavailable. */ }
+    runtimeJobs.delete(this.abort.signal); clearInterval(this.timer); for (const [signal, handler] of this.handlers) process.off(signal, handler);
+  }
 }
 
 // Deliberately omit shell arguments, tool arguments, model text and outputs.
@@ -789,5 +915,5 @@ export function progressSnapshot(job) {
     headline: `${pending ? "waiting for parent" : job.currentItem?.summary ?? phase} · ${elapsed}`.slice(0, 60), phase, elapsed, elapsedMs,
     startupTimings: { mcpReady: null, ...job.startupTimings }, startupWarning: job.startupWarning ?? null,
     currentItem: job.currentItem ?? null, completedItems: job.completedItems ?? [],
-    ...(pending ? { questionMessage: questionMessage(pending), question: { id: pending.id, kind: pending.kind ?? "question", text: snippet(pending.text, 1000), options: pending.options.map(option => snippet(option, 160)), expiresAt: pending.expiresAt } } : {}) };
+    ...(pending ? { questionMessage: questionMessage(pending), question: { id: pending.id, kind: pending.kind ?? "question", text: pending.kind === "action-approval" ? pending.text : snippet(pending.text, 1000), options: pending.options.map(option => snippet(option, 160)), expiresAt: pending.expiresAt } } : {}) };
 }

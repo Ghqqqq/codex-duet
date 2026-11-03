@@ -821,10 +821,12 @@ function commitState(stateDir, previousState, state, protectedId = null) {
     // remove this job's canonical files, without following a jobs-dir symlink.
     const directory = path.join(stateDir, JOBS_DIR_NAME);
     if (!safeJobId(job.id) || !fs.lstatSync(directory, { throwIfNoEntry: false })?.isDirectory()) continue;
-    for (const suffix of [".json", ".log", ".output.txt", ".result.json"]) {
+    for (const suffix of [".json", ".log", ".output.txt", ".result.json", ".steering.json"]) {
       const file = jobPath(stateDir, job.id, suffix);
       if (fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) removeFileIfExists(file);
     }
+    const steeringLock = jobPath(stateDir, job.id, ".steering.json.lock");
+    if (fs.lstatSync(steeringLock, { throwIfNoEntry: false })?.isDirectory()) fs.rmSync(steeringLock, { recursive: true, force: true });
   }
 
   return snapshot(nextState);

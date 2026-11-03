@@ -32,7 +32,8 @@ DUET: --model gpt-6-astra --effort xhigh --sandbox read-only --normal
 <brief: objective, context, owned paths, constraints, acceptance criteria>
 ```
 
-The header also accepts `--cwd` and `--fork`. A `--cwd <repo>/sub` starts or resumes
+The header also accepts `--cwd`, `--fork`, `--max-minutes` and `--max-tokens`.
+A `--cwd <repo>/sub` starts or resumes
 the Codex thread in that subdirectory; broker and job state stay at the repository
 root. Set the Codex model in the header:
 the Agent tool's `model` only selects the Claude shell. Initial-task effort
@@ -40,21 +41,28 @@ precedence is `DUET: --effort` > explicitly supplied Agent
 `effort` (including `max`) > companion default. The shell definition's
 `effort: low` is not a Codex request; follow-ups retain recorded thread settings
 unless overridden. Native calls can be foreground or background.
+Role presets use `codex:codex-reviewer` / `codex:codex-investigator` (read-only)
+or `codex:codex-implementer` (workspace-write), retaining the usual model/effort
+and speed settings. Conflicting sandbox headers get `native_preset_sandbox`.
 In plan mode the worker runs with `--sandbox read-only`; a header asking for a
 writable sandbox is refused (`native_plan_mode_read_only`) and nothing starts.
 A header the companion rejects before starting a job (an invalid value, an
 unavailable Codex) returns a blocked report and the agent accepts a corrected
-message. Use SendMessage to the native agent's
-name to continue the same Codex thread or answer its pending question. The
+message. Use SendMessage from the main conversation to steer a running native
+agent, continue its ended Codex thread or answer its pending question. A steer
+that arrives after the turn ended goes once to the normal queue; a rejected or
+unconfirmed steer is reported as not delivered and never resent. See [steering and hooks](worker-operations.md#steering-and-lifecycle-hooks). The
 adapter handles waits; stop an active task from `/tasks`. It gives the owner stop
 a bounded chance to confirm `interrupted` / `owner_stopped`, then uses a cancel
 fallback if confirmation is missing. A parked question may
 outlive stopping an already-ended agent row: use `duet cancel <worker>` for an
 explicit cancellation, or the question expires after 900 seconds by default.
 
-When Codex reports token usage, the agent transcript ends with a `Codex usage`
-notice and the result carries `usage`; Codex tokens are not added to Claude's
-own usage or cost. A late answer is submitted only to the question the agent
+When Codex reports token usage, native notices/rendered reports show provider
+`OpenAI Codex` and model, and the result carries `usage`. The adapter's host usage
+stays null; Codex tokens are not added to Claude's `/usage` or cost. With the
+pane installed, the final notice offers `Open Codex activity: /codex-live <name>`.
+A late answer is submitted only to the question the agent
 last returned; if another answerable question is pending, that current question
 is returned. If no unanswered pending slot remains or the job has ended, the
 adapter returns the old job with a notice, including after reload. It does not reinterpret the
@@ -63,14 +71,21 @@ not check expiry locally: if the unanswered slot still exists past its deadline,
 the pinned answer goes to the companion and is refused there, as in 1.4.2.
 Expiry alone does not promise the resolved-question notice.
 
-Every fresh native Agent call reserves a scientist pool name through the companion
-before spawn and claims it at dispatch. A passed label is replaced unless it is
-a free pool name; resumptions retain their name. When the assigned name differs
+Every fresh native Agent call reserves a name through the companion before
+spawn and claims it at dispatch. A valid, free caller name is kept; otherwise
+a scientist pool name is assigned. Resumptions retain their name. When the assigned name differs
 from the input, the Agent result's context gains `Codex worker named X` and the
 SendMessage target, background launch acknowledgements included; the result itself is
-unchanged. A preserved free pool name adds no note, and denials stay as they are. Reservation uses cached host Node
+unchanged. A preserved caller name adds no note, and denials stay as they are. Reservation uses cached host Node
 within a two-second budget; on failure the Agent call passes through unchanged.
 See [naming rules](commands.md#companion-subcommands).
+
+Agent teams use a local in-process loop and verified coordinator messages.
+Split-pane/unknown modes, plan-approval teammates and peer/unverified team
+mailboxes get `native_teammate_unsupported`; team task claiming is unsupported.
+Remote isolation gets `native_remote_isolation`. Local worktrees are supported;
+opt-in [permission mapping](configuration.md#claude-permission-mapping-opt-in)
+adds sandbox confinement. See [roles and teams](worker-operations.md#native-roles-and-agent-teams).
 
 Live progress appears under the Agent row in the main transcript (three latest
 entries, name, model, effort, speed and elapsed time) and under each turn's prompt
@@ -301,7 +316,9 @@ that fit, repairing parent links without rewriting conversation text. A budget t
 small for the boundary and summary fails with an actionable error. The source read
 cap is 128 MiB, configurable with `CODEX_COMPANION_IMPORT_MAX_BYTES`; sources above
 that cap fail before import. Job requests record slice statistics as `forkSlice`
-and the original source hash as `forkSourceSha256`.
+and the original source hash as `forkSourceSha256`. `duet result <worker> --details`
+exposes `forkSlice`, including dropped entries, trimmed tool results/images and
+unpaired tools dropped.
 `--fork` cannot combine with `--to`, `--thread`, `--continue` or resume flags.
 Use `SendMessage` for native follow-ups or `--to` for Bash follow-ups after the fork.
 
@@ -322,7 +339,9 @@ source read cap, brief without `--fork`. See the
 
 Install the separate pane plugin with `/plugin install codex-live@duet`. New jobs
 ask Claude Code to open the pane; Claude Code decides whether it is shown at the
-current width. `/codex-live` opens and focuses it at any width.
+current width. `/codex-live` opens and focuses it at any width;
+`/codex-live <name>` selects a native worker's activity. Provider/model-tagged
+token counts and session totals stay separate from Claude's usage.
 It shows the session's jobs and the selected job's prompt, Codex messages, commands,
 file changes, tool calls, plan and pending question. Resolved `ask_parent` calls
 show their matched answer on fresh and resumed threads using Codex's
@@ -431,8 +450,11 @@ lease otherwise.
 | Direct-mode timeout | 3600 s | `--timeout-sec <seconds>` (maximum 3600) |
 | Owner lease | 1800 s in direct mode; 180 s otherwise | `--lease-sec <seconds>` |
 | Codex sandbox | `danger-full-access` (full access, like the Codex app's own full-access mode) | Lower the default with `setup --default-sandbox read-only\|workspace-write` (stored in `~/.claude/codex-isolated/duet/config.toml`); narrow or widen one call with `task --sandbox <mode>`; `--write` is a floor (at least `workspace-write`), `--write=false` an explicit read-only call |
-| Approval policy | `never+elicitations` on owned jobs (every command/sandbox/rule prompt rejected; a Computer Use app request is forwarded to the parent as a question); `never` on a compatibility non-direct companion task | — |
-| Browser | unrestricted: any website, no per-origin prompt (`approval_mode = "never_ask"` is mirrored into the isolated browser runtime before every task); network access stays on in every sandbox mode | `setup --browser-approval ask` restores the runtime's ordinary origin checks (saved in `duet/config.toml`); `setup --browser-approval never-ask` returns to the default |
+| Approval policy | With permission mapping off: `never+elicitations` on owned jobs (command/sandbox/rule prompts rejected; Computer Use app requests forwarded); `never` on a compatibility non-direct companion task | `setup --permission-mapping claude` opts native agents into the [mode table](configuration.md#claude-permission-mapping-opt-in) |
+| Task budgets | time and tokens off | `--max-minutes`, `--max-tokens`; `setup --default-max-minutes <n\|off>`, `--default-max-tokens <n\|off>` |
+| Agent memory · concurrency cap | off · off | `setup --agent-memory on`, `--max-concurrent <n\|off>` |
+| Git dispatch context | bounded preamble on | `CODEX_COMPANION_GIT_CONTEXT=0` |
+| Browser | unrestricted: any website, no per-origin prompt (`approval_mode = "never_ask"` is mirrored into the isolated browser runtime before every task); sandbox network access stays on when permission mapping is off | `setup --browser-approval ask` restores the runtime's ordinary origin checks (saved in `duet/config.toml`); `setup --browser-approval never-ask` returns to the default |
 | Computer Use apps | `mirror`: apps the user marked "always allow" in their Codex app (`~/.codex/computer-use/config.toml`, read-only) are copied into the isolated runtime's approval file before every task; any other app is asked of the parent during the task | `setup --computer-use-approval ask` stops the sync; `setup --allow-computer-app`/`--revoke-computer-app <bundle id>` adjust individual apps; `task --approve-computer-app <bundle id>` pre-approves one app for one call |
 | Claude instructions | Loaded CLAUDE.md/rules forwarded; approximate scan if unavailable | `--no-claude-md`, `CODEX_COMPANION_CLAUDE_MD=0` |
 | Codex project discovery | `CLAUDE.md` where no `AGENTS.md` exists, unless [already forwarded](claude-md.md#delivery-to-workers) | `duet setup --project-docs agents-only` |

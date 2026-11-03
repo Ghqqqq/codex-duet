@@ -74,7 +74,8 @@ default does not apply to the gate.
 The browser is unrestricted by default. Before every task the plugin mirrors
 top-level `approval_mode = "never_ask"` into the isolated `browser/config.toml`
 when the key is absent, so any website opens without a per-origin prompt, and
-every sandbox mode (even `--sandbox read-only`) keeps network access on.
+with permission mapping off, every sandbox mode (even `--sandbox read-only`)
+keeps network access on.
 `setup --browser-approval ask` removes that key and records the choice in
 `duet/config.toml` so later tasks leave it absent; existing per-origin grants
 and download/upload/history settings remain unchanged, and a hand-edited custom
@@ -83,6 +84,104 @@ value is never overwritten. `setup --json` reports `defaultSandbox`,
 choice); `setup --list-browser-origins --json` includes the same. See
 [worker operations](worker-operations.md#codex-app-profile) and
 [browser approvals](browser-approvals.md#all-sites-browser-approval-the-default).
+
+## Claude permission mapping (opt-in)
+
+`duet setup --permission-mapping claude|off` controls native agents' mapping
+from Claude permission modes to Codex sandbox and approval policy. The default
+is `off`: the configured Codex sandbox and existing approval behavior apply.
+The setting is saved as `permission_mapping` in `<isolated-home>/duet/config.toml`.
+Run this change separately from other setup changes; `--dry-run` previews it.
+
+```bash
+duet setup --permission-mapping claude --dry-run
+duet setup --permission-mapping claude
+duet setup --permission-mapping off
+```
+
+With mapping enabled, the native adapter supplies the current Claude mode:
+
+| Claude mode | Codex sandbox | Codex approval policy |
+| --- | --- | --- |
+| `default` | workspace-write | `untrusted` |
+| `acceptEdits` | workspace-write | `on-request` |
+| `dontAsk`, `auto` | workspace-write | `never` (no action approvals) |
+| `plan`, absent or unknown | read-only | `never` |
+| `bypassPermissions` | explicit sandbox, else saved sandbox, else workspace-write | `on-request`, or `never` if read-only |
+
+An explicit sandbox can narrow the mapped ceiling; it cannot widen it except
+as selected in bypass mode. Role presets still enforce their own sandbox and
+plan mode remains read-only. Mapped read-only/workspace-write turns disable
+sandbox network access; workspace-write excludes the default `/tmp` and
+`TMPDIR` write grants. Browser-origin settings remain separate.
+
+Writable roots are the resolved cwd, or the isolation worktree plus its validated
+private Git index/state directory. With `isolation: "worktree"` (also detected
+under `.claude/worktrees`), `DUET: --cwd` cannot escape that worktree, and full
+access is clamped to workspace-write. Shared Git refs/objects are not added to
+writable roots; access requiring approval must be approved per action. A changed
+Claude mode cannot be applied to a live turn: it is stopped before continuing.
+
+Supported Codex command/file approval requests become parent questions with
+`question.kind: "action-approval"` and choices `Allow once` / `Deny`. Only the
+exact answer `Allow once` approves that action; numbers, prose, timeout and stale
+answers deny it. Requests whose operation cannot be displayed exactly within
+the size limit, malformed requests and persistent root grants are refused.
+
+This maps sandbox and approval requests only. Claude allow/deny rules, the
+auto-mode classifier and PreToolUse do not apply to Codex actions. With mapping
+off, worktree placement alone does not confine a full-access Codex worker.
+
+## Task budgets (opt-in)
+
+Both defaults are `off`. Save limits for new task turns with
+`duet setup --default-max-minutes <n|off>` and
+`duet setup --default-max-tokens <n|off>` (`default_max_minutes` and
+`default_max_tokens` in the shared Duet config). Minutes accept a positive
+number, including fractions; tokens require a positive integer. The two flags
+can combine with each other, `--dry-run` and `--json`, but run separately from
+other setup changes.
+
+```bash
+duet setup --default-max-minutes 10 --default-max-tokens 100000 --dry-run
+duet setup --default-max-minutes 10 --default-max-tokens 100000
+duet setup --default-max-minutes off --default-max-tokens off
+```
+
+Override either default for one task with `--max-minutes <n>` or
+`--max-tokens <n>`; native agents accept both in the `DUET:` header. Per-task
+flags require positive values, not `off`. Each new task turn gets a fresh budget;
+follow-ups use the current defaults unless given explicit limits. Reaching a
+limit interrupts the turn and adds a `budget_exceeded` blocker. Wall time excludes
+queueing and parked parent questions; tokens are this turn's total, excluding
+earlier turns. Token consumption can overshoot by one usage update. See
+[operating examples](worker-operations.md#task-budgets).
+
+## Worker context and concurrency
+
+These settings are shared by workspaces using the same isolated home and are
+off by default. The two setup flags can combine with each other, `--dry-run`
+and `--json`, but run separately from other setup changes.
+
+| Flag | Default | Effect and example |
+| --- | --- | --- |
+| `--agent-memory on\|off` | `off` | Load Duet-owned memory keyed by canonical workspace and agent role (the preset type for native agents). Enable with `duet setup --agent-memory on`; disable with `duet setup --agent-memory off`. |
+| `--max-concurrent <n\|off>` | `off` | Queue new Codex turns at a Duet-wide cap across workspaces/processes sharing this home. Set a positive integer with `duet setup --max-concurrent 4`; clear with `duet setup --max-concurrent off`. |
+
+Memory is stored under `<isolated-home>/duet/agent-memory/<workspace-hash>/<role-hash>/MEMORY.md`
+and loaded up to 200 lines / 25 KiB. Workers may update it only when their
+existing sandbox permits that path; enabling memory grants no extra write
+access. Current native dispatch records `codex:codex-native` for memory/skill
+lookup, including preset agents; these presets therefore share that memory scope.
+Ordinary companion workers use the `worker` scope.
+
+At task dispatch, a best-effort Git preamble includes branch/upstream and at
+most 40 changed paths (a 1.5 s status-read deadline). It is on by default; opt
+out with `CODEX_COMPANION_GIT_CONTEXT=0`. Skills declared by the plugin's public
+agent definition can be preloaded as bounded text; skills merely invoked in
+the parent are not forwarded. The shipped native/preset definitions currently
+declare no skills. Fork import omissions are visible as `forkSlice` in
+`duet result <worker> --details`; see [worker context](worker-operations.md#worker-context).
 
 ## Default worker models
 
@@ -290,8 +389,8 @@ Only add origins the user has explicitly approved; Duet never adds one after a
 denial.
 
 `task --approve-browser-origin <origin>` is narrower: it approves only the
-schema-defined, network-only command approval for the current turn. With the
-unrestricted default and network access on in every sandbox mode it is normally
+schema-defined, network-only command approval for the current turn. With
+permission mapping off, the unrestricted default keeps sandbox network access on, so it is normally
 unnecessary. Unsupported browser elicitations are answered with `cancel`, which
 the browser runtime does not persist as a deny. Details:
 [browser approvals](browser-approvals.md).

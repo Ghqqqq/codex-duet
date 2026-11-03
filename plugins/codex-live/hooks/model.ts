@@ -1,5 +1,5 @@
 import { limitChars } from './text';
-import type { CodexLiveEvent, CodexLiveJob, CodexLiveMarker, CodexLiveSession, CodexLiveState } from '../types';
+import type { CodexLiveEvent, CodexLiveJob, CodexLiveMarker, CodexLiveSession, CodexLiveState, CodexLiveUsage, CodexLiveUsageEntry } from '../types';
 
 const object = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -9,6 +9,27 @@ const number = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 const validBlockerCode = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-z0-9_.:-]{1,64}$/i.test(value);
+const usageKeys = ['inputTokens', 'cachedInputTokens', 'outputTokens', 'totalTokens'] as const;
+export function usageView(value: unknown): CodexLiveUsage | undefined {
+  const usage = object(value);
+  return usageKeys.every(key => Number.isSafeInteger(usage[key]) && (usage[key] as number) >= 0)
+    ? Object.fromEntries(usageKeys.map(key => [key, usage[key]])) as CodexLiveUsage : undefined;
+}
+export function usageSnapshots(previous: CodexLiveState['usageByJob'], jobs: readonly CodexLiveJob[]) {
+  const snapshots = { ...previous };
+  for (const job of jobs) if (job.usage) snapshots[job.id] = { model: job.model || 'unknown', usage: job.usage };
+  return snapshots;
+}
+export function usageLines(entries: Record<string, CodexLiveUsageEntry>, label = 'Codex session total'): string[] {
+  const models = new Map<string, CodexLiveUsage>();
+  for (const entry of Object.values(entries)) {
+    const sum = models.get(entry.model) ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    for (const key of usageKeys) sum[key] += entry.usage[key];
+    models.set(entry.model, sum);
+  }
+  return [...models].map(([model, usage]) => `${label} (provider: OpenAI Codex, model ${model}): ` +
+    usageKeys.map((key, i) => `${usage[key].toLocaleString('en-US')} ${['input', 'cached', 'output', 'total'][i]}`).join(' · '));
+}
 
 // Persisted atoms can contain valid JSON with an invalid shape. Check every
 // nested collection consumed by rendering/polling before trusting the cache.
@@ -32,6 +53,7 @@ export function validView(value: unknown): value is CodexLiveState {
     optional(v, ['blockerCode'], validBlockerCode) &&
     optional(v, ['unresolved', 'notStarted', 'promptReport', 'detailsLoaded', 'detailsOmitted'], bool) &&
     optional(v, ['toolUses', 'lastUpdateMs'], finite) && (v.fileCount === null || finite(v.fileCount)) &&
+    optional(v, ['usage'], usage => usageView(usage) !== undefined) &&
     (v.question === null || record(v.question) && text(v.question.text) && strings(v.question.options) &&
       optional(v.question, ['createdAt'], text) && optional(v.question, ['expiresAt'], finite)) &&
     list(v.events, event);
@@ -40,10 +62,12 @@ export function validView(value: unknown): value is CodexLiveState {
     optional(v, ['anchor'], a => record(a) && text(a.source) && finite(a.offset)) &&
     optional(v, ['seenItems'], items => dictionary(items, item => record(item) && finite(item.length) && finite(item.hash)));
   return record(value) && list(value.jobs, job) && (value.selectedId === null || text(value.selectedId)) && finite(value.nowMs) &&
-    optional(value, ['sessionId', 'discoveryWarning'], text) && optional(value, ['jobsExpanded'], bool) &&
+    optional(value, ['sessionId', 'discoveryWarning', 'openedJobId'], text) && optional(value, ['jobsExpanded'], bool) &&
     optional(value, ['hiddenFinishedBefore', 'spinnerTick', 'historyPage', 'attentionOmitted'], finite) &&
     optional(value, ['newSessionIds', 'viewedSessionIds', 'hiddenJobIds', 'recentEndedIds', 'seenJobIds', 'autoOpenedJobIds'], strings) &&
     optional(value, ['turnCounts', 'firstEndedAtMs'], v => dictionary(v, finite)) &&
+    optional(value, ['usagePartial'], bool) &&
+    optional(value, ['usageByJob'], v => dictionary(v, entry => record(entry) && text(entry.model) && usageView(entry.usage) !== undefined)) &&
     optional(value, ['feeds'], v => dictionary(v, feed));
 }
 
@@ -267,6 +291,8 @@ export function jobView(value: unknown, marker: CodexLiveMarker, details = true,
     createdAt: marker.createdAt || string(job.createdAt),
     startedAt: string(job.startedAt) || marker.createdAt || string(job.createdAt),
     completedAt: string(job.completedAt), model: limitChars(clean(request.model), 100),
+    // These are already per-turn deltas from the runtime; never use thread totals.
+    usage: usageView(result.usage ?? report.usage ?? job.usage),
     effort: limitChars(clean(request.effort), 40), fast: request.serviceTier === 'priority',
     sandbox: limitChars(clean(job.sandbox), 100), workspaceRoot: marker.workspaceRoot,
     ...summaryFields({ currentOperation, lastActivityAt: string(latest.at) }),
@@ -454,6 +480,7 @@ export function normalizeSessions(state: CodexLiveState): CodexLiveState {
 }
 
 export function isHiddenJob(state: CodexLiveState, job: CodexLiveJob): boolean {
+  if (state.openedJobId === job.id) return false;
   if (jobLifecycle(job).active || job.unresolved) return false;
   if (state.hiddenJobIds?.includes(job.id)) return true;
   if (state.hiddenFinishedBefore === undefined || !jobLifecycle(job).finished) return false;
@@ -475,7 +502,7 @@ export function visibleSessions(state: CodexLiveState): CodexLiveSession[] {
 }
 
 export function clearFinished(state: CodexLiveState, nowMs: number): CodexLiveState {
-  const clearing = { ...state, hiddenFinishedBefore: Math.max(state.hiddenFinishedBefore ?? nowMs, nowMs) };
+  const clearing = { ...state, openedJobId: undefined, hiddenFinishedBefore: Math.max(state.hiddenFinishedBefore ?? nowMs, nowMs) };
   // A concurrent poll may have added completions after the captured clear time.
   const hiddenJobIds = [...new Set([...(state.hiddenJobIds ?? []),
     ...visibleSessions(state).filter(session => !session.active && !session.unresolved)
@@ -501,6 +528,7 @@ export function jobSummary(job: CodexLiveJob): CodexLiveJob {
 }
 
 export function boundState(state: CodexLiveState): CodexLiveState {
+  if (state.usageByJob || state.jobs.some(job => job.usage)) state = { ...state, usageByJob: usageSnapshots(state.usageByJob, state.jobs) };
   state = normalizeSessions(state);
   const sessions = groupedSessions(state.jobs, state.turnCounts);
   const retained = new Set(sessions.flatMap(session => retainedTurns(session).map(job => job.id)));
@@ -545,6 +573,16 @@ export function boundState(state: CodexLiveState): CodexLiveState {
 // Measure once and subtract removed jobs; do not reserialize the entire state
 // for every eviction. Active turns and the selected conversation are protected.
 export function fitState(state: CodexLiveState): CodexLiveState {
+  // Keep accounting separate from transcript retention. At the state ceiling,
+  // show a partial total explicitly rather than growing an unbounded ledger.
+  if (state.usageByJob && JSON.stringify(state.usageByJob).length > 200_000) {
+    let size = 2;
+    const entries = Object.entries(state.usageByJob).reverse().filter(entry => {
+      size += JSON.stringify(entry).length + 1;
+      return size <= 200_000;
+    }).reverse();
+    state = { ...state, usageByJob: Object.fromEntries(entries), usagePartial: true };
+  }
   // Lifetime metadata must shrink with history, including old oversized views.
   // Run before measurement and after eviction so a failed publish can recover.
   const trim = (value: CodexLiveState): CodexLiveState => {

@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 
 import { spawnDetached } from "./lib/process.mjs";
+import { handoffSteering } from "./lib/steering.mjs";
 import { codexRuntimeDiagnostic, executableOnPath, isolatedCodexCommand } from "./lib/codex-home.mjs";
 import { getWorkspaceRuntimeStatus, restartBrokerRuntime } from "./lib/broker-lifecycle.mjs";
 import { UNREACHABLE_GUIDANCE } from "./lib/runtime-errors.mjs";
 import { getToolAvailability, syncToolConfig } from "./lib/tool-config.mjs";
 import { buildWorkerReport, parseStructuredReport, persistTaskArtifacts, taskArtifactPaths } from "./lib/worker-report.mjs";
 import { normalizeBrowserOrigins, normalizeBundleIds } from "./lib/server-requests.mjs";
-import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, defaultModeSetup, dispatchSetup, dispatchPreference, workerDefaultsSetup, readWorkerDefaults, normalizeRequestedModel, isSupportedReasoningEffort, ensureBrowserApproval, ensureComputerUseApproval, ensureProjectDocs, projectDocsSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
+import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, defaultModeSetup, permissionMappingSetup, readTomlField, dispatchSetup, dispatchPreference, contextSetup, budgetDefaultsSetup, workerDefaultsSetup, readWorkerDefaults, normalizeRequestedModel, isSupportedReasoningEffort, ensureBrowserApproval, ensureComputerUseApproval, ensureProjectDocs, projectDocsSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
+import { budgetLimit, newJobBudget } from "./lib/job-budget.mjs";
 import { listModels, renderModels } from "./lib/models.mjs";
 import { activityReader, formatActivity, redactActivity, snippet } from "./lib/activity.mjs";
 import { JobRuntime, ACTIVE, OWNER_GRACE_MS, seconds, ownerId, renewLease, requestCancel, answerQuestion, progressSnapshot, leaseExpiryReport, continuationReport, fullReport, directReport, envelopeBytes, adoptJob, ownershipNotice } from "./lib/job-runtime.mjs";
@@ -47,7 +49,10 @@ import {
     runAppServerTurn
   } from "./lib/codex.mjs";
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
-import { prepareClaudeInstructions } from "./lib/claude-memory.mjs";
+import { mapPermissionPolicy, permissionWorktree, livePermissionMismatch, PERMISSION_LIMITS } from "./lib/permission-policy.mjs";
+import { prepareClaudeInstructions, prepareClaudeSkills } from "./lib/claude-memory.mjs";
+import { gitContext } from "./lib/git-context.mjs";
+import { prepareAgentMemory } from "./lib/agent-memory.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
@@ -233,6 +238,8 @@ Uses app-server model/list, falling back to the isolated model cache; reports th
   --json  Model descriptions, efforts, context windows and effective tiers with sources.
   --all  Include hidden models; --help, -h  Help without starting the runtime.`,
   setup: `duet setup reports invocation availability, selected runtime source and readiness.
+  --agent-memory <on|off>  Workspace/role memory in the isolated home (default off).
+  --max-concurrent <n|off>  Duet-wide worker turn limit (default off).
 Usage: duet setup [options]
 Check isolated runtime readiness or change setup; --help, -h exits without changes.
   --cwd, -C <dir>  Workspace; --json  JSON output; --dry-run  Preview a setup change.
@@ -550,7 +557,11 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     defaultSandbox: defaultSandboxSetup().defaultSandbox,
     defaultMode: defaultModeSetup().defaultMode,
     dispatch: dispatchPreference(),
+    ...contextSetup(),
+    permissionMapping: permissionMappingSetup().permissionMapping,
+    permissionMappingLimits: PERMISSION_LIMITS,
     ...workerDefaultsSetup(),
+    ...budgetDefaultsSetup(),
     browserOrigins: browserOriginSetup(),
     computerUse: computerUseSummary(),
     projectDocs: projectDocsSummary(),
@@ -585,7 +596,7 @@ async function handleModels(argv) {
 
 async function handleSetup(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "cua-template", "chatgpt-resources", "transport", "profile", "default-sandbox", "default-mode", "dispatch", "default-model", "default-effort", "ultra-routine-model", "browser-approval", "computer-use-approval", "project-docs"],
+    valueOptions: ["cwd", "cua-template", "chatgpt-resources", "transport", "profile", "default-sandbox", "default-mode", "permission-mapping", "dispatch", "default-model", "default-effort", "ultra-routine-model", "browser-approval", "computer-use-approval", "project-docs", "agent-memory", "max-concurrent", "default-max-minutes", "default-max-tokens"],
     repeatableOptions: ["allow-browser-origin", "revoke-browser-origin", "allow-computer-app", "revoke-computer-app"],
     booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "sync-tools", "dry-run", "list-browser-origins", "list-computer-apps", "replace-cua"]
   });
@@ -599,8 +610,26 @@ async function handleSetup(argv) {
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const actionsTaken = [];
+  if (options["default-max-minutes"] !== undefined || options["default-max-tokens"] !== undefined) {
+    if (Object.keys(options).some(key => !["default-max-minutes", "default-max-tokens", "cwd", "session", "json", "dry-run"].includes(key))) throw new Error("Run budget defaults separately from other setup changes.");
+    const report = budgetDefaultsSetup({ maxMinutes: options["default-max-minutes"], maxTokens: options["default-max-tokens"], dryRun: Boolean(options["dry-run"]) });
+    outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
+    return;
+  }
   for (const key of ["cua-template", "chatgpt-resources", "profile", "replace-cua"]) {
     if (options[key] !== undefined && !options["sync-tools"]) throw new Error(`--${key} requires --sync-tools.`);
+  }
+  if (options["permission-mapping"] !== undefined) {
+    if (Object.keys(options).some(key => !["permission-mapping", "cwd", "session", "json", "dry-run"].includes(key))) throw new Error("Run --permission-mapping separately from other setup changes.");
+    const report = { ...permissionMappingSetup({ mode: options["permission-mapping"], dryRun: Boolean(options["dry-run"]) }), permissionMappingLimits: PERMISSION_LIMITS };
+    outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
+    return;
+  }
+  if (options["agent-memory"] !== undefined || options["max-concurrent"] !== undefined) {
+    if (Object.keys(options).some(key => !["agent-memory", "max-concurrent", "cwd", "session", "json", "dry-run"].includes(key))) throw new Error("Run context/concurrency setup separately from other setup changes.");
+    const report = contextSetup({ agentMemory: options["agent-memory"], maxConcurrent: options["max-concurrent"], dryRun: Boolean(options["dry-run"]) });
+    outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
+    return;
   }
   if (options.dispatch !== undefined) {
     if (Object.keys(options).some(key => !["dispatch", "cwd", "session", "json", "dry-run"].includes(key))) throw new Error("Run --dispatch separately from other setup changes.");
@@ -818,6 +847,7 @@ async function executeReviewRun(request) {
   if (reviewName === "Review") {
     const reviewTarget = validateNativeReviewRequest(target, focusText);
     const result = await runAppServerReview(request.cwd, {
+      jobId: request.jobId,
       target: reviewTarget,
       model: request.model,
       effort: request.effort,
@@ -874,6 +904,7 @@ async function executeReviewRun(request) {
   const context = collectReviewContext(request.cwd, target);
   const prompt = buildAdversarialReviewPrompt(context, focusText);
   const result = await runAppServerTurn(context.repoRoot, {
+    jobId: request.jobId,
     prompt,
     model: request.model,
     effort: request.effort,
@@ -973,6 +1004,10 @@ function threadBusyBlocker(workspaceRoot, stored) {
   return blocker;
 }
 
+// The runtime trims the whole prompt; trim the brief itself so the preamble
+// does not change what the worker reads. An empty brief keeps its default.
+const withGitContext = (context, brief) => brief.trim() && context ? context + brief.trim() : brief;
+
 async function executeTaskRun(request) {
   requireTaskRequest(request.prompt ?? "", request.resumeLast, request.threadId);
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
@@ -1021,7 +1056,7 @@ async function executeTaskRun(request) {
   // Only an owned (detached/--follow) job has a parent polling for questions, so
   // only there can a Computer Use request be forwarded; a plain foreground run
   // keeps "never" and such a request fails closed at once.
-  const approvalPolicy = request.detached ? FORWARDED_APPROVALS_LABEL : "never";
+  const approvalPolicy = request.permissionPolicy ? (request.detached ? request.permissionPolicy.approvalPolicy : "never") : request.detached ? FORWARDED_APPROVALS_LABEL : "never";
   updateJob(workspaceRoot, request.jobId, () => ({ preExistingChanges: before.preExistingChanges, sandbox, approvalPolicy }));
   request.onProgress?.(`Sandbox: ${sandbox}; approval policy: ${approvalPolicy}${request.detached ? " (Computer Use app requests are forwarded to the parent)" : ""}. Captured workspace baseline (${before.status}).`);
 
@@ -1039,8 +1074,9 @@ async function executeTaskRun(request) {
     },
     developerInstructions: request.developerInstructions,
     claudeMd: request.claudeMd,
+    skills: request.skills,
     resumeThreadId,
-    prompt: request.report ? `${request.prompt || DEFAULT_CONTINUE_PROMPT}\n\n${loadPromptTemplate(ROOT_DIR, "worker-task")}` : request.prompt,
+    prompt: withGitContext(request.gitContext, request.report ? `${request.prompt || DEFAULT_CONTINUE_PROMPT}\n\n${loadPromptTemplate(ROOT_DIR, "worker-task")}` : request.prompt || (resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "")),
     outputSchema: request.report ? readOutputSchema(WORKER_REPORT_SCHEMA) : null,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
@@ -1048,6 +1084,7 @@ async function executeTaskRun(request) {
     serviceTier: request.serviceTier,
     sandbox,
     explicitSandbox: Boolean(request.sandbox),
+    permissionPolicy: request.permissionPolicy,
     approvedBrowserOrigins: request.approvedBrowserOrigins ?? [],
     approvedComputerApps: request.approvedComputerApps ?? [],
     onProgress: request.onProgress,
@@ -1250,6 +1287,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
   // Set once on creation; adoption may change sessionId, never this origin.
   // A null submission distinguishes new, never-submitted jobs from legacy ones.
   const record = { ...job, turnSubmission: null, reportTracking: 1, launcherPid: process.pid, dispatchSessionId: job.sessionId ?? null, ownerId: lifecycle.owner ?? ownerId(job.id), sessionId: job.sessionId ?? null, leaseRenewedAt: Date.now(), leaseSec: lifecycle.leaseSec ?? 180, questionTimeoutSec: lifecycle.questionTimeoutSec ?? 900,
+    ...(lifecycle.budget ? { budget: lifecycle.budget } : {}),
     ...(identity.dispatchNonce ? { dispatchNonce: identity.dispatchNonce } : {}),
     ...(identity.dispatchToolUseId ? { dispatchToolUseId: identity.dispatchToolUseId,
       deliveryBindings: [{ toolUseId: identity.dispatchToolUseId, sessionId: job.sessionId ?? null }] } : {}),
@@ -1330,7 +1368,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
   return record;
 }
 
-function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins = [], approvedComputerApps = [], resumeLast, threadId, jobId, report, detached = false, developerInstructions, claudeMd }) {
+function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins = [], approvedComputerApps = [], resumeLast, threadId, jobId, report, detached = false, developerInstructions, claudeMd, skills, agentType, agentMemory, claudeInstructionsBase, gitContext, budget, permissionPolicy }) {
   return {
     cwd,
     model,
@@ -1339,6 +1377,8 @@ function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sand
     prompt,
     developerInstructions,
     claudeMd,
+    skills, agentType, agentMemory, claudeInstructionsBase, gitContext, budget,
+    ...(permissionPolicy ? { permissionPolicy } : {}),
     write,
     sandbox,
     approvedBrowserOrigins,
@@ -1527,6 +1567,7 @@ async function handleReviewCommand(argv, config) {
       try {
         runtime.abort.signal.throwIfAborted();
         execution = await executeReviewRun({
+        jobId: job.id,
         cwd,
         base: options.base,
         scope: options.scope,
@@ -1590,11 +1631,50 @@ function handleReserveName(argv) {
   process.stdout.write(`${JSON.stringify({ name })}\n`);
 }
 
+const permissionFlags = ["claude-permission-mode", "native-cwd", "native-isolation"];
+const nativePermissionOptions = config => ({ ...config, internalValueOptions: [...(config.internalValueOptions ?? []), ...permissionFlags] });
+function taskPermissionPolicy(options, cwd, previous) {
+  if (permissionMappingSetup().permissionMapping !== "claude" || (options["claude-permission-mode"] === undefined && !previous)) return null;
+  const { file } = defaultSandboxSetup();
+  const configuredSandbox = fs.existsSync(file) ? readTomlField(fs.readFileSync(file, "utf8"), ["default_sandbox"]) : undefined;
+  const confinement = permissionWorktree(cwd, { hostCwd: options["native-cwd"] ?? cwd,
+    isolation: options["native-isolation"], worktree: previous?.worktree });
+  // Older records did not distinguish an explicit ceiling; retain their grant
+  // conservatively. A new flag can narrow, never erase, an inherited ceiling.
+  const ceiling = previous?.explicitSandbox === undefined ? previous?.sandbox : previous.explicitSandbox;
+  if (ceiling != null && !SANDBOX_MODES.includes(ceiling)) throw new Error("Invalid recorded permission sandbox.");
+  let explicitSandbox = options.sandbox ?? ceiling ?? undefined;
+  if (ceiling && explicitSandbox && SANDBOX_MODES.includes(explicitSandbox)) {
+    explicitSandbox = SANDBOX_MODES[Math.min(SANDBOX_MODES.indexOf(ceiling), SANDBOX_MODES.indexOf(explicitSandbox))];
+  }
+  return { ...mapPermissionPolicy({ mode: options["claude-permission-mode"], configuredSandbox,
+    explicitSandbox, isolated: Boolean(confinement.worktree) }), ...confinement };
+}
+function checkLivePermission(options, workspaceRoot, job) {
+  if (options["claude-permission-mode"] === undefined || !ACTIVE.has(job.status)) return;
+  const previous = job.request?.permissionPolicy;
+  const policy = taskPermissionPolicy({ ...options, sandbox: previous?.sandbox }, job.request?.cwd ?? workspaceRoot, previous);
+  if (livePermissionMismatch(job.request?.permissionPolicy, policy)) {
+    requestCancel(workspaceRoot, job.id, "permission_mode_changed");
+    throw new Error("Native permission mode changed; the live Codex turn was interrupted. Start a follow-up after it stops.");
+  }
+}
+
 async function handleTask(argv) {
   // Parsing --session updates process.env; keep the inherited transcript's
   // original session identity so a nested host cannot relabel its parent's path.
   const forkSourceEnv = { ...process.env };
-  const { options, positionals } = parseCommandInput(argv, COMMAND_OPTIONS.task);
+  const { options, positionals } = parseCommandInput(argv, nativePermissionOptions({ ...COMMAND_OPTIONS.task,
+    internalValueOptions: [...(COMMAND_OPTIONS.task.internalValueOptions ?? []), "agent-type"] }));
+  const declaredAgentType = options["agent-type"];
+  if (declaredAgentType !== undefined && !["codex:codex-native", "codex:codex-reviewer", "codex:codex-implementer", "codex:codex-investigator"].includes(declaredAgentType)) {
+    throw new Error("--agent-type requires a declared native agent type.");
+  }
+  const budgetDefaults = budgetDefaultsSetup();
+  const budget = newJobBudget(
+    options["max-minutes"] !== undefined ? budgetLimit(options["max-minutes"], "max-minutes") : budgetDefaults.defaultMaxMinutes === "off" ? null : budgetDefaults.defaultMaxMinutes,
+    options["max-tokens"] !== undefined ? budgetLimit(options["max-tokens"], "max-tokens") : budgetDefaults.defaultMaxTokens === "off" ? null : budgetDefaults.defaultMaxTokens
+  );
   for (const flag of ["name", "agent-name"]) {
     if (/^(task|review|job)-/i.test(options[flag] ?? "")) {
       if (flag === "name") throw new Error("--name cannot start with task-, review- or job-; these prefixes are reserved for job IDs.");
@@ -1699,7 +1779,7 @@ async function handleTask(argv) {
   // Per-call Computer Use approval, like --approve-browser-origin: only the
   // listed bundle ids, only for this job's turn.
   const approvedComputerApps = normalizeBundleIds(options["approve-computer-app"] ?? grantRequest?.approvedComputerApps ?? []);
-  const lifecycle = { owner: options.owner, leaseSec: seconds(options["lease-sec"] ?? process.env.CODEX_COMPANION_LEASE_SEC, options.direct ? 1800 : 180, "--lease-sec"), questionTimeoutSec: seconds(options["question-timeout-sec"], 900, "--question-timeout-sec") };
+  const lifecycle = { budget, owner: options.owner, leaseSec: seconds(options["lease-sec"] ?? process.env.CODEX_COMPANION_LEASE_SEC, options.direct ? 1800 : 180, "--lease-sec"), questionTimeoutSec: seconds(options["question-timeout-sec"], 900, "--question-timeout-sec") };
   const defaults = readWorkerDefaults();
   const model = normalizeRequestedModel(options.model) ?? recordedSettings.model ?? defaults.model;
   const effort = normalizeReasoningEffort(options.effort) ?? recordedSettings.effort ?? defaults.effort;
@@ -1716,9 +1796,10 @@ async function handleTask(argv) {
   if (threadId && fresh) {
     throw new Error("Choose --thread, --fresh, or --resume/--resume-last; these options cannot be combined.");
   }
+  const contextRequest = previousRequest ?? (threadId ? latestThreadJob(cwd, threadId)?.request : null);
   const claudeInstructions = prepareClaudeInstructions({
     sessionId: process.env[SESSION_ID_ENV], cwd, sessionCwd: options["session-cwd"],
-    previousRequest: previousRequest ?? (threadId ? latestThreadJob(cwd, threadId)?.request : null),
+    previousRequest: contextRequest?.claudeInstructionsBase !== undefined ? { ...contextRequest, developerInstructions: contextRequest.claudeInstructionsBase } : contextRequest,
     resuming: Boolean(threadId), disabled: Boolean(options["no-claude-md"])
   });
   // Permission model: the parent adjusts Codex's sandbox per call with --sandbox
@@ -1740,7 +1821,16 @@ async function handleTask(argv) {
     else if (write && configured === "read-only") sandbox = "workspace-write";
     else sandbox = configured;
   }
+  const permissionPolicy = taskPermissionPolicy(options, cwd, previousRequest?.permissionPolicy);
+  if (permissionPolicy) sandbox = permissionPolicy.sandbox;
   write = sandbox !== "read-only";
+  const agentType = contextRequest?.agentType ?? declaredAgentType ?? (nativeAgentName ? "codex:codex-native" : null);
+  const skillContext = threadId ? { skills: contextRequest?.skills ?? [], text: "" } : prepareClaudeSkills({ agentType, cwd });
+  const memoryContext = threadId ? { agentMemory: contextRequest?.agentMemory ?? { enabled: false }, text: "" }
+    : prepareAgentMemory({ workspace: workspaceRoot, role: agentType ?? "worker" });
+  const claudeInstructionsBase = claudeInstructions.developerInstructions;
+  Object.assign(claudeInstructions, { claudeInstructionsBase, agentType, gitContext: gitContext(cwd), skills: skillContext.skills, agentMemory: memoryContext.agentMemory,
+    developerInstructions: threadId ? contextRequest?.developerInstructions ?? null : (claudeInstructionsBase ?? "") + skillContext.text + memoryContext.text || null });
   let forkRequest = {};
   if (options.fork) {
     if (!prompt.trim()) throw new Error("Provide the task --fork brief on stdin.");
@@ -1787,6 +1877,8 @@ async function handleTask(argv) {
     if (options.direct) job.direct = true;
     const request = buildTaskRequest({
       ...claudeInstructions,
+      budget,
+      permissionPolicy,
       cwd,
       model,
       effort,
@@ -1828,7 +1920,7 @@ async function handleTask(argv) {
   }
 
   const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, false, { cwd, continued, threadId, resumeLast, prompt, model, effort, agentName, nativeAgentName, run: options.run, dispatchToolUseId, report: Boolean(options.report) });
-  job.request = buildTaskRequest({ ...claudeInstructions, cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins, approvedComputerApps, resumeLast, threadId, jobId: job.id, report: Boolean(options.report) });
+  job.request = buildTaskRequest({ ...claudeInstructions, budget, permissionPolicy, cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins, approvedComputerApps, resumeLast, threadId, jobId: job.id, report: Boolean(options.report) });
   if (options.run !== undefined) job.request.run = options.run;
   if (inheritance?.details) job.request.settingsInheritance = inheritance.details;
   Object.assign(job.request, forkRequest);
@@ -1837,6 +1929,7 @@ async function handleTask(argv) {
     (progress) =>
       executeTaskRun({
         ...claudeInstructions,
+        permissionPolicy,
         cwd,
         model,
         effort,
@@ -2868,19 +2961,30 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
 }
 
 async function handleWait(argv) {
-  const { options, positionals } = parseCommandInput(argv, COMMAND_OPTIONS.wait);
+  const { options, positionals } = parseCommandInput(argv, nativePermissionOptions(COMMAND_OPTIONS.wait));
   validatePositionalArity(positionals, 1, "wait");
   const toolUseId = deliveryToolUseId(options);
   validateDirectOptions(argv, DIRECT_OPTION_CONFLICTS.wait, options);
   if (!positionals[0]) throw new Error("wait requires a job id.");
   const selected = resolveWorkerTarget(resolveCommandCwd(options), positionals[0], { command: "wait", nameState: "wait", legacyReferences: !DUET_INVOCATION || options.owner !== undefined });
   const { workspaceRoot, job } = buildSingleJobSnapshot(selected.cwd, selected.reference);
+  checkLivePermission(options, workspaceRoot, job);
   if (options.owner === undefined && (DUET_INVOCATION || positionals[0].toLowerCase() === job.agentName?.toLowerCase())) options.owner = selected.job.ownerId;
   await waitForJob(workspaceRoot, job, { owner: options.owner, timeoutSec: options["timeout-sec"], minIntervalSec: options["min-interval-sec"], afterQuestion: options["after-question"], feedLimit: options["feed-limit"], json: options.json, direct: options.direct, quiet: options.quiet, details: options.details, toolUseId });
 }
 
+async function handleSteer(argv) {
+  const { options, positionals } = parseCommandInput(argv, { valueOptions: ["cwd", "delivery-id", "owner"], booleanOptions: ["json"] });
+  if (positionals.length !== 1) throw new Error("steer requires one job ID; pass message text on stdin.");
+  const receipt = await handoffSteering(resolveCommandCwd(options), positionals[0], {
+    deliveryId: options["delivery-id"], text: readStdinIfPiped({ maxBytes: 256 * 1024 }),
+    sessionId: process.env[SESSION_ID_ENV], ownerId: options.owner
+  });
+  outputResult(receipt, true);
+}
+
 async function handleAnswer(argv) {
-  const { options, positionals } = parseCommandInput(argv, COMMAND_OPTIONS.answer);
+  const { options, positionals } = parseCommandInput(argv, nativePermissionOptions(COMMAND_OPTIONS.answer));
   const toolUseId = deliveryToolUseId(options);
   validateDirectOptions(argv, DIRECT_OPTION_CONFLICTS.answer, options);
   if (!positionals[0]) throw new Error("answer requires a worker name or job id; pass answer text on stdin.");
@@ -2895,6 +2999,7 @@ async function handleAnswer(argv) {
     if (options.direct && !options.owner) throw new Error("answer --direct requires --owner <id>.");
     if (!options.direct && options["timeout-sec"] !== undefined) throw new Error("--timeout-sec requires --direct.");
     const { workspaceRoot, job } = buildSingleJobSnapshot(selected.cwd, selected.reference);
+    checkLivePermission(options, workspaceRoot, job);
     const text = readStdinIfPiped();
     if (options.direct) {
       await waitForJob(workspaceRoot, job, { owner: options.owner, afterQuestion: options.question,
@@ -3132,6 +3237,9 @@ async function main() {
       break;
     case "answer":
       await handleAnswer(argv);
+      break;
+    case "steer":
+      await handleSteer(argv);
       break;
     case "status":
       await handleStatus(argv);

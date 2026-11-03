@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { cleanDisplayText } from "./display-text.mjs";
 
 const methods = new Set([
   "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/tool/requestUserInput",
@@ -86,6 +87,54 @@ export function parseApprovalAnswer(answer) {
   if (APPROVAL_CHOICES.includes(text)) return text;
   if (text === "once") return "call";
   return "deny";
+}
+
+export const ACTION_APPROVAL_OPTIONS = ["Allow once", "Deny"];
+export const isActionApproval = message => ["item/commandExecution/requestApproval", "item/fileChange/requestApproval"].includes(message.method);
+// JSON quoting keeps whitespace and control characters visible and exact. Bidi
+// formatting and C1 controls must also be visible, not affect the parent's UI.
+const operationText = value => cleanDisplayText(JSON.stringify(value).replace(/[\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g,
+  char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`));
+
+export function actionApprovalRequest(message, context, policy, item) {
+  if (!policy || !isActionApproval(message)) return null;
+  const p = message.params;
+  const summary = { method: message.method, requestId: Number.isSafeInteger(message.id) ? message.id : `sha256:${hash(message.id)}`,
+    kind: "action-approval", decision: "cancelled", reason: "malformed-request" };
+  const denied = { reply: { id: message.id, result: { decision: "decline" } }, summary, request: null };
+  if (!object(p) || !(Number.isSafeInteger(message.id) || typeof message.id === "string" && message.id.length > 0) ||
+      !["threadId", "turnId", "itemId"].every(key => typeof p[key] === "string" && p[key]) || !Number.isSafeInteger(p.startedAtMs)) return denied;
+  if (!context.threadId || !context.turnId || p.threadId !== context.threadId || p.turnId !== context.turnId) {
+    summary.reason = "turn-mismatch"; return denied;
+  }
+  if (!policy.forwardActions) { summary.reason = "permission-mode-denies-approvals"; return denied; }
+  let question;
+  if (message.method === "item/commandExecution/requestApproval") {
+    // Codex 0.166 also sends kind, availableDecisions and the "local" environment.
+    if (!only(p, ["threadId", "turnId", "itemId", "startedAtMs", "approvalId", "environmentId", "reason", "networkApprovalContext", "command", "cwd", "commandActions", "proposedExecpolicyAmendment", "proposedNetworkPolicyAmendments", "kind", "availableDecisions"]) ||
+        typeof p.command !== "string" || !p.command || typeof p.cwd !== "string" || !p.cwd || (p.environmentId != null && p.environmentId !== "local") ||
+        (p.kind !== undefined && p.kind !== "command")) return denied;
+    question = `Codex command approval. Command: ${operationText(p.command)}\nCwd: ${operationText(p.cwd)}`;
+  } else {
+    // grantRoot is unstable session authority, never a filename or consent.
+    if (!only(p, ["threadId", "turnId", "itemId", "startedAtMs", "reason", "grantRoot", "kind", "availableDecisions"]) || p.grantRoot != null) {
+      summary.reason = "unsupported-root-grant"; return denied;
+    }
+    if (item?.type !== "fileChange" || item.id !== p.itemId || item.threadId !== p.threadId || item.turnId !== p.turnId || !Array.isArray(item.changes) || !item.changes.length ||
+        !item.changes.every(change => typeof change.path === "string" && change.path && typeof change.diff === "string" &&
+          ["add", "delete", "update"].includes(change.kind?.type) && (change.kind.move_path == null || typeof change.kind.move_path === "string"))) {
+      summary.reason = "missing-file-change-details"; return denied;
+    }
+    question = `Codex file-change approval. Cwd: ${operationText(policy.cwd)}\nFiles/diff: ${operationText(item.changes.map(change => ({ path: change.path, kind: change.kind, diff: change.diff })))}`;
+  }
+  // Only a one-time accept is ever sent; refuse to ask when the runtime offers none.
+  if (p.availableDecisions != null && (!Array.isArray(p.availableDecisions) || !p.availableDecisions.includes("accept"))) {
+    summary.reason = "accept-unavailable"; return denied;
+  }
+  if (Buffer.byteLength(JSON.stringify(question)) > 800) { summary.reason = "operation-too-large-to-display-exactly"; return denied; }
+  summary.decision = "pending"; summary.reason = "ask-parent";
+  return { ...denied, request: { kind: "action-approval", question,
+    binding: { threadId: p.threadId, turnId: p.turnId, requestId: message.id, itemId: p.itemId, approvalId: p.approvalId ?? null, method: message.method } } };
 }
 
 export function unsupportedServerRequest(message) {
@@ -200,8 +249,12 @@ export class ServerRequestRelay {
   constructor({ send, respond, log }) {
     this.send = send; this.respond = respond; this.log = log;
     this.pending = new Map(); this.nextId = 1;
+    this.actions = new Map();
   }
-  request(message, owner) {
+  request(message, owner, { trackActions = false } = {}) {
+    const tracked = trackActions && isActionApproval(message);
+    const previous = tracked && this.actions.get(message.id);
+    if (previous && (this.pending.has(previous.id) || previous.threadId === message.params?.threadId && previous.turnId === message.params?.turnId)) return;
     if (!owner || owner.destroyed) {
       const { reply, summary } = decideServerRequest(message);
       this.log({ ...summary, reason: "no-active-job" });
@@ -210,15 +263,22 @@ export class ServerRequestRelay {
     }
     const id = `broker-server-${this.nextId++}`;
     this.pending.set(id, { message, owner });
+    if (tracked) this.actions.set(message.id, { id, owner, threadId: message.params?.threadId, turnId: message.params?.turnId });
     this.send(owner, { ...message, id });
+  }
+  resolved(message) {
+    const tracked = this.actions.get(message.params?.requestId);
+    if (!tracked || tracked.threadId !== message.params?.threadId) return false;
+    if (this.pending.delete(tracked.id)) this.send(tracked.owner, { ...message, params: { ...message.params, requestId: tracked.id } });
+    return true;
   }
   response(message, owner) {
     if (message.method !== undefined || !this.pending.has(message.id)) return false;
     const pending = this.pending.get(message.id);
     if (pending.owner !== owner) return true;
     this.pending.delete(message.id);
-    if (pending.message.method === "item/commandExecution/requestApproval" && object(message.result) && Object.keys(message.result).length === 1 && message.result.decision === "accept") {
-      this.respond({ id: pending.message.id, result: { decision: "accept" } });
+    if (isActionApproval(pending.message) && object(message.result) && Object.keys(message.result).length === 1 && ["accept", "decline"].includes(message.result.decision)) {
+      this.respond({ id: pending.message.id, result: { decision: message.result.decision } });
     } else if (pending.message.method === "mcpServer/elicitation/request" && object(message.result) && Object.keys(message.result).length === 1 && message.result.action === "accept" && computerUseElicitation(pending.message.params)) {
       this.respond({ id: pending.message.id, result: { action: "accept" } });
     } else if (pending.message.method === "item/tool/call" && pending.message.params?.tool === "ask_parent" &&
@@ -237,5 +297,6 @@ export class ServerRequestRelay {
       const { summary } = decideServerRequest(pending.message);
       this.log({ ...summary, reason: "job-disconnected" });
     }
+    for (const [id, tracked] of this.actions) if (tracked.owner === owner) this.actions.delete(id);
   }
 }

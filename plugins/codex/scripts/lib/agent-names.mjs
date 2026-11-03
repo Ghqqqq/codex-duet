@@ -23,6 +23,7 @@ function livePid(pid) {
 
 const tiers = [TIER_1_NAMES, TIER_2_NAMES, TIER_3_NAMES];
 export const AGENT_NAMES = Object.freeze(tiers.flat());
+export const validAgentName = name => typeof name === "string" && !/^(task|review|job)-/i.test(name) && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(name);
 const weightedNames = tiers.flatMap((names, tier) =>
   names.map(name => ({ name, weight: NAME_TIER_WEIGHTS[tier] }))
 );
@@ -54,13 +55,16 @@ export function pickAgentName(usedNames, random = Math.random) {
 // onReserved reports a new selection or native claim, never earlier jobs.
 // A claim supplies its own rollback: keep the pre-spawn reservation pinned.
 export function reserveAgentName(usedNames, options, random = Math.random) {
-  const { cwd, sessionId, preferredName = null } = options;
+  const { cwd, sessionId } = options;
+  // Admission validates new caller labels; existing job/thread identities keep
+  // their original spelling, including legacy names during a continuation.
+  const preferredName = options.reserveForSpawn && !validAgentName(options.preferredName) ? null : options.preferredName ?? null;
   const used = new Set([...usedNames].map(name => name.toLowerCase()));
   if (!sessionId) return preferredName && !used.has(preferredName.toLowerCase()) ? preferredName : pickAgentName(used, random);
   // Inventory may migrate workspace state. Do it before taking the names lock:
   // dispatch/adoption hold a workspace lock before entering this namespace.
   const jobs = listSessionJobs(cwd, sessionId), root = namesRoot(process.env, true);
-  return withJournalLock(root, () => reserveSessionName(used, options, jobs, root, random));
+  return withJournalLock(root, () => reserveSessionName(used, { ...options, preferredName }, jobs, root, random));
 }
 function reserveSessionName(used, { sessionId, preferredName = null, threadId = null,
   reserveForSpawn = false, claimOwner = null, onReserved = undefined }, jobs, root, random) {

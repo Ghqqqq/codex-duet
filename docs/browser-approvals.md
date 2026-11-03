@@ -6,11 +6,14 @@ Workers browse like the user's own Codex app: any website through the user's
 logged-in browser, without per-origin prompts. Before every task the plugin
 mirrors top-level `approval_mode = "never_ask"` into the isolated
 `browser/config.toml` when that key is absent (`ensureBrowserApproval`); a
-hand-edited custom value is left alone. The sandbox never limits the network
-either: a `--sandbox read-only` or `workspace-write` turn is sent with
+hand-edited custom value is left alone. With permission mapping off, a
+`--sandbox read-only` or `workspace-write` turn is sent with
 `networkAccess: true`, so web research and browser work never wait on an egress
 approval. This is separate from Codex's filesystem sandbox, desktop permissions,
-and the request-scoped `task --approve-browser-origin` mechanism.
+and the request-scoped `task --approve-browser-origin` mechanism. Opt-in
+[Claude permission mapping](configuration.md#claude-permission-mapping-opt-in)
+disables sandbox network access for mapped read-only/workspace-write turns;
+the browser-origin setting remains separate.
 
 `setup --browser-approval never-ask|ask` records the user's choice as
 `browser_approval` in `<isolated home>/duet/config.toml` (next to

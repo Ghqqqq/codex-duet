@@ -28,6 +28,23 @@ export function instructionInventory(files) {
   return { entries, complete: valid && !stopped, inventoryAvailable: valid, bounded: stopped, omittedPaths, omittedCount };
 }
 
+// skill.prompt has no agent attribution in the current host API. Never turn
+// the main session's invoked skills into a subagent preload. Only declarations
+// supplied for the dispatched agent (or a future attributed hook) cross over.
+export function skillInventory(skills) {
+  const entries = [], seen = new Set();
+  let size = 0;
+  for (const skill of Array.isArray(skills) ? skills : []) {
+    if (!skill || typeof skill.name !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/.test(skill.name) || seen.has(skill.name)) continue;
+    if (typeof skill.text !== "string" || skill.text.length > 24000 || (skill.path != null && (typeof skill.path !== "string" || skill.path.length > 4096))) continue;
+    const entry = { name: skill.name, ...(skill.path ? { path: skill.path } : {}), text: skill.text };
+    const length = JSON.stringify(entry).length;
+    if (entries.length >= 16 || size + length > 30000) break;
+    entries.push(entry); seen.add(skill.name); size += length;
+  }
+  return entries;
+}
+
 export const register = on => {
   let claiming = Promise.resolve();
   const keyFor = sessionId => `claude-memory:first-context:v1:${sessionId}`;

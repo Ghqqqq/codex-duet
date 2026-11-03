@@ -1,6 +1,6 @@
 import type { ThemeKey } from 'claude-code';
 import type { CodexLiveEvent, CodexLiveFeedView, CodexLiveJob, CodexLiveSession, CodexLiveState } from '../types';
-import { attention, attentionOrder, clean, cleanBody, detailedTurns, elapsed, isAbsolutePath, jobLifecycle, questionExcerpt, reusedAgentName, sessionForId, taskText, turnKey, unwrapCommand, visibleSessions } from './model';
+import { attention, attentionOrder, clean, cleanBody, detailedTurns, elapsed, isAbsolutePath, jobLifecycle, questionExcerpt, reusedAgentName, sessionForId, taskText, turnKey, unwrapCommand, usageLines, visibleSessions } from './model';
 
 import { cells, clusters, fit, width } from './text';
 export { fit, width } from './text';
@@ -209,6 +209,8 @@ export function headerItem(job: CodexLiveJob, now: number): FeedItem {
   return { key: 'job-header', title: job.agentName ? `${job.agentName}(${taskText(job.label)})` : taskText(job.label), bold: job.agentName, maxRows: 2, color,
     results: [{ text: `${word} · ${job.toolUses ?? toolUseCount(job.events)} tool uses · ${elapsed(job, now)}`, color },
       ...(model ? [{ text: model, color: 'subtle' as const }] : []),
+      ...(job.usage ? usageLines({ [job.id]: { model: job.model || 'unknown', usage: job.usage } }, 'Codex tokens')
+        .map(text => ({ text, color: 'subtle' as const })) : []),
       ...(job.detailsUnavailable ? [{ text: 'Details unavailable · showing the last good view', color: 'subtle' as const }] : [])] };
 }
 
@@ -237,7 +239,9 @@ export function feedItems(job: CodexLiveJob | CodexLiveSession, now: number): Fe
       key: 'terminal-question', title: 'Question', color: 'warning', results: [{ text: turn.terminalQuestion, color: 'subtle' }] });
     if (detailed && turn.detailsLoaded === false && !turn.detailsUnavailable) items.push({ key: 'loading', title: 'Loading transcript…', color: 'subtle', results: [] });
     return turn.threadId?.trim() ? items.map(item => ({ ...item, key: turnKey(item.key, turn.id) })) : items;
-  })];
+  }), ...('turns' in job && job.sessionUsage && Object.keys(job.sessionUsage).length ? [{ key: 'session-usage',
+    title: job.usagePartial ? 'Codex session total (partial history)' : 'Codex session total', color: 'subtle' as const,
+    results: usageLines(job.sessionUsage, 'Codex tokens').map(text => ({ text, color: 'subtle' as const })) }] : [])];
 }
 
 export type Span = { text: string; color?: ThemeKey; bold?: boolean; strikethrough?: boolean; start?: number; end?: number };
@@ -449,7 +453,8 @@ export function feedLines(job: CodexLiveJob, now: number, columns: number, view?
 
 export function selectedJob(state: CodexLiveState): CodexLiveSession | undefined {
   const jobs = visibleSessions(state).sort(newestJob);
-  return sessionForId(jobs, state.selectedId) ?? jobs.find(job => jobLifecycle(job).active) ?? jobs[0];
+  const selected = sessionForId(jobs, state.selectedId) ?? jobs.find(job => jobLifecycle(job).active) ?? jobs[0];
+  return selected && state.usageByJob ? { ...selected, sessionUsage: state.usageByJob, usagePartial: state.usagePartial } : selected;
 }
 
 const newestJob = (a: CodexLiveJob, b: CodexLiveJob) =>

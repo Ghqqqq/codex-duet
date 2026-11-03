@@ -1,6 +1,6 @@
 ---
 description: Check Codex readiness and explicitly configure isolated tools, sandbox and browser access
-argument-hint: '[--sync-tools [--profile chrome|codex-app] [--replace-cua] [--cua-template <file>] [--dry-run]] [--enable-review-gate|--disable-review-gate] [--default-sandbox read-only|workspace-write|danger-full-access] [--default-mode off|ultra|pair|duel] [--default-model <model|default>] [--default-effort <effort|default>] [--ultra-routine-model <model|default>] [--browser-approval never-ask|ask] [--transport http|websocket|status] [--allow-browser-origin <origin>|--revoke-browser-origin <origin>|--list-browser-origins] [--computer-use-approval mirror|ask] [--allow-computer-app <bundle-id>|--revoke-computer-app <bundle-id>|--list-computer-apps] [--project-docs claude-md|agents-only]'
+argument-hint: '[--sync-tools [--profile chrome|codex-app] [--replace-cua] [--cua-template <file>] [--dry-run]] [--enable-review-gate|--disable-review-gate] [--default-sandbox read-only|workspace-write|danger-full-access] [--default-mode off|ultra|pair|duel] [--default-model <model|default>] [--default-effort <effort|default>] [--ultra-routine-model <model|default>] [--browser-approval never-ask|ask] [--transport http|websocket|status] [--allow-browser-origin <origin>|--revoke-browser-origin <origin>|--list-browser-origins] [--computer-use-approval mirror|ask] [--allow-computer-app <bundle-id>|--revoke-computer-app <bundle-id>|--list-computer-apps] [--project-docs claude-md|agents-only] [--permission-mapping claude|off] [--default-max-minutes <n|off>] [--default-max-tokens <n|off>] [--agent-memory on|off] [--max-concurrent <n|off>]'
 allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
 ---
 
@@ -100,7 +100,31 @@ The optional stop review gate (`--enable-review-gate`/`--disable-review-gate`)
 always runs with `--sandbox read-only`, including in plan mode; it never uses
 the configured default sandbox.
 
-Browser access is unrestricted by default, like the user's own Codex app: before
+New opt-in settings (all default to `off`) live in the shared Duet config:
+
+- `--permission-mapping claude|off` maps native Claude modes to Codex sandbox and
+  approval policy. Run separately from other setup changes; for example,
+  `duet setup --permission-mapping claude --dry-run`, then omit `--dry-run`.
+  It forwards supported command/file approvals as `action-approval` questions:
+  only exact `Allow once` approves; `Deny`, numbers, prose and timeout deny.
+  It does not apply Claude allow/deny rules, the auto-mode classifier or
+  PreToolUse to Codex actions. See the [mode table and worktree limits](https://github.com/Ghqqqq/codex-duet/blob/main/docs/configuration.md#claude-permission-mapping-opt-in).
+- `--default-max-minutes <n|off>` and `--default-max-tokens <n|off>` save per-task
+  budgets. Positive minutes may be fractional; tokens require an integer.
+  These two flags may combine with each other, separately from other changes:
+  `duet setup --default-max-minutes 10 --default-max-tokens 100000`.
+  Reset either with `off`. Task/header `--max-minutes` / `--max-tokens` override
+  the defaults; a limit interrupts with `budget_exceeded`. Running time excludes
+  queueing and parked questions; tokens can overshoot by one usage update.
+- `--agent-memory on|off` enables bounded per-workspace, per-role memory without
+  granting write access; `duet setup --agent-memory on` enables it.
+  `--max-concurrent <n|off>` queues Codex turns at a Duet-wide cap across
+  workspaces sharing the isolated home; `duet setup --max-concurrent 4` sets it.
+  These two may combine with each other, separately from other changes; `off`
+  disables each. Both support `--dry-run` and `--json`, as do the budget and
+  permission-mapping flags. See [context settings](https://github.com/Ghqqqq/codex-duet/blob/main/docs/configuration.md#worker-context-and-concurrency).
+
+Browser access is unrestricted by default, like the user's own Codex app. Before
 every task the plugin mirrors top-level `approval_mode = "never_ask"` into the
 isolated browser/config.toml when that key is absent, so workers reach any site
 without per-origin prompts. `--browser-approval never-ask|ask` records the user's
@@ -183,7 +207,7 @@ validation. Preserve other content, show changed files and backups, and support
 operations. Never run these commands automatically after a denial or from a worker.
 Unsupported MCP elicitations now return nonpersistent cancel. The task-only
 `--approve-browser-origin` flag remains a separate per-invocation network-egress
-grant; it is normally unnecessary because every sandbox mode keeps network access
-on. See [persistence evidence](https://github.com/Ghqqqq/codex-duet/blob/main/docs/browser-approvals.md).
+grant; with permission mapping off it is normally unnecessary because every sandbox
+mode keeps network access on. See [persistence evidence](https://github.com/Ghqqqq/codex-duet/blob/main/docs/browser-approvals.md).
 Browser assignments use fresh owned tabs, close them in cleanup, and report stale
 claims with the full session ID. Setup never opens or controls a browser.

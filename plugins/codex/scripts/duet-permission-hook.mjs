@@ -11,6 +11,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { COMMAND_ALIASES, COMMAND_OPTIONS, DIRECT_OPTION_CONFLICTS } from "./lib/command-options.mjs";
 import { SANDBOX_MODES, isSupportedReasoningEffort, normalizeRequestedModel } from "./lib/setup-config.mjs";
+import { budgetLimit } from "./lib/job-budget.mjs";
 import { readHookInput } from "./lib/fs.mjs";
 
 const launcher = fileURLToPath(new URL("../bin/duet", import.meta.url));
@@ -130,6 +131,9 @@ export function approveDuet(input, env = process.env) {
       if (name === "session" && value !== input.session_id) return {};
       if (name === "effort" && !isSupportedReasoningEffort(value, env)) return {};
       if (name === "sandbox" && !SANDBOX_MODES.includes(value)) return {};
+      if (["max-minutes", "max-tokens"].includes(name)) {
+        try { budgetLimit(value, name); } catch { return {}; }
+      }
       if (name === "timeout-sec" && (!/^\d+$/.test(value) || +value < 1 || +value > 3600)) return {};
       if (["lease-sec", "question-timeout-sec"].includes(name) && (!/^\d+$/.test(value) || +value < 1 || +value > 86400)) return {};
       flags.set(name, value);

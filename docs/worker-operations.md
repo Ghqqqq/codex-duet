@@ -89,8 +89,9 @@ slice, bounded by `CODEX_COMPANION_FORK_BUDGET_BYTES` (default 2 MiB); see
 It cannot combine with `--to`, `--thread`, `--continue` or resume flags.
 
 Native agents take an optional first line `DUET: <flags>` (`--model`, `--effort`,
-`--sandbox`, `--fast`/`--normal`, `--cwd`, `--fork`). Use SendMessage to their
-Claude agent name for follow-ups and answers; they handle waits themselves.
+`--sandbox`, `--fast`/`--normal`, `--cwd`, `--fork`, `--max-minutes`, `--max-tokens`).
+Use SendMessage to their Claude agent name for steering, follow-ups and answers;
+they handle waits themselves.
 Stop active native tasks from `/tasks`: the adapter waits briefly for
 `interrupted` / `owner_stopped` confirmation and falls back to cancel if needed.
 A parked question may not cancel when
@@ -98,10 +99,12 @@ its already-ended agent row is stopped; use `duet cancel <worker>` or the defaul
 900 s question timeout applies. An older in-memory build, unloaded hooks or a hook
 failure can yield `native_adapter_unavailable`; run `/reload-plugins`, check
 `duet status` before retrying and use background `duet task` if it persists.
-Every fresh native call reserves a scientist pool name, replacing a passed label
-unless it is a free pool name. When a name is assigned or replaced, an Agent
-result with content adds a `Codex worker named X` note for SendMessage; a preserved free pool
-name adds no note. Reservation failure leaves the call unchanged; resumptions
+Every fresh native call reserves its name before spawn. A valid, free caller
+name is kept; otherwise a scientist pool name is assigned. Names use 1–64 ASCII
+letters, digits, `_`, `.` or `-`, starting with a letter or digit; job-ID prefixes
+are reserved. When the name changes, the Agent result's context adds a
+`Codex worker named X` note for SendMessage; a preserved name adds no note.
+Reservation failure leaves the call unchanged; resumptions
 keep their name. `duet task --name <label>` requests a fresh worker name;
 collisions fall back to the pool. See [direct mode](direct-mode.md) for naming,
 live progress and native capacity rules.
@@ -111,8 +114,115 @@ tool calls, plans and pending questions. Resolved `ask_parent` calls show answer
 matched by Codex's `_meta.callId`, preserved by the MCP bridge on fresh and
 resumed threads. Missing/invalid call IDs remain unmatched, including older
 stored answers. New jobs request a pane;
-`/codex-live` opens it at any width. It never starts, answers or cancels jobs and
-costs no Claude tokens.
+`/codex-live` opens it at any width; `/codex-live <name>` opens a native worker's
+activity. Native notices offer `Open Codex activity: /codex-live <name>` when
+the pane is installed. Native notices/rendered reports and the pane label token
+counts with provider `OpenAI Codex` and model; the pane also totals retained
+session usage by model and labels partial history. Missing usage stays unknown.
+The native adapter returns host `usage: null`: Codex tokens are absent from
+Claude's `/usage`. The pane never starts, answers or cancels jobs and costs no
+Claude tokens.
+
+## Native roles and agent teams
+
+Use a preset as the Agent tool's `subagent_type`:
+
+| Agent type | Role | Sandbox |
+| --- | --- | --- |
+| `codex:codex-native` | General bounded work | Configured default |
+| `codex:codex-reviewer` | Correctness, regression and security review | read-only |
+| `codex:codex-investigator` | Trace code and evidence; distinguish observations from hypotheses | read-only |
+| `codex:codex-implementer` | Implement within owned paths and verify | workspace-write |
+
+Presets prefix each assignment with role instructions and retain the role on
+follow-ups. They use the usual saved model/effort defaults and recorded thread
+settings, including speed; fresh calls use normal speed unless `--fast` is set.
+They do not pin a separate model or speed. A conflicting `DUET: --sandbox` is
+refused with `native_preset_sandbox`. Plan mode clamps even the implementer to
+read-only; an explicitly writable header is refused.
+
+```text
+Agent(subagent_type: "codex:codex-reviewer", name: "api-review", prompt: "DUET: --max-minutes 5\nReview src/api; report supported findings and checks.")
+```
+
+With agent teams enabled, Duet recognizes native/preset agents by their declared
+type, even when a classic hook identifies a teammate by name. In-process
+teammates support bounded assignments, verified coordinator follow-ups and stop.
+`auto` mode is accepted only when the host supplies a local loop. Split-pane or
+unknown modes, plan-approval teammates and peer/unverified team mailbox messages
+are refused with `native_teammate_unsupported`. Team task claiming is unsupported.
+If the host already created a pane teammate, stop it and select in-process mode.
+`isolation: "remote"` is refused with `native_remote_isolation`; use a local agent
+or `isolation: "worktree"`. See [permission mapping](configuration.md#claude-permission-mapping-opt-in)
+for opt-in worktree confinement.
+
+## Steering and lifecycle hooks
+
+SendMessage from the main conversation to a running native Codex agent steers
+the active Codex turn through `turn/steer`. It does not start a second turn.
+A message that cannot be applied because the turn already ended, or because
+Codex is waiting on a question, goes once to the normal message queue, so a
+parked question still receives it as its answer. A steer Codex rejects, or one
+whose acknowledgement was lost, is reported as not delivered and is never resent
+automatically: inspect the current job before deciding what to send next.
+Messages sent by subagents, and jobs running under permission mapping, use the
+normal queue instead of steering. After a completed turn, SendMessage starts a
+follow-up on the same thread.
+
+The hook uses the companion's internal `duet steer <jobId> --delivery-id <id>
+--owner <ownerId>` command, with text on stdin and the owning Claude session.
+Use SendMessage for native work so the hook handles delivery IDs, ownership and
+fallback; do not submit a second task to a busy thread.
+
+SubagentStart hooks' folded `additionalContext` is prepended to the Codex brief,
+bounded to 64 entries / 16,384 characters. Late context waits for the next task
+follow-up and never answers a parked question. A SubagentStop hook block can
+continue the same Codex thread with its feedback, up to three continuations per
+agent turn. Feedback must match the finished job; pending questions, unresolved
+turns, stale feedback, interruption or the cap suppress continuation with a
+notice. Codex tool calls do not pass through Claude PreToolUse/PostToolUse hooks.
+
+## Task budgets
+
+Set a running-time or token limit on a task, or in a native header:
+
+```bash
+duet task --max-minutes 10 --max-tokens 100000 <<'DUET_TASK'
+<bounded brief and acceptance criteria>
+DUET_TASK
+```
+
+```text
+DUET: --max-minutes 10 --max-tokens 100000
+<bounded brief and acceptance criteria>
+```
+
+Both are off by default; [setup defaults](configuration.md#task-budgets-opt-in)
+apply when a call omits a limit. Each task turn starts a fresh budget. Wall time
+counts only while the Codex turn runs, excluding queueing and parked parent
+questions. Token limits count this turn's total tokens and can overshoot by one
+usage update. On a limit, Duet interrupts the turn and reports a `budget_exceeded`
+blocker (the status can be `interrupted`, rather than `blocked`).
+`duet result <worker> --details` includes the limit, maximum, consumed amount
+and unit in `reason`. The thread and edits remain for an authorized follow-up.
+These limits stop work; `--timeout-sec` only limits how long the owner waits.
+
+## Worker context
+
+A bounded Git status preamble is captured at task dispatch; set
+`CODEX_COMPANION_GIT_CONTEXT=0` to opt out. Only skills declared in the plugin's
+agent definition are eligible for bounded preload; the parent's invoked skills
+are not inherited. The shipped native/preset agents currently declare none.
+Optional `duet setup --agent-memory on` loads Duet-owned workspace/role memory
+without widening the sandbox. Current native presets share the recorded
+`codex:codex-native` memory/skill scope; ordinary companion workers use `worker`.
+See [context settings](configuration.md#worker-context-and-concurrency) for
+bounds, storage and the opt-in Duet-wide `--max-concurrent` queue.
+
+For `--fork`, `duet result <worker> --details` exposes `forkSlice`: source/sliced
+byte counts, compaction-boundary selection, dropped entries, trimmed tool
+results/images, unpaired tools dropped and whether the tail was capped. This
+makes omissions inspectable; import fidelity is still not verified.
 
 ## Haiku fallback and shared rules
 
@@ -125,6 +235,7 @@ SendMessage to an existing fallback only answers its pending question. It
 returns report v2 verbatim plus at most five lines of notes for stderr, retries
 or a relayed question.
 
+With [permission mapping](configuration.md#claude-permission-mapping-opt-in) off,
 Codex tasks use the plugin's configured sandbox default (`danger-full-access`
 unless lowered with `setup --default-sandbox`). Owned jobs (including `--direct`,
 detached, `--background`, `--follow`) run with the granular approval policy
@@ -215,8 +326,9 @@ could not inspect or close because of `Debugger unattached` is reported as
 `browser_tab_debugger_unattached` with `tabId`, `sessionId` and `closed`.
 
 The browser is unrestricted by default (`approval_mode = "never_ask"` mirrored
-into the isolated browser runtime before every task) and every sandbox mode keeps
-`networkAccess: true`, so browser assignments normally need no origin flag. For
+into the isolated browser runtime before every task). With permission mapping
+off, every sandbox mode keeps `networkAccess: true`, so browser assignments
+normally need no origin flag. For
 the rare case where the user chose `setup --browser-approval ask`, a browser-tool
 origin needs `setup --allow-browser-origin https://example.com`, an explicit persistent
 grant. `task --approve-browser-origin` covers only supported network-egress approvals.
@@ -450,7 +562,10 @@ policies, including detached tasks/resumes. The parent adjusts one call with
 `task --sandbox <mode>` in either direction; no other flag is needed. `--write`
 alone is a floor (at least workspace-write, never narrowing a broader default) and
 `--write=false` selects read-only; `--write --sandbox read-only` is rejected.
-Review commands keep their separate read-only behavior.
+Review commands keep their separate read-only behavior. Native role presets,
+plan mode and opt-in [Claude permission mapping](configuration.md#claude-permission-mapping-opt-in)
+can impose a lower ceiling; the mapping's mode table also controls action
+approval forwarding and worktree confinement.
 
 For an assignment that must not touch anything, the parent narrows one call:
 

@@ -320,7 +320,10 @@ should be kept.
   bridge registration, fresh threads retry with the experimental dynamic-tool API, which can incur
   repeated `exec`/`wait` sampling while awaiting an answer. If registration is
   unavailable, workers retain the final `needs_input` fallback.
-- Codex edits bypass Claude Code's own permission prompts and edit tracking; the
+- Claude allow/deny rules, the auto-mode classifier and PreToolUse/PostToolUse
+  hooks do not apply to Codex actions. Opt-in [permission mapping](configuration.md#claude-permission-mapping-opt-in)
+  maps native modes to Codex sandbox/approvals and forwards supported command/file
+  requests; it does not provide full Claude policy parity. Codex edits bypass Claude edit tracking; the
   report's `changedFiles` (`touchedFiles`/`preExistingChanges` in `--details`), the Codex sandbox and your git
   history are the controls. `git diff`/`git status` show current uncommitted changes;
   also check new commits and the report's touched-file evidence, with the limits
@@ -331,6 +334,15 @@ should be kept.
   it after the 5 s grace. A signalled stop is immediate.
 - The owner lease is lifecycle coordination between local processes, not an
   authentication boundary.
+- Codex tokens appear in Duet notices, reports and `codex-live`, not Claude's
+  `/usage`; native host usage remains null.
+- Agent teammates require a local in-process loop and verified coordinator
+  messages. Team task claiming, plan approval, peer/unverified mailboxes and
+  split-pane/unknown modes are unsupported (`native_teammate_unsupported`).
+  Remote isolation is refused (`native_remote_isolation`).
+- Token budgets can overshoot by one usage update; running-time budgets exclude
+  queueing and parked parent questions. A limit interrupts work with a
+  `budget_exceeded` blocker, preserving the thread and edits.
 - Browser origin persistence and Computer Use app approvals follow the file
   formats used by the bundled browser service and `node_repl`
   (`computer-use/config.toml`, `computer-use/sessions/<thread>.toml`); a future

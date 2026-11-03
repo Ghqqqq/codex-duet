@@ -39,7 +39,15 @@ Task text belongs in briefs, never control-CLI arguments or a generated shell co
 
 ## Follow-ups and recovery
 
-- Follow-ups and rework use SendMessage to the named native agent, or `duet task --to <worker>` with a new brief on stdin. They start a new job on the same thread in the original cwd; restate the relevant criteria. Codex does not remember your acceptance notes.
+- For `question.kind: "action-approval"` on a permission-mapped thread, send only
+  `Allow once` or `Deny`; only exact `Allow once` approves. Numbers, prose,
+  timeout and stale answers deny. Keep this separate from Computer Use choices.
+- Task `--max-minutes` / `--max-tokens` override the opt-in saved budgets for that
+  turn. A `budget_exceeded` blocker can accompany `interrupted`; report remaining
+  work. Wall time excludes queueing and parked questions; tokens can overshoot
+  by one usage update. `result --details` exposes limits/consumption and fork
+  omissions (`forkSlice`).
+- Follow-ups and rework use SendMessage to the named native agent, or `duet task --to <worker>` with a new brief on stdin. After the turn ends, these start a new job on the same thread in the original cwd; SendMessage while running steers the active turn. Restate the relevant criteria. Codex does not remember your acceptance notes.
 
 Check `duet status` before retrying an unavailable native adapter: dispatch is unconfirmed. Run `/reload-plugins` to restore the hooks. When native adapter capacity is full, wait for active workers to finish or stop them before starting a new native agent; the Bash fallback above remains available.
 

@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.4.13
+
+### Features
+
+- Role presets as agent types: `codex:codex-reviewer` and `codex:codex-investigator` run read-only, `codex:codex-implementer` runs workspace-write. Each adds its role instructions, keeps the saved model/effort/speed, refuses a conflicting `DUET: --sandbox` and stays read-only in plan mode. Follow-ups keep the preset.
+- SendMessage from the main conversation reaches a running Codex agent mid-turn (Codex `turn/steer`) instead of waiting for the turn to end. A message that cannot be applied because the turn already ended, or because Codex is waiting on a question, goes once to the normal queue (a parked question still receives it as the answer). A rejected or unconfirmed steer is reported as not delivered and is never resent automatically. Steering is not used for jobs under permission mapping.
+- SubagentStart hook `additionalContext` is added to the Codex brief. A SubagentStop hook that blocks continues the same Codex thread with its feedback, at most three times per agent turn.
+- Native notices, reports and `codex-live` label token usage with the Codex provider and model, and native notices offer `Open Codex activity: /codex-live <name>`. Claude's own usage for the agent stays empty; Codex tokens are not added to `/usage`.
+- Opt-in Claude permission mapping: `duet setup --permission-mapping claude|off` (default off). The agent's Claude permission mode selects the Codex sandbox and approval policy, worktree isolation confines writes to that worktree, and Codex command and file approvals are forwarded as `Allow once`/`Deny` questions showing the exact command or diff.
+- Opt-in budgets: `--max-minutes` and `--max-tokens` on `duet task` and in the `DUET:` line, with saved defaults through `setup --default-max-minutes <n|off>` and `--default-max-tokens <n|off>` (both off). A job over budget is interrupted with a `budget_exceeded` blocker. Running time excludes queueing, parked questions and host sleep.
+- Workers receive a bounded Git status preamble at dispatch (`CODEX_COMPANION_GIT_CONTEXT=0` turns it off). Skills declared in a Duet agent definition are preloaded. `setup --agent-memory on|off` (default off) gives each workspace and role a memory file in the isolated home. A resumed thread keeps the instructions, skills and memory it started with. Fork imports list what the slice dropped as `forkSlice` in `result --details`.
+- `duet setup --max-concurrent <n|off>` (default off) caps running turns across every workspace that shares the isolated home; extra jobs wait as queued.
+
+### Fixes
+
+- With agent teams enabled, Codex agents are recognised by their declared type and run as in-process teammates with parent follow-ups and stop. Split-pane or unknown teammate modes, plan-approval teammates and peer or unverified team messages are refused with `native_teammate_unsupported`; `isolation: "remote"` is refused with `native_remote_isolation`.
+- A SendMessage that answers a question which already expired or was answered elsewhere, while Codex keeps working, now keeps the agent attached until the job finishes or asks again. Previously the agent ended with a `running` snapshot and its completion was never reported.
+- A valid caller-provided Agent name is kept when it is free (names starting with `task-`, `review-` or `job-` excepted); otherwise Duet assigns a scientist pool name. A suffixed teammate name from the host is kept.
+
+### Known limits
+
+- Permission mapping does not apply Claude allow/deny rules, the auto-mode classifier or PreToolUse hooks to Codex actions. A running turn keeps the permission mode it started with; a changed mode applies from the next message.
+- Team task claiming, plan approval and peer mailboxes are not supported.
+- A token budget can overshoot by one usage update. Fork import fidelity is not verified.
+
 ## 1.4.12
 
 ### Features

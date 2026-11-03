@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveStateRoot, withJournalLock } from "./state.mjs";
-import { instructionInventory } from "../../hooks/claude-memory.mjs";
+import { instructionInventory, skillInventory } from "../../hooks/claude-memory.mjs";
 import { resolveClaudeConfigRoot } from "./claude-session-transfer.mjs";
 
 export const EXECUTOR_FRAMING = "The following are the user's Claude Code instruction files (CLAUDE.md and rules), included so you follow the same user rules as Claude's own subagents. You are a delegated worker executing one assignment: apply only the instructions relevant to your assignment and your owned paths; do not delegate to other agents or start other workers; if an instruction conflicts with your assignment brief, follow the brief and report the conflict.";
@@ -17,6 +17,64 @@ const FALLBACK_NOTE = "Approximate startup scan: readable managed policy, CLAUDE
 const hash = value => createHash("sha256").update(value).digest("hex");
 const digest = value => hash(JSON.stringify(value));
 export const CLAUDE_MEMORY_DIR = "claude-memory";
+
+// Deliberately only the plugin's public agent definitions, never session JSONL
+// or a registry of skills invoked by a different model loop. Unknown YAML is
+// left empty instead of guessing grants or parsing Claude's private formats.
+export function declaredAgentSkills(agentType, { pluginRoot = fileURLToPath(new URL("../../", import.meta.url)), cwd = undefined, env = process.env } = {}) {
+  const name = typeof agentType === "string" ? agentType.replace(/^codex:/, "") : "";
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return [];
+  try {
+    const definitionFile = path.join(pluginRoot, "agents", `${name}.md`);
+    if (fs.statSync(definitionFile).size > 64000) return [];
+    const definition = fs.readFileSync(definitionFile, "utf8");
+    const header = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(definition)?.[1];
+    if (!header) return [];
+    const rows = header.split(/\r?\n/), index = rows.findIndex(row => /^skills:/.test(row));
+    if (index < 0 || rows.filter(row => /^skills:/.test(row)).length !== 1) return [];
+    const value = rows[index].slice(7).trim();
+    let names = [];
+    if (value.startsWith("[") && value.endsWith("]")) {
+      names = value.slice(1, -1).split(",").map(value => value.trim().replace(/^(['"])(.*)\1$/, "$2"));
+    } else if (!value) {
+      for (const row of rows.slice(index + 1)) {
+        if (!/^\s/.test(row)) break;
+        const item = /^\s+-\s+([A-Za-z0-9_.:-]+)\s*$/.exec(row);
+        if (!item) return [];
+        names.push(item[1]);
+      }
+    }
+    const roots = [];
+    if (cwd) for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+      roots.push(path.join(dir, ".claude", "skills"));
+      if (path.dirname(dir) === dir) break;
+    }
+    roots.push(path.join(resolveClaudeConfigRoot(env), "skills"));
+    const skills = [];
+    for (const skill of names.slice(0, 16)) {
+      if (typeof skill !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/.test(skill) || [".", ".."].includes(skill)) continue;
+      const relative = skill.replace(/^codex:/, "");
+      // Other plugins' names cannot be resolved from this plugin's files.
+      if (relative.includes(":")) continue;
+      for (const root of skill.startsWith("codex:") ? [path.join(pluginRoot, "skills")] : roots) {
+        const file = path.join(root, relative, "SKILL.md");
+        try {
+          if (!fs.statSync(file).isFile() || fs.statSync(file).size > 24000) continue;
+          skills.push({ name: skill, path: file, text: fs.readFileSync(file, "utf8") }); break;
+        } catch { /* Missing declarations never broaden the search to sessions. */ }
+      }
+    }
+    return skillInventory(skills);
+  } catch { return []; }
+}
+
+export function prepareClaudeSkills({ skills, agentType, cwd, pluginRoot, skillItemsSupported = false }, env = process.env) {
+  const inventory = skills === undefined ? declaredAgentSkills(agentType, { pluginRoot, cwd, env }) : skillInventory(skills);
+  const items = skillItemsSupported ? inventory.filter(skill => skill.path && path.isAbsolute(skill.path)).map(({ name, path }) => ({ name, path })) : [];
+  const itemNames = new Set(items.map(skill => skill.name));
+  const text = inventory.filter(skill => !itemNames.has(skill.name)).map(skill => `\n\n### Preloaded skill: ${skill.name}${skill.path ? ` (${skill.path})` : ""}\n${skill.text}`).join("");
+  return { skills: items, text };
+}
 const snapshotDirectory = env => path.join(resolveStateRoot(env), CLAUDE_MEMORY_DIR);
 
 function requireSnapshotDirectory(env) {
