@@ -90,7 +90,7 @@ export function escapeDiagnosticControls(value) {
 function resolutionError(reference, reason, candidates, command) {
   const listing = candidates.map(job => `${job.agentName ?? "(unnamed)"} | jobId=${job.id} | threadId=${job.threadId ?? "none"} | cwd=${job.request?.cwd ?? job.workspaceRoot ?? "unknown"} | status=${job.status}`).join("; ");
   const guidance = ["wait", "answer", "cancel"].includes(command)
-    ? `Pass an exact positional job ID: duet ${command} <jobId>. Find job IDs with duet status --all.`
+    ? `Pass an exact positional job ID: fugato ${command} <jobId>. Find job IDs with fugato status --all.`
     : "Pass a jobId or --thread <id>.";
   return new Error(escapeDiagnosticControls(`Worker ${JSON.stringify(reference)}: ${reason}. ${guidance} Candidates: ${listing || "(none in the current session/workspace)"}`));
 }

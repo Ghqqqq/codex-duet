@@ -1,6 +1,6 @@
 # Codex Live
 
-A read-only live pane for the current Claude session's Duet Codex jobs. It shows
+A read-only live pane for the current Claude session's Fugato Codex jobs. It shows
 status, elapsed time, model/effort, assignment prompts, messages, commands, file changes, tool calls,
 plans and pending questions in Claude Code’s transcript style: a bullet, bold tool
 name and indented result. Messages use light inline styling for bold, code,
@@ -15,7 +15,7 @@ bridge preserves Codex's `_meta.callId` for matching. Answers without a valid
 call ID, including older stored answers, are not shown.
 
 Jobs in this Claude session that share a Codex `threadId` appear as one session,
-including `duet task --to`, `--thread` and `--continue` follow-ups. Its row shows the
+including `fugato task --to`, `--thread` and `--continue` follow-ups. Its row shows the
 lifecycle owner's summary, status and elapsed time, plus a turn count when it fits.
 Any active turn keeps the session active; an active turn with a pending question
 takes priority. Otherwise an unresolved turn takes priority over ended turns.
@@ -26,7 +26,7 @@ never hides a session with an active or unresolved turn. A new started follow-up
 reveals a cleared session's history again. Jobs without a thread ID stay separate
 until one is known; saved job selections and scroll positions migrate to their session.
 
-Install from the Duet marketplace with `/plugin install codex-live@duet`, then
+Install from the Fugato marketplace with `/plugin install codex-live@fugato`, then
 use `/codex-live` to open and focus the pane at any terminal width. New active
 jobs also request a pane automatically; Claude Code leaves it undrawn below
 its automatic-opening width threshold. Closing it keeps it closed until a new
@@ -48,7 +48,7 @@ includes omitted terminal-attention sessions and reports their count and the
 cap. Clear removes ended attention
 and resets that count, without changing job records.
 When the empty pane contains hidden finished jobs, it says: “Finished jobs are
-hidden. Their records follow your Duet cleanup settings.”
+hidden. Their records follow your Fugato cleanup settings.”
 New workers preserve the selected conversation and its scroll position, showing `• new` until selected; returning to a viewed conversation restores its saved scroll position.
 
 `+N more` counts omitted sessions. Its first press expands up to ten rows: active
@@ -175,7 +175,7 @@ The test kit's `MountedMembers`
 (16300–16304; `redraw` at 16430–16442) checks descriptions and hooks, not terminal
 paint, so the tests cannot establish the engine's physical overlay behavior.
 
-The plugin reads session markers and job JSON written by the Duet companion in
+The plugin reads session markers and job JSON written by the Fugato companion in
 `CODEX_COMPANION_HOME` (default `~/.claude/codex-isolated`). It never writes job
 files, calls the companion, answers questions, starts/cancels jobs, invokes a
 model or appends session messages. Polling and rendering cost no model tokens.

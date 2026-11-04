@@ -5,11 +5,11 @@ task the way Claude Code's own Ultracode mode does, with Codex workers in place
 of Claude subagents. Claude scouts, assigns, judges and integrates; Codex
 investigates, implements and reviews. Claude uses the native
 `codex:codex-native` agent from the first dispatch, without waiting for readiness.
-Background `duet task` is for `native_adapter_unavailable`, `native_capacity`,
+Background `fugato task` is for `native_adapter_unavailable`, `native_capacity`,
 per-call options the `DUET:` line rejects, or follow-ups to Bash-launched workers.
 The report arrives with the completion notification. Only if
-missing, Claude runs `duet result <worker>`; full evidence and handles are in
-`duet result <worker> --details`. No output-file parsing is needed.
+missing, Claude runs `fugato result <worker>`; full evidence and handles are in
+`fugato result <worker> --details`. No output-file parsing is needed.
 `/codex:ultra-codex on` makes that the session's default (see "Mode" below).
 It is one of three modes: [pair](pair.md) keeps one executor thread, while
 [duel](duel.md) puts a Claude subagent and a Codex worker in adversarial roles.
@@ -29,7 +29,7 @@ to settle before assigning new work; old jobs still count toward ultra's cap.
 /codex:ultra-codex on --thorough --max-workers auto
 /codex:ultra-codex --quick add --json to the cancel command
 /codex:ultra-codex off
-duet ultra-codex status
+fugato ultra-codex status
 ```
 
 No arguments means status. `on <task>` first enables the validated settings,
@@ -51,7 +51,7 @@ Ultra-codex mode on (<scale>, max <n> workers (auto), routine <routineModel>, st
 
 An explicit integer renders `max <n> workers`; `unlimited` renders `no worker cap`.
 Pair and duel name their own section in their reminders. Run
-`duet ultra-codex status --for-command` for the actual path and current version,
+`fugato ultra-codex status --for-command` for the actual path and current version,
 or add `--json` for `protocolFile`/`protocolVersion`. All three commands use the
 same [protocol file](../plugins/codex/prompts/ultra-codex-protocol.md) and body
 hash. An edit to any mode or shared section invalidates the version for all modes.
@@ -77,7 +77,7 @@ are not retained. Workspace-keyed legacy records are discarded, never adopted.
 The active mode persists when resuming (`claude --resume`) or compacting the
 same session, including after a normal exit: SessionEnd keeps the mode record.
 A new session or `/clear` clears the active mode and applies the opt-in default
-saved with `duet setup --default-mode off|ultra|pair|duel`, using standard mode
+saved with `fugato setup --default-mode off|ultra|pair|duel`, using standard mode
 options (new installs default to off). Per-session changes never change that
 [saved default](configuration.md#default-orchestration-mode).
 SessionStart also prunes mode records older than 30 days,
@@ -117,20 +117,20 @@ or background Bash and direct Codex jobs, so it works at any effort level withou
 
 | Ultracode element | /codex:ultra-codex equivalent |
 | --- | --- |
-| `agent()` with `schema` | `codex:codex-native` or Bash → `duet task`; the report is schema-enforced (`schemas/worker-report.schema.json`) |
-| `parallel()` fan-out | one named native agent or background `duet task` per job; reports arrive with completion notifications |
+| `agent()` with `schema` | `codex:codex-native` or Bash → `fugato task`; the report is schema-enforced (`schemas/worker-report.schema.json`) |
+| `parallel()` fan-out | one named native agent or background `fugato task` per job; reports arrive with completion notifications |
 | `pipeline()` / `phase()` | per-item dependencies tracked with `TodoWrite`; accept a result and start its ready downstream work as a slot opens |
 | `isolation: "worktree"` | Claude creates worktrees with `git worktree add`, passes each as `--cwd` and merges the branches; a shared checkout requires disjoint OWNED PATHS |
-| journal cache / resume | `journal show` recovers criteria, verdicts, decisions and saved worker artifacts; `duet task --continue <jobId> --cwd '<cwd>'` starts an explicitly requested continuation while its job record is retained |
+| journal cache / resume | `journal show` recovers criteria, verdicts, decisions and saved worker artifacts; `fugato task --continue <jobId> --cwd '<cwd>'` starts an explicitly requested continuation while its job record is retained |
 | adversarial verify, judge, loop-until-dry | independent read-only probes, evidence-backed findings routed to the owner, bounded rework |
 
 Use the [dispatch recipe](direct-mode.md): a named native agent with an optional
-first prompt line `DUET: <flags>`, or `duet task` with a single-quoted `DUET_TASK`
+first prompt line `DUET: <flags>`, or `fugato task` with a single-quoted `DUET_TASK`
 heredoc in background Bash. Investigators and reviewers use `--sandbox read-only`.
 SessionStart honors the saved [worker dispatch](configuration.md#worker-dispatch)
 route: `bash` selects background Bash immediately, while `auto` prefers it for
 24 hours after the last native-unavailable observation, or until
-`duet setup --dispatch` is run without `--dry-run`; otherwise native
+`fugato setup --dispatch` is run without `--dry-run`; otherwise native
 dispatch comes first. The registered adapter's readiness
 notice is informational; dispatch does not wait for it. Each fresh native call
 reserves a name before spawn: a valid, free caller name is kept; otherwise a
@@ -138,20 +138,20 @@ scientist pool name is assigned. The Agent result's context carries a
 `Codex worker named X` note when the name changes; use that name for SendMessage. Reservation
 failure leaves the call unchanged; resumptions keep their name. Bash dispatch
 can request a fresh name with `--name <label>`; collisions
-fall back to the pool and job-ID prefixes are reserved. If `duet` is not on PATH,
-reload/start a new session or use the absolute `bin/duet` launcher. Native-hook
-failure returns a blocked report; run `/reload-plugins`, check `duet status` before
-retrying and use background `duet task` if it persists.
+fall back to the pool and job-ID prefixes are reserved. If `fugato` is not on PATH,
+reload/start a new session or use the absolute `bin/fugato` launcher. Native-hook
+failure returns a blocked report; run `/reload-plugins`, check `fugato status` before
+retrying and use background `fugato task` if it persists.
 
 Native follow-ups and answers use SendMessage to the agent's name. Bash
-follow-ups use `duet task --to <worker>` and a new stdin brief; `running` uses
-one background `duet wait <worker>`, and `needs_answer` uses one background
-`duet answer <worker> --question '<questionId>'` with the displayed ID and a
+follow-ups use `fugato task --to <worker>` and a new stdin brief; `running` uses
+one background `fugato wait <worker>`, and `needs_answer` uses one background
+`fugato answer <worker> --question '<questionId>'` with the displayed ID and a
 single-quoted `DUET_ANSWER` heredoc; prefer the report's `next` command verbatim.
-A bare `duet answer <worker>` can answer a newer pending question; native
+A bare `fugato answer <worker>` can answer a newer pending question; native
 SendMessage already pins the displayed question. Never run two
 waits. Reports arrive with the completion notification; only if missing, run
-`duet result <worker>`. Use `--details` for shortened evidence or questions.
+`fugato result <worker>`. Use `--details` for shortened evidence or questions.
 Direct waits default to 3600 s (maximum 3600), the lease to 1800 s; `--quiet`
 suppresses progress. Never poll, sleep or parse output files.
 
@@ -162,7 +162,7 @@ labelled “imported Claude conversation (fidelity not verified)”. It cannot
 combine with thread-selection flags; follow up afterwards with `--to`.
 
 Stop active native tasks or background Bash waits from `/tasks`, or run
-`duet cancel <worker>`. Continue user-stopped work only with consent. A question
+`fugato cancel <worker>`. Continue user-stopped work only with consent. A question
 parked after a native agent returns may not cancel immediately when that ended
 row is stopped; explicit cancellation or its default 900 s timeout applies.
 When several reports are already pending, accept each; batch only missing-report
@@ -178,9 +178,9 @@ request a pane; `/codex-live` opens it at any width. It never starts, answers or
 The Haiku `codex:codex-worker` remains a fallback when native dispatch and
 background Bash are unavailable, or for a requested forwarding-agent transcript.
 Put Codex's model/effort in its brief, not Agent fields. Rework starts a NEW
-fallback agent with `duet task --to <worker>`; SendMessage to an existing
+fallback agent with `fugato task --to <worker>`; SendMessage to an existing
 fallback only answers its pending question. The Workflow tool's fallback
-`agentType: "codex:codex-worker"` integration has not been exercised with Duet
+`agentType: "codex:codex-worker"` integration has not been exercised with Fugato
 and is not required by this command.
 
 ## Why the briefs and the acceptance are stricter than Ultracode's
@@ -232,7 +232,7 @@ Claude's own evidence.
 
 ## Run journal
 
-After writing task-level criteria, Claude runs `duet journal
+After writing task-level criteria, Claude runs `fugato journal
 start` with stdin JSON containing `goal` and `criteria`. Tasks in that Claude
 session link automatically across workspaces and worktrees, preserving the exact
 worker brief and final compact report. `task --run <id|none>` overrides linkage
@@ -269,7 +269,7 @@ In a new session, `journal use <runId>` selects the existing open run, including
 across workspaces, so later dispatches link to it. After compaction or a resumed
 session, `journal show` recovers the goal,
 criteria, latest worker verdicts, decisions and open items. SessionStart adds a
-one-line reminder when a run is active. Journals live only in Duet's isolated
+one-line reminder when a run is active. Journals live only in Fugato's isolated
 home, survive job-record pruning, and follow the retention window; they neither
 verify claims nor restart work. See [Run journal](run-journal.md) for schemas,
 commands and limits.
@@ -330,7 +330,7 @@ Speed is `--normal` unless the user asks for `--fast`. Explicit user choices
 take precedence. If integration/runtime support for `max` is absent, report it
 and use `xhigh`. These are ultra's stage defaults; pair and duel use the
 configured worker model and effort. Change ultra's saved models with
-`duet setup --default-model <model> --ultra-routine-model <model>`; see
+`fugato setup --default-model <model> --ultra-routine-model <model>`; see
 [Default worker models](configuration.md#default-worker-models). The mode
 reminder and status name the effective values; `--default-effort` does not
 change ultra's effort by stage.
@@ -369,7 +369,7 @@ arrives with the completion notification:
   `changedFilesOmitted`, `checks.omitted` and `question.optionsOmitted` count
   omissions. `checks.ran` is captured command evidence;
   `checks.claimed` is Codex's account.
-- `next` suggests an action or is null; `details` supplies `duet result '<jobId>'
+- `next` suggests an action or is null; `details` supplies `fugato result '<jobId>'
   --details`, always targeting the exact job even after a follow-up, for handles,
   settings, tracking basis, artifact paths and fuller evidence.
 - A runtime refusal forces `blocked`; a `completed` response that is only a plan
@@ -401,14 +401,14 @@ through the pinned answer command or native SendMessage. See
 
 Claude's loaded CLAUDE.md/rules are automatically forwarded as developer
 instructions, including user-level files. When the inventory is unavailable,
-Duet reports an approximate startup scan. It excludes auto-memory by real path,
+Fugato reports an approximate startup scan. It excludes auto-memory by real path,
 including indirect aliases through symlinked directories. Existing threads retain
 their original instructions. Disable forwarding for a fresh task with `--no-claude-md` or set
 `CODEX_COMPANION_CLAUDE_MD=0`.
 
-Codex also discovers `AGENTS.md` itself. Duet's separate default
+Codex also discovers `AGENTS.md` itself. Fugato's separate default
 `project_doc_fallback_filenames = ["CLAUDE.md"]` lets Codex read project
-CLAUDE.md where no AGENTS.md exists; `duet setup --project-docs agents-only`
+CLAUDE.md where no AGENTS.md exists; `fugato setup --project-docs agents-only`
 removes only that exact fallback list, leaving custom lists intact. It does not
 disable forwarding. See [configuration](configuration.md#claude-instructions-and-conversation-imports).
 
@@ -422,6 +422,6 @@ version line and its newline. Keep the following blank line and all other bytes.
 `tests/ultra-codex-mode.test.mjs` checks that the committed header matches. All
 three modes share this hash and the absolute file path; the legacy filename and
 header are retained. After editing any body section, recompute the header.
-`duet ultra-codex status --for-command` (or the pair/duel equivalent) reports
+`fugato ultra-codex status --for-command` (or the pair/duel equivalent) reports
 the current computed version, even if the stored header is stale. The reminder
 above is a labeled template and does not need a copied literal hash.

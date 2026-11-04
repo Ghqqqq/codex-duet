@@ -16,7 +16,7 @@ and try first; current judgments change with evidence.
 
 A task runs once; `on` keeps the mode for substantive prompts in this session.
 Only one orchestration mode is active at a time. Off or replacement preserves
-existing jobs and rooms. Save `duet setup --default-mode roundtable` for fresh
+existing jobs and rooms. Save `fugato setup --default-mode roundtable` for fresh
 sessions and `/clear`; the installation default remains `off`. Resume and
 compaction retain the session's choice.
 
@@ -98,17 +98,17 @@ intensity-adjusted effort. Ordinary `--default-model`/`--default-effort` worker
 settings do not redefine persona models.
 
 ```bash
-duet setup --persona-model critic=gpt-6-astra:xhigh --persona-model improver=gpt-6.1-sol:high --dry-run --json
-duet setup --persona-model critic=gpt-6-astra:xhigh --persona-model improver=gpt-6.1-sol:high --json
-duet setup --persona-model critic=default --json
-duet setup --json
+fugato setup --persona-model critic=gpt-6-astra:xhigh --persona-model improver=gpt-6.1-sol:high --dry-run --json
+fugato setup --persona-model critic=gpt-6-astra:xhigh --persona-model improver=gpt-6.1-sol:high --json
+fugato setup --persona-model critic=default --json
+fugato setup --json
 ```
 
 Run persona mapping changes separately from other setup changes. The repeatable
 flag validates every id, model and effort before any write; duplicate ids in a
 batch are rejected. Model checks reuse the isolated model catalog: unknown
 names in a fresh catalog fail; a stale or missing catalog produces warnings.
-`duet models` refreshes/displays available models. Static efforts and additional
+`fugato models` refreshes/displays available models. Static efforts and additional
 efforts listed in the isolated cache are accepted.
 
 Values live in `<isolated-home>/duet/config.toml`:
@@ -125,7 +125,7 @@ if a model name itself contains colons, include an explicit effort suffix.
 `setup --json` reports `personaModels.<id>.model` and `.effort` as
 `{ value, source }`, where source is `saved` or `built-in`. These are standard
 mapping values; the room's returned members show the resolved intensity.
-Per-room `duet roundtable start --persona-model id=model[:effort]` overrides the
+Per-room `fugato roundtable start --persona-model id=model[:effort]` overrides the
 saved mapping for that run.
 
 No research establishes an optimal persona/model/effort pairing. This is a
@@ -158,7 +158,7 @@ the index and expanding a thread have separate cursors.
 
 Read objects by id with `forum_read(resource="post/<seq>")`,
 `thread/<seq>`, `member/<name>` or `candidate/<seq>`; the chair uses
-`duet forum read <roomId> --resource <resource>`. Post reads return one full
+`fugato forum read <roomId> --resource <resource>`. Post reads return one full
 post; thread reads return at most 25 posts and 128 KiB of serialized events per
 page. Member resources show persona, status, the 10 most recent jobs and commits
 by default, omitted counts, report summaries of at most 600 characters with
@@ -174,7 +174,7 @@ Peer objects and workspaces remain sealed before the initial record. All peer
 workspace reads are read-only. Object reads leave cursors unchanged, except
 thread resources advance the expansion cursor only through returned posts.
 Follow the returned continuation pointer with `forum_read(resource=..., after=n,
-limit=n)` or `duet forum read <roomId> --resource <resource> --after n --limit n`.
+limit=n)` or `fugato forum read <roomId> --resource <resource> --after n --limit n`.
 For threads, `after` is the last returned post sequence. For member resources,
 it is an offset into each newest-first history; pages are capped at 25 jobs and
 25 commits. Full member history is available through these explicit page reads.
@@ -188,11 +188,11 @@ are references to inspect, not pasted full diffs or self-accepting votes.
 Members use bound `forum_read`/`forum_post` tools. The chair uses:
 
 ```bash
-duet forum read <roomId> --json
-duet forum read <roomId> --thread <seq> --json
-duet forum read <roomId> --resource candidate/<seq>
-duet forum read <roomId> --resource member/critic
-duet forum post <roomId> --kind request --mention steward --title 'Check candidate' --ref <commit> <<'DUET_POST'
+fugato forum read <roomId> --json
+fugato forum read <roomId> --thread <seq> --json
+fugato forum read <roomId> --resource candidate/<seq>
+fugato forum read <roomId> --resource member/critic
+fugato forum post <roomId> --kind request --mention steward --title 'Check candidate' --ref <commit> <<'DUET_POST'
 Please reproduce the candidate's reconnect result under the original conditions.
 DUET_POST
 ```
@@ -217,7 +217,7 @@ about two minutes if the same job is still idle.
 
 If a ready wake waits about two minutes because no main-loop tool call has
 happened, the chair receives one notice per delivery:
-`Roundtable <room>: <names> have updates waiting; run duet roundtable status <roomId> to deliver them.`
+`Roundtable <room>: <names> have updates waiting; run fugato roundtable status <roomId> to deliver them.`
 The chair immediately runs that status command; its completion triggers the
 pending delivery. If room status still lists the member's wake updates a minute
 after such a run, delivery has stalled (for example, a notice whose retry never
@@ -233,11 +233,11 @@ preferences, keeps technical opinions challengeable, protects candor, asks for
 unique evidence and tests popular candidates as carefully as minority ones.
 The runtime returns the stable chair card with the roster.
 
-The workflow is `duet roundtable start` with the goal on stdin, one background
+The workflow is `fugato roundtable start` with the goal on stdin, one background
 native Codex agent per returned member, then work and forum exchanges.
 Agent `name` equals the persona id; copy its printed
 `DUET: --model <m> --effort <e> --normal --roundtable <roomId> --persona <id> --cwd "<workspace path>"`
-header. Dispatch members without Agent `isolation: "worktree"`: Duet creates
+header. Dispatch members without Agent `isolation: "worktree"`: Fugato creates
 and owns each member's detached Git worktree from the current HEAD at
 `<isolated-home>/duet/roundtables/<roomId>/worktrees/<persona>`. These workspaces
 survive completed turns and later wakes. Creation rolls back the entire room
@@ -251,10 +251,10 @@ and integrates selected candidates there and verifies the combined result.
 It never starts two live jobs for the same member.
 
 ```text
-duet roundtable status <roomId> --json
-duet roundtable pause <roomId>
-duet roundtable resume <roomId>
-duet roundtable close <roomId> --title "<summary>" [--selects <seq>] <<'DUET_DECISION'
+fugato roundtable status <roomId> --json
+fugato roundtable pause <roomId>
+fugato roundtable resume <roomId>
+fugato roundtable close <roomId> --title "<summary>" [--selects <seq>] <<'DUET_DECISION'
 <closing decision>
 DUET_DECISION
 ```
@@ -262,7 +262,7 @@ DUET_DECISION
 Closing with its decision in one command records the decision and closes the
 room together, so idle members are not woken only to read the closing note.
 
-Bare `duet roundtable status` (or no action) reports session mode state and the
+Bare `fugato roundtable status` (or no action) reports session mode state and the
 latest room; a room id selects room status, including member workspace paths
 and whether they have changes. Room status leads with an `attention` list of
 only items needing the chair, each with a resource pointer: open questions or
@@ -272,14 +272,14 @@ jobs or pending answers, candidates without a non-author finding, and missing
 member workspaces. An empty list prints “Nothing needs the chair.” Counts
 follow the list. Bare mode status prints the latest room's attention summaries
 and resource pointers first, followed by mode information; JSON keeps both.
-`duet roundtable on|off|status` controls the mode and
+`fugato roundtable on|off|status` controls the mode and
 does not start members. Pause stops room notifications, not running jobs.
 The chair checks the final candidate independently, reruns verification, and
 records delivery acceptance in the run journal. Before closing, it lists open
 questions/requests, unresolved criticism and unique findings not yet addressed.
-It records the final choice as the closing decision, `duet roundtable close
+It records the final choice as the closing decision, `fugato roundtable close
 <roomId> --title "<summary>" --selects <candidateSeq>` with the decision body on
-stdin (`duet forum post <roomId> --kind decision --selects <candidateSeq>` records
+stdin (`fugato forum post <roomId> --kind decision --selects <candidateSeq>` records
 a selection without closing). The store refuses a
 selection unless that post is a candidate and a non-author member has posted a
 later `finding` in its thread. Members inspect `forum_read(resource="candidate/<seq>")`

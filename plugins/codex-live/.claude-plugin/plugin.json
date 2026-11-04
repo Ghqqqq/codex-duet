@@ -1,9 +1,9 @@
 {
   "name": "codex-live",
-  "version": "1.5.0",
-  "description": "Read-only live pane for this Claude session's Duet Codex jobs.",
+  "version": "1.6.0",
+  "description": "Read-only live pane for this Claude session's Fugato Codex jobs.",
   "types": "./types/index.d.ts",
   "author": {
-    "name": "Duet"
+    "name": "Fugato"
   }
 }

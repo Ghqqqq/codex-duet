@@ -28,7 +28,7 @@ const importMarker = directory => JSON.stringify({ version: 1, kind: "duet-claud
 const sameFile = (left, right) => left.dev === right.dev && left.ino === right.ino;
 
 const contentBytes = value => Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value));
-const toolPlaceholder = bytes => `[Duet: tool output trimmed for fork import, ${bytes} bytes]`;
+const toolPlaceholder = bytes => `[Fugato: tool output trimmed for fork import, ${bytes} bytes]`;
 
 // Keep the source format at one boundary; slicing never discovers or reads
 // another session. The snapshot reader enforces the existing source byte cap.
@@ -95,7 +95,7 @@ export function sliceClaudeTranscript(lines, {
     return content.filter(block => !["thinking", "redacted_thinking"].includes(block?.type)).map(block => {
       if (block?.type === "image" && contentBytes(block) > toolResultMaxBytes) {
         meta.trimmedImages++;
-        return { type: "text", text: "[Duet: image omitted for fork import]" };
+        return { type: "text", text: "[Fugato: image omitted for fork import]" };
       }
       if (block?.type === "tool_result" && block.content !== undefined) {
         // Handle images inside tool results too, without discarding small text
@@ -373,7 +373,7 @@ export function resolveClaudeSessionPath(cwd, options = {}, env = process.env) {
 
 function inspectImportDirectory(directory, cutoff) {
   const uid = process.getuid?.(), stat = fs.lstatSync(directory);
-  // Names and private layouts do not prove ownership: require Duet's marker.
+  // Names and private layouts do not prove ownership: require Fugato's marker.
   // Fork/transfer staging has no released pre-marker copies to support.
   if (uid === undefined || !/^\.duet-import-[A-Za-z0-9]{6}$/.test(path.basename(directory)) ||
       !stat.isDirectory() || stat.uid !== uid || (stat.mode & 0o777) !== 0o700 || stat.mtimeMs >= cutoff ||
@@ -465,7 +465,7 @@ export function snapshotClaudeSession(cwd, sourcePath, env = process.env, proven
       throw new Error("Claude session source changed after validation; import refused.");
     }
     if (stat.size > maxBytes) {
-      throw new Error(`Claude transcript is ${stat.size} bytes, above the ${maxBytes}-byte import limit. Use a normal duet task brief without --fork, or explicitly raise ${IMPORT_MAX_BYTES_ENV}.`);
+      throw new Error(`Claude transcript is ${stat.size} bytes, above the ${maxBytes}-byte import limit. Use a normal fugato task brief without --fork, or explicitly raise ${IMPORT_MAX_BYTES_ENV}.`);
     }
     // Read only the length observed at open. Appends cannot grow the source
     // read or change the original bytes used for fork provenance.

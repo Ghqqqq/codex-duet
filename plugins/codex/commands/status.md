@@ -26,26 +26,26 @@ If the user did pass a job ID:
 - Do not summarize or condense it.
 
 This command is an observer: do not supply `--owner` or renew worker leases.
-Use `duet status <worker>` to inspect a named worker. Stop active native tasks or
-background Bash waits from `/tasks`, or run `duet cancel <worker>`. Thread context
+Use `fugato status <worker>` to inspect a named worker. Stop active native tasks or
+background Bash waits from `/tasks`, or run `fugato cancel <worker>`. Thread context
 and edits persist. Continue user-stopped work only with explicit consent: use
-SendMessage to a native agent, or `duet task --to <worker>` with a new stdin brief
-through a single-quoted `DUET_TASK` heredoc. `duet result <worker> --details`
+SendMessage to a native agent, or `fugato task --to <worker>` with a new stdin brief
+through a single-quoted `DUET_TASK` heredoc. `fugato result <worker> --details`
 provides handles and compatibility recovery commands when needed.
 
 Reports arrive with completion notifications; only if missing, run
-`duet result <worker>`. Handle `running` with one background `duet wait <worker>`;
+`fugato result <worker>`. Handle `running` with one background `fugato wait <worker>`;
 handle `needs_answer` with the report's `next` command verbatim, or one background
-`duet answer <worker> --question '<questionId>'` using the displayed ID and a
-single-quoted `DUET_ANSWER` heredoc. A bare `duet answer <worker>` can answer a
+`fugato answer <worker> --question '<questionId>'` using the displayed ID and a
+single-quoted `DUET_ANSWER` heredoc. A bare `fugato answer <worker>` can answer a
 newer pending question. Native agents already pin the displayed question through
 SendMessage and handle waits themselves. Never parse output files or run two
 waits. See the [dispatch protocol](../prompts/ultra-codex-protocol.md#dispatch).
 
 Orphaned means no renewal for half the lease in direct mode (900 s by default),
 or the smaller of 65 s and half the lease otherwise. With explicit user consent,
-a replacement owner's FIRST action is `duet adopt <jobId> --json` within the
-lease window. It then runs one `duet wait <jobId> --owner '<newOwnerId>'` in
+a replacement owner's FIRST action is `fugato adopt <jobId> --json` within the
+lease window. It then runs one `fugato wait <jobId> --owner '<newOwnerId>'` in
 background Bash. A retired owner reports `ownership_moved` and must stop.
 The Haiku fallback uses a NEW agent for rework; SendMessage to that fallback only
 answers its pending question. Verify all result claims with the diff and evidence.

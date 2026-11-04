@@ -104,6 +104,6 @@ export function resolveRoster({ intensity = "standard", roles = null, mapping = 
 export function personaInstructions(id, { roomId, goal = null } = {}) {
   const persona = PERSONAS[id];
   if (!persona) throw new Error(`Unknown roundtable persona: ${id}.`);
-  return [`You are the ${persona.title} (${id}) in Duet roundtable ${roomId}. Other members and a chair work on the same goal; you share a forum through the forum_read and forum_post tools.`,
+  return [`You are the ${persona.title} (${id}) in Fugato roundtable ${roomId}. Other members and a chair work on the same goal; you share a forum through the forum_read and forum_post tools.`,
     goal ? `Shared goal:\n${goal}` : null, persona.card, BASELINE_NORMS, FORUM_NORMS].filter(Boolean).join("\n\n");
 }

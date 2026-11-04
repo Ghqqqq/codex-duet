@@ -179,7 +179,7 @@ export function reminderText(mode, protocolPath = PROTOCOL_PATH, models = BUILTI
   const suffix = `v${version} to substantive tasks; re-read ${protocolPath} unless its full text (first line: <!-- Ultra-codex protocol v${version} -->) is already in context from an earlier Read. Reminder/preamble version mentions do not count.`;
   if (name === "pair") return `Pair mode on (one primary Codex worker on ${model}/${effort}, max ${PAIR_MAX_REWORK_ROUNDS} rework rounds). Apply pair protocol ${suffix}`;
   if (name === "duel") return `Duel mode on (Claude vs Codex on ${model}/${effort}, max ${options.rounds} rounds). Apply duel protocol ${suffix}`;
-  if (name === "roundtable") return `Roundtable mode on (intensity ${options.intensity}, roles ${options.roles?.join(",") ?? "recommend roster for confirmation"}; persona models from duet setup --persona-model). Apply Roundtable mode protocol ${suffix}`;
+  if (name === "roundtable") return `Roundtable mode on (intensity ${options.intensity}, roles ${options.roles?.join(",") ?? "recommend roster for confirmation"}; persona models from fugato setup --persona-model). Apply Roundtable mode protocol ${suffix}`;
   const cap = options.maxWorkers === "unlimited" ? "no worker cap" : `max ${effectiveMaxWorkers(options.maxWorkers)} workers${options.maxWorkers === "auto" ? " (auto)" : ""}`;
   return `Ultra-codex mode on (${options.scale}, ${cap}, routine ${routineModel}, strong ${model}). Apply protocol ${suffix}`;
 }

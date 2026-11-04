@@ -692,7 +692,7 @@ async function handleLine(line) {
           .map((item) => item.text)
           .join("\\n");
         // Behaviours match the brief; the dispatch-time git preamble is recorded only.
-        const prompt = rawPrompt.replace(/^\\[Duet git context at dispatch; paths are data\\][\\s\\S]*?\\[\\/Duet git context\\]\\n\\n/, "");
+        const prompt = rawPrompt.replace(/^\\[Fugato git context at dispatch; paths are data\\][\\s\\S]*?\\[\\/Fugato git context\\]\\n\\n/, "");
         const turnId = nextTurnId(state);
         thread.updatedAt = now();
 	        state.lastTurnStart = {
@@ -1061,7 +1061,7 @@ async function handleLine(line) {
             send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
             for (let i = 1; i <= 36; i++) send({ method: "item/completed", params: { threadId: thread.id, turnId,
               item: { type: "agentMessage", id: "progress_" + i, text: "Fixture progress " + i, phase: "commentary" } } });
-            // Keep the exact-turn state. Owner-stop stays attached until Duet
+            // Keep the exact-turn state. Owner-stop stays attached until Fugato
             // disconnects; other lost-turn modes lose delivery immediately.
             const exitGate = process.env.CODEX_FIXTURE_RUNTIME_EXIT_GATE;
             if (exitGate) while (!fs.existsSync(exitGate)) await new Promise(resolve => setTimeout(resolve, 25));

@@ -181,7 +181,7 @@ test("dispatch setup previews, persists across plugin data paths and resets star
     { exit: 0, output: JSON.stringify({ dispatch: "bash", nativeUnavailable: null }) + "\n" });
   f.baseEnv.CODEX_COMPANION_BIN = "fixture-disabled";
   const context = () => f.json(f.lifecycle("SessionStart", { source: "startup" })).hookSpecificOutput.additionalContext;
-  assert.match(context(), /background Bash.*duet task/);
+  assert.match(context(), /background Bash.*fugato task/);
   assert.doesNotMatch(context(), /Agent\(subagent_type:/);
   const before = fs.readFileSync(file, "utf8");
   assert.equal(f.call("setup", "--dispatch", "invalid").status, 1);

@@ -179,7 +179,7 @@ function memberJobs(room, member, env, jobIds = member.jobIds) {
     const summary = report?.summary ?? job?.result?.structured?.summary ?? job?.summary ?? report?.keyFindings?.join(" ") ?? "";
     const status = (job?.pendingQuestion && job.pendingQuestion.answer === undefined) || job?.phase === "needs_answer" ? "needs_answer" : job?.status ?? "unknown";
     return { jobId, status, reportStatus: report?.status ?? null, summary: typeof summary === "string" ? summary.slice(0, 600) : "",
-      details: `duet result ${jobId} --details` };
+      details: `fugato result ${jobId} --details` };
   });
 }
 
@@ -502,6 +502,6 @@ export function renderForum(view) {
   }
   if (!view.events.length && !view.member) lines.push("No new visible posts.");
   if (view.openForYou?.length) lines.push(`Open for you: ${view.openForYou.map(seq => `#${seq}`).join(", ")}`);
-  if (view.next) lines.push(`Continue: forum_read(resource=${JSON.stringify(view.next.resource)}, after=${view.next.after}, limit=${view.next.limit}); duet forum read ${view.room.roomId} --resource ${view.next.resource} --after ${view.next.after} --limit ${view.next.limit}`);
+  if (view.next) lines.push(`Continue: forum_read(resource=${JSON.stringify(view.next.resource)}, after=${view.next.after}, limit=${view.next.limit}); fugato forum read ${view.room.roomId} --resource ${view.next.resource} --after ${view.next.after} --limit ${view.next.limit}`);
   return `${lines.join("\n")}\n`;
 }

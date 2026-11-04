@@ -1626,7 +1626,7 @@ test("stop hook blocks on findings once and skips review when stop_hook_active i
   const jobsBefore = JSON.parse(fs.readFileSync(statePath, "utf8")).jobs;
   const gateJob = jobsBefore.find(job => job.title === "Codex Stop Gate Review");
   assert.ok(gateJob);
-  assert.ok(blockedPayload.reason.includes(`duet result ${gateJob.id}`));
+  assert.ok(blockedPayload.reason.includes(`fugato result ${gateJob.id}`));
   assert.match(blockedPayload.reason, /Handle empty input\.\nPreserve retries\.\nAdd a regression check\./);
   assert.doesNotMatch(blockedPayload.reason, /Omitted fifth line/);
   assert.equal(fakeState.lastThreadStart.ephemeral, true);

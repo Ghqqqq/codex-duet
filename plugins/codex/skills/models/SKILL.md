@@ -1,6 +1,6 @@
 ---
 name: models
-description: Check, compare or change Codex worker models and reasoning efforts in Duet. Load when the user asks to change, compare or check worker models or efforts, or when a dispatch fails on an unknown model.
+description: Check, compare or change Codex worker models and reasoning efforts in Fugato. Load when the user asks to change, compare or check worker models or efforts, or when a dispatch fails on an unknown model.
 ---
 
 # Codex worker models
@@ -20,7 +20,7 @@ pair's model also changes ordinary delegation, duel and ultra's strong tier.
 
 ## Discover before choosing
 
-Run `duet models` or `duet models --json` and read the returned descriptions.
+Run `fugato models` or `fugato models --json` and read the returned descriptions.
 Choose the most capable available model for the strong tier and a fast workhorse
 for the routine tier, respecting the user's cost and speed preferences. Never
 assume current model names from memory. Use `--all` to include hidden models.
@@ -36,8 +36,8 @@ Substitute discovered slugs and supported efforts, preview the requested change,
 then apply it without `--dry-run`:
 
 ```text
-duet setup --default-model <slug> --default-effort <effort> --ultra-routine-model <slug> --dry-run
-duet setup --default-model <slug> --default-effort <effort> --ultra-routine-model <slug>
+fugato setup --default-model <slug> --default-effort <effort> --ultra-routine-model <slug> --dry-run
+fugato setup --default-model <slug> --default-effort <effort> --ultra-routine-model <slug>
 ```
 
 Use only the flags needed for the user's change. Pass `default` for any setting
@@ -54,13 +54,13 @@ Check that the chosen model supports the chosen effort.
 
 Put `DUET: --model <slug> --effort <effort>` on the first line of that native
 dispatch's prompt. This overrides that dispatch only; it does not save defaults.
-For the Bash fallback, use `duet task --model <slug> --effort <effort> ...`
+For the Bash fallback, use `fugato task --model <slug> --effort <effort> ...`
 in background Bash as described in the `codex:native-fallback` skill.
 Follow-ups retain recorded settings unless explicitly overridden.
 
 ## Confirm
 
-Read the effective values in the mode reminder or `duet pair status`,
-`duet duel status` or `duet ultra-codex status`. `duet models` also reports both
+Read the effective values in the mode reminder or `fugato pair status`,
+`fugato duel status` or `fugato ultra-codex status`. `fugato models` also reports both
 tiers, their sources and each listed model's `inUse` markers. Confirm the result
 against the user's requested tier and explain any shared-mode effect.

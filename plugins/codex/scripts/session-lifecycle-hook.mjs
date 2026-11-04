@@ -27,15 +27,15 @@ async function sessionStartContext() {
   const bash = dispatch === "bash" || Boolean(unavailable);
   const routeContext = bash ? [
     dispatch === "bash"
-      ? 'The saved dispatch preference is bash: dispatch through background Bash `duet task`; load the `codex:native-fallback` skill and follow it. Do not use codex:codex-native.'
-      : `Native dispatch was unavailable on this host at ${unavailable.at} (missing turn start); prefer background Bash \`duet task\` through the \`codex:native-fallback\` skill. This observation is honored for 24 hours after the last observation, or until \`duet setup --dispatch\` is run without \`--dry-run\`.`
+      ? 'The saved dispatch preference is bash: dispatch through background Bash `fugato task`; load the `codex:native-fallback` skill and follow it. Do not use codex:codex-native.'
+      : `Native dispatch was unavailable on this host at ${unavailable.at} (missing turn start); prefer background Bash \`fugato task\` through the \`codex:native-fallback\` skill. This observation is honored for 24 hours after the last observation, or until \`fugato setup --dispatch\` is run without \`--dry-run\`.`
   ] : [
-    'Dispatch Codex natively by default from the first dispatch: Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (a valid caller name is kept when free; otherwise the plugin assigns a scientist name; the name appears in the Agent result); an optional first prompt line DUET: <flags> sets task flags. The agent result is the Duet report; use SendMessage to the named agent for follow-ups and answers.',
+    'Dispatch Codex natively by default from the first dispatch: Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (a valid caller name is kept when free; otherwise the plugin assigns a scientist name; the name appears in the Agent result); an optional first prompt line DUET: <flags> sets task flags. The agent result is the Fugato report; use SendMessage to the named agent for follow-ups and answers.',
     "If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it."
   ];
   return [
     ...routeContext,
-    `When delegating outside an orchestration mode, explicitly set model, effort and speed: \`${bash ? "duet task" : "DUET:"} --model ${model} --effort ${effort} --normal\` unless the user chose otherwise; add \`--sandbox read-only\` for investigation/review. Active ultra, pair, duel or roundtable reminders and protocols take precedence.`,
+    `When delegating outside an orchestration mode, explicitly set model, effort and speed: \`${bash ? "fugato task" : "DUET:"} --model ${model} --effort ${effort} --normal\` unless the user chose otherwise; add \`--sandbox read-only\` for investigation/review. Active ultra, pair, duel or roundtable reminders and protocols take precedence.`,
     `Use a fresh ${bash ? "worker" : "native agent"} per independent job; never run two jobs on one thread at once. Concurrent edits need disjoint owned paths or separate worktrees.`,
     "Briefs state the objective, owned paths, numbered acceptance criteria and verification commands.",
     "Accept only on evidence: read the actual diff and rerun checks. A success message, launch receipt or `running` payload is not completion; never simulate a worker report or notification."

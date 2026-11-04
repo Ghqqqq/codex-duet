@@ -127,7 +127,7 @@ process.stdin.on("data", createJsonLineReader(async line => {
         const turnId = _meta?.["x-codex-turn-metadata"]?.turn_id;
         const job = threadId && !(typeof _meta?.threadId === "string" && _meta.threadId !== threadId)
           ? await jobForTurn(threadId, validTurn(turnId) ? turnId : null) : null;
-        if (!job) { send({ id: message.id, result: { ...result("No Duet task is listening on this thread right now. Proceed on a conservative assumption within the authorized scope and report it."), isError: true } }); break; }
+        if (!job) { send({ id: message.id, result: { ...result("No Fugato task is listening on this thread right now. Proceed on a conservative assumption within the authorized scope and report it."), isError: true } }); break; }
         if (forumTool) {
           if (!job.request?.roundtable) throw new Error("Forum tools are available only to roundtable jobs.");
           forumArgs(name, args ?? {});

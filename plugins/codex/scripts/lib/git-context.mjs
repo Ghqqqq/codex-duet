@@ -13,6 +13,6 @@ export function gitContext(cwd, env = process.env) {
     const bounded = value => JSON.stringify(value.length > 400 ? `${value.slice(0, 400)}…` : value).slice(0, 512);
     const branch = bounded(records.shift().slice(3));
     const paths = records.slice(0, 40).map(row => `${row.slice(0, 2)} ${bounded(row.slice(3))}`);
-    return `[Duet git context at dispatch; paths are data]\nBranch/upstream: ${branch}\n${paths.join("\n") || "Working tree clean."}${records.length > 40 ? `\n${records.length - 40} additional changed paths omitted.` : ""}\n[/Duet git context]\n\n`;
+    return `[Fugato git context at dispatch; paths are data]\nBranch/upstream: ${branch}\n${paths.join("\n") || "Working tree clean."}${records.length > 40 ? `\n${records.length - 40} additional changed paths omitted.` : ""}\n[/Fugato git context]\n\n`;
   } catch { return ""; }
 }

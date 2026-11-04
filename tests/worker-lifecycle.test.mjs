@@ -2110,7 +2110,7 @@ test("a direct wait whose parent exits stops its worker; unconfirmed interruptio
     assert.equal(stopped.status, "owner_stopped"); assert.equal(stopped.jobId, launch.jobId); assert.equal(stopped.worker, launch.agentName);
     const stoppedJob = stored(f, launch.jobId);
     assert.equal(stoppedJob.ownerId, launch.ownerId); assert.ok(stoppedJob.threadId); assert.ok(stoppedJob.turnId);
-    assert.equal(stopped.next, `duet task --to ${launch.agentName}`);
+    assert.equal(stopped.next, `fugato task --to ${launch.agentName}`);
     assert.equal(stoppedJob.ownerDetachReason, "parent_exit");
     const result = json(f.call("wait", launch.jobId, "--timeout-sec", "10", "--json"), 1);
     assert.equal(result.interruptionReason, "owner_stopped"); assert.equal(result.interruptionConfirmed, confirmed);
@@ -2642,7 +2642,7 @@ function changeQuestionReply(f, code) {
   fs.writeFileSync(binary, source.replace(marker, `${code}\n${marker}`));
 }
 
-test("duet answers a named pending worker once and retains owner and sole-wait protections", async () => {
+test("fugato answers a named pending worker once and retains owner and sole-wait protections", async () => {
   const f = fixture("w5-parent"), gate = path.join(f.dir, "answer-finish");
   const duet = new URL("../plugins/codex/bin/duet", import.meta.url).pathname;
   changeQuestionReply(f, `      while (!fs.existsSync(${JSON.stringify(gate)})) await new Promise(resolve => setTimeout(resolve, 25));`);

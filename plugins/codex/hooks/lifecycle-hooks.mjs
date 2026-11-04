@@ -154,7 +154,7 @@ export async function prepareLifecycleStep($, e, state, { inspect, ended, save }
     if (jobQuestion(job) || !ended(job, state)) return;
     state.incoming = { turnId: e.turnId, attemptId: pending.id, text: `Feedback from SubagentStop hooks:\n${pending.feedback}` };
     delete state.intent; delete state.answeredTurn; delete state.answer; delete state.finishedAt; delete state.notices;
-    // The same host turn now has a distinct Duet attempt. Subsequent steps
+    // The same host turn now has a distinct Fugato attempt. Subsequent steps
     // recover its intent/cache normally; the nonce makes its job and journal
     // finish distinct without ever resubmitting an already reserved attempt.
     await save(state);

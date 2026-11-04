@@ -100,29 +100,29 @@ The optional stop review gate (`--enable-review-gate`/`--disable-review-gate`)
 always runs with `--sandbox read-only`, including in plan mode; it never uses
 the configured default sandbox.
 
-New opt-in settings (all default to `off`) live in the shared Duet config:
+New opt-in settings (all default to `off`) live in the shared Fugato config:
 
 - `--permission-mapping claude|off` maps native Claude modes to Codex sandbox and
   approval policy. Run separately from other setup changes; for example,
-  `duet setup --permission-mapping claude --dry-run`, then omit `--dry-run`.
+  `fugato setup --permission-mapping claude --dry-run`, then omit `--dry-run`.
   It forwards supported command/file approvals as `action-approval` questions:
   only exact `Allow once` approves; `Deny`, numbers, prose and timeout deny.
   It does not apply Claude allow/deny rules, the auto-mode classifier or
-  PreToolUse to Codex actions. See the [mode table and worktree limits](https://github.com/Ghqqqq/codex-duet/blob/main/docs/configuration.md#claude-permission-mapping-opt-in).
+  PreToolUse to Codex actions. See the [mode table and worktree limits](https://github.com/Ghqqqq/fugato/blob/main/docs/configuration.md#claude-permission-mapping-opt-in).
 - `--default-max-minutes <n|off>` and `--default-max-tokens <n|off>` save per-task
   budgets. Positive minutes may be fractional; tokens require an integer.
   These two flags may combine with each other, separately from other changes:
-  `duet setup --default-max-minutes 10 --default-max-tokens 100000`.
+  `fugato setup --default-max-minutes 10 --default-max-tokens 100000`.
   Reset either with `off`. Task/header `--max-minutes` / `--max-tokens` override
   the defaults; a limit interrupts with `budget_exceeded`. Running time excludes
   queueing and parked questions; tokens can overshoot by one usage update.
 - `--agent-memory on|off` enables bounded per-workspace, per-role memory without
-  granting write access; `duet setup --agent-memory on` enables it.
-  `--max-concurrent <n|off>` queues Codex turns at a Duet-wide cap across
-  workspaces sharing the isolated home; `duet setup --max-concurrent 4` sets it.
+  granting write access; `fugato setup --agent-memory on` enables it.
+  `--max-concurrent <n|off>` queues Codex turns at a Fugato-wide cap across
+  workspaces sharing the isolated home; `fugato setup --max-concurrent 4` sets it.
   These two may combine with each other, separately from other changes; `off`
   disables each. Both support `--dry-run` and `--json`, as do the budget and
-  permission-mapping flags. See [context settings](https://github.com/Ghqqqq/codex-duet/blob/main/docs/configuration.md#worker-context-and-concurrency).
+  permission-mapping flags. See [context settings](https://github.com/Ghqqqq/fugato/blob/main/docs/configuration.md#worker-context-and-concurrency).
 
 Browser access is unrestricted by default, like the user's own Codex app. Before
 every task the plugin mirrors top-level `approval_mode = "never_ask"` into the
@@ -172,7 +172,7 @@ Project instructions: Codex reads `AGENTS.md` itself; `--project-docs claude-md`
 (the default, saved as `project_docs` in `<isolated home>/duet/config.toml`)
 makes every task set Codex's own `project_doc_fallback_filenames = ["CLAUDE.md"]`
 in the isolated home's `config.toml`, so workers read the project's `CLAUDE.md`
-wherever an `AGENTS.md` is missing. `--project-docs agents-only` removes Duet's
+wherever an `AGENTS.md` is missing. `--project-docs agents-only` removes Fugato's
 list and is remembered; a hand-written list is reported as `custom` and left
 alone. Run this flag separately from other setup changes; supports `--dry-run`
 and `--json` (`projectDocs`: `projectDocs`, `fallbackFilenames`, `custom`,
@@ -186,14 +186,14 @@ validation and staging use that same selected profile's `projects/` root.
 If another profile is selected, the fallback ancestor scan skips the unselected
 `HOME/.claude` by real path, including for workspaces beneath HOME, so its
 CLAUDE.md/rules are not picked up as project instructions.
-Use `duet task --fresh --no-claude-md` or `CODEX_COMPANION_CLAUDE_MD=0` to opt out
+Use `fugato task --fresh --no-claude-md` or `CODEX_COMPANION_CLAUDE_MD=0` to opt out
 of forwarding; existing threads retain their original instructions.
 
 Transport/browser setup is offline. `--transport status` only reads selected
 transport; explicit `--transport http|websocket` merges a named ChatGPT provider
 and selector, with a timestamped private backup. Recognize the existing matching
 hand-written block as a no-op. Do not change transport automatically based on a
-warning or assume a live speedup; after an actual change, run `duet runtime restart`
+warning or assume a live speedup; after an actual change, run `fugato runtime restart`
 when other assignments have finished. It retires only an idle broker; the next task
 starts a fresh broker.
 
@@ -208,6 +208,6 @@ operations. Never run these commands automatically after a denial or from a work
 Unsupported MCP elicitations now return nonpersistent cancel. The task-only
 `--approve-browser-origin` flag remains a separate per-invocation network-egress
 grant; with permission mapping off it is normally unnecessary because every sandbox
-mode keeps network access on. See [persistence evidence](https://github.com/Ghqqqq/codex-duet/blob/main/docs/browser-approvals.md).
+mode keeps network access on. See [persistence evidence](https://github.com/Ghqqqq/fugato/blob/main/docs/browser-approvals.md).
 Browser assignments use fresh owned tabs, close them in cleanup, and report stale
 claims with the full session ID. Setup never opens or controls a browser.

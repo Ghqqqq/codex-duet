@@ -46,7 +46,7 @@ export const COMMAND_OPTIONS = {
   cancel: { valueOptions: ["cwd"], booleanOptions: ["json", "all"] }
 };
 
-// The duet launcher implies direct mode for these verbs.
+// The fugato launcher implies direct mode for these verbs.
 export const DIRECT_OPTION_CONFLICTS = {
   task: ["follow", "detached", "background", "json", "feed-limit", "min-interval-sec"],
   answer: ["json"],

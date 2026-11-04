@@ -101,7 +101,7 @@ function noticeEntry(job) {
   const reason = job.interruptionReason ?? job.result?.interruptionReason ?? job.report?.interruptionReason
     ?? job.report?.blockers?.[0]?.code ?? job.result?.blockers?.[0]?.code ?? null;
   const unsafePath = /[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(job.workspaceRoot);
-  const details = `duet result ${quote(job.id)}${unsafePath ? "" : ` --cwd ${quote(job.workspaceRoot)}`} --details`;
+  const details = `fugato result ${quote(job.id)}${unsafePath ? "" : ` --cwd ${quote(job.workspaceRoot)}`} --details`;
   if (details.length > 4096) throw new Error("Invalid details command.");
   return { worker: snippet(job.agentName, 96) || job.id, jobId: job.id, status: job.status,
     reason: typeof reason === "string" && /^[A-Za-z0-9_.:-]{1,96}$/.test(reason) ? reason : null, details };
@@ -352,7 +352,7 @@ export function readDelivery({ text, sessionId }, env = process.env) {
     if (!job) return null;
     const report = storedReport(job, env);
     if (!isC2Report(report)) return null;
-    const entry = `Duet report for background task ${notification.taskId}:\n${JSON.stringify(report)}`;
+    const entry = `Fugato report for background task ${notification.taskId}:\n${JSON.stringify(report)}`;
     if (entry.length > 100000) return null;
     return { taskId: notification.taskId, jobId, status: report.status, entry };
   } catch { return null; }

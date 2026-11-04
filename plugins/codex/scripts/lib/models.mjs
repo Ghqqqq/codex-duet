@@ -100,7 +100,7 @@ export async function listModels({ env = process.env, cwd = process.cwd(), all =
     if (client) await client.close();
   }
   catalog ??= readModelCache(env);
-  if (!catalog) throw new Error("Codex models are unavailable from the app-server and isolated model cache. Run /codex:setup to check the runtime and sign in, then retry duet models.");
+  if (!catalog) throw new Error("Codex models are unavailable from the app-server and isolated model cache. Run /codex:setup to check the runtime and sign in, then retry fugato models.");
   return { ...catalog, models: catalog.models.filter(model => all || model.visibility !== "hide") };
 }
 
@@ -111,5 +111,5 @@ export function renderModels(report) {
   const { strong, effort, routine } = report.tiers;
   return [`Models source: ${clean(report.source)}; fetched: ${clean(report.fetchedAt)}; invalid entries dropped: ${clean(report.droppedInvalid)}`,
     "Slug | Display name | Supported efforts | Default effort | Context window | In use | Description", ...rows,
-    `Duet tiers: strong ${clean(strong.value)}/${clean(effort.value)} (model: ${clean(strong.source)}, effort: ${clean(effort.source)}); routine ${clean(routine.value)} (${clean(routine.source)})`, ""].join("\n");
+    `Fugato tiers: strong ${clean(strong.value)}/${clean(effort.value)} (model: ${clean(strong.source)}, effort: ${clean(effort.source)}); routine ${clean(routine.value)} (${clean(routine.source)})`, ""].join("\n");
 }

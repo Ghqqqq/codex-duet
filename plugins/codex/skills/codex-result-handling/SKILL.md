@@ -6,27 +6,27 @@ user-invocable: false
 
 # Codex Result Handling
 
-Background `duet task`/`wait`/`answer` reports arrive with the completion notification;
+Background `fugato task`/`wait`/`answer` reports arrive with the completion notification;
 native `codex:codex-native` reports arrive as agent results. Only if a report is
-missing, use `duet result <worker>`. Do not parse output files or poll.
-A typed prompt may carry a `Duet: … ended while nothing was waiting …` line for
-endings no wait or notification delivered; read each listed `duet result … --details`
+missing, use `fugato result <worker>`. Do not parse output files or poll.
+A typed prompt may carry a `Fugato: … ended while nothing was waiting …` line for
+endings no wait or notification delivered; read each listed `fugato result … --details`
 before acting on that work.
 Report v2 gives `status`, `worker`, `jobId`, `summary`, nonempty evidence, `next`
 and `details`. `checks.ran` is captured evidence; `checks.claimed` is Codex's
-account. Use `duet result <worker> --details` for shortened fields, full handles,
+account. Use `fugato result <worker> --details` for shortened fields, full handles,
 settings, file-tracking basis and artifact paths. A suggested `next` command is
 not permission to continue user-stopped work.
 Details also expose fork import omissions as `forkSlice`. A `budget_exceeded`
 blocker can accompany an `interrupted` status; report the limit and remaining
 work. Codex usage belongs to the Codex provider, not Claude's `/usage`.
 
-For `running`, background `duet wait <worker>`; for `needs_answer`, background
-the report's `next` command verbatim, or `duet answer <worker> --question '<questionId>'`
+For `running`, background `fugato wait <worker>`; for `needs_answer`, background
+the report's `next` command verbatim, or `fugato answer <worker> --question '<questionId>'`
 with the displayed ID and stdin via a single-quoted `DUET_ANSWER` heredoc.
-A bare `duet answer <worker>` answers whatever question is pending now, which
+A bare `fugato answer <worker>` answers whatever question is pending now, which
 may be newer than the one you saw.
-Never run two waits. Follow up with `duet task --to <worker>` and a `DUET_TASK`
+Never run two waits. Follow up with `fugato task --to <worker>` and a `DUET_TASK`
 heredoc. Native agents receive answers and follow-ups via SendMessage instead;
 that answer path already pins the displayed question and is unchanged.
 
@@ -36,7 +36,7 @@ or `call`/`once`/`task`/`always`/`deny`/`no`. Answers are trimmed and
 case-insensitive; exact labels allow a trailing period. Anything else, including
 `yes`, negations or qualified replies, denies the request. Do not add an
 explanation or infer permission from ambiguous text. This also applies to native
-SendMessage; see [approval choices](https://github.com/Ghqqqq/codex-duet/blob/main/docs/computer-use-approvals.md#forwarded-approvals-owned-jobs).
+SendMessage; see [approval choices](https://github.com/Ghqqqq/fugato/blob/main/docs/computer-use-approvals.md#forwarded-approvals-owned-jobs).
 
 For `question.kind: "action-approval"` (opt-in Claude permission mapping), use
 the displayed `Allow once` / `Deny` choices and send only the selected label.

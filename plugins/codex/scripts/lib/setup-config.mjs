@@ -362,7 +362,7 @@ export function projectDocsSetup({ mode, env = process.env, dryRun = false } = {
   const current = readTomlField(before, ["project_doc_fallback_filenames"]);
   if (current !== undefined && (!Array.isArray(current) || current.some(v => typeof v !== "string"))) throw new Error("project_doc_fallback_filenames must be a string array; no configuration changed.");
   // A hand-written list that already covers CLAUDE.md (or lists other names) is
-  // the user's; only Duet's own default list is added or removed.
+  // the user's; only Fugato's own default list is added or removed.
   const custom = current !== undefined && !same(current, CLAUDE_MD_FALLBACKS);
   const wanted = projectDocs === "claude-md" ? (custom ? current : CLAUDE_MD_FALLBACKS) : (custom ? current : undefined);
   const after = same(current, wanted) ? before : setTomlField(before, ["project_doc_fallback_filenames"], wanted);
@@ -573,11 +573,11 @@ function checkedWorkerPreference(key, value, env, warnings, catalog = readModelC
   }
   if (normalized !== undefined && key !== "defaultEffort") {
     if (catalog && !catalog.models.some(model => model.slug === normalized)) {
-      if (cacheAgeMs !== null && cacheAgeMs >= 0 && cacheAgeMs <= 24 * 3600000) throw new Error(`--${flag}: ${normalized} is not listed in Codex's isolated model cache. Run duet models to refresh the cache, then retry.`);
+      if (cacheAgeMs !== null && cacheAgeMs >= 0 && cacheAgeMs <= 24 * 3600000) throw new Error(`--${flag}: ${normalized} is not listed in Codex's isolated model cache. Run fugato models to refresh the cache, then retry.`);
       const age = cacheAgeMs === null ? "of unknown age (missing fetched_at)" : cacheAgeMs < 0 ? "of unknown age (future fetched_at)" : `${Math.floor(cacheAgeMs / 3600000)} hours old`;
-      warnings.push(`Warning: model ${normalized} is not listed in the isolated model cache, which is ${age}. Run duet models to refresh the cache and check available model names.`);
+      warnings.push(`Warning: model ${normalized} is not listed in the isolated model cache, which is ${age}. Run fugato models to refresh the cache and check available model names.`);
     }
-    if (!catalog) warnings.push(`Warning: model ${normalized} could not be checked because the isolated model cache is unavailable. Run duet models to check available model names.`);
+    if (!catalog) warnings.push(`Warning: model ${normalized} could not be checked because the isolated model cache is unavailable. Run fugato models to check available model names.`);
   }
   return normalized;
 }

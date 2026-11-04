@@ -5,8 +5,8 @@ import type { PromptSubmitInput } from 'claude-code';
 // tests/report-delivery.test.mjs runs the same module with the real Node helper,
 // regular task-output files, foreign/adopted jobs and the actual C2 serializer.
 test('host composer endings and task notifications attach once, preserve prompts, and fail closed', async ($, on) => {
-  const report = { status: 'completed', worker: 'Ada', jobId: 'task-fixture', summary: '\u0001'.repeat(8000), next: null, details: 'duet result Ada --details' };
-  const entry = `Duet report for background task bg-a:\n${JSON.stringify(report)}`;
+  const report = { status: 'completed', worker: 'Ada', jobId: 'task-fixture', summary: '\u0001'.repeat(8000), next: null, details: 'fugato result Ada --details' };
+  const entry = `Fugato report for background task bg-a:\n${JSON.stringify(report)}`;
   const saved = new Map<string, unknown>();
   const seen: PromptSubmitInput[] = [];
   let processes = 0;
@@ -16,7 +16,7 @@ test('host composer endings and task notifications attach once, preserve prompts
   let failure = '', failOnce = false, failuresLeft = 0;
   // Mock helper contract; the Node test checks the exported TTL and real expiry.
   const ENDING_CLAIM_TTL_MS = 600000;
-  const ending = { worker: 'Tesla-3', jobId: 'task-lost', status: 'interrupted', reason: 'owner_stopped', details: "duet result 'task-lost' --details" };
+  const ending = { worker: 'Tesla-3', jobId: 'task-lost', status: 'interrupted', reason: 'owner_stopped', details: "fugato result 'task-lost' --details" };
   on('session.id', () => ({ value: 'session-a' }));
   on('clock.now', () => ({ value: 1800000000000 }));
   on('store.keys', () => ({ value: [...saved.keys()] }));
@@ -101,6 +101,7 @@ test('host composer endings and task notifications attach once, preserve prompts
   expect(seen.at(-1)!.text).toBe(composer.text);
   expect(seen.at(-1)!.origin).toEqual(composer.origin);
   expect(seen.at(-1)!.context?.[0]).toBe(composer.context![0]);
+  expect(seen.at(-1)!.context?.[1]).toBe("Fugato: 1 worker ended while nothing was waiting for it: Tesla-3 interrupted (owner_stopped) — fugato result 'task-lost' --details");
   await $.prompt.submit(composer);
   expect(seen.at(-1)!.context).toEqual(composer.context);
   endingNoticed = false; emitted = false; dropNext = true;

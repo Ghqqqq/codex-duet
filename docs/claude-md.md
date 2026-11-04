@@ -1,21 +1,21 @@
 # Optional CLAUDE.md policy
 
-Duet works without a personal CLAUDE.md. SessionStart supplies native dispatch
+Fugato works without a personal CLAUDE.md. SessionStart supplies native dispatch
 guidance, a pointer to the `codex:native-fallback` skill, and generic rules for
 explicit dispatch settings, job ownership, briefs and evidence-based acceptance.
 Active orchestration modes supply their own reminders and protocols. The optional
 policy below adds proactive delegation outside a mode and a stated model policy.
 
 Paste it into `~/.claude/CLAUDE.md` for all projects, or a project's `CLAUDE.md`.
-Duet forwards loaded CLAUDE.md files to Codex as developer instructions; see
+Fugato forwards loaded CLAUDE.md files to Codex as developer instructions; see
 [instruction forwarding](direct-mode.md#context-instructions-and-explicit-forks).
 The snippet costs context in every session where that file is loaded.
 
 ## Delivery to workers
 
 When every project `CLAUDE.md` on the path from the worker's cwd through its
-ancestors was forwarded with Duet's executor framing, Codex's fallback list
-is Duet's default `["CLAUDE.md"]`, and no `.codex/config.toml` on that path sets
+ancestors was forwarded with Fugato's executor framing, Codex's fallback list
+is Fugato's default `["CLAUDE.md"]`, and no `.codex/config.toml` on that path sets
 `project_doc_fallback_filenames`, the worker thread disables that fallback.
 The project instructions then arrive once through `developerInstructions`;
 the isolated home's config file is not changed. On runtimes that reject
@@ -29,7 +29,7 @@ keep Codex discovery enabled. See
 ## Optional policy
 
 For orchestration in every fresh session without a CLAUDE.md, use
-`duet setup --default-mode pair` (or `ultra` / `duel`). See
+`fugato setup --default-mode pair` (or `ultra` / `duel`). See
 [Default orchestration mode](configuration.md#default-orchestration-mode).
 
 ```markdown
@@ -37,7 +37,7 @@ For orchestration in every fresh session without a CLAUDE.md, use
 
 - Explicit user instructions and active ultra, pair or duel reminders and
   protocols take precedence over this policy.
-- Outside an orchestration mode, use Duet naturally for substantive tasks that
+- Outside an orchestration mode, use Fugato naturally for substantive tasks that
   benefit from independent investigation, implementation or review. Handle simple
   questions and small direct edits without delegation. A delegated Codex worker
   executes its own assignment without recursively orchestrating more workers.
@@ -48,7 +48,7 @@ For orchestration in every fresh session without a CLAUDE.md, use
 - Honor the dispatch route in SessionStart guidance; use native dispatch from
   the first task when that route selects it:
   `Agent(subagent_type: "codex:codex-native", description: "<purpose>", prompt: "DUET: --model <model> --effort <effort> --normal [--sandbox <mode>] [--cwd <dir>]\n<brief>")`.
-  A valid, free caller `name` is kept; otherwise Duet assigns a scientist pool
+  A valid, free caller `name` is kept; otherwise Fugato assigns a scientist pool
   name. Use the returned name for SendMessage steering, follow-ups and answers.
   Wait for the actual result; never poll or treat a launch
   receipt or a `running` payload as completed work.
@@ -77,7 +77,7 @@ For orchestration in every fresh session without a CLAUDE.md, use
 
 Explicit user instructions and active mode protocols take precedence. Instead
 of maintaining the snippet's model lines, take the model and effort from
-`duet setup --default-model <model> --default-effort <effort>`;
+`fugato setup --default-model <model> --default-effort <effort>`;
 `--ultra-routine-model <model>` sets ultra's routine tier. SessionStart guidance,
 mode reminders and status show the effective values. See
 [Default worker models](configuration.md#default-worker-models).

@@ -76,7 +76,7 @@ export const register: Register = on => {
         ...usageLines(state.usageByJob ?? {}, state.usagePartial ? 'Codex session total (partial history)' : 'Codex session total')].join('\n'), columns)
         .map((spans, i) => ({ key: `empty-${i}`, spans: spans.map(span => ({ ...span, color: 'subtle' as const })) }));
     if (!selected && (state.hiddenFinishedBefore !== undefined || state.hiddenJobIds?.length)) lines.push(
-      ...messageLines('Finished jobs are hidden. Their records follow your Duet cleanup settings.', columns)
+      ...messageLines('Finished jobs are hidden. Their records follow your Fugato cleanup settings.', columns)
         .map((spans, i) => ({ key: i ? `hidden-notice-${i}` : 'hidden-notice',
           spans: spans.map(span => ({ ...span, color: 'subtle' as const })) })));
     const window = selected ? feedWindow(lines, rows, state.feeds?.[selected.id]) : { lines: lines.slice(0, rows), following: true, newLines: 0 };

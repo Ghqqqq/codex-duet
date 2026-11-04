@@ -65,11 +65,11 @@ Use the same pattern when invoking the companion directly; `$()`, backticks and
 dollar signs in focus text reach the argument parser without shell expansion:
 
 ```bash
-duet review --args-stdin <<'DUET_ARGS'
+fugato review --args-stdin <<'DUET_ARGS'
 --base main
 DUET_ARGS
 
-duet adversarial-review --args-stdin <<'DUET_ARGS'
+fugato adversarial-review --args-stdin <<'DUET_ARGS'
 --base main check whether $(refresh) and `retry` are treated as literal input
 DUET_ARGS
 ```
@@ -95,7 +95,7 @@ A failed native review keeps its failure reason in the report and summary.
 An otherwise successful turn with empty native output, or empty, malformed or
 schema-invalid adversarial output, becomes a failed `review_output_invalid` job
 (exit 1). New review jobs save raw output and result artifacts even on invalid
-output. `duet result <jobId> --details` exposes the complete review text/findings
+output. `fugato result <jobId> --details` exposes the complete review text/findings
 and artifact paths; the compact summary keeps its 8,000-character cap. Older
 jobs are not backfilled with artifacts.
 
@@ -122,11 +122,11 @@ overrides them; follow-ups retain recorded thread settings. See
 [Default worker models](configuration.md#default-worker-models).
 If you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`. For planned,
 parallel work Claude honors the saved [worker dispatch](configuration.md#worker-dispatch)
-route: `bash` selects background `duet task` immediately, while `auto` prefers it
+route: `bash` selects background `fugato task` immediately, while `auto` prefers it
 for 24 hours after the last native-unavailable observation, or until
-`duet setup --dispatch` is run without `--dry-run`. Otherwise Claude
+`fugato setup --dispatch` is run without `--dry-run`. Otherwise Claude
 uses `codex:codex-native` from the first dispatch, without waiting for readiness.
-Background `duet task` also handles `native_adapter_unavailable`,
+Background `fugato task` also handles `native_adapter_unavailable`,
 `native_capacity`, per-call options the `DUET:` line rejects, or follow-ups to
 Bash-launched workers; `codex:codex-worker` is the Haiku fallback when neither
 path is available. See [direct mode](direct-mode.md).
@@ -271,15 +271,15 @@ acceptance for consequential/conflicting claims. Details:
 CLI mode controls never take task text or start workers:
 
 ```text
-duet ultra-codex [on|off|status] [options]
-duet pair [on|off|status] [options]
-duet duel [on|off|status] [options]
-duet roundtable [on|off|status] [--intensity light|standard|deep|full] [--roles id,id]
+fugato ultra-codex [on|off|status] [options]
+fugato pair [on|off|status] [options]
+fugato duel [on|off|status] [options]
+fugato roundtable [on|off|status] [--intensity light|standard|deep|full] [--roles id,id]
 
-duet ultra-codex on --thorough --max-workers unlimited
-duet pair on
-duet duel on --rounds 2
-duet duel status --for-command
+fugato ultra-codex on --thorough --max-workers unlimited
+fugato pair on
+fugato duel on --rounds 2
+fugato duel status --for-command
 ```
 
 For roundtable, bare status/no action reports the mode; `status <roomId>`
@@ -333,7 +333,7 @@ Its activity feed uses only the newest 500 events retained per job. Cumulative
 event totals remain available as `activityCount` in result details when no
 payload-specific count is present; see [activity retention](worker-lifecycle.md#fallback-and-compatibility-feed-mode).
 
-`duet status <worker>` shows the worker name, model, effort and sandbox, followed
+`fugato status <worker>` shows the worker name, model, effort and sandbox, followed
 by recent structured activity: commands with exit status when known, file changes
 and message snippets. The job list includes worker names and model/effort.
 List status also prints input, cached-input, output and total token usage for
@@ -352,7 +352,7 @@ without starting another turn.
 ### `/codex:cancel`
 
 Interrupts an active job and reports whether termination was confirmed.
-`/codex:cancel --all` (or `duet cancel --all`) cancels every active job of the
+`/codex:cancel --all` (or `fugato cancel --all`) cancels every active job of the
 current Claude session in this workspace and prints each job's outcome.
 Other sessions are untouched. `--all` cannot be combined with a worker argument;
 outside a Claude session, supply `--session <id>`.
@@ -368,7 +368,7 @@ and dollar signs are not expanded by the shell. For example:
 /codex:result Ada --cwd '/work/my repo/sub' --details
 ```
 
-Direct companion calls can use `duet status --args-stdin <<'DUET_ARGS'` with the
+Direct companion calls can use `fugato status --args-stdin <<'DUET_ARGS'` with the
 same raw arguments on stdin; choose another delimiter if a line equals `DUET_ARGS`.
 
 ### `/codex:setup`
@@ -379,7 +379,7 @@ configuration actions described under [Configuration](configuration.md).
 For API-key authentication, use the [isolated login procedure](troubleshooting.md#sign-in-with-an-api-key).
 
 ```text
-duet setup --default-model <model|default> [--default-effort <effort|default>] [--ultra-routine-model <model|default>]
+fugato setup --default-model <model|default> [--default-effort <effort|default>] [--ultra-routine-model <model|default>]
 /codex:setup --default-model <model|default> [--default-effort <effort|default>] [--ultra-routine-model <model|default>]
 ```
 
@@ -391,19 +391,19 @@ mode reminders and status show the effective models too. For built-ins,
 precedence, examples and validation limits, see
 [Default worker models](configuration.md#default-worker-models).
 
-`duet setup --default-mode off|ultra|pair|duel|roundtable` saves the orchestration mode for
+`fugato setup --default-mode off|ultra|pair|duel|roundtable` saves the orchestration mode for
 fresh Claude sessions and `/clear` (default `off`); run it separately from other
 setup changes, with `--dry-run` to preview. See
 [default orchestration mode](configuration.md#default-orchestration-mode).
 
-`duet setup --persona-model id=model[:effort]` saves a persona mapping;
+`fugato setup --persona-model id=model[:effort]` saves a persona mapping;
 repeat the flag for different ids, or use `id=default` to remove both fields.
 Run it separately from other setup changes; `--dry-run --json` previews without
 writes. Setup JSON includes `personaModels` with effective model/effort values
 and per-field `saved`/`built-in` sources. Model-only changes clear the saved
 effort. See [persona models](roundtable.md#models-and-redefinition).
 
-`duet setup --dispatch auto|native|bash|default` selects Claude's dispatch
+`fugato setup --dispatch auto|native|bash|default` selects Claude's dispatch
 guidance; run it separately from other setup changes. See
 [worker dispatch](configuration.md#worker-dispatch).
 The opt-in settings `--permission-mapping claude|off`,
@@ -447,17 +447,20 @@ re-review the follow-up changes; run `/codex:review --wait` for them. A review t
 fails, times out or returns an unexpected answer also allows the stop and shows
 its reason as a note; only explicit findings block. The gate also allows the stop
 with a note, without running a review, when the Git working tree is clean
-(including no untracked files) or a writable Duet task is queued or running in
+(including no untracked files) or a writable Fugato task is queued or running in
 the workspace, even from another session. Gate reviews use ephemeral threads
 and never become `--resume-last` targets. A `BLOCK` shows up to four lines of
-findings and the review job ID with `duet result <jobId>` for the full result.
+findings and the review job ID with `fugato result <jobId>` for the full result.
 An eligible first stop costs one Codex review turn; skipped gates and follow-up
 stops cost none.
 
 ## Companion subcommands
 
-`duet models [--json] [--all]` lists the current account's Codex models,
-descriptions, supported/default efforts and context windows, followed by Duet's
+`fugato` is the canonical CLI. `duet` remains a compatibility alias to the same
+implementation and state.
+
+`fugato models [--json] [--all]` lists the current account's Codex models,
+descriptions, supported/default efforts and context windows, followed by Fugato's
 effective strong/effort/routine tiers and their sources. It prefers app-server
 `model/list`, falling back to the isolated model cache, and names the source.
 Hidden models require `--all`; unknown context windows are `null` in JSON.
@@ -465,20 +468,20 @@ If neither source is available it exits nonzero and points to `/codex:setup`.
 The model-invocable `codex:models` skill explains tier selection, setup changes,
 one-off overrides and confirmation; see [configuration](configuration.md#default-worker-models).
 
-Use `duet <subcommand>` in a Claude session, or `plugins/codex/bin/duet` from the
-repository root. Run `duet task --help` for flags and side-effect-free examples.
+Use `fugato <subcommand>` in a Claude session, or `plugins/codex/bin/fugato` from the
+repository root. Run `fugato task --help` for flags and side-effect-free examples.
 SessionStart supplies the session ID; `--session <id>` overrides it.
 
 ### Shared runtime
 
-`duet runtime status` inspects the current workspace without starting a broker
+`fugato runtime status` inspects the current workspace without starting a broker
 or app-server. It shows the selected Codex binary, selection source and version,
 plus the saved broker's PID, alive/reachable state and endpoint, if present.
 It checks whether the broker's runtime identity matches the selected binary or
 is stale (unknown when it cannot compare); JSON also exposes `homeMatches`.
 Busy state is `unknown` in status; status does not establish that restart is safe.
 
-`duet runtime restart` asks the broker to retire only when idle. A busy broker
+`fugato runtime restart` asks the broker to retire only when idle. A busy broker
 refuses and lists the workspace's running workers, including other sessions;
 no worker is force-stopped. An unreachable or incompatible broker also refuses
 when safe shutdown cannot be confirmed. The command does not start a replacement:
@@ -487,36 +490,36 @@ the next task starts a fresh broker. Both commands accept `--cwd <dir>` and
 
 | Command | Use |
 | --- | --- |
-| `duet task` | Fresh assignment; brief only on stdin; implies `--direct` |
-| `duet task --name <label>` | Request a name on a fresh thread; collisions fall back to the pool; follow-ups retain their name |
-| `duet task --cwd <repo>/sub` | Start or resume the Codex thread in that subdirectory; broker/job state remains at the repository root |
-| `duet task --run <id\|none>` | Override journal linkage for this dispatch only; select an open run across workspaces or skip linking with `none`; follow-ups do not inherit it |
-| `duet task --to <worker>` | New turn on that worker's thread/cwd, inheriting recorded settings unless overridden |
-| `duet task --fork` | Import the current Claude transcript into a new thread, then run the stdin brief; fidelity not verified |
-| `duet task --max-minutes <n> --max-tokens <n>` | Per-turn running-time/token budgets; either flag can be used alone |
-| `duet answer <worker> --question '<questionId>'` | Answer the displayed question ID from stdin and keep waiting; prefer the report's `next` verbatim |
-| `duet wait <worker>` | Attach the sole owner wait and renew its lease |
-| `duet result <worker>` | Retrieve report v2 if missing from the completion notification |
-| `duet result <worker> --details` | Full evidence, settings, handles and artifact paths |
-| `duet status [worker]` | Observe jobs without renewing their lease |
-| `duet cancel <worker>` | Cancel and report whether interruption was confirmed |
-| `duet cancel --all` | Cancel this Claude session's active jobs in the workspace, with per-job outcomes |
-| `duet runtime status` | Inspect the selected binary and saved workspace broker without starting a runtime |
-| `duet runtime restart` | Retire an idle broker; refuse while busy; start fresh on the next task |
-| `duet setup` | Runtime readiness and configuration |
-| `duet steer <jobId> --delivery-id <id> --owner <ownerId>` | Internal native-hook steering handoff, message on stdin; use SendMessage for native agents |
-| `duet models [--json] [--all]` | Discover current account models and efforts, including hidden models with `--all`, and show effective tiers |
-| `duet ultra-codex [on\|off\|status]` | Ultra session controls; task text belongs in the slash command |
-| `duet pair [on\|off\|status]` | Pair session controls; one primary Codex thread |
-| `duet duel [on\|off\|status]` | Duel session controls; `on --rounds <n>` sets 1–3 total rounds |
-| `duet roundtable [on\|off\|status]` | Roundtable session mode controls; `on --intensity … --roles …` selects defaults |
-| `duet roundtable start [--intensity …] [--roles id,id] [--persona-model id=model[:effort]]… [--run <runId>] [--json]` | Goal on stdin; returns room, member headers and chair card |
-| `duet roundtable status <roomId> [--json]` / `pause\|resume <roomId>` | Inspect or control the room |
-| `duet roundtable close <roomId> [--title t] [--label l] [--selects n] [--unreviewed reason]` | Close the room; with a title, `--selects` or a body on stdin, first records the chair's closing decision under the review gate. Closing does not cancel jobs |
-| `duet forum read <roomId> [--after n] [--thread n] [--limit n] [--json]` | Chair index/thread reads |
-| `duet forum post <roomId> --kind <kind> [--thread n] [--reply-to n] [--title t] [--label l] [--ref r]… [--mention m]…` | Chair posts, body on stdin; see [forum](roundtable.md#the-forum) |
-| `duet cleanup --dry-run --json` / `duet cleanup --json` | Preview/apply retention with read-only inert workspace reporting; text output includes manual removal hints; `--days N` overrides the period |
-| `duet journal <start\|use\|add\|validate\|close\|show\|list>` | Criteria (including `add withdraw`), verdicts and decisions; `start --switch` selects a new run while leaving the old one open; `use <runId>` selects an existing open run for the session |
+| `fugato task` | Fresh assignment; brief only on stdin; implies `--direct` |
+| `fugato task --name <label>` | Request a name on a fresh thread; collisions fall back to the pool; follow-ups retain their name |
+| `fugato task --cwd <repo>/sub` | Start or resume the Codex thread in that subdirectory; broker/job state remains at the repository root |
+| `fugato task --run <id\|none>` | Override journal linkage for this dispatch only; select an open run across workspaces or skip linking with `none`; follow-ups do not inherit it |
+| `fugato task --to <worker>` | New turn on that worker's thread/cwd, inheriting recorded settings unless overridden |
+| `fugato task --fork` | Import the current Claude transcript into a new thread, then run the stdin brief; fidelity not verified |
+| `fugato task --max-minutes <n> --max-tokens <n>` | Per-turn running-time/token budgets; either flag can be used alone |
+| `fugato answer <worker> --question '<questionId>'` | Answer the displayed question ID from stdin and keep waiting; prefer the report's `next` verbatim |
+| `fugato wait <worker>` | Attach the sole owner wait and renew its lease |
+| `fugato result <worker>` | Retrieve report v2 if missing from the completion notification |
+| `fugato result <worker> --details` | Full evidence, settings, handles and artifact paths |
+| `fugato status [worker]` | Observe jobs without renewing their lease |
+| `fugato cancel <worker>` | Cancel and report whether interruption was confirmed |
+| `fugato cancel --all` | Cancel this Claude session's active jobs in the workspace, with per-job outcomes |
+| `fugato runtime status` | Inspect the selected binary and saved workspace broker without starting a runtime |
+| `fugato runtime restart` | Retire an idle broker; refuse while busy; start fresh on the next task |
+| `fugato setup` | Runtime readiness and configuration |
+| `fugato steer <jobId> --delivery-id <id> --owner <ownerId>` | Internal native-hook steering handoff, message on stdin; use SendMessage for native agents |
+| `fugato models [--json] [--all]` | Discover current account models and efforts, including hidden models with `--all`, and show effective tiers |
+| `fugato ultra-codex [on\|off\|status]` | Ultra session controls; task text belongs in the slash command |
+| `fugato pair [on\|off\|status]` | Pair session controls; one primary Codex thread |
+| `fugato duel [on\|off\|status]` | Duel session controls; `on --rounds <n>` sets 1–3 total rounds |
+| `fugato roundtable [on\|off\|status]` | Roundtable session mode controls; `on --intensity … --roles …` selects defaults |
+| `fugato roundtable start [--intensity …] [--roles id,id] [--persona-model id=model[:effort]]… [--run <runId>] [--json]` | Goal on stdin; returns room, member headers and chair card |
+| `fugato roundtable status <roomId> [--json]` / `pause\|resume <roomId>` | Inspect or control the room |
+| `fugato roundtable close <roomId> [--title t] [--label l] [--selects n] [--unreviewed reason]` | Close the room; with a title, `--selects` or a body on stdin, first records the chair's closing decision under the review gate. Closing does not cancel jobs |
+| `fugato forum read <roomId> [--after n] [--thread n] [--limit n] [--json]` | Chair index/thread reads |
+| `fugato forum post <roomId> --kind <kind> [--thread n] [--reply-to n] [--title t] [--label l] [--ref r]… [--mention m]…` | Chair posts, body on stdin; see [forum](roundtable.md#the-forum) |
+| `fugato cleanup --dry-run --json` / `fugato cleanup --json` | Preview/apply retention with read-only inert workspace reporting; text output includes manual removal hints; `--days N` overrides the period |
+| `fugato journal <start\|use\|add\|validate\|close\|show\|list>` | Criteria (including `add withdraw`), verdicts and decisions; `start --switch` selects a new run while leaving the old one open; `use <runId>` selects an existing open run for the session |
 
 Without an active run, journal add/close use the sole open run in the current
 workspace. Automatic task linking uses it only if it belongs to the dispatching
@@ -524,7 +527,7 @@ Claude session or has no recorded session. Several open runs leave tasks unlinke
 and require `journal use <runId>` or `--run <id>` for add/close. See [run journal](run-journal.md)
 for verdict criterion matching and cross-session `resolves`.
 
-`duet journal show` prints token totals for the run's linked jobs, including how
+`fugato journal show` prints token totals for the run's linked jobs, including how
 many jobs had no usage, and exposes `usageTotals` in JSON. It uses saved reports
 or available job records; unknown usage remains unknown. See
 [run journal](run-journal.md#commands).
@@ -552,7 +555,7 @@ Refused or never-started attempts do not replace started settings anchors.
 Reports' `details` always names the exact job ID, preserving saved commands
 after follow-ups. `next` may use a safely resolved worker name, otherwise the
 job ID, with `--cwd` when needed; for `needs_answer` it pins `--question`. Use
-it verbatim or retain the displayed ID explicitly. A bare `duet answer <worker>`
+it verbatim or retain the displayed ID explicitly. A bare `fugato answer <worker>`
 answers whatever question is pending now, which may be newer than the one you
 saw. Native `codex:codex-native` agents receive follow-ups and answers via
 SendMessage; that path pins the displayed question. If no unanswered pending
@@ -575,4 +578,4 @@ allowlist use normal permissions. Never start two waits for one job.
 
 Compatibility: `node "$CODEX_COMPANION" <subcommand>` remains supported, including
 the legacy non-direct/feed modes. Some slash-command preambles call the absolute
-companion path so they can run before PATH refreshes. New dispatches use `duet`.
+companion path so they can run before PATH refreshes. New dispatches use `fugato`.

@@ -1,17 +1,18 @@
 # Troubleshooting and known limitations
 
-Back to the [README](../README.md).
+Back to the [README](../README.md). Moving from Duet to Fugato? Follow the
+[upgrade guide](upgrading-from-duet.md).
 
 ## Troubleshooting
 
-**`duet: command not found` after install.** Reload plugins or start a new Claude
+**`fugato: command not found` after install.** Reload plugins or start a new Claude
 session so the plugin's `bin/` is on PATH. You can also invoke the installed
-plugin's absolute launcher, for example `'/absolute/path/plugins/codex/bin/duet'
+plugin's absolute launcher, for example `'/absolute/path/plugins/codex/bin/fugato'
 task --help`. `/codex:setup` reports the resolved launcher path and availability.
 SessionStart supplies the session ID and dispatch guidance; do not construct a
 second runtime or submit a replacement for a job that may already exist.
 
-**Setup reports an unsupported command or app-server method.** Duet requires a
+**Setup reports an unsupported command or app-server method.** Fugato requires a
 Codex CLI that provides `app-server`; the tested version is **0.146.0**, recorded
 in [.codex-version](../.codex-version). Finish or cancel running jobs before
 changing runtimes. To install that version with npm:
@@ -25,14 +26,14 @@ codex app-server --help
 Check setup's selected runtime source: a stale `CODEX_COMPANION_BIN` or
 `<isolated-home>/runtime.json` pin takes precedence over PATH. Point
 `CODEX_COMPANION_BIN` at the absolute path of the installed executable, or set
-`runtime.json`'s `codexBinary` to that path, then run `duet runtime restart` when
+`runtime.json`'s `codexBinary` to that path, then run `fugato runtime restart` when
 workers have finished and rerun `/codex:setup`. See [runtime selection](configuration.md#runtime-selection).
 
-**Reload shared runtime configuration.** Run `duet runtime status` to see the
+**Reload shared runtime configuration.** Run `fugato runtime status` to see the
 selected binary, its source/version and the saved workspace broker's PID,
 alive/reachable state, endpoint and matching/stale runtime identity. It starts
 no broker or app-server; busy state is unknown. After tool, browser or transport
-changes, run `duet runtime restart`: only an idle broker retires, and the next
+changes, run `fugato runtime restart`: only an idle broker retires, and the next
 task starts a fresh one. A busy broker refuses and reports the running workspace
 workers; wait for them to finish rather than force-stopping it. Safe shutdown
 also requires a reachable broker with the supported idle-shutdown control.
@@ -44,11 +45,11 @@ the supported function-hook module. Native dispatch is the default from the firs
 assignment; the readiness notice is informational. If the model fallback runs,
 it returns `native_adapter_unavailable` and does not solve the assignment. This
 can mean an older plugin build is still in memory, hooks were not loaded, or the
-native hook failed. Run `/reload-plugins`, check `duet status` before retrying
-because dispatch is unconfirmed, and use background `duet task` if it persists.
+native hook failed. Run `/reload-plugins`, check `fugato status` before retrying
+because dispatch is unconfirmed, and use background `fugato task` if it persists.
 Do not treat the fallback as zero Claude usage.
 With `setup --dispatch auto`, a missing native turn start is remembered for
-24 hours after the last observation, or until `duet setup --dispatch` is run
+24 hours after the last observation, or until `fugato setup --dispatch` is run
 without `--dry-run`, so later guidance prefers Bash; `native` always advertises
 native dispatch, and `bash` selects Bash immediately. See [worker dispatch](configuration.md#worker-dispatch).
 
@@ -56,19 +57,19 @@ native dispatch, and `bash` selects Bash immediately. See [worker dispatch](conf
 evicted oldest-first to admit work within the 128-record and 2 MiB budgets;
 active or protected bindings can still exhaust capacity. `native_capacity`
 launches nothing: wait for workers to end, stop them if intended, or use background
-`duet task`. `native_binding_gone` means a retained native binding is unavailable;
+`fugato task`. `native_binding_gone` means a retained native binding is unavailable;
 start a new native agent. Briefs over 65,536 characters are refused as
 `native_message_too_large` before eviction; shorten the brief. See
 [native store protections](state-and-retention.md#native-adapter-store).
 
 **Completion notification has no report.** The function hook normally attaches
-report v2. If it cannot, run `duet result <worker>`; use `--details` for full
+report v2. If it cannot, run `fugato result <worker>`; use `--details` for full
 evidence, handles and settings. Do not parse the task output file.
 
-**A worker ended while nothing was waiting.** On a typed prompt, Duet can give
+**A worker ended while nothing was waiting.** On a typed prompt, Fugato can give
 Claude one recovery line for up to five jobs in this session that ended at least
 10 seconds ago without an emitted report, previous notice or live attached
-owner wait. Follow its `duet result '<id>' --cwd '<root>' --details` command.
+owner wait. Follow its `fugato result '<id>' --cwd '<root>' --details` command.
 Only tasks with tracking introduced in 1.4.4 qualify. Lookup errors, oversized state
 or the 2-second timeout leave the prompt unchanged; the scan caps at 256
 state-root entries and 8 MiB of indexes (2 MiB each). Each notice is claimed
@@ -79,7 +80,7 @@ prompt; see [unreported endings](worker-lifecycle.md#unreported-endings).
 
 **Claude instructions are approximate.** Managed environments skip user-supplied
 `prompt.context` hooks. If the session's first loaded instruction inventory is
-missing or invalid, Duet falls back to a startup scan and records
+missing or invalid, Fugato falls back to a startup scan and records
 `claudeMd.approximate` in `--details`. Later contexts cannot replace that first attempt.
 A valid inventory over the capture budget stays authoritative, with omissions
 reported instead of a fallback scan. The scan cannot reproduce all
@@ -153,7 +154,7 @@ These are typed failed-turn blockers, with `status: blocked` and exit 2:
 `context_window_exceeded`; and `unauthorized` to `auth_required`. Respect the
 provider refusal and clarify legitimate defensive scope before a fresh dispatch;
 for usage limits wait for reset or change model/plan; for full context start a
-fresh worker with a shorter brief; for missing auth run `duet setup` and log in
+fresh worker with a shorter brief; for missing auth run `fugato setup` and log in
 to the isolated home. Details preserve the original `error` text with display
 cleanup. The sole text fallback is “flagged for possible cybersecurity risk”,
 case-insensitive, when typed information is absent. Other failures remain
@@ -162,10 +163,10 @@ alone make it blocked. See [runtime blocker details](worker-operations.md#direct
 
 **`codex_runtime_restarted` or a desktop-managed runtime warning.** After
 transport loss, recovery reports `blocked` (exit 2) with `codex_runtime_restarted`
-only when the exact persisted turn is `interrupted` and no recorded Duet stop
+only when the exact persisted turn is `interrupted` and no recorded Fugato stop
 takes precedence. The thread and saved work persist. Once the runtime is
 available, use the report's continuation to continue that worker when requested;
-Duet never reruns it automatically. Unreadable or still-running turns remain
+Fugato never reruns it automatically. Unreadable or still-running turns remain
 unresolved. One observed cause was a ChatGPT desktop auto-update stopping
 app-servers launched from its managed CLI; other runtime exits can have the
 same result. Setup warns with `desktop_managed_codex_runtime` for managed paths,
@@ -173,8 +174,8 @@ including symlink targets. Pin a stable CLI using `CODEX_COMPANION_BIN` or
 `runtime.json`'s `codexBinary`; setup does not change the pin or make `ready`
 false because of this warning. See [runtime selection](configuration.md#runtime-selection).
 
-**Interrupted worker or lost connection.** Inspect `duet status <worker>` and
-`duet result <worker> --details` in the original workspace: an eligible lost turn
+**Interrupted worker or lost connection.** Inspect `fugato status <worker>` and
+`fugato result <worker> --details` in the original workspace: an eligible lost turn
 is reconciled against its exact server record without resubmission, preserving
 its real outcome and recovery provenance. A missing turn handle can also be
 recovered from a unique unclaimed turn with a suitable start timestamp;
@@ -196,7 +197,7 @@ Use `next` verbatim: it answers the tracked owner's pinned question when one
 blocks progress, otherwise observes recovery/status, or is null. The blocker's
 nested question and `cancelCommand` belong to that owner; `details` targets the
 refused attempt. Use recovery or cancel only when supplied for a tracked owning job;
-external turns have no Duet recovery/cancel command and must be resolved by
+external turns have no Fugato recovery/cancel command and must be resolved by
 their owner. Commands shortened out of a compact report remain in `--details`.
 Do not resubmit blindly; that starts a new turn.
 
@@ -212,11 +213,11 @@ and use `login --with-api-key`. With `OPENAI_API_KEY` already set in your termin
 
 ```bash
 printenv OPENAI_API_KEY | node '/absolute/path/plugins/codex/scripts/codex-isolated.mjs' --home '/absolute/path/to/isolated-home' login --with-api-key
-duet setup --json
+fugato setup --json
 ```
 
 The wrapper directs authentication, SQLite and logs to the isolated home;
-plain `codex login` does not select Duet's isolated home. Setup reports an API-key
+plain `codex login` does not select Fugato's isolated home. Setup reports an API-key
 account as `loggedIn: true`, `authMethod: "apiKey"`, `verified: false` with
 `API key configured (unverified)`: it recognizes the configuration, without
 testing the key against the service. An unreachable auth probe is not a reason
@@ -224,18 +225,20 @@ to sign in again.
 
 ## Roll back a plugin release
 
-Finish or cancel all Duet jobs before switching versions, including jobs in other
-sessions and workspaces. Inspect `duet status --all` in each workspace, ask the
-owning sessions to stop their work as needed, then use `duet runtime restart`
+Finish or cancel all Fugato jobs before switching versions, including jobs in other
+sessions and workspaces. Inspect `fugato status --all` in each workspace, ask the
+owning sessions to stop their work as needed, then use `fugato runtime restart`
 to retire idle brokers. Keep a backup of the isolated home before downgrading.
 
-Use Claude Code's plugin manager to uninstall `codex@duet` and the optional
-`codex-live@duet`, and remove the current `duet` marketplace entry. In a separate
-clone of `Ghqqqq/codex-duet`, find the earlier version's release commit; releases
-are commits on `main`, not tags. For example, `git log --oneline --grep '1\.4\.11'`
+When rolling back from 1.6.0, use Claude Code's plugin manager to uninstall
+`codex@fugato` and the optional `codex-live@fugato`, then remove the `fugato`
+marketplace entry. In a separate clone of `Ghqqqq/fugato`, find the earlier
+version's release commit; releases are commits on `main`, not tags. For example, `git log --oneline --grep '1\.4\.11'`
 finds candidates for 1.4.11. Check the chosen commit out in a separate directory
 and confirm its version in `.claude-plugin/marketplace.json`. Register that
-checkout as a local marketplace, then install from it:
+checkout as a local marketplace, then install from it. The example below applies
+to releases before 1.6.0: their manifests name the marketplace `duet`, so use
+that release's original plugin IDs:
 
 ```text
 /plugin marketplace add /absolute/path/to/previous-duet-checkout
@@ -247,7 +250,7 @@ checkout as a local marketplace, then install from it:
 
 Skip `codex-live` if unused. Keep the same `CODEX_COMPANION_HOME` and Codex binary
 pin. Replacing the plugin leaves authentication, Codex threads, tool/approval
-settings and Duet job/journal artifacts in that home. For rollback from 1.4.12
+settings and Fugato job/journal artifacts in that home. For rollback from 1.4.12
 to 1.4.11, the isolated-home paths, job index version 1 and orchestration mode
 schema 2 are unchanged; the new dispatch preference/observation has no effect in
 1.4.11. This is not a reverse migration for arbitrary older releases: mode state
@@ -257,12 +260,12 @@ or report fields. See [state compatibility](state-and-retention.md#orchestration
 ## Uninstall and remove retained data
 
 Uninstalling the plugins leaves the isolated Codex home (authentication,
-threads, tool settings and logs) and Duet state on disk. The default home is
-`~/.claude/codex-isolated`, overridden by `CODEX_COMPANION_HOME`; Duet's job
+threads, tool settings and logs) and Fugato state on disk. The default home is
+`~/.claude/codex-isolated`, overridden by `CODEX_COMPANION_HOME`; Fugato's job
 records, results and journals are under `<isolated-home>/duet/state/`.
 
-Before uninstalling, run `duet status --all` in each workspace with jobs and
-`duet cancel <jobId>` for each active job; confirm interruption before removing
+Before uninstalling, run `fugato status --all` in each workspace with jobs and
+`fugato cancel <jobId>` for each active job; confirm interruption before removing
 state. Log out of the isolated home through the installed wrapper, using the
 same absolute wrapper path and home printed by setup's login command:
 
@@ -270,15 +273,15 @@ same absolute wrapper path and home printed by setup's login command:
 node '/absolute/path/plugins/codex/scripts/codex-isolated.mjs' --home '/absolute/path/to/isolated-home' logout
 ```
 
-Then uninstall `codex@duet` (and `codex-live@duet` if installed) through Claude
+Then uninstall `codex@fugato` (and `codex-live@fugato` if installed) through Claude
 Code's plugin manager. Once jobs and idle brokers have exited, remove the
-isolated-home directory to delete its credentials, threads and Duet data.
+isolated-home directory to delete its credentials, threads and Fugato data.
 Earlier releases may also have left `~/.claude/plugins/data/codex-duet/state/`,
 `~/.claude/plugins/data/codex-codex-isolated-local/state/`,
 `CLAUDE_PLUGIN_DATA/state` or `$TMPDIR/codex-companion-isolated/`; remove those
 legacy state directories if present and no longer needed. See
 [state and migration paths](state-and-retention.md#job-state-and-migration).
-Remove any optional [Duet CLAUDE.md policy](claude-md.md) you pasted, and reload
+Remove any optional [Fugato CLAUDE.md policy](claude-md.md) you pasted, and reload
 plugins or restart Claude Code. The ordinary `~/.codex` home is separate and
 should be kept.
 
@@ -287,14 +290,14 @@ should be kept.
 - Stopping an active native agent from `/tasks` interrupts its turn and ends
   the commands its thread started. The adapter gives the owner stop a bounded
   chance to record `interrupted` / `owner_stopped`, with a cancel fallback when
-  confirmation is missing. Explicit `duet cancel` retains its cancellation
+  confirmation is missing. Explicit `fugato cancel` retains its cancellation
   semantics. Claude Code refuses process calls in the
   stopped dispatch, so the agent's result reports `interrupted` from the
   recorded handles, and the confirmation is recorded on the job afterwards
-  (`duet status <worker>`); SendMessage can then continue the agent. If no job
+  (`fugato status <worker>`); SendMessage can then continue the agent. If no job
   was recorded yet, the result is blocked (`native_stop_unconfirmed`); after
-  `duet cancel <worker>` confirms it, the next SendMessage is accepted. A question parked
-  after the native agent returns may not receive a stop event; use `duet cancel
+  `fugato cancel <worker>` confirms it, the next SendMessage is accepted. A question parked
+  after the native agent returns may not receive a stop event; use `fugato cancel
   <worker>`, or the default 900 s question timeout applies.
 - Cancelling ends every background terminal the worker's thread started,
   including dev servers from earlier turns. A Codex runtime without
@@ -334,7 +337,7 @@ should be kept.
   it after the 5 s grace. A signalled stop is immediate.
 - The owner lease is lifecycle coordination between local processes, not an
   authentication boundary.
-- Codex tokens appear in Duet notices, reports and `codex-live`, not Claude's
+- Codex tokens appear in Fugato notices, reports and `codex-live`, not Claude's
   `/usage`; native host usage remains null.
 - Agent teammates require a local in-process loop and verified coordinator
   messages. Team task claiming, plan approval, peer/unverified mailboxes and

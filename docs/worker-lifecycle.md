@@ -2,22 +2,22 @@
 
 Use `Agent(subagent_type: "codex:codex-native")` by default from the first dispatch,
 without waiting for a readiness notice, subject to the [saved dispatch route](configuration.md#worker-dispatch).
-Background `duet task` is for
+Background `fugato task` is for
 `native_adapter_unavailable`, `native_capacity`, per-call options the `DUET:` line
 rejects, or follow-ups to Bash-launched workers. Reports arrive with completion notifications;
-only if missing, use `duet result <worker>`. The Haiku `codex:codex-worker` is a
+only if missing, use `fugato result <worker>`. The Haiku `codex:codex-worker` is a
 fallback when neither native dispatch nor background Bash is available, or for
 a user-requested forwarding-agent transcript. Native agents receive follow-ups
 and pending answers through SendMessage; see [direct mode](direct-mode.md).
 
 ## Direct mode
 
-`duet task` implies `--direct`: it enqueues a detached task-worker, then attaches
+`fugato task` implies `--direct`: it enqueues a detached task-worker, then attaches
 this process as its owner wait. Use Bash `run_in_background: true`,
 `description: "Codex: <label>"` and, when Claude's Bash sandbox is on,
 `dangerouslyDisableSandbox: true` for network and local sockets. Put the brief
 only on stdin through a single-quoted `DUET_TASK` heredoc. The plugin adds its
-`bin/duet` launcher to PATH; older sessions may need a reload/new session or the
+`bin/fugato` launcher to PATH; older sessions may need a reload/new session or the
 absolute launcher path. See the [dispatch recipe](worker-operations.md#direct-mode).
 
 Direct mode prints progress in `/tasks`, then report v2 when the job ends, a
@@ -29,11 +29,11 @@ attached. A normal return leaves the lease protecting the job; observation-only
 status/result calls do not renew it.
 
 To stop all active jobs of this Claude session in the current workspace, run
-`duet cancel --all`. It attempts each job and prints per-job outcomes, including
+`fugato cancel --all`. It attempts each job and prints per-job outcomes, including
 unconfirmed interruption or errors; inspect those outcomes before assuming all
 work has stopped. Other sessions' jobs are untouched. It cannot be combined with
 a worker argument. Outside a Claude session, use `--session <id>` to select the
-session explicitly; `--cwd <dir>` selects the workspace. Use `duet cancel
+session explicitly; `--cwd <dir>` selects the workspace. Use `fugato cancel
 <worker>` to stop one job.
 
 When a worker tick is delayed by more than two seconds (for example, Mac sleep),
@@ -45,22 +45,22 @@ retried within one second; a silent owner still gets only the five-second grace
 in awake time. Cancellation and terminal jobs are never revived.
 
 The completion notification carries report v2. Only if missing, run
-`duet result <worker>`; do not parse the output file, poll, sleep or use `tail -f`.
+`fugato result <worker>`; do not parse the output file, poll, sleep or use `tail -f`.
 Act on `status`:
 
 - Terminal: run the acceptance protocol even after a nonzero exit. Report v2
   gives status, worker, jobId, summary (8000-character cap), nonempty evidence,
   `next` and `details`. `checks.ran` is captured evidence; `checks.claimed` is
-  Codex's account. `duet result <worker> --details` supplies full handles,
+  Codex's account. `fugato result <worker> --details` supplies full handles,
   settings, touchedFiles/preExistingChanges, file-tracking basis, verification,
   findings, assumptions, blockers and artifact paths. Read `rawOutputFile` only
   if a report field is insufficient.
-- `running`: background `duet wait <worker>` and wait for its notification.
+- `running`: background `fugato wait <worker>` and wait for its notification.
 - `needs_answer`: use the report's `next` command verbatim, or background ONE
-  `duet answer <worker> --question '<questionId>'` with the displayed question ID
+  `fugato answer <worker> --question '<questionId>'` with the displayed question ID
   (`timeout: 600000`) and stdin via a single-quoted `DUET_ANSWER` heredoc. It
   refuses a stale ID, submits once and keeps waiting on the same turn. A bare
-  `duet answer <worker>` answers whatever question is pending now, possibly a
+  `fugato answer <worker>` answers whatever question is pending now, possibly a
   newer one. Native SendMessage already pins the displayed question. `question` gives
   id, kind, text, options and `expiresInSec`; use `--details` if text/options
   were shortened. A Computer Use approval has four fixed options; forward with
@@ -84,19 +84,19 @@ Never run two waits for one job. Exit codes are completed 0, blocked/needs_input
 2, other terminal states 1, running/needs_answer 0, ownership_moved 2,
 and stopped owner wait 130. Direct mode rejects `--follow`, `--detached`,
 `--background`, `--json`, `--feed-limit` and `--min-interval-sec`.
-Follow up with `duet task --to <worker>` and restated criteria on stdin; it keeps
+Follow up with `fugato task --to <worker>` and restated criteria on stdin; it keeps
 the thread and cwd. Native agents use SendMessage instead.
 
 Stop an active native task or background Bash wait from `/tasks`, or run
-`duet cancel <worker>`. Thread context and edits persist; `duet result <worker>
+`fugato cancel <worker>`. Thread context and edits persist; `fugato result <worker>
 --details` provides recovery handles and the compatibility `continuationCommand`.
-Continue user-stopped work only with consent, using `duet task --to <worker>`
-with a new brief or `duet task --continue <jobId> --cwd '<cwd>'`. After adoption,
-use the new owner in one background `duet wait <jobId> --owner '<newOwnerId>'`.
+Continue user-stopped work only with consent, using `fugato task --to <worker>`
+with a new brief or `fugato task --continue <jobId> --cwd '<cwd>'`. After adoption,
+use the new owner in one background `fugato wait <jobId> --owner '<newOwnerId>'`.
 
 The companion writes per-session markers under
 `<isolated home>/duet/sessions/<claudeSessionId>/`. The separate `codex-live`
-plugin (`/plugin install codex-live@duet`) reads those markers and shows session
+plugin (`/plugin install codex-live@fugato`) reads those markers and shows session
 jobs and the selected job's live messages, commands, file changes, tool calls,
 plan and pending question. New jobs ask Claude Code to open the pane; Claude
 Code decides whether to show it at the current width. Its `codex-live` slash
@@ -106,7 +106,7 @@ cancels a job and costs no Claude tokens.
 ## Unreported endings
 
 New task records carry `reportTracking: 1`. Terminal reports record
-`reportEmittedAt` through foreground output, `duet result` (compact or details),
+`reportEmittedAt` through foreground output, `fugato result` (compact or details),
 an owner wait's final or owner-stop line, task-notification delivery, or the
 native adapter's synthesized stop on abort. A native-dispatched job's owner-stop
 line is not marked by the companion, because the host discards an aborted native
@@ -121,7 +121,7 @@ context line for up to five tracked jobs in this session that ended at least
 live attached owner wait. The line looks like:
 
 ```text
-Duet: 1 worker ended while nothing was waiting for it: <worker> <status> (<reason>) — duet result '<id>' --cwd '<root>' --details
+Fugato: 1 worker ended while nothing was waiting for it: <worker> <status> (<reason>) — fugato result '<id>' --cwd '<root>' --details
 ```
 
 The reason is omitted when absent; multiple jobs share the line. Worker names
@@ -151,9 +151,9 @@ prompt, with an estimated cost of about 60 ms that varies by machine and state.
 Never pass `model` or `effort` to `Agent(subagent_type: "codex:codex-worker")`;
 Codex's choices belong in the brief. The Haiku forwarder keeps `effort: low`,
 `omitClaudeMd: true` and `autoCompactWindow: 100000`. It calls
-`duet task --timeout-sec 570` in foreground Bash (`timeout: 600000`), then
-`duet wait <worker> --timeout-sec 570` on `running`. Rework uses a NEW fallback
-agent with `duet task --to <worker>`; SendMessage to an existing fallback only
+`fugato task --timeout-sec 570` in foreground Bash (`timeout: 600000`), then
+`fugato wait <worker> --timeout-sec 570` on `running`. Rework uses a NEW fallback
+agent with `fugato task --to <worker>`; SendMessage to an existing fallback only
 answers its pending question. It returns report v2 verbatim plus at most five
 lines of notes for stderr, retries or a relayed question.
 
@@ -164,7 +164,7 @@ one line per event, then a JSON report with `activity` (at most 12 newest events
 `activityCount`/`activityOmitted` and `cursor`. Here `activityCount` counts events
 collected by that wait and `activityOmitted` counts those left out of its JSON
 tail. Events evicted from the stored 500-event window before the wait read them
-are added to both counts and reported separately as `activityEvicted`. Separately, `duet result <worker> --details` uses the job's cumulative
+are added to both counts and reported separately as `activityEvicted`. Separately, `fugato result <worker> --details` uses the job's cumulative
 event total for `activityCount` when the stored payload supplies no count.
 Its feed limit is 60 lines;
 `--json` suppresses the feed. Its wait budget defaults to 570 s (range 1–3600);
@@ -225,18 +225,18 @@ later completion whose start was forgotten; an identity can hold several starts.
 Legacy jobs without activity return an empty feed and cursor 0.
 
 The fallback never re-prints progress. After forwarding a question once, it uses
-`duet wait <worker> --after-question '<id>' --timeout-sec 20` to wait without
+`fugato wait <worker> --after-question '<id>' --timeout-sec 20` to wait without
 immediately returning that question on every call; the
 short budget exists only so the parent's SendMessage reply can be picked up
 between tool calls.
 
 ## Parent questions
 
-Duet exposes `ask_parent` through a per-thread MCP bridge on fresh and resumed
+Fugato exposes `ask_parent` through a per-thread MCP bridge on fresh and resumed
 threads. Keeping it outside Codex's code-mode tool set lets the model call it
 directly, without repeated `exec`/`wait` sampling while the parent answers.
 The experimental dynamic-tool API remains a compatibility fallback for fresh
-threads. Duet enables `initialize.capabilities.experimentalApi: true`. Owned jobs use
+threads. Fugato enables `initialize.capabilities.experimentalApi: true`. Owned jobs use
 `never+elicitations`: command/sandbox/rule approvals are rejected, and Computer
 Use app elicitations go to the parent. There is no plan-mode switch.
 Request-user-input availability in ordinary mode was not assumed. A valid tool
@@ -263,7 +263,7 @@ Exact successful dynamic-tool fallback result (original request ID retained):
 {"id":7,"result":{"success":true,"contentItems":[{"type":"inputText","text":"The parent's answer."}]}}
 ```
 
-`duet result <worker> --details` for `needs_answer` includes a one-line `questionMessage`:
+`fugato result <worker> --details` for `needs_answer` includes a one-line `questionMessage`:
 `Question <id>: <text> | Options: "First"; "Second"` (or `(none)`). Whitespace is
 normalized to one line; the fallback worker must send this
 field verbatim to `main` once per question. SendMessage is allowed ONLY for this
@@ -285,7 +285,7 @@ expiry remain deliverable. Interrupt resolves the question with stop guidance.
 An answer pinned with
 `--question '<id>'` (as every report's `next` is) fails once that question is no
 longer pending, rather than continuing a different question. A bare
-`duet answer <worker>` answers whichever question is pending now.
+`fugato answer <worker>` answers whichever question is pending now.
 Submission also checks an explicitly supplied owner, cancellation and lease
 expiry, including the submit-only path. A retired owner gets `ownership_moved`;
 an unrelated owner, stopping job or expired lease cannot submit an answer.
@@ -294,7 +294,7 @@ Both `thread/start.config.mcp_servers.duet_parent` and the corresponding
 `thread/resume` override point Codex at `scripts/parent-bridge-mcp.mjs` (stdio MCP).
 Its environment contains `CODEX_COMPANION_BRIDGE_CWD`, `CODEX_COMPANION_HOME`,
 optional `TMPDIR`, and exactly one handle: `CODEX_COMPANION_BRIDGE_JOB` for a fresh
-thread, or `CODEX_COMPANION_BRIDGE_THREAD` for a resumed thread (`duet task --to`,
+thread, or `CODEX_COMPANION_BRIDGE_THREAD` for a resumed thread (`fugato task --to`,
 `--thread`, `--continue`). Fresh starts carry no `dynamicTools`. Codex can spawn
 the bridge before `thread/start` returns, so a job-bound bridge reads that job's
 recorded `threadId` as soon as the companion publishes it: on every incoming MCP
@@ -339,7 +339,7 @@ and `mcpServerStatus/list` shows the tool but the model's tool list never contai
 worker's approval policy (`never`, or the granular `never+elicitations` of owned jobs, which rejects tool approvals the same way), which the tool's `readOnlyHint` annotation plus
 `tools.ask_parent.approval_mode = "approve"` guarantee (without them Codex fails
 the call with "requires approval"). If a runtime reports unsupported fresh-thread
-bridge registration, Duet retries once with `dynamicTools`; an unsupported
+bridge registration, Fugato retries once with `dynamicTools`; an unsupported
 dynamic registration retains the registration-free `thread/start` retry. The
 dynamic fallback can incur repeated code-mode sampling while waiting. `thread/resume`, which has no
 `dynamicTools` field, keeps its single registration-free retry. These fallbacks
@@ -360,8 +360,8 @@ Each task generates a unique ownerId by default (job ID plus random UUID),
 returned for detached/background and foreground tasks. `task --owner` remains an
 explicit override; ambient session/owner variables never select the owner.
 The Claude session ID is recorded separately as `sessionId`. A matching owner
-renews an unexpired lease; `duet wait`/`answer` resolve it automatically. Explicit
-`--owner` handles remain supported. Observational `/codex:status`, `duet status`
+renews an unexpired lease; `fugato wait`/`answer` resolve it automatically. Explicit
+`--owner` handles remain supported. Observational `/codex:status`, `fugato status`
 and result reads do not renew; neither do ownerless compatibility companion waits.
 Foreground owners renew while alive; detached task-workers never renew themselves.
 The default lease is 1800 seconds in direct mode, 180 seconds otherwise.
@@ -405,10 +405,10 @@ write far more data than they add (known limitation; a split activity log is
 planned).
 
 For an interrupted or failed job, or a blocked `codex_runtime_restarted` result,
-`duet result <worker> --details` exposes the compatibility `continuationCommand`.
+`fugato result <worker> --details` exposes the compatibility `continuationCommand`.
 A confirmed runtime-exit interruption also supplies the continuation in the
 report; the thread and saved work persist, and continuation waits for an explicit
-request once the runtime is available. Use `duet task --continue <jobId> --cwd
+request once the runtime is available. Use `fugato task --continue <jobId> --cwd
 '<cwd>'` for one new turn with that job's recorded settings, only with consent.
 Native-agent stop and continuation behavior is described in [direct mode](direct-mode.md#if-a-worker-is-stopped).
 `--continue` refuses active jobs and conflicting flags (`--thread`, `--fresh`,
@@ -418,20 +418,20 @@ threadId, sandbox/write, model, effort and speed; only original request grants
 from the same Claude session are eligible, excluding runtime-only approvals
 and foreign dispatches after adoption. A recorded sandbox cannot be overridden.
 If settings are missing, `thread_settings_unknown` requires an explicit sandbox:
-`duet task --continue <jobId> --sandbox read-only --cwd '<cwd>'` is allowed in
+`fugato task --continue <jobId> --sandbox read-only --cwd '<cwd>'` is allowed in
 that case. Refused or never-started attempts do not become settings anchors;
-Duet consults a started predecessor. It records `request.continuedFrom` and
+Fugato consults a started predecessor. It records `request.continuedFrom` and
 appends any prompt text to the default continue prompt. With the user's consent, run it
 in background Bash, or through a new fallback worker; never automatically.
 
 For a job that is still running, with the user's explicit consent, the parent
-launches a replacement with the existing jobId. Its FIRST action is `duet adopt
+launches a replacement with the existing jobId. Its FIRST action is `fugato adopt
 <jobId> --json`, not task submission. Under one
 job-state lock, adoption checks that the task is queued/running with an unexpired
 lease and no cancellation, rotates to a new ownerId and renews the lease. It does
 not call thread/resume or turn/start. It preserves the thread/turn, pending
 question and last delivered owner's cursor. The replacement loops
-`duet wait <jobId> --owner '<newOwnerId>'` in background Bash (the fallback
+`fugato wait <jobId> --owner '<newOwnerId>'` in background Bash (the fallback
 uses foreground Bash with `--timeout-sec 570`). Retired owners get
 `ownership_moved` from wait/status/answer, including an already-running wait,
 and cannot renew or answer. They must stop polling and must not adopt again.
@@ -456,7 +456,7 @@ detach its replacement. See [stop actions and recovery](direct-mode.md#if-a-work
 
 This is lifecycle coordination, not an authentication boundary for local users.
 Lease expiry, cancel, signals and SessionEnd trigger the worker's AbortSignal,
-resolve questions and request turn/interrupt. `duet cancel` records stop intent
+resolve questions and request turn/interrupt. `fugato cancel` records stop intent
 before handle discovery or interruption, and worker-runtime stops record their
 reason before aborting (best effort if the job store is unavailable). Recovery
 therefore preserves recorded cancellation as `cancelled` and owner stops as
@@ -470,12 +470,12 @@ accepted while the run is finishing is applied by the terminal commit under the
 state lock: the job ends `cancelled` and its background terminals are cleaned,
 unless the run already stopped for its own reason (owner stop, lease expiry,
 signal), which it keeps. `turnInterruptAttempted` and `turnInterrupted` report
-only an interrupt Duet actually sent and confirmed.
+only an interrupt Fugato actually sent and confirmed.
 Broker shutdown is idempotent and completes socket/file cleanup even if the
 app-server has already exited and a request against its client throws
 synchronously. Transport-loss recovery reports `blocked` with
 `codex_runtime_restarted` only after finding a persisted `interrupted` turn
-without a recorded Duet stop. Unreadable or in-progress turns stay unresolved;
+without a recorded Fugato stop. Unreadable or in-progress turns stay unresolved;
 a runtime exit alone does not prove an ending or authorize a rerun.
 A dead worker with no thread handle is resolved as failed on refresh. If a
 thread exists but the turn handle is missing, read-only `thread/read` can recover
@@ -493,7 +493,7 @@ cancel interrupts only such a uniquely
 attributed live turn; otherwise it reports `interrupt_unconfirmed` (exit 2).
 
 When completion was inferred from a final answer rather than a terminal turn
-notification, Duet confirms the exact server turn with a `thread/read` capped at
+notification, Fugato confirms the exact server turn with a `thread/read` capped at
 five seconds. If it cannot confirm an ending, the saved answer may still say
 `completed`, but `inferredCompletion: true` and `turnEnded: false` keep the task
 unresolved for pruning, recovery and cancellation; the pane shows `Outcome unknown`.
@@ -513,7 +513,7 @@ The server's actual turn status remains in recovery provenance.
 Session-start prewarm can reconcile sufficiently stale unresolved tasks
 automatically, without rerunning them; see [maintenance limits](state-and-retention.md#retention).
 
-Before starting a follow-up, Duet also checks the server for in-progress turns,
+Before starting a follow-up, Fugato also checks the server for in-progress turns,
 including external turns and jobs in other workspaces. Any such turn yields
 `thread_busy` without a new turn. A per-thread admission reservation under the
 isolated home (`duet/thread-admission/`) is held from that check until the new
@@ -536,14 +536,14 @@ when a tracked job owns the turn; an external turn must be resolved by its owner
 Refused or blocked attempts never become thread blockers.
 
 Codex's turn/interrupt leaves the commands a turn started running (unified-exec
-sessions under `codex app-server`). After every Duet-initiated interrupt, on the
-worker's own connection or, for `duet cancel` of a lost turn, on the broker that
-owns the thread, Duet sends the experimental `thread/backgroundTerminals/clean`
+sessions under `codex app-server`). After every Fugato-initiated interrupt, on the
+worker's own connection or, for `fugato cancel` of a lost turn, on the broker that
+owns the thread, Fugato sends the experimental `thread/backgroundTerminals/clean`
 with the threadId (capped at 3 s), including confirmed cancellation before a
 new turn started. This ends every background terminal of that
 thread, including servers it started in earlier turns. The outcome is recorded
-as `backgroundTerminals: {cleaned, detail}` on the job (`duet result --details`)
-and in `duet cancel --json`. It never changes the cancellation's confirmation or
+as `backgroundTerminals: {cleaned, detail}` on the job (`fugato result --details`)
+and in `fugato cancel --json`. It never changes the cancellation's confirmation or
 exit code. A natural turn end sends no terminal cleanup. Task-scoped Computer Use grants
 left behind by a dead worker are released at the next start or recovery.
 
@@ -553,7 +553,7 @@ controls. It waits up to four seconds inside the hook's five-second budget,
 across worktrees sharing the state root `<isolated-home>/duet/state`. Busy state
 locks are reported unconfirmed without blocking; lease expiry remains the
 fallback. Finish the work or let workers complete before ending the session to
-keep their work. Saved results remain retrievable with `duet result <worker>`
+keep their work. Saved results remain retrievable with `fugato result <worker>`
 (`--details` for full evidence and recovery handles) while retained.
 
 Job state lives in the isolated home (`~/.claude/codex-isolated/duet/state/`,
@@ -574,7 +574,7 @@ on a native one. A job or thread reference unknown to the new directory falls
 back to the legacy directories and imports the match, covering records an older
 session writes after the merge. SessionEnd runs the same check for its own
 workspace with a bounded lock wait before cancelling. Upgrade or downgrade
-with no Duet jobs running; legacy migration does not make mixed-version writes safe.
+with no Fugato jobs running; legacy migration does not make mixed-version writes safe.
 It never shuts down a shared broker used by another session. The broker interrupts
 turns when their owner socket disconnects and closes its server group after a
 bounded failure deadline. With no clients or active turns it exits after 60 seconds

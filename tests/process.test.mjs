@@ -8,13 +8,13 @@ import { syncBuiltinESMExports } from "node:module";
 
 import { runCommand, spawnOwned, terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
 
-test("duet launcher reports companion import failures and preserves its exit code", t => {
+test("fugato launcher reports companion import failures and preserves its exit code", t => {
   const directory = fs.mkdtempSync(path.join(process.env.CODEX_COMPANION_TEST_ROOT, "launcher-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const bin = path.join(directory, "bin"), scripts = path.join(directory, "scripts");
   fs.mkdirSync(bin); fs.mkdirSync(scripts);
-  const launcher = path.join(bin, "duet"), companion = path.join(scripts, "codex-companion.mjs");
-  fs.copyFileSync(new URL("../plugins/codex/bin/duet", import.meta.url), launcher);
+  const launcher = path.join(bin, "fugato"), companion = path.join(scripts, "codex-companion.mjs");
+  fs.copyFileSync(new URL("../plugins/codex/bin/fugato", import.meta.url), launcher);
   fs.copyFileSync(new URL("../plugins/codex/bin/package.json", import.meta.url), path.join(bin, "package.json"));
   const failure = 'throw new Error("fixture companion import failure");\n';
   fs.writeFileSync(companion, failure);

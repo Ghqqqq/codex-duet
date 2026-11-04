@@ -1,8 +1,8 @@
 {
   "name": "codex",
   "types": "./types/index.d.ts",
-  "version": "1.5.0",
-  "description": "Duet: delegate coding, research and review from Claude Code to parallel Codex workers.",
+  "version": "1.6.0",
+  "description": "Fugato: delegate coding, research and review from Claude Code to parallel Codex workers.",
   "author": {
     "name": "OpenAI"
   }

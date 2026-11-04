@@ -371,9 +371,9 @@ function fixture(on: any, observeProgress?: (notices: any) => Promise<void>) {
       if (normalized.argv[0] !== 'node') normalized.argv[0] = '/host/node';
       normalized.argv[1] = '/plugin/scripts/codex-companion.mjs';
     } else if (normalized.argv[0] !== 'node') {
-      if (!normalized.argv[1].endsWith('/plugins/codex/bin/duet')) problems.push('Wrong launcher');
+      if (!normalized.argv[1].endsWith('/plugins/codex/bin/fugato')) problems.push('Wrong launcher');
       normalized.argv[0] = '/host/node';
-      normalized.argv[1] = '/plugin/bin/duet';
+      normalized.argv[1] = '/plugin/bin/fugato';
     } else if (normalized.argv[1]?.endsWith('/plugins/codex/scripts/lib/report-delivery.mjs') && normalized.argv[2] === '--mark-emitted') {
       normalized.argv[1] = '/plugin/scripts/lib/report-delivery.mjs';
     }
@@ -572,7 +572,7 @@ test('typed blockers preserve runtime recovery and only native reports are proje
   }
   for (const code of ['context_window_exceeded', 'provider_refused', 'auth_required']) {
     expect(reports.get(code).next).not.toBe(reports.get('fixture_blocker').next);
-    const next = 'duet status predecessor --json';
+    const next = 'fugato status predecessor --json';
     expect((await f.report($, { status: 'blocked', blockers: [{ code }, { code: 'thread_busy' }], next })).next).toBe(next);
   }
   const render = async (text: string) => {
@@ -581,6 +581,8 @@ test('typed blockers preserve runtime recovery and only native reports are proje
   };
   const native = captures[3].events.find((event: any) => event.event === 'turn.step').result.answer;
   expect(await render(native)).not.toBe(native);
+  const legacy = JSON.stringify({ ...JSON.parse(native), details: `duet result '${JSON.parse(native).jobId}' --details` });
+  expect(await render(legacy)).toBe(await render(native));
   const question = 'Choose the fixture direction?';
   expect(await render(JSON.stringify({ ...JSON.parse(native), status: 'needs_answer',
     question: { text: question, options: ['A', 'B'] } }))).toContain(question);

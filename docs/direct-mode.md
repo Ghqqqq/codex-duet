@@ -14,13 +14,13 @@ another Codex worker review the retry logic in src/net/.
 
 ### Native subagent (default)
 
-With the default `duet setup --dispatch auto`, Claude uses
+With the default `fugato setup --dispatch auto`, Claude uses
 `Agent(subagent_type: "codex:codex-native", prompt: "<brief>")` from the first
 dispatch, without waiting for a readiness notice, unless a recent native-unavailable
 observation selects Bash guidance. `--dispatch bash` selects background
-`duet task` immediately; `native` keeps native guidance and `default` resets to
+`fugato task` immediately; `native` keeps native guidance and `default` resets to
 `auto`. An observation records a missing native turn start and is honored for
-24 hours after the last observation, or until `duet setup --dispatch` is run
+24 hours after the last observation, or until `fugato setup --dispatch` is run
 without `--dry-run`. Explicit native calls remain possible with any route. See
 [worker dispatch](configuration.md#worker-dispatch).
 
@@ -55,7 +55,7 @@ unconfirmed steer is reported as not delivered and never resent. See [steering a
 adapter handles waits; stop an active task from `/tasks`. It gives the owner stop
 a bounded chance to confirm `interrupted` / `owner_stopped`, then uses a cancel
 fallback if confirmation is missing. A parked question may
-outlive stopping an already-ended agent row: use `duet cancel <worker>` for an
+outlive stopping an already-ended agent row: use `fugato cancel <worker>` for an
 explicit cancellation, or the question expires after 900 seconds by default.
 
 When Codex reports token usage, native notices/rendered reports show provider
@@ -119,16 +119,16 @@ After registration, the adapter announces native workers on the first accepted
 non-command person prompt of each session (`prompt.submit`, not SessionStart).
 That notice is informational. If the hook does not handle the turn, the agent
 returns `blocked` with `native_adapter_unavailable`, not a substitute solution.
-Run `/reload-plugins`, check `duet status` before retrying because dispatch is
-unconfirmed, and use background `duet task` if it persists. See [troubleshooting](troubleshooting.md).
+Run `/reload-plugins`, check `fugato status` before retrying because dispatch is
+unconfirmed, and use background `fugato task` if it persists. See [troubleshooting](troubleshooting.md).
 
 ### Direct mode
 
-Use `duet task --help` for task flags; help starts no job. The installed plugin
+Use `fugato task --help` for task flags; help starts no job. The installed plugin
 adds `bin/` to PATH, and SessionStart supplies the session ID and the Bash
 recipe according to the saved [worker dispatch](configuration.md#worker-dispatch)
 route: `bash` selects Bash immediately, while `auto` prefers it for 24 hours after
-the last native-unavailable observation, or until `duet setup --dispatch` is run
+the last native-unavailable observation, or until `fugato setup --dispatch` is run
 without `--dry-run`. Otherwise SessionStart names
 `codex:codex-native` without waiting for registration evidence;
 an unavailable adapter reports its fallback condition. After registration the adapter adds a
@@ -136,12 +136,12 @@ an unavailable adapter reports its fallback condition. After registration the ad
 to every request that offers the Agent tool when native guidance is selected.
 That section asks for native dispatch first:
 browser work and Computer Use run natively, with unapproved apps arriving as
-approval questions. Background-Bash `duet task` also handles `native_adapter_unavailable`
+approval questions. Background-Bash `fugato task` also handles `native_adapter_unavailable`
 or `native_capacity`, per-call overrides the `DUET:` line rejects (`--run`, `--approve-browser-origin`,
 `--approve-computer-app`, `--lease-sec`, `--question-timeout-sec`) and follow-ups
 to Bash-launched workers. Because the system prompt is rebuilt for every request,
-compaction cannot remove that guidance, unlike the one-time readiness notice. If `duet` is missing in an older session, reload/start a new session or
-use the absolute `plugins/codex/bin/duet` launcher path.
+compaction cannot remove that guidance, unlike the one-time readiness notice. If `fugato` is missing in an older session, reload/start a new session or
+use the absolute `plugins/codex/bin/fugato` launcher path.
 The SessionStart answer recipe pins the displayed `--question` ID. Its exports
 append to `CLAUDE_ENV_FILE` with a newline separator when a previous hook left
 its last line unterminated.
@@ -152,7 +152,7 @@ Claude makes one Bash call per job with `run_in_background: true` and
 sockets.
 
 ```bash
-duet task --model gpt-6-astra --effort xhigh --normal <<'DUET_TASK'
+fugato task --model gpt-6-astra --effort xhigh --normal <<'DUET_TASK'
 <brief: objective, context, owned paths, constraints, acceptance criteria>
 DUET_TASK
 ```
@@ -176,10 +176,10 @@ missing snapshots must not silently prevent report attachment. A shell function
 can shadow even an absolute launcher, but anyone able to plant functions in the
 user's shell initialisation can already run arbitrary commands.
 
-`duet task` implies `--direct`: a detached job with this process attached as
+`fugato task` implies `--direct`: a detached job with this process attached as
 its owner wait. Compact progress appears in `/tasks`. When the job ends, asks a
 question or reaches the wait budget, report v2 arrives with the completion
-notification. Only if the report is missing, run `duet result <worker>`; do not
+notification. Only if the report is missing, run `fugato result <worker>`; do not
 parse the output file, poll or sleep. `--quiet` suppresses progress. The wait
 renews its lease independently of output draining; pending progress is capped
 at 200 lines, with an omitted-line notice before the final JSON line.
@@ -206,7 +206,7 @@ number of failed captured commands, only when nonzero; also in `--details`), `as
 `keyFindings`, then optional `usage` with integer `inputTokens`,
 `cachedInputTokens`, `outputTokens`, `reasoningOutputTokens` and `totalTokens`
 for this turn only (omitted when unknown). `next` suggests an action or is null.
-`details` gives `duet result '<jobId>' --details`, targeting the exact job even
+`details` gives `fugato result '<jobId>' --details`, targeting the exact job even
 after a follow-up, for handles, settings, artifact paths and fuller evidence.
 Use it whenever compact evidence or question text was shortened.
 Compact blockers retain bounded app/tab/session and safe approval identifiers,
@@ -218,13 +218,13 @@ cancel action when available; `details` continues to select the refused attempt.
 - Terminal: apply the [acceptance protocol](../plugins/codex/prompts/ultra-codex-protocol.md#accepting-a-result-every-worker-report-no-exceptions),
   even after a nonzero exit. Verify the diff and checks yourself; read
   `rawOutputFile` only if report fields are insufficient.
-- `running`: run `duet wait <worker>` in background Bash and wait for its notification.
+- `running`: run `fugato wait <worker>` in background Bash and wait for its notification.
   An expired unanswered question does not make `wait` return early; it continues
   waiting under the usual completion, question, stop and wait-budget rules.
 - `needs_answer`: run ONE background Bash call (`timeout: 600000`):
 
   ```bash
-  duet answer Ada --question '<questionId>' <<'DUET_ANSWER'
+  fugato answer Ada --question '<questionId>' <<'DUET_ANSWER'
   <answer to Ada's pending question>
   DUET_ANSWER
   ```
@@ -234,7 +234,7 @@ cancel action when available; `details` continues to select the refused attempt.
   The command resolves the owner, refuses a stale/expired question or an explicit
   owner mismatch, and refuses a stopping job or expired lease. These checks also
   apply to submit-only answers. It submits once, then waits
-  on the same turn. A bare `duet answer <worker>` answers whatever question is
+  on the same turn. A bare `fugato answer <worker>` answers whatever question is
   pending now, which may be newer than the one you saw. Native SendMessage
   pins the displayed question. Do not start another
   wait. `question` supplies `id`, `kind`, `text`, `options` and `expiresInSec`;
@@ -247,7 +247,7 @@ cancel action when available; `details` continues to select the refused attempt.
   else, including `yes` or qualified text, denies the request. The same rules
   apply to native SendMessage; see [approval choices](computer-use-approvals.md#forwarded-approvals-owned-jobs).
 - `ownership_moved`: report it; do not reuse the retired owner or re-adopt.
-- `error`: check `duet status` before resubmitting; a runtime or wait failure
+- `error`: check `fugato status` before resubmitting; a runtime or wait failure
   may occur after launch. `owner_stopped` means the wait was stopped and the
   job interrupted; use `--details` for recovery information.
 
@@ -261,14 +261,14 @@ Without a requested name, each worker gets one of 1,089 historical scientist or 
 drawn from unused names in three tiers: 120 familiar names weighted 10 each,
 299 weighted 3 each, and 670 weighted 1 each. Numbered suffixes appear only after
 the pool is exhausted, with the base chosen by the same weights. Use
-`duet task --name <label>` to request a name on a fresh thread; reserved names
+`fugato task --name <label>` to request a name on a fresh thread; reserved names
 fall back to the pool, and follow-ups keep their name. Names use 1–64 ASCII
 letters, digits, `_`, `.` or `-`, starting with a letter or digit. The prefixes
 `task-`, `review-` and `job-` are refused case-insensitively by `--name` and ignored
 by internal native naming. Adoption and
 cross-session `--thread` follow-ups reserve a name in the destination session,
 renaming on collision. Follow up with
-`duet task --to <worker>` and a new stdin brief; it keeps the original cwd and
+`fugato task --to <worker>` and a new stdin brief; it keeps the original cwd and
 thread and inherits recorded model, effort, sandbox and speed. Request grants
 are inherited only from the original dispatch in the same Claude session;
 runtime-only approvals and foreign dispatches after adoption are excluded.
@@ -289,7 +289,7 @@ parallel work by “the latest thread”.
 Claude's loaded CLAUDE.md/rules from the session's first `prompt.context` are
 automatically forwarded as `developerInstructions`. Later contexts are ignored;
 edits apply from the next Claude session. An unavailable or invalid first
-inventory leaves no snapshot and Duet reports an approximate startup scan. A
+inventory leaves no snapshot and Fugato reports an approximate startup scan. A
 scan excludes auto-memory by real path, including indirect symlink aliases. A
 valid inventory that exceeds the capture budget stays authoritative, with
 omissions reported; it never falls back to scanning removed files back in.
@@ -299,24 +299,24 @@ Codex's own project-file discovery is separate; see
 [configuration](configuration.md#claude-instructions-and-conversation-imports).
 
 A normal brief does not include the conversation. Use `DUET: --fork` for a
-native worker or `duet task --fork` with stdin to import the current Claude
+native worker or `fugato task --fork` with stdin to import the current Claude
 transcript (no thinking) into a new thread, then run the assignment.
 `--source '<jsonl>'` selects another allowed transcript. Imports are labelled
 “imported Claude conversation (fidelity not verified)”; fidelity has
-not been established. Duet slices from the last main-conversation compact boundary
+not been established. Fugato slices from the last main-conversation compact boundary
 (or the beginning if none exists), retaining user, assistant and system entries.
 Sidechains, non-conversational entries and thinking blocks are omitted. Tool output
-over 16 KiB is replaced with `[Duet: tool output trimmed for fork import, N bytes]`;
-oversized image blocks become `[Duet: image omitted for fork import]`. This includes
+over 16 KiB is replaced with `[Fugato: tool output trimmed for fork import, N bytes]`;
+oversized image blocks become `[Fugato: image omitted for fork import]`. This includes
 images inside tool results and oversized auxiliary copies of tool output.
 
 The slice defaults to 2 MiB, configurable with `CODEX_COMPANION_FORK_BUDGET_BYTES`. A live import measured about 12 bytes per token, so 2 MiB is roughly 175k tokens on the forked worker's first turn; keep the budget below the chosen model's context window.
-If necessary, Duet keeps the compact boundary, its summary and the newest entries
+If necessary, Fugato keeps the compact boundary, its summary and the newest entries
 that fit, repairing parent links without rewriting conversation text. A budget too
 small for the boundary and summary fails with an actionable error. The source read
 cap is 128 MiB, configurable with `CODEX_COMPANION_IMPORT_MAX_BYTES`; sources above
 that cap fail before import. Job requests record slice statistics as `forkSlice`
-and the original source hash as `forkSourceSha256`. `duet result <worker> --details`
+and the original source hash as `forkSourceSha256`. `fugato result <worker> --details`
 exposes `forkSlice`, including dropped entries, trimmed tool results/images and
 unpaired tools dropped.
 `--fork` cannot combine with `--to`, `--thread`, `--continue` or resume flags.
@@ -337,7 +337,7 @@ source read cap, brief without `--fork`. See the
 
 ### Live view with codex-live
 
-Install the separate pane plugin with `/plugin install codex-live@duet`. New jobs
+Install the separate pane plugin with `/plugin install codex-live@fugato`. New jobs
 ask Claude Code to open the pane; Claude Code decides whether it is shown at the
 current width. `/codex-live` opens and focuses it at any width;
 `/codex-live <name>` selects a native worker's activity. Provider/model-tagged
@@ -362,7 +362,7 @@ take priority. New workers preserve the selected conversation and its
 scroll position, showing `• new` until selected; returning to a viewed
 conversation restores its saved scroll position. **Clear finished** hides ended
 conversations only when they have no active or unresolved turn, without deleting
-records or changing your Duet cleanup settings. Pane bookkeeping is bounded
+records or changing your Fugato cleanup settings. Pane bookkeeping is bounded
 with retained history. In addition to the newest 20 sessions and active/unresolved/
 selected exceptions, the newest 40 uncleared terminal-attention sessions are
 protected (`ATTENTION_SESSION_LIMIT`), subject to the state budget. The status
@@ -387,23 +387,23 @@ transcript. Never pass `model` or `effort` to that Haiku agent; put Codex's choi
 in the assignment text. Its [definition](../plugins/codex/agents/codex-worker.md)
 keeps `effort: low`, `omitClaudeMd: true` and `autoCompactWindow: 100000`.
 
-The forwarder calls `duet task --timeout-sec 570` in foreground Bash with
-`timeout: 600000`, then `duet wait <worker> --timeout-sec 570` on `running`.
-It relays the full `questionMessage` from `duet result <worker> --details`, accepts
-SendMessage replies and submits them with `duet answer <worker> --question '<questionId>'`,
+The forwarder calls `fugato task --timeout-sec 570` in foreground Bash with
+`timeout: 600000`, then `fugato wait <worker> --timeout-sec 570` on `running`.
+It relays the full `questionMessage` from `fugato result <worker> --details`, accepts
+SendMessage replies and submits them with `fugato answer <worker> --question '<questionId>'`,
 retaining the ID of the relayed question. It returns
 report v2 verbatim plus at most five lines of notes for stderr, retries or a
-relayed question. Follow-ups start a NEW fallback agent with `duet task --to
+relayed question. Follow-ups start a NEW fallback agent with `fugato task --to
 <worker>`; SendMessage to an existing fallback agent only answers its pending
 question. The parent performs the same acceptance checks.
 
 ### If a worker is stopped
 
-`duet task --continue <jobId> --cwd '<cwd>'` starts one new turn on
+`fugato task --continue <jobId> --cwd '<cwd>'` starts one new turn on
 the same thread with the recorded settings, only with the user's consent, and a
 still-running job can be adopted by a replacement owner without a new turn.
 
-Stop the background task in Claude Code, or run `duet cancel <worker>`.
+Stop the background task in Claude Code, or run `fugato cancel <worker>`.
 Stopping its attached owner wait signals the helper, interrupting the Codex turn
 as `interruptionReason: owner_stopped`. A dead owner wait can be replaced
 immediately with the same owner while the job is still active and its lease
@@ -414,9 +414,9 @@ edits persist. A normal wait return (timeout, question, terminal state) leaves
 the job protected by its lease. A stopped fallback agent cannot resume via
 SendMessage.
 
-After a stop, `duet result <worker> --details` supplies the recorded handles and
+After a stop, `fugato result <worker> --details` supplies the recorded handles and
 compatibility `continuationCommand` (task jobs with a recorded thread only). With explicit user consent, run
-`duet task --to <worker>` with a new brief, or `duet task --continue <jobId>
+`fugato task --to <worker>` with a new brief, or `fugato task --continue <jobId>
 --cwd '<cwd>'` to retain that exact job's settings. Either starts one new turn;
 nothing continues automatically. If no thread was recorded, continuation is
 unavailable. A native agent can also continue through SendMessage when Claude
@@ -425,14 +425,14 @@ Code allows it; the Haiku fallback requires a new agent.
 A job still running after its owner returned normally stays alive for the lease
 window (default 1800 s in direct mode, 180 s otherwise, from the last renewal;
 `task --lease-sec`). With the user's explicit consent, a replacement owner whose
-FIRST action is `duet adopt <jobId> --json` takes over that live turn. Adoption rotates
+FIRST action is `fugato adopt <jobId> --json` takes over that live turn. Adoption rotates
 the ownerId and renews the lease, preserving the thread, turn, pending question
 and delivered feed cursor; never submit a new task for an adoptable job. Start
-one `duet wait <jobId> --owner '<newOwnerId>'` in background Bash. The old
+one `fugato wait <jobId> --owner '<newOwnerId>'` in background Bash. The old
 owner's wait/status/answer calls return `ownership_moved`; it must stop, never
 re-adopt. Without adoption the job is interrupted at lease expiry
-(`lease_expired`) with a continuation command. Observational `/codex:status`, `duet status` and `duet result` do not renew the
-lease. `duet wait` resolves and renews the owner; an ownerless compatibility
+(`lease_expired`) with a continuation command. Observational `/codex:status`, `fugato status` and `fugato result` do not renew the
+lease. `fugato wait` resolves and renews the owner; an ownerless compatibility
 companion wait is observation only.
 
 `/codex:status` marks stale running jobs **orphaned**, with remaining lease seconds
@@ -457,7 +457,7 @@ lease otherwise.
 | Browser | unrestricted: any website, no per-origin prompt (`approval_mode = "never_ask"` is mirrored into the isolated browser runtime before every task); sandbox network access stays on when permission mapping is off | `setup --browser-approval ask` restores the runtime's ordinary origin checks (saved in `duet/config.toml`); `setup --browser-approval never-ask` returns to the default |
 | Computer Use apps | `mirror`: apps the user marked "always allow" in their Codex app (`~/.codex/computer-use/config.toml`, read-only) are copied into the isolated runtime's approval file before every task; any other app is asked of the parent during the task | `setup --computer-use-approval ask` stops the sync; `setup --allow-computer-app`/`--revoke-computer-app <bundle id>` adjust individual apps; `task --approve-computer-app <bundle id>` pre-approves one app for one call |
 | Claude instructions | Loaded CLAUDE.md/rules forwarded; approximate scan if unavailable | `--no-claude-md`, `CODEX_COMPANION_CLAUDE_MD=0` |
-| Codex project discovery | `CLAUDE.md` where no `AGENTS.md` exists, unless [already forwarded](claude-md.md#delivery-to-workers) | `duet setup --project-docs agents-only` |
+| Codex project discovery | `CLAUDE.md` where no `AGENTS.md` exists, unless [already forwarded](claude-md.md#delivery-to-workers) | `fugato setup --project-docs agents-only` |
 
 For model and effort, explicit user choices win; dispatch uses explicit flags,
 then recorded follow-up settings, then saved defaults, then built-ins. Mode

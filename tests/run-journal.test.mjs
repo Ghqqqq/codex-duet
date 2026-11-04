@@ -667,7 +667,7 @@ test("direct tasks link exact worker brief and one terminal compact report; unli
       const report = JSON.parse(rejected.stdout);
       assert.equal(report.status, "error");
       assert.ok(report.summary.includes(runId));
-      for (const command of ["duet journal start", "--run <id>", "--run none"]) assert.ok(report.summary.includes(command));
+      for (const command of ["fugato journal start", "--run <id>", "--run none"]) assert.ok(report.summary.includes(command));
     }
     assert.deepEqual(snapshot(g.stateRoot), beforeInvalid);
     assert.equal(fs.readFileSync(path.join(g.root, "fake-codex-state.json"), "utf8"), runtime);

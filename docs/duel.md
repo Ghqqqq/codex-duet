@@ -7,7 +7,7 @@ quota**, in addition to Codex usage. Codex uses the configured worker model
 (default `gpt-6-astra`) and worker effort (default `xhigh`) at normal speed.
 Explicit user settings take precedence; justified `max` needs the existing
 integration/runtime support check first. Change the saved model and effort with
-`duet setup --default-model <model> --default-effort <effort>`; see
+`fugato setup --default-model <model> --default-effort <effort>`; see
 [Default worker models](configuration.md#default-worker-models). The mode
 reminder and status name the effective values.
 
@@ -36,9 +36,9 @@ Usage: /codex:duel [on [--rounds <n>] [<task>] | off | status | [--rounds <n>] <
 /codex:duel status
 /codex:duel off
 
-duet duel on --rounds 2
-duet duel status --for-command
-duet duel off
+fugato duel on --rounds 2
+fugato duel status --for-command
+fugato duel off
 ```
 
 `--rounds` is the ceiling on **total rounds, initial round included**: integer
@@ -111,7 +111,7 @@ Every changed deliverable from either participant gets full Claude acceptance:
 read the complete diff, rerun required checks and walk every criterion.
 Read-only attacks, drafts and rebuttals use probe acceptance, promoted to full
 depth for consequential or conflicting claims. Record actual Codex job verdicts
-normally. A Claude general-purpose agent has no Duet job ID: record its real
+normally. A Claude general-purpose agent has no Fugato job ID: record its real
 agent identity, findings, checks and acceptance basis in journal **decision**
 entries. See the [duel protocol](../plugins/codex/prompts/ultra-codex-protocol.md#duel-mode)
 and [run journal](run-journal.md).
@@ -139,7 +139,7 @@ not write the record. See [state and lifecycle](state-and-retention.md#orchestra
 All modes share one [protocol file](../plugins/codex/prompts/ultra-codex-protocol.md)
 and current body hash. Tasks read it and apply shared sections plus **Duel mode**
 only; controls do not load the body into Claude's context. Obtain the current
-version/path with `duet duel status --for-command`.
+version/path with `fugato duel status --for-command`.
 
 **Reminder template** (placeholders):
 

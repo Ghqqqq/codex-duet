@@ -3,7 +3,7 @@
 A run preserves the orchestrator's goal, acceptance criteria, worker verdicts
 and decisions across context compaction and session resume. It also keeps each
 linked task's exact submitted brief and final compact report independently of
-the latest-50 job history. Journals live in Duet's isolated home; no journal
+the latest-50 job history. Journals live in Fugato's isolated home; no journal
 files are written in the user's checkout.
 
 ## Commands
@@ -12,24 +12,24 @@ SessionStart exports `CODEX_COMPANION` and `CODEX_COMPANION_SESSION_ID`. Start
 one active run per Claude session, then send JSON on stdin:
 
 ```sh
-duet journal start <<'JSON'
+fugato journal start <<'JSON'
 {"goal":"Add durable recovery","criteria":["Criteria and verdicts survive compaction"]}
 JSON
-duet journal add criteria <<'JSON'
+fugato journal add criteria <<'JSON'
 {"criteria":["Keep all journal files in the isolated home"]}
 JSON
-duet journal add verdict <<'JSON'
+fugato journal add verdict <<'JSON'
 {"jobId":"task-...","verdict":"ACCEPT","criteria":[{"criterion":"Criteria and verdicts survive compaction","evidence":"Ran journal show in a new process and observed the stored criteria","result":"met"},{"criterion":"Keep all journal files in the isolated home","evidence":"Checked run and artifact paths in the isolated home","result":"met"}],"reason":"Observed evidence meets the criterion"}
 JSON
-duet journal add decision <<'JSON'
+fugato journal add decision <<'JSON'
 {"summary":"Use a workspace journal","basis":"Keep acceptance evidence after job pruning","risk":"History still expires under retention"}
 JSON
-duet journal show
-duet journal validate
-duet journal close <<'JSON'
+fugato journal show
+fugato journal validate
+fugato journal close <<'JSON'
 {"judgment":"passed","summary":"Acceptance criteria verified","openRisks":[]}
 JSON
-duet journal list --json
+fugato journal list --json
 ```
 
 All commands accept `--cwd <dir>`, `--json`, `--help` and `-h`. Help exits
@@ -38,7 +38,7 @@ before reading stdin, creating files or starting a runtime. Start prints
 run, even when the second start uses another workspace. For an unrelated task
 the user starts mid-run, `journal start --switch` leaves the previous run open,
 points the session at the new run and also returns `previousRunId`. It does not
-cancel or relink existing workers. `duet journal use <runId>` selects an existing
+cancel or relink existing workers. `fugato journal use <runId>` selects an existing
 open run for the current session, searching across workspaces in the same isolated
 home, and prints `{"runId":"run-..."}`. Start and use require
 `CODEX_COMPANION_SESSION_ID`; use reads no stdin and does not accept `--run`.
@@ -53,10 +53,10 @@ active. List returns that workspace's runs newest first. Invalid
 JSON, missing fields, invalid enum
 values and unknown entry types fail before journal writes.
 
-`duet journal show` also prints input, cached-input, output and total token usage
+`fugato journal show` also prints input, cached-input, output and total token usage
 for the run's linked jobs, with counts of jobs with and without usage. JSON has
 `usageTotals`. Saved reports or available job records supply the usage; a job
-without usable usage is counted as unknown rather than zero. `duet status`
+without usable usage is counted as unknown rather than zero. `fugato status`
 provides the same totals for its displayed job list.
 
 | Input | Fields |
@@ -96,7 +96,7 @@ Claude session; unknown job IDs are rejected before writing.
 When the user drops a criterion, record its exact text and the reason:
 
 ```sh
-duet journal add withdraw <<'JSON'
+fugato journal add withdraw <<'JSON'
 {"criteria":["Keep all journal files in the isolated home"],"reason":"The user dropped this requirement"}
 JSON
 ```
@@ -114,7 +114,7 @@ rejection and add `"resolves":["<rejectedJobId>"]` to the replacement's verified
 acceptance verdict. For example, with both jobs already linked to the run:
 
 ```sh
-duet journal add verdict <<'JSON'
+fugato journal add verdict <<'JSON'
 {"jobId":"task-replacement","verdict":"ACCEPT","criteria":[{"criterion":"Keep all journal files in the isolated home","evidence":"Checked the replacement's artifact paths","result":"met"}],"reason":"Verified the replacement fixes the rejected work","resolves":["task-rejected"]}
 JSON
 ```
@@ -126,11 +126,11 @@ SessionEnd does not close a run.
 
 ### Select a run for one task
 
-`duet task --run <runId|none>` overrides automatic journal linkage for that
+`fugato task --run <runId|none>` overrides automatic journal linkage for that
 dispatch only. `--run none` skips linking; an explicit run ID is resolved across
 workspaces in the same isolated home and must be open. An invalid or closed run
 fails before any worker starts, including if it closes before the locked link;
-the error names the recoveries (`duet journal start`, another open `--run <id>`, or
+the error names the recoveries (`fugato journal start`, another open `--run <id>`, or
 `--run none`). The rejected dispatch's reservation and any worker name it newly reserved are
 removed, so the thread stays free. If the link had already succeeded when a
 later write failed, the run records that job as failed, so validation asks for
@@ -159,7 +159,7 @@ or unreadable journal. Text lists every issue and its next safe action. JSON is:
 | Issue kind | What remains open | Next step |
 | --- | --- | --- |
 | `unfinished_job` | Linked job has no `job_finished` and its readable record is queued/running | Check status and the existing owner wait; wait for completion |
-| `unrecorded_finish` | Linked job has a readable terminal record but no `job_finished` | Read `duet result <jobId> --details` to retry finish recording, then verify evidence and record a verdict |
+| `unrecorded_finish` | Linked job has a readable terminal record but no `job_finished` | Read `fugato result <jobId> --details` to retry finish recording, then verify evidence and record a verdict |
 | `no_verdict` | Finished job has no verdict | Inspect its report, verify criteria and record a verdict |
 | `open_rework` | Latest rejection has no later acceptance on that job, linked descendant or job naming it in `resolves` | Verify a correction before accepting; record `resolves` for a fresh replacement; continuing a stopped job requires consent |
 | `unmet_criterion` | Latest result for a non-withdrawn criterion is `not_met` or `cannot_verify` | Resolve and recheck it, then record observed evidence with `met` |

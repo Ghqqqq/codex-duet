@@ -41,7 +41,7 @@ once, under the new directory's state lock:
   `resultFile`) unchanged; those artifacts remain readable in place.
 - A legacy job whose worker is still running is served in place until that
   worker ends, then is merged. This migration fallback does not make mixed-version
-  writes safe: **upgrade or downgrade with no Duet jobs running**.
+  writes safe: **upgrade or downgrade with no Fugato jobs running**.
 - A busy legacy lock is retried later rather than waited on. Concurrent first
   commands migrate once; the marker is `<workspace>/.legacy-migration.json`.
 - `status`/`result`/`wait`/`adopt`/`cancel`/`task --continue` with a job or thread
@@ -130,7 +130,7 @@ their current hash are described in [the ultra guide](ultra-codex.md#protocol-co
 
 ## Retention
 
-At session start, Duet's detached prewarm child cleans ended job records, session
+At session start, Fugato's detached prewarm child cleans ended job records, session
 markers and old Codex threads that no retained job uses, at most once every 12
 hours. It follows `cleanupPeriodDays` in `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json`
 (default 30 days); `CODEX_COMPANION_RETENTION_DAYS` overrides it. Values below one
@@ -180,8 +180,8 @@ API, keeping its indexes consistent; unavailable deletion is reported and skippe
 Jobs with legacy artifact paths are kept and listed under `retained`, separately
 from errors. Their threads stay protected while unrelated old threads can expire.
 
-Preview with `duet cleanup --dry-run --json`; apply with
-`duet cleanup --json`. Both ignore the 12-hour limit; `--days N`
+Preview with `fugato cleanup --dry-run --json`; apply with
+`fugato cleanup --json`. Both ignore the 12-hour limit; `--days N`
 overrides the period for that command. Nothing is removed immediately on job
 completion, so results, continuations and pane history remain available during
 the retention period (subject to the count cap). The orphan-marker maintenance
@@ -194,7 +194,7 @@ if they contain other files. Private job filenames are `jobs/<id>.json`, where
 `<id>` contains only letters, digits, `_` or `-`; `.result.json` files do not
 count. Unreadable or unsafe directories still prevent a complete inventory.
 
-For an index-less directory with private job files, the name must match Duet's
+For an index-less directory with private job files, the name must match Fugato's
 workspace-key form and every entry must fit its artifact layout. Recognized
 entries include job `.json`, `.log`, `.output.txt` and `.result.json` files,
 migration metadata, journal streams/briefs/reports and lock owner markers.
@@ -255,6 +255,6 @@ under pressure after finished history. A brief over 65,536 characters is rejecte
 as `native_message_too_large` before eviction. Every admission refusal clears its
 spawn guard. If protected records or the byte budget still prevent admission,
 `native_capacity` launches nothing; wait for active workers, stop them if intended,
-or use background `duet task`. A follow-up whose binding was evicted returns
+or use background `fugato task`. A follow-up whose binding was evicted returns
 `native_binding_gone`; start a new native agent. These limits do not delete the
 companion's job results, which follow the retention rules above.

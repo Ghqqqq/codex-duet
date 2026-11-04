@@ -3,7 +3,7 @@
 Codex's Computer Use tooling (the `node_repl` MCP server bundled with the Codex
 app, `cua.getApp(...)`, `sky.get_app_state(...)`) asks for permission before it
 drives a macOS application. This document records where that permission lives,
-how the isolated runtime used by Duet workers handles it, and what Duet does so
+how the isolated runtime used by Fugato workers handles it, and what Fugato does so
 that workers see the same approvals as the user's own Codex app.
 
 ## Findings (Codex app 0.162.0-alpha.17.2, cua_node bundle)
@@ -37,12 +37,12 @@ that workers see the same approvals as the user's own Codex app.
   request_permissions: false, skill_approval: false } }` (reported as
   `never+elicitations`): every command, sandbox, rule, skill and permission
   prompt is still rejected automatically, and MCP elicitations are forwarded to
-  Duet, which turns a Computer Use app request into a question for the parent
+  Fugato, which turns a Computer Use app request into a question for the parent
   (see "Forwarded approvals"). Verified live on codex-cli 0.162: the request
   arrived as `mcpServer/elicitation/request`, the tool call paused until the
   answer, and `{ action: "accept" }` let it proceed.
 
-## What Duet does
+## What Fugato does
 
 ### Mirror (default)
 
@@ -77,7 +77,7 @@ isolated allowed = (current − previously mirrored − revoked)
 
 `setup --computer-use-approval ask` stops the sync and removes previously
 mirrored apps from the isolated file. Explicitly allowed and hand-written entries
-stay. In owned jobs, including a plain foreground `duet task`, an app without an
+stay. In owned jobs, including a plain foreground `fugato task`, an app without an
 approval pauses the tool call and asks the parent. The job is blocked only after
 Deny, an invalid answer, timeout or a runtime/policy refusal; choosing `ask` does
 not itself deny app requests.
@@ -116,28 +116,28 @@ apps for that call. Two mechanisms cover both runtimes:
   `{ action: "accept" }` and no `_meta.persist`, so nothing outlives the request.
   Everything else is cancelled (`cancel` is not persisted as a deny).
 
-Follow-ups (`duet task --to`, `--thread`, or `--continue`) inherit recorded
+Follow-ups (`fugato task --to`, `--thread`, or `--continue`) inherit recorded
 request grants (browser origins and Computer Use apps) only from jobs in the
 same Claude session and originally dispatched there. Adoption into another
 session does not re-authorize foreign request grants; runtime-only approvals
 are not inherited. `--to` and `--thread` inherit model, effort, sandbox and
 speed unless explicitly overridden; an explicit `--thread` may inherit those
-settings from another session's job, but never its grants. `duet task --continue`
+settings from another session's job, but never its grants. `fugato task --continue`
 inherits the selected job's recorded settings and same-session request grants and rejects
 overriding approval flags. The job record, status and
-`duet result <worker> --details` expose `approvedComputerApps`.
+`fugato result <worker> --details` expose `approvedComputerApps`.
 
 ### Forwarded approvals (owned jobs)
 
-Owned jobs, including native workers, plain foreground `duet task` and legacy
+Owned jobs, including native workers, plain foreground `fugato task` and legacy
 detached or `--follow` jobs, have an owner, so a Computer Use request that no
 grant covers is not refused outright: the helper parks it as a pending
 question with `question.kind: "approval"` and the fixed options `Allow this
 call`, `Allow for this task`, `Allow always (isolated Codex home)`, `Deny`. The
 worker relays the `questionMessage` to the parent like any other question; the
 parent (or the user through it) answers with the report's `next` command verbatim, or
-`duet answer '<jobId>' --question '<id>'` with the displayed ID and answer on
-stdin. A bare `duet answer <worker>` can answer a newer pending question; the
+`fugato answer '<jobId>' --question '<id>'` with the displayed ID and answer on
+stdin. A bare `fugato answer <worker>` can answer a newer pending question; the
 native SendMessage path already pins the displayed question.
 Submit only an exact displayed option label, its number `1`–`4` in the order
 below, or a single keyword `call`, `once`, `task`, `always`, `deny` or `no`.
@@ -158,8 +158,8 @@ The effect of each choice:
 
 The reply never carries `_meta.persist`, so Codex's own runtime records nothing;
 the user's `~/.codex` is never written. The question uses the job's question
-timeout (default 15 minutes). The `duet` launcher always adds `--direct` to
-`task`, `answer` and `wait`, so a plain foreground `duet task` also forwards
+timeout (default 15 minutes). The `fugato` launcher always adds `--direct` to
+`task`, `answer` and `wait`, so a plain foreground `fugato task` also forwards
 approval questions under `never+elicitations`. Only legacy non-direct foreground
 calls to `codex-companion.mjs task` without `--detached`, `--background` or
 `--follow` have nobody to ask and keep `approvalPolicy: "never"`, failing closed
@@ -178,15 +178,15 @@ A denied authorization is a blocker, not a success. Reports use
 blocker's `code`, short `message`, bounded app/tab/session and safe approval
 identifiers, and `closed` when known. Its serialized UTF-8 envelope, excluding
 `summary`, is limited to 2,000 bytes; blocker lists and messages may be trimmed.
-It carries `next` (normally `duet task --to <worker>` for a blocked job; a fresh
-task for `context_window_exceeded`/`provider_refused`, `duet setup` for
+It carries `next` (normally `fugato task --to <worker>` for a blocked job; a fresh
+task for `context_window_exceeded`/`provider_refused`, `fugato setup` for
 `auth_required`) and
-`details` (`duet result '<jobId>' --details`, always the exact job), not `blockersOmitted` or
+`details` (`fugato result '<jobId>' --details`, always the exact job), not `blockersOmitted` or
 `continuationCommand`. For `thread_busy`, `next` instead answers the owning
 job's pinned question, observes its recovery, or is null; it never suggests a
 new turn on the busy thread.
 
-Use `duet result <worker> --details` for the stored blocker's full fields when
+Use `fugato result <worker> --details` for the stored blocker's full fields when
 captured, and `continuationCommand` when job and thread handles are available.
 The detailed report can include these blocker codes:
 
@@ -224,7 +224,7 @@ exit 1. See [runtime blocker actions](worker-operations.md#direct-mode).
 The worker contract asks for: discard the stale binding, re-obtain the tab by id
 through the browser session and close it; if that fails, report the tab id, the
 session name and that the tab could not be closed, and let the parent decide.
-Duet does not reach into Chrome itself; the report makes the leftover visible.
+Fugato does not reach into Chrome itself; the report makes the leftover visible.
 
 ## Verification
 

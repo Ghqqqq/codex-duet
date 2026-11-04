@@ -8,7 +8,7 @@ Invoke the `codex:codex-rescue` subagent via the `Agent` tool (`subagent_type: "
 `codex:codex-rescue` is a subagent, not a skill — do not call `Skill(codex:codex-rescue)` (no such skill) or `Skill(codex:rescue)` (that re-enters this command and hangs the session). The command runs inline so the `Agent` tool stays in scope; forked general-purpose subagents do not expose it.
 The rescue subagent returns Codex's output to the parent unchanged. The parent may summarize that result for the user while preserving findings, evidence boundaries, and failures. During `codex-claude collaboration`, the parent also inspects changes and verification evidence before accepting the work.
 
-For parallel delegation, use `Agent(subagent_type: "codex:codex-native")` by default from the first dispatch unless saved dispatch guidance selects Bash: `duet setup --dispatch bash` selects it immediately, while `auto` prefers it for 24 hours after the last native-unavailable observation, or until `duet setup --dispatch` is run without `--dry-run`. Use background `duet task` when selected by that guidance, the native agent returns `native_adapter_unavailable` or `native_capacity`, a per-call option is rejected by the `DUET:` line (`--run`, `--approve-browser-origin`, `--approve-computer-app`, `--lease-sec`, `--question-timeout-sec`), or following up a worker launched through Bash. For that route, use background Bash with a single-quoted `DUET_TASK` heredoc. The report arrives with the completion notification; only if missing, run `duet result <worker>`. Follow-ups use SendMessage for native agents, or `duet task --to <worker>` with a new stdin brief. Native answers use SendMessage, which already pins the displayed question. Bash answers use the report's `next` verbatim, or `duet answer <worker> --question '<questionId>'` with the displayed ID and a `DUET_ANSWER` heredoc. A bare `duet answer <worker>` can answer a newer pending question. Full evidence is in `duet result <worker> --details`; do not parse output files. `codex:codex-worker` is the Haiku fallback when neither native dispatch nor background Bash is available, or the user requests a forwarding-agent transcript. Follow the [dispatch protocol](../prompts/ultra-codex-protocol.md#dispatch). This command remains the explicit rescue entrypoint.
+For parallel delegation, use `Agent(subagent_type: "codex:codex-native")` by default from the first dispatch unless saved dispatch guidance selects Bash: `fugato setup --dispatch bash` selects it immediately, while `auto` prefers it for 24 hours after the last native-unavailable observation, or until `fugato setup --dispatch` is run without `--dry-run`. Use background `fugato task` when selected by that guidance, the native agent returns `native_adapter_unavailable` or `native_capacity`, a per-call option is rejected by the `DUET:` line (`--run`, `--approve-browser-origin`, `--approve-computer-app`, `--lease-sec`, `--question-timeout-sec`), or following up a worker launched through Bash. For that route, use background Bash with a single-quoted `DUET_TASK` heredoc. The report arrives with the completion notification; only if missing, run `fugato result <worker>`. Follow-ups use SendMessage for native agents, or `fugato task --to <worker>` with a new stdin brief. Native answers use SendMessage, which already pins the displayed question. Bash answers use the report's `next` verbatim, or `fugato answer <worker> --question '<questionId>'` with the displayed ID and a `DUET_ANSWER` heredoc. A bare `fugato answer <worker>` can answer a newer pending question. Full evidence is in `fugato result <worker> --details`; do not parse output files. `codex:codex-worker` is the Haiku fallback when neither native dispatch nor background Bash is available, or the user requests a forwarding-agent transcript. Follow the [dispatch protocol](../prompts/ultra-codex-protocol.md#dispatch). This command remains the explicit rescue entrypoint.
 
 Raw user request:
 $ARGUMENTS
@@ -26,7 +26,7 @@ Execution mode:
 - Otherwise, before starting Codex, check for a resumable rescue thread from this Claude session by running:
 
 ```bash
-duet task-resume-candidate --json
+fugato task-resume-candidate --json
 ```
 
 - If that helper reports `available: true`, use `AskUserQuestion` exactly once to ask whether to continue the current Codex thread or start a new one.
@@ -41,12 +41,12 @@ duet task-resume-candidate --json
 
 Operating rules:
 
-- The subagent is a Haiku forwarder only; do not pass it model or effort overrides. It forwards the request verbatim except for routing and runtime flags, without rewriting or adding instructions. It should use one `Bash` call to invoke `duet task --quiet --timeout-sec 570` with stdin via a single-quoted `DUET_TASK` heredoc and return that command's stdout as-is.
+- The subagent is a Haiku forwarder only; do not pass it model or effort overrides. It forwards the request verbatim except for routing and runtime flags, without rewriting or adding instructions. It should use one `Bash` call to invoke `fugato task --quiet --timeout-sec 570` with stdin via a single-quoted `DUET_TASK` heredoc and return that command's stdout as-is.
 - Preserve the Codex companion output as evidence. The parent may give a concise user-facing explanation and continue authorized integration or verification.
 - The wrapper's forwarding restriction does not restrict the parent Claude agent's planning, verification, or final response.
 - Do not ask the subagent to inspect files, monitor progress, poll `/codex:status`, fetch `/codex:result`, call `/codex:cancel`, summarize output, or do follow-up work of its own.
-- Omit `--model` and `--effort` unless the user chose them; Duet then applies the saved defaults (see the `codex:models` skill). Respect explicit user choices, and allow `max` for difficult work when supported.
-- Pass explicit model choices and aliases through to Duet for normalization.
+- Omit `--model` and `--effort` unless the user chose them; Fugato then applies the saved defaults (see the `codex:models` skill). Respect explicit user choices, and allow `max` for difficult work when supported.
+- Pass explicit model choices and aliases through to Fugato for normalization.
 - Leave `--to <jobId>`, explicit `--resume` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command; an offered candidate must keep its exact job ID.
 - If the helper reports that Codex is missing or unauthenticated, stop and tell the user to run `/codex:setup`.
 - If the user did not supply a request, ask what Codex should investigate or fix.

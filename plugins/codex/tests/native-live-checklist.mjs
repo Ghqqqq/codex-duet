@@ -24,7 +24,7 @@ Preparation (repeat with a new fixture for each behavior below):
 A. Completion, continuation, and accounting (slow-task):
 3. Record the main session usage view before dispatch. Ask main to call:
    Agent({subagent_type:"codex:codex-native",name:"native-live",
-          description:"Native Duet live gate",prompt:"Perform the first fake assignment."})
+          description:"Native Fugato live gate",prompt:"Perform the first fake assignment."})
    This build's Agent schema does not expose run_in_background; background:true
    in codex-native.md supplies it. On a build exposing that field, pass
    run_in_background:true. Use the actual schema, never invent a tool argument.
@@ -33,7 +33,7 @@ A. Completion, continuation, and accounting (slow-task):
    The completion notification must contain the worker's C2 JSON (status,
    worker, jobId, summary first), not merely a path. Main must not need Read or
    Bash to retrieve it. next must say "SendMessage to native-live to continue";
-   details remains "duet result <worker> --details". No running report is final.
+   details remains "fugato result <worker> --details". No running report is final.
 5. Call SendMessage({to:"native-live",message:"Continue the same fake assignment."}).
    Expect a second completion on the same native id, a new jobId, and one
    Codex thread with two turns in $DUET_LIVE_ROOT/bin/fake-codex-state.json.
@@ -76,7 +76,7 @@ D. Stop (new fixture: interruptible-slow-task):
     native /tasks row. Expect fake lastInterrupt and no surviving running worker.
     Its final C2 text must say interrupted or cancelled, include the real worker
     and jobId, next "SendMessage to native-live to continue", and details
-    "duet result <worker or jobId> --details". It must not be blocked with null
+    "fugato result <worker or jobId> --details". It must not be blocked with null
     handles. Repeat using TaskStop with the actual task id.
     Repeat immediately after dispatch to exercise the pre-handle gap; a
     recorded nonce must reconcile to cancellation, never launch another job.
@@ -104,7 +104,7 @@ E. Fail-safe (only in a temporary copy beneath DUET_LIVE_ROOT):
     tokens. Zero usage is guaranteed only while the registered hook answers.
 14. Separately inject a throw in drive in that temporary copy. Expect a blocked
     synthetic report with zero model requests, and no accidental new dispatch.
-    For a previously launched job, inspect duet status before retrying. Make
+    For a previously launched job, inspect fugato status before retrying. Make
     Node unavailable in an isolated session: expect a blocked prerequisite
     report, never permission to solve the task with Claude.
 
@@ -127,7 +127,7 @@ job id. Retain the fixture's logs/state until the live observations are reviewed
 
 API/design limits: the sandbox exposes no host process.execPath. The adapter
 resolves PATH Node once per session using node -p process.execPath, then passes
-that absolute executable and the plugin's own bin/duet as argv. This is the
+that absolute executable and the plugin's own bin/fugato as argv. This is the
 parent-approved interpretation of host Node, consistent with classic hooks.
 Readiness is attached by the fully registered module at the first user-origin
 prompt, keyed by session id in the plugin store. There is no cross-process flag.

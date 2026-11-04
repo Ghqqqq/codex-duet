@@ -2,12 +2,12 @@
 // SessionSendInput/Result). session.receive runs inside the recipient's turn;
 // it is not our interception point while turn.step owns that turn's wait.
 import { isNativeType } from './presets.mjs';
-const UNKNOWN_REASON = 'Codex steering outcome unknown; the message may or may not have reached the running turn and will not be resent automatically. Inspect the Duet job before resending.';
+const UNKNOWN_REASON = 'Codex steering outcome unknown; the message may or may not have reached the running turn and will not be resent automatically. Inspect the Fugato job before resending.';
 async function deliveryId($, session, agentId) {
   return `${session}:${agentId}:${await $.clock.now()}:${Math.random().toString(36).slice(2)}`;
 }
 function command($, state, args, input = '') {
-  return { argv: ['node', `${$.plugin.root}/bin/duet`, ...args, '--cwd', state.cwd, '--session', state.session], cwd: state.cwd, input };
+  return { argv: ['node', `${$.plugin.root}/bin/fugato`, ...args, '--cwd', state.cwd, '--session', state.session], cwd: state.cwd, input };
 }
 async function resolveJob($, state) {
   const request = command($, state, ['status', '--all', '--json', '--dispatch-nonce', state.intent.nonce]);
@@ -48,7 +48,7 @@ export function registerSteering(on) {
       catch { /* A notice failure cannot replay a durable delivery. */ }
       if (receipt.status === 'unknown') return { isDelivered: false, reason: UNKNOWN_REASON };
       return receipt.status === 'failed' ? { isDelivered: false,
-        reason: `Codex steering failed (${receipt.reason ?? 'steer_rejected'}); the message will not be resent automatically. Inspect the Duet job before resending.` } : { isDelivered: true };
+        reason: `Codex steering failed (${receipt.reason ?? 'steer_rejected'}); the message will not be resent automatically. Inspect the Fugato job before resending.` } : { isDelivered: true };
     } catch {
       // After process launch a lost receipt is ambiguous. Never release that
       // text to the host queue, which could start a second Codex turn.

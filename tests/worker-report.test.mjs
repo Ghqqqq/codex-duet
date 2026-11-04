@@ -272,7 +272,7 @@ test("writer-locked follow-ups wait for the busy broker, bound the wait and pres
   assert.equal(Boolean(saved.recovered), false);
   assert.equal(json(f.call("result", blocked.jobId, "--json")).storedJob.report.blockers[0].code, "thread_busy");
   const retry = json(f.call("result", blocked.jobId), 2).next;
-  assert.deepEqual(splitRawArgumentString(retry), ["duet", "task", "--to", blocked.jobId, "--cwd", f.repo, "--sandbox", "read-only"]);
+  assert.deepEqual(splitRawArgumentString(retry), ["fugato", "task", "--to", blocked.jobId, "--cwd", f.repo, "--sandbox", "read-only"]);
   assert.equal(bounded.progress().split(waitLine).length - 1, 1);
 
   // Stopping the foreground worker aborts backoff without submitting a turn.
@@ -535,7 +535,7 @@ test("stored transport failures recover the exact terminal outcome and provenanc
       assert.equal(report.exitCode, 2);
       assert.equal(report.interruptionReason, "codex_runtime_restarted");
       assert.equal(report.interruptionConfirmed, true);
-      assert.deepEqual(splitRawArgumentString(compact.next), ["duet", "task", "--to", compact.worker]);
+      assert.deepEqual(splitRawArgumentString(compact.next), ["fugato", "task", "--to", compact.worker]);
       const continued = directJson(f.call(...splitRawArgumentString(compact.next).slice(1), "--direct", "Continue fixture work."));
       assert.equal(continued.status, "completed");
       assert.equal(storedFixtureJob(f, continued.jobId).threadId, original.threadId);
@@ -564,7 +564,7 @@ test("stored transport failures recover the exact terminal outcome and provenanc
   assert.equal(directResponse.status, 2);
   assert.equal(directResult.status, "blocked");
   assert.equal(directResult.blockers[0].code, "codex_runtime_restarted");
-  assert.deepEqual(splitRawArgumentString(directResult.next), ["duet", "task", "--to", directResult.worker]);
+  assert.deepEqual(splitRawArgumentString(directResult.next), ["fugato", "task", "--to", directResult.worker]);
   assert.equal(direct.state().nextTurnId, 2);
 
   // Also cancel through the real CLI while the fake runtime is poised to exit.
@@ -908,17 +908,17 @@ test("runtime refusals and declared blocks retain typed blockers and their statu
     assert.equal(compactResponse.status, exit, JSON.stringify(spec));
     assert.equal(compact.status, status);
     assert.equal(compact.blockers?.[0]?.code ?? null, spec.code);
-    const next = spec.code === null ? null : spec.code === "auth_required" ? ["duet", "setup"]
-      : ["context_window_exceeded", "provider_refused"].includes(spec.code) ? ["duet", "task", "--fresh"]
-      : ["duet", "task", "--to", compact.worker];
+    const next = spec.code === null ? null : spec.code === "auth_required" ? ["fugato", "setup"]
+      : ["context_window_exceeded", "provider_refused"].includes(spec.code) ? ["fugato", "task", "--fresh"]
+      : ["fugato", "task", "--to", compact.worker];
     assert.deepEqual(compact.next === null ? null : splitRawArgumentString(compact.next), next);
     if (status === "blocked") {
-      const recoveryCommand = "duet status predecessor --json";
+      const recoveryCommand = "fugato status predecessor --json";
       const busy = { code: "thread_busy", recoveryCommand };
       const blocked = { ...compact, blockers: [...compact.blockers, busy] };
       assert.equal(directReport(blocked).next, recoveryCommand);
-      assert.equal(directReport({ ...blocked, blockers: [{ ...busy, answerCommand: "duet answer predecessor --question q" }, ...compact.blockers] }).next,
-        "duet answer predecessor --question q");
+      assert.equal(directReport({ ...blocked, blockers: [{ ...busy, answerCommand: "fugato answer predecessor --question q" }, ...compact.blockers] }).next,
+        "fugato answer predecessor --question q");
     }
     const { summary, ...envelope } = compact;
     assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
@@ -1099,8 +1099,8 @@ checkDecisionReport = (f, output, status, code) => {
   assert.deepEqual(Object.keys(result).slice(-2), ["next", "details"]);
   const { summary, ...envelope } = result;
   assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
-  assert.equal(result.details, `duet result '${result.jobId}' --details`);
-  assert.equal(result.next, status === "completed" ? null : status === "needs_answer" ? `duet answer ${result.worker} --question '${result.question.id}'` : status === "running" ? `duet wait ${result.worker}` : `duet task --to ${result.worker}`);
+  assert.equal(result.details, `fugato result '${result.jobId}' --details`);
+  assert.equal(result.next, status === "completed" ? null : status === "needs_answer" ? `fugato answer ${result.worker} --question '${result.question.id}'` : status === "running" ? `fugato wait ${result.worker}` : `fugato task --to ${result.worker}`);
   for (const key of ["waitCommand", "answerCommand", "answerAndWaitCommand", "rawOutputFile", "ownerId"]) assert.equal(Object.hasOwn(result, key), false);
   const details = json(f.call("result", result.jobId, "--details"), code);
   const reread = json(f.call("result", result.jobId), code);
@@ -1184,7 +1184,7 @@ test("direct questions provide executable re-wait and stdin-answer commands and 
   const compact = direct(output);
   checkDecisionReport(f, output, "needs_answer", 0);
   const pending = json(f.call("result", launch.jobId, "--details"));
-  assert.equal(compact.next, `duet answer ${launch.agentName} --question '${pending.question.id}'`);
+  assert.equal(compact.next, `fugato answer ${launch.agentName} --question '${pending.question.id}'`);
   assert.equal(pending.status, "needs_answer"); assert.ok(pending.question.id);
   assert.deepEqual(pending.question.options, ["Small", "Broad"]);
   assert.deepEqual(splitRawArgumentString(pending.waitCommand), ["node", script, "wait", launch.jobId, "--cwd", f.repo, "--owner", launch.ownerId, "--direct", "--after-question", pending.question.id]);
@@ -1342,7 +1342,7 @@ test("v2 budgets UTF-8 text and counts omitted files/checks while details keeps 
   const compact = direct(output);
   assert.equal(directLines(output.stdout).length, 76, "direct progress has no feed cap");
   assert.equal(compact.summary.length, 8000); assert.equal(compact.summaryTruncated, true);
-  assert.equal(compact.details, `duet result '${id}' --details`, "unnamed jobs use the job ID");
+  assert.equal(compact.details, `fugato result '${id}' --details`, "unnamed jobs use the job ID");
   const { summary, ...envelope } = compact;
   assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
   assert.equal(compact.changedFiles.length + compact.changedFilesOmitted, entries.length);
@@ -1430,14 +1430,14 @@ test("v2 budgets UTF-8 text and counts omitted files/checks while details keeps 
   const pending = directReport({ status: "needs_answer", jobId: id, question: { id: "q", text: "字".repeat(1000), options: Array(6).fill("字".repeat(160)), expiresAt: Date.now() + 10000 }, blockers: [{ code: "fixture", message: "字".repeat(500) }] });
   const { summary: pendingSummary, ...pendingEnvelope } = pending;
   assert.ok(Buffer.byteLength(JSON.stringify(pendingEnvelope)) <= 2000);
-  assert.equal(pending.next, `duet answer ${id} --question 'q'`);
+  assert.equal(pending.next, `fugato answer ${id} --question 'q'`);
   for (const options of [Array(165).fill("12345678"), Array(500).fill(""), Array(500).fill("😀".repeat(80))]) {
     const question = { id: "question-'quoted", text: "Choose a scope.", options };
     const compact = directReport({ status: "needs_answer", jobId: id, question });
     const { summary, ...envelope } = compact;
     assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= 2000);
     assert.equal(compact.question.options.length + (compact.question.optionsOmitted ?? 0), options.length);
-    assert.deepEqual(splitRawArgumentString(compact.next), ["duet", "answer", id, "--question", question.id]);
+    assert.deepEqual(splitRawArgumentString(compact.next), ["fugato", "answer", id, "--question", question.id]);
     assert.equal(question.options.length, options.length, "fitting leaves the full options intact");
   }
   const astral = "a".repeat(7999) + "😀";
@@ -1450,11 +1450,11 @@ test("v2 budgets UTF-8 text and counts omitted files/checks while details keeps 
   const errorReport = buildWorkerReport({ status: 0, rawOutput: "Completed.", error: "Runtime error." });
   assert.equal(errorReport.status, "blocked");
   assert.equal(errorReport.blockers[0].code, "error");
-  const recoveryCommand = "duet status predecessor --json";
+  const recoveryCommand = "fugato status predecessor --json";
   const busy = directReport({ status: "blocked", jobId: id, blockers: [{ code: "thread_busy", message: "Active predecessor.", recoveryCommand }] });
   assert.equal(busy.blockers[0].recoveryCommand, recoveryCommand);
   assert.equal(busy.next, recoveryCommand);
-  assert.equal(directReport({ status: "blocked", jobId: id, blockers: [{ code: "thread_busy", cancelCommand: "duet cancel original" }] }).next, null);
+  assert.equal(directReport({ status: "blocked", jobId: id, blockers: [{ code: "thread_busy", cancelCommand: "fugato cancel original" }] }).next, null);
   for (const fields of [
     { app: "com.apple.TextEdit" }, { app: "Fixture  App", sessionId: "Fixture  Session" },
     { tab_id: "123", session_id: "00000000-0000-0000-0000-000000000001" },
@@ -1495,7 +1495,7 @@ test("v2 budgets UTF-8 text and counts omitted files/checks while details keeps 
       const details = splitRawArgumentString(compact.details);
       assert.equal(json(run(process.execPath, [script, ...details.slice(1)], { cwd }), code ? 2 : 0).jobId, id);
       if (compact.next !== null) assert.deepEqual(splitRawArgumentString(compact.next),
-        code ? ["duet", "task", "--fresh", "--cwd", workspace] : details.slice(0, -1));
+        code ? ["fugato", "task", "--fresh", "--cwd", workspace] : details.slice(0, -1));
       if (!code) assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).pendingQuestion, pendingQuestion);
     }
   }
@@ -1517,7 +1517,7 @@ test("v2 budgets UTF-8 text and counts omitted files/checks while details keeps 
   assert.equal(all.historyOmitted, 1);
 });
 
-test("report commands resolve ambiguous, cross-workspace and adopted workers through the duet CLI", t => {
+test("report commands resolve ambiguous, cross-workspace and adopted workers through the fugato CLI", t => {
   // cli-3: a failure before thread creation has no task continuation.
   const startup = fixture("lost-turn:startup");
   const failed = startup.call("task", "--direct", "--quiet", "fixture");
@@ -1542,14 +1542,14 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
     const report = read(id);
     assert.equal(report.worker, "SharedWorker");
     assert.equal(report.next, report.blockers[0].recoveryCommand);
-    assert.equal(report.details, `duet result '${id}' --details`);
+    assert.equal(report.details, `fugato result '${id}' --details`);
     const recovered = json(run(process.execPath, [script, ...splitRawArgumentString(report.details).slice(1)], { cwd }), 2);
     assert.equal(recovered.jobId, id);
   }
   save({ ...records[1], threadId: records[0].threadId });
-  assert.equal(read("first").details, "duet result 'first' --details");
+  assert.equal(read("first").details, "fugato result 'first' --details");
   assert.equal(read("first").next, read("first").blockers[0].recoveryCommand);
-  assert.equal(read("second").details, "duet result 'second' --details");
+  assert.equal(read("second").details, "fugato result 'second' --details");
   assert.equal(read("second").next, read("second").blockers[0].recoveryCommand);
 
   const f = fixture("review-ok"), other = path.join(f.dir, "other-workspace");
@@ -1557,27 +1557,27 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
   f.env.PATH = `${path.dirname(new URL("../plugins/codex/bin/duet", import.meta.url).pathname)}${path.delimiter}${f.env.PATH}`;
   const execute = (command, cwd = f.repo) => run("sh", ["-c", command], { cwd, env: f.env, input: "Complete the fixture follow-up." });
   for (const verb of ["wait", "answer", "cancel"]) {
-    const missing = execute(`duet ${verb} MissingWorker`);
+    const missing = execute(`fugato ${verb} MissingWorker`);
     assert.equal(missing.status, 1);
     assert.doesNotMatch(missing.stderr, /--thread\b/);
-    const recovery = missing.stderr.match(/duet status --all\b/)?.[0];
+    const recovery = missing.stderr.match(/fugato status --all\b/)?.[0];
     assert.ok(recovery);
     assert.equal(execute(recovery).status, 0);
   }
-  assert.match(execute("duet task --to MissingWorker").stderr, /--thread\b/);
+  assert.match(execute("fugato task --to MissingWorker").stderr, /--thread\b/);
   const workers = [f.repo, other].map(workspace => {
-    const launched = direct(execute("duet task --fresh", workspace));
+    const launched = direct(execute("fugato task --fresh", workspace));
     const fixture = { ...f, repo: workspace };
     const original = storedFixtureJob(fixture, launched.jobId);
     storedFixtureJob(fixture, launched.jobId, { agentName: "AcrossWorker", status: "needs_input", report: { ...original.report, status: "needs_input" } });
     return { fixture, original };
   });
   for (const { original } of workers) {
-    const projected = json(execute(`duet result ${original.id}`), 2);
+    const projected = json(execute(`fugato result ${original.id}`), 2);
     assert.equal(projected.worker, "AcrossWorker");
     const cwdFlag = original.workspaceRoot === f.repo ? "" : ` --cwd '${original.workspaceRoot}'`;
-    assert.equal(projected.details, `duet result '${original.id}'${cwdFlag} --details`);
-    assert.equal(projected.next, `duet task --to AcrossWorker${cwdFlag}`);
+    assert.equal(projected.details, `fugato result '${original.id}'${cwdFlag} --details`);
+    assert.equal(projected.next, `fugato task --to AcrossWorker${cwdFlag}`);
     assert.equal(json(execute(projected.details), 2).jobId, original.id);
     const continued = direct(execute(projected.next));
     assert.equal(continued.status, "completed");
@@ -1593,13 +1593,13 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
   }));
   assert.equal(moved.adopted, true);
   storedFixtureJob(adopted.fixture, adopted.original.id, { status: "needs_input", report: { ...adopted.original.report, status: "needs_input" } });
-  const dispatchProjection = json(execute(`duet result ${adopted.original.id}`), 2);
+  const dispatchProjection = json(execute(`fugato result ${adopted.original.id}`), 2);
   f.env.CODEX_COMPANION_SESSION_ID = "replacement-session";
-  const projected = json(execute(`duet result ${adopted.original.id}`), 2);
-  assert.deepEqual(dispatchProjection, { ...projected, next: `duet task --to ${adopted.original.id}`,
-    details: `duet result '${adopted.original.id}' --details` }, "foreign-session commands use exact job handles");
-  assert.equal(projected.details, `duet result '${adopted.original.id}' --details`);
-  assert.equal(projected.next, "duet task --to AdoptedWorker");
+  const projected = json(execute(`fugato result ${adopted.original.id}`), 2);
+  assert.deepEqual(dispatchProjection, { ...projected, next: `fugato task --to ${adopted.original.id}`,
+    details: `fugato result '${adopted.original.id}' --details` }, "foreign-session commands use exact job handles");
+  assert.equal(projected.details, `fugato result '${adopted.original.id}' --details`);
+  assert.equal(projected.next, "fugato task --to AdoptedWorker");
   assert.equal(json(execute(projected.details), 2).jobId, adopted.original.id);
   const continued = direct(execute(projected.next));
   assert.equal(continued.status, "completed");
@@ -1619,7 +1619,7 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
     assert.equal(report.worker, firstQuestion.worker);
     for (const field of ["checks", "usage", "changedFiles"]) assert.equal(report[field], undefined);
     assert.ok(report.next && report.details);
-    for (const [field, args] of [["next", ["duet", "result", report.jobId]], ["details", ["duet", "result", report.jobId, "--details"]]]) {
+    for (const [field, args] of [["next", ["fugato", "result", report.jobId]], ["details", ["fugato", "result", report.jobId, "--details"]]]) {
       const tokens = splitRawArgumentString(report[field]);
       const cwdIndex = tokens.indexOf("--cwd");
       if (cwdIndex >= 0) assert.equal(tokens.splice(cwdIndex, 2)[1], sequence.repo);
@@ -1627,20 +1627,20 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
       assert.equal(json(runSequence(report[field], observer)).jobId, report.jobId);
     }
   };
-  const firstQuestion = direct(runSequence("duet task --fresh"));
+  const firstQuestion = direct(runSequence("fugato task --fresh"));
   const secondQuestion = direct(runSequence(firstQuestion.next));
   assert.equal(secondQuestion.status, "needs_answer");
   assert.notEqual(secondQuestion.question.id, firstQuestion.question.id);
   const replies = sequence.state().serverRequestReplies.length;
   for (const target of [firstQuestion.worker, firstQuestion.jobId]) {
-    const stale = runSequence(`duet answer ${target} --question '${firstQuestion.question.id}'`);
+    const stale = runSequence(`fugato answer ${target} --question '${firstQuestion.question.id}'`);
     rejectedAnswer(stale);
     assert.equal(sequence.state().serverRequestReplies.length, replies);
     assert.equal(storedFixtureJob(sequence, firstQuestion.jobId).pendingQuestion.id, secondQuestion.question.id);
   }
   assert.equal(direct(runSequence(secondQuestion.next)).status, "completed");
   for (const question of ["", ` --question '${secondQuestion.question.id}'`]) {
-    rejectedAnswer(runSequence(`duet answer ${firstQuestion.jobId}${question}`, observer));
+    rejectedAnswer(runSequence(`fugato answer ${firstQuestion.jobId}${question}`, observer));
   }
   assert.equal(sequence.state().serverRequestReplies.length, replies + 1);
 
@@ -1671,7 +1671,7 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
   assert.equal(json(command("result", "Heisenberg")).jobId, first.jobId);
   const waited = direct(command("wait", "heisenberg"));
   assert.equal(waited.jobId, second.jobId); assert.equal(waited.status, "needs_answer");
-  t.diagnostic(JSON.stringify({ command: "duet wait heisenberg", ...waited }));
+  t.diagnostic(JSON.stringify({ command: "fugato wait heisenberg", ...waited }));
   // Active-state filtering and command filtering are independent: exercise
   // every state and every selector without their duplicate cross-product.
   for (const [status, options] of [["queued", { nameState: "pending", pending: true }],
@@ -1688,7 +1688,7 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
   const answered = direct(command("answer", "heisenberg"));
   assert.equal(answered.jobId, second.jobId); assert.equal(answered.status, "completed");
   assert.equal(p.state().serverRequestReplies.length, before.serverRequestReplies.length + 1);
-  t.diagnostic(JSON.stringify({ command: "duet answer heisenberg", ...answered }));
+  t.diagnostic(JSON.stringify({ command: "fugato answer heisenberg", ...answered }));
   storedFixtureJob(p, first.jobId, { status: "completed", pendingQuestion: null });
   const noQuestion = command("answer", "Heisenberg");
   assert.equal(noQuestion.status, 1); assert.match(noQuestion.stderr, /no pending unanswered question/);
@@ -1698,7 +1698,7 @@ test("report commands resolve ambiguous, cross-workspace and adopted workers thr
   const explicit = storedFixtureJob(remoteFixture, third.jobId, { agentName: "Heisenberg" });
   const explicitAnswer = direct(command("answer", "Heisenberg", "--question", explicit.pendingQuestion.id, "--owner", explicit.ownerId));
   assert.equal(explicitAnswer.jobId, third.jobId); assert.equal(explicitAnswer.status, "completed");
-  t.diagnostic(JSON.stringify({ command: "duet answer Heisenberg --question <id> --owner <id>", ...explicitAnswer }));
+  t.diagnostic(JSON.stringify({ command: "fugato answer Heisenberg --question <id> --owner <id>", ...explicitAnswer }));
 
   const busy = fixture("w5-parent");
   const launched = direct(busy.call("task", "--fresh", "--direct", "fixture"));

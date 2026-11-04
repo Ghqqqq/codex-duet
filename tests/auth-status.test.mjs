@@ -33,16 +33,16 @@ test("confirmed logout still prints isolated login, unknown runtime errors do no
   assert.equal(classifyRuntimeError(new Error("authentication expired")).status, "unauthenticated");
 });
 
-test("setup reports an invokable duet when CODEX_COMPANION is unset", () => {
+test("setup reports an invokable fugato when CODEX_COMPANION is unset", () => {
   const bin = makeTempDir("duet14-a-"); installFakeCodex(bin);
-  const duet = new URL("../plugins/codex/bin/duet", import.meta.url).pathname;
-  fs.symlinkSync(duet, path.join(bin, "duet"));
+  const duet = new URL("../plugins/codex/bin/fugato", import.meta.url).pathname;
+  fs.symlinkSync(duet, path.join(bin, "fugato"));
   const env = { ...buildEnv(bin), CODEX_COMPANION_HOME: path.join(bin, "isolated"), CODEX_COMPANION: undefined };
   const result = run(process.execPath, [script, "setup", "--json"], { cwd: bin, env });
   assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
   assert.equal(report.ready, true);
-  assert.deepEqual(report.invocation, { duet: { available: true, path: path.join(bin, "duet") }, companionEnv: { set: false, path: null } });
+  assert.deepEqual(report.invocation, { duet: { available: true, path: path.join(bin, "fugato") }, companionEnv: { set: false, path: null } });
   assert.equal(report.codex.source, "PATH");
   assert.equal(report.codex.executable, path.join(bin, "codex"));
   const command = run(report.invocation.duet.path, ["status", "--json"], { cwd: bin, env });

@@ -1093,7 +1093,7 @@ async function requestExternalAgentSessionImport(client, params) {
   /** @type {Promise<never>} */
   const deadline = new Promise((_, reject) => {
     timeout = setTimeout(() => reject(new Error(
-      `Timed out after 120 seconds waiting for Codex Claude session import${importId ? ` ${importId}` : " acknowledgement"}. No task turn was started. Check the Codex app-server logs, then retry or use a normal duet task brief without --fork.`
+      `Timed out after 120 seconds waiting for Codex Claude session import${importId ? ` ${importId}` : " acknowledgement"}. No task turn was started. Check the Codex app-server logs, then retry or use a normal fugato task brief without --fork.`
     )), EXTERNAL_AGENT_IMPORT_TIMEOUT_MS);
   });
 
@@ -1749,7 +1749,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       // The message repeats only these safe identifiers, never request content.
       serverRequestBlockers.push({ code: summary.decision === "cancelled" ? "approval_denied" : "approval_unsupported",
         message: summary.kind === "action-approval" ? `Codex action approval was denied (${summary.reason}).`
-          : `Codex request ${summary.method} (${summary.kind})${summary.server ? ` from ${summary.server}` : ""}${summary.origin ? ` for ${summary.origin}` : ""} was ${summary.decision === "cancelled" ? "declined" : "not supported"}; Duet workers cannot approve it.`,
+          : `Codex request ${summary.method} (${summary.kind})${summary.server ? ` from ${summary.server}` : ""}${summary.origin ? ` for ${summary.origin}` : ""} was ${summary.decision === "cancelled" ? "declined" : "not supported"}; Fugato workers cannot approve it.`,
         method: summary.method, kind: summary.kind, requestId: summary.requestId,
         ...(summary.app ? { app: summary.app } : {}),
         ...(summary.server ? { server: summary.server } : {}),
@@ -1982,7 +1982,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     // Broker wait outcomes use the normal task-result path so busy blockers
     // retain their retry commands.
     const quote = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
-    const recoveryCommand = options.jobId ? `duet task --to ${quote(options.jobId)} --cwd ${quote(options.executionCwd ?? cwd)} --sandbox ${quote(options.sandbox ?? "read-only")}` : null;
+    const recoveryCommand = options.jobId ? `fugato task --to ${quote(options.jobId)} --cwd ${quote(options.executionCwd ?? cwd)} --sandbox ${quote(options.sandbox ?? "read-only")}` : null;
     return { status: error.code === "BROKER_THREAD_BUSY" ? 0 : 1,
       threadId: error.threadId, turnId: null, turnStatus: "notStarted", turnEnded: true,
       finalMessage: error.message, error: { message: error.message },

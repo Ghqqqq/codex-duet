@@ -351,7 +351,7 @@ function steeringInbox(f, job) {
   return JSON.parse(fs.readFileSync(marker.jobFile.replace(/\.json$/, '.steering.json'), 'utf8'));
 }
 function steer(f, job, deliveryId, text) {
-  const result = spawnSync(process.execPath, [plugin + '/bin/duet', 'steer', job.id,
+  const result = spawnSync(process.execPath, [plugin + '/bin/fugato', 'steer', job.id,
     '--delivery-id', deliveryId, '--cwd', `${f.root}/repo`, '--session', 'native-session'],
   { env: f.env, input: text, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
@@ -380,7 +380,7 @@ async function notifierTick(f) {
 }
 const roundtableWakes = f => f.wakes || [];
 const wakePass = (f, input = {}, bottom = async () => ({ result: { text: 'Tool result' } })) =>
-  f.invoke('tool.call', { tool: 'Bash', command: 'duet roundtable status', tool_use_id: 'roundtable-tool', ...input }, bottom);
+  f.invoke('tool.call', { tool: 'Bash', command: 'fugato roundtable status', tool_use_id: 'roundtable-tool', ...input }, bottom);
 async function receiveNotice(f, notice, number) {
   // A tool-hook-origin send excludes only that tool frame; the member's
   // native turn hooks still run. Timer-origin sends must never reach here.
@@ -510,7 +510,7 @@ test('roundtable notifier never wakes stopped, closed, paused, ambiguous or unre
   await f.$.store.set(key, { ...state, roundtable: { roomId: 'rt-other-room', persona: 'critic' } });
   await check(); await f.$.store.set(key, state);
   const run = f.$.process.run;
-  const stale = await run([process.execPath, `${plugin}/bin/duet`, 'forum', 'pending', '--session', 'native-session', '--json'],
+  const stale = await run([process.execPath, `${plugin}/bin/fugato`, 'forum', 'pending', '--session', 'native-session', '--json'],
     { cwd: `${f.root}/repo`, timeoutMs: 5000 });
   f.$.process.run = async (argv, init) => argv[2] === 'forum' && argv[3] === 'pending' ? stale : run(argv, init);
   setStatus(rt.room.roomId, 'paused', rt.env); await check();
@@ -567,11 +567,13 @@ test('roundtable deferred notices cannot answer a question that appears during s
   };
   await (await notifierTick(f))(); await wakePass(f);
   assert.deepEqual(roundtableWakes(f), []);
-  assert.match(notice, /^\[Duet roundtable notice /);
+  assert.match(notice, /^\[Fugato roundtable notice /);
   // Also model a tool-hook wake reaching a member after its question appeared.
   await f.$.store.set(key, state);
   const report = await receiveNotice(f, { to: 'critic', text: notice }, 2);
   assert.deepEqual(report, asked);
+  assert.deepEqual(await receiveNotice(f, { to: 'critic', text: notice.replace('[Fugato roundtable notice ', '[Duet roundtable notice ') }, 3), asked,
+    'A legacy notice remains a notice-only turn and cannot answer the pending question');
   assert.equal(f.readStore()[`native:roundtable:v1:native-session:${rt.room.roomId}:critic`].receipt.status, 'deferred');
   assert.equal(f.jobs()[0].pendingQuestion.answer, undefined);
   assert.equal(f.capture.processes.filter(call => call.request.argv[2] === 'answer').length, 0);
@@ -743,7 +745,7 @@ test('roundtable timer records a ready idle wake without sending or spawning', a
   const tick = await notifierTick(f); await tick(); await tick();
   const claim = f.readStore()[`native:roundtable:v1:native-session:${rt.room.roomId}:critic`].attempt;
   assert.equal(claim.phase, 'ready'); assert.ok(Number.isFinite(claim.readyAt));
-  assert.match(claim.text, /^\[Duet roundtable notice roundtable:/);
+  assert.match(claim.text, /^\[Fugato roundtable notice roundtable:/);
   assert.match(claim.text, /continue toward the roundtable goal\.$/);
   assert.deepEqual(roundtableWakes(f), []); assert.deepEqual(spawns, []);
   assert.equal(f.jobs().length, 1); assert.equal(f.capture.notices.length, notices);
@@ -776,7 +778,7 @@ test('roundtable main-loop tool hook delivers once to the bound id and continues
   }), result);
   const [notice] = roundtableWakes(f);
   assert.equal(notice.to, agent.id); assert.equal(notice.text.length, 8192);
-  assert.match(notice.text, /^\[Duet roundtable notice roundtable:/);
+  assert.match(notice.text, /^\[Fugato roundtable notice roundtable:/);
   assert.match(notice.text, /…\n\nRead the forum, answer what is addressed to you, and continue toward the roundtable goal\.$/);
   const processes = f.capture.processes.length;
   await wakePass(f); assert.equal(f.capture.processes.length, processes, 'Main-loop passes are throttled');
@@ -814,7 +816,7 @@ test('roundtable undelivered ready wake prompts the chair once after the grace p
   assert.equal(notices().length, 1);
   const notice = notices()[0];
   assert.equal(notice.agentId, undefined); assert.equal(notice.message.type, 'user');
-  assert.equal(notice.message.content[0].text, `Roundtable ${rt.room.roomId}: critic have updates waiting; run \`duet roundtable status ${rt.room.roomId}\` to deliver them.`);
+  assert.equal(notice.message.content[0].text, `Roundtable ${rt.room.roomId}: critic have updates waiting; run \`fugato roundtable status ${rt.room.roomId}\` to deliver them.`);
   now += 120001; f.reload(); tick = await notifierTick(f); await tick(); await tick();
   assert.equal(notices().length, 1); assert.deepEqual(roundtableWakes(f), []);
   await wakePass(f); assert.equal(roundtableWakes(f).length, 1);
@@ -906,7 +908,7 @@ test('native steering delivery IDs are idempotent, including lost acknowledgemen
       async () => { queued++; return { isDelivered: true }; });
     assert.equal(queued, 0);
     assert.equal(receipt.isDelivered, false);
-    assert.equal(receipt.reason, 'Codex steering outcome unknown; the message may or may not have reached the running turn and will not be resent automatically. Inspect the Duet job before resending.');
+    assert.equal(receipt.reason, 'Codex steering outcome unknown; the message may or may not have reached the running turn and will not be resent automatically. Inspect the Fugato job before resending.');
     assert.ok(f.capture.notices.some(notice => notice.message.content.some(item => item.text?.includes('Codex steering unknown'))));
     const inbox = steeringInbox(f, job);
     assert.equal(inbox.deliveries.length, 1);
@@ -940,7 +942,7 @@ test('native steering never queues a failed delivery, even with a stale fallback
     const receipt = await f.invoke('session.send', { to: 'native-agent', text: 'Failed steering.', origin: { kind: 'model' } },
       async () => assert.fail('Failed steering must never enter the host queue'));
     assert.equal(receipt.isDelivered, false);
-    assert.match(receipt.reason, /steer_rejected.*Inspect the Duet job before resending/);
+    assert.match(receipt.reason, /steer_rejected.*Inspect the Fugato job before resending/);
     assert.equal(steeringInbox(f, job).deliveries[0].text, undefined);
     assert.equal(f.codexState().steers.length, 1);
   } finally { f.abort(); await pending; }
@@ -1014,7 +1016,7 @@ test('native steering inbox retains hashed receipts and refuses new deliveries b
 
 test('native steering defers permission-mapped jobs once and re-derives permissions on continuation', async () => {
   const f = fixture('steer-applied');
-  const setup = spawnSync(process.execPath, [plugin + '/bin/duet', 'setup', '--permission-mapping', 'claude', '--json'],
+  const setup = spawnSync(process.execPath, [plugin + '/bin/fugato', 'setup', '--permission-mapping', 'claude', '--json'],
     { cwd: `${f.root}/repo`, env: f.env, encoding: 'utf8' });
   assert.equal(setup.status, 0, setup.stderr);
   const pending = f.turn('Work until interrupted.', 1, true);
@@ -1150,7 +1152,7 @@ test('Agent worktree isolation reaches custom host paths and durable permission 
   const f = fixture('review-ok', 'worktree-worker');
   const custom = `${f.root}/custom-worktree`;
   fs.mkdirSync(custom); initGitRepo(custom);
-  const setup = spawnSync(process.execPath, [plugin + '/bin/duet', 'setup', '--permission-mapping', 'claude'],
+  const setup = spawnSync(process.execPath, [plugin + '/bin/fugato', 'setup', '--permission-mapping', 'claude'],
     { env: f.env, cwd: `${f.root}/repo`, encoding: 'utf8' });
   assert.equal(setup.status, 0, setup.stderr);
   f.$.session.cwd = async () => custom;
@@ -1329,7 +1331,7 @@ test('real companion: dispatch, completion and reload follow-up reuse the Codex 
   const first = await pending;
   assert.equal(first.status, 'completed'); assert.ok(first.summary);
   assert.equal(first.worker, attached.agentName);
-  const status = spawnSync(process.execPath, [plugin + '/bin/duet', 'status', first.worker,
+  const status = spawnSync(process.execPath, [plugin + '/bin/fugato', 'status', first.worker,
     '--cwd', `${f.root}/repo`, '--session', 'native-session', '--json'], { env: f.env, encoding: 'utf8' });
   assert.equal(status.status, 0, status.stderr);
   assert.equal(JSON.parse(status.stdout).job.agentName, first.worker);
@@ -1367,14 +1369,14 @@ test('real companion: dispatch, completion and reload follow-up reuse the Codex 
   assert.equal(final.nextTurnId, 3);
   assert.equal(f.capture.processes.filter(p => p.kind === 'spawn' && p.request.argv[2] === 'wait').length, 0);
   assert.notEqual(second.jobId, first.jobId);
-  assert.equal(first.details, `duet result '${first.jobId}' --details`);
+  assert.equal(first.details, `fugato result '${first.jobId}' --details`);
   assert.deepEqual(Object.keys(first).slice(0, 4), ['status', 'worker', 'jobId', 'summary']);
   const state = Object.values(f.readStore())[0];
   assert.equal(state.incoming, undefined);
   assert.equal(state.session, 'native-session');
   assert.ok(state.intent.nonce);
   for (const child of f.capture.processes.filter(p => p.kind === 'spawn')) {
-    assert.equal(child.request.argv[1], plugin + '/bin/duet');
+    assert.equal(child.request.argv[1], plugin + '/bin/fugato');
     assert.ok(child.request.argv.includes('--session'));
     if (child.request.argv[2] === 'task') assert.equal(child.request.argv[child.request.argv.indexOf('--session-cwd') + 1], `${f.root}/repo`);
     if (child.request.argv[2] === 'task') {
@@ -1395,7 +1397,7 @@ test('real companion: dispatch, completion and reload follow-up reuse the Codex 
   assert.equal(named.context.length, 2);
   assert.ok(AGENT_NAMES.includes(firstAuto.worker));
   assert.equal((await auto.$.agent.list())[0].name, firstAuto.worker);
-  const bash = spawnSync(process.execPath, [plugin + '/bin/duet', 'task', '--fresh', '--session', 'native-session'],
+  const bash = spawnSync(process.execPath, [plugin + '/bin/fugato', 'task', '--fresh', '--session', 'native-session'],
     { cwd: `${auto.root}/repo`, env: auto.env, input: 'Reserve a Bash worker.', encoding: 'utf8' });
   assert.equal(bash.status, 0, bash.stderr);
   const bashName = JSON.parse(bash.stdout.trimEnd().split('\n').at(-1)).worker;
@@ -1552,7 +1554,7 @@ test('refused starts release lifecycle context and abandoned sidecars expire aft
 test('SubagentStop feedback gets one durable Codex attempt per job, on the same thread, up to the cap', async () => {
   const f = fixture('review-ok');
   f.withUsage({ inputTokens: 150, cachedInputTokens: 40, outputTokens: 30, totalTokens: 180 });
-  const journal = spawnSync(process.execPath, [plugin + '/bin/duet', 'journal', 'start', '--session', 'native-session',
+  const journal = spawnSync(process.execPath, [plugin + '/bin/fugato', 'journal', 'start', '--session', 'native-session',
     '--cwd', `${f.root}/repo`, '--json'], { env: f.env, input: JSON.stringify({ goal: 'Lifecycle fixture', criteria: [] }), encoding: 'utf8' });
   assert.equal(journal.status, 0, journal.stderr);
   let report = await f.turn('Initial assignment.', 1);
@@ -1641,7 +1643,7 @@ test('real companion: question/answer stays on the job; abort interrupts fake Co
   // Another owner path answers Q1 and the same job parks at Q2 before Claude's
   // delayed Q1 answer arrives. Never retarget that text to the new question.
   const jobBeforeAnswer = question.jobs()[0];
-  const external = spawnSync(process.execPath, [plugin + '/bin/duet', 'answer', asked.jobId,
+  const external = spawnSync(process.execPath, [plugin + '/bin/fugato', 'answer', asked.jobId,
     '--question', asked.question.id, '--owner', jobBeforeAnswer.ownerId, '--timeout-sec', '5',
     '--cwd', `${question.root}/repo`, '--session', 'native-session'], { env: question.env, input: 'Small', encoding: 'utf8' });
   assert.equal(external.status, 0, external.stderr);
@@ -1735,7 +1737,7 @@ test('real companion: question/answer stays on the job; abort interrupts fake Co
     const failure = fixture('parent-question-sequence');
     const q1 = await failure.turn('Ask Q1 before injecting a store failure.', 1);
     const job = failure.jobs()[0];
-    const external = spawnSync(process.execPath, [plugin + '/bin/duet', 'answer', q1.jobId,
+    const external = spawnSync(process.execPath, [plugin + '/bin/fugato', 'answer', q1.jobId,
       '--question', q1.question.id, '--owner', job.ownerId, '--timeout-sec', '5',
       '--cwd', `${failure.root}/repo`, '--session', 'native-session'], { env: failure.env, input: 'Small', encoding: 'utf8' });
     assert.equal(external.status, 0, external.stderr);
@@ -1785,7 +1787,7 @@ test('real companion: question/answer stays on the job; abort interrupts fake Co
   assert.equal(stopped.status, 'interrupted');
   assert.equal(stopped.worker, job.agentName);
   assert.equal(stopped.jobId, job.id);
-  assert.equal(stopped.details, `duet result '${job.id}' --details`);
+  assert.equal(stopped.details, `fugato result '${job.id}' --details`);
   assert.ok(!stopped.blockers?.some(blocker => blocker.code === 'native_adapter_error'));
   assert.equal(job.ownerAttached, false);
   assert.equal(job.dispatchNonce, 'native-session:native-agent:turn-1');
@@ -1850,7 +1852,7 @@ test('real companion: question/answer stays on the job; abort interrupts fake Co
   assert.deepEqual(await endingNotices(startup, startupJob), [1, 0]);
 
   // A dead wrapper cannot observe its owner's stop. The adapter must retain
-  // duet cancel's app-server recovery path to interrupt the unresolved turn.
+  // fugato cancel's app-server recovery path to interrupt the unresolved turn.
   const dead = fixture('lost-turn:owner-stop');
   dead.stopOnWait(() => process.kill(dead.jobs()[0].pid, 'SIGSTOP'));
   await dead.turn('Run until stopped after the wrapper exits.', 1, true, { beforeComplete: async () => {
@@ -1869,7 +1871,7 @@ test('real companion: question/answer stays on the job; abort interrupts fake Co
     status: deadJob.status, interruptionConfirmed: deadJob.result?.interruptionConfirmed === true,
     confirmation: deadState.cancellation?.confirmation, lastInterrupt: dead.codexState().lastInterrupt,
     ownerDetachReason: deadJob.ownerDetachReason }));
-  assert.equal(fallback.length, 1, 'A stopped dead wrapper requires the duet cancel safety net');
+  assert.equal(fallback.length, 1, 'A stopped dead wrapper requires the fugato cancel safety net');
   assert.ok(waitIndex >= 0 && waitIndex < cancelIndex, 'Read-only owner-stop confirmation precedes the fallback cancel');
   assert.ok(['interrupted', 'cancelled'].includes(deadJob.status));
   assert.equal(deadJob.result.interruptionConfirmed, true);
@@ -1880,7 +1882,7 @@ test('real companion: question/answer stays on the job; abort interrupts fake Co
 
 // Job reads are independent test assertions, outside the captured hook boundary.
 function inspect(f, id) {
-  const result = spawnSync(process.execPath, [plugin + '/bin/duet', 'status', ...(id ? [id] : []), '--all', '--json',
+  const result = spawnSync(process.execPath, [plugin + '/bin/fugato', 'status', ...(id ? [id] : []), '--all', '--json',
     '--cwd', `${f.root}/repo`, '--session', 'native-session'], { env: f.env, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout);
@@ -1909,7 +1911,7 @@ test('dispatch intent survives the response/persistence gap and nonce retries re
   assert.equal(repeated.status, 'completed');
   assert.equal(f.codexState().nextTurnId, 2);
   // A second CLI process with the same hidden nonce also reattaches atomically.
-  const retry = spawnSync(process.execPath, [plugin + '/bin/duet', 'task', '--fresh', '--dispatch-nonce', before.dispatchNonce,
+  const retry = spawnSync(process.execPath, [plugin + '/bin/fugato', 'task', '--fresh', '--dispatch-nonce', before.dispatchNonce,
     '--quiet', '--timeout-sec', '1', '--cwd', `${f.root}/repo`, '--session', 'native-session'],
     { env: f.env, input: 'Dispatch exactly once.', encoding: 'utf8' });
   assert.equal(retry.status, 0, retry.stderr);
@@ -2027,7 +2029,7 @@ test('native run logs settle unmatched starts after confirmed cancellation', asy
   fs.writeFileSync(file, source.slice(0, at) + events + source.slice(at));
   f.stopOnWait(async () => {
     await until(async () => renderLeaves(await renderNativePrompt(f, text)).includes(' … running'));
-    const cancelled = spawnSync(process.execPath, [plugin + '/bin/duet', 'cancel', f.jobs()[0].id,
+    const cancelled = spawnSync(process.execPath, [plugin + '/bin/fugato', 'cancel', f.jobs()[0].id,
       '--json', '--cwd', `${f.root}/repo`, '--session', 'native-session'], { env: f.env, encoding: 'utf8' });
     assert.equal(cancelled.status, 0, cancelled.stderr);
     assert.equal(JSON.parse(cancelled.stdout).confirmation, 'confirmed');
@@ -2075,7 +2077,7 @@ test('native headers project flags, preserve ordinary briefs and reject malforme
   assert.deepEqual(Object.fromEntries(['sandbox', 'effort', 'prompt'].map(key => [key, continued.request[key]])),
     { sandbox: 'read-only', effort: 'low', prompt: brief });
   assert.equal(f.capture.processes.filter(p => p.kind === 'spawn' && p.request.argv[2] === 'task').at(-1).request.input, brief);
-  const ordinary = "Duet's native adapter needs review.\nDUET:--sandbox read-only\n";
+  const ordinary = "Fugato's native adapter needs review.\nDUET:--sandbox read-only\n";
   assert.equal((await f.turn(ordinary, 3)).status, 'completed');
   assert.equal(f.jobs().find(job => job.request.prompt === ordinary).request.prompt, ordinary);
   // Neither half of the known framing is sufficient to strip user text.
@@ -2189,7 +2191,7 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   assert.equal(dispatch.input, brief);
   assert.equal(dispatch.argv[dispatch.argv.indexOf('--session-cwd') + 1], `${f.root}/repo`);
   assert.equal(dispatch.argv[dispatch.argv.indexOf('--cwd') + 1], cwd);
-  const job = JSON.parse(spawnSync(process.execPath, [plugin + '/bin/duet', 'status', result.jobId, '--json', '--cwd', cwd,
+  const job = JSON.parse(spawnSync(process.execPath, [plugin + '/bin/fugato', 'status', result.jobId, '--json', '--cwd', cwd,
     '--session', 'native-session'], { env: f.env, encoding: 'utf8' }).stdout).job;
   assert.equal(job.request.model, 'gpt-6-sol'); assert.equal(job.request.effort, 'high');
   assert.equal(job.request.sandbox, 'read-only'); assert.equal(job.request.serviceTier, 'priority');
@@ -2214,7 +2216,7 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   const report = JSON.parse(final.chunks.filter(c => c.stream === 'stdout').map(c => c.text).join('').trim().split('\n').at(-1));
   assert.ok(isC2Report(report)); assert.ok(isC2Report(result));
   assert.deepEqual(result, { ...report, next: 'SendMessage to native-worker to continue' });
-  t.diagnostic(JSON.stringify({ header: 'DUET: --fork', command: 'duet task --fork', status: result.status,
+  t.diagnostic(JSON.stringify({ header: 'DUET: --fork', command: 'fugato task --fork', status: result.status,
     importId: imported.importId, importedThread: imported.threadId, resumedThread: runtime.lastThreadResume.threadId,
     turnThread: runtime.lastTurnStart.threadId, claudeMdSource: job.request.claudeMd.source,
     developerInstructions: runtime.lastThreadResume.developerInstructions, nativeReportMatchesC2: true }));
@@ -2942,7 +2944,7 @@ async function nativeStability() {
     }
     const recovery = { status, jobId: 'task-1', summary: 'Fixture recovery',
       blockers: [{ code: 'thread_busy', message: 'Fixture unresolved turn' }],
-      next: 'duet result task-1 --report', details: 'duet result task-1 --details' };
+      next: 'fugato result task-1 --report', details: 'fugato result task-1 --details' };
     const spawn = f.$.process.spawn;
     f.$.process.spawn = request => {
       if (request.argv[2] === 'result') return Object.assign((async function* () {
@@ -2988,7 +2990,7 @@ async function nativeStability() {
   for (const status of ['unknown', 'unreachable']) for (const source of ['envelope', 'inferred', 'report']) {
     const { f, owner } = host(), run = f.$.process.run, spawn = f.$.process.spawn;
     const closed = 'native:closed:v1:native-session:native-agent';
-    const recovery = { status, jobId: 'task-1', blockers: [{ code: 'thread_busy' }], next: 'duet result task-1 --report' };
+    const recovery = { status, jobId: 'task-1', blockers: [{ code: 'thread_busy' }], next: 'fugato result task-1 --report' };
     let confirmed = false;
     f.$.process.run = async (argv, init) => {
       if (argv[2] === 'result') return { exitCode: 2, stdout: JSON.stringify(recovery) };
@@ -3591,7 +3593,7 @@ test('first native turn stays model-free when discovery or the host turn start i
   const unavailable = await step();
   assert.equal(unavailable.status, 'blocked');
   assert.equal(unavailable.blockers[0].code, 'native_adapter_unavailable');
-  assert.match(unavailable.next, /duet status.*background Bash.*duet task.*codex:native-fallback/);
+  assert.match(unavailable.next, /fugato status.*background Bash.*fugato task.*codex:native-fallback/);
   const markerFile = `${partial.root}/isolated/duet/native-unavailable.json`;
   const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8'));
   assert.equal(marker.reason, 'missing_turn_start');
@@ -3603,7 +3605,7 @@ test('first native turn stays model-free when discovery or the host turn start i
   assert.equal(start.status, 0, start.stderr);
   const context = JSON.parse(start.stdout).hookSpecificOutput.additionalContext;
   assert.ok(context.includes(marker.at));
-  assert.match(context, /prefer.*background Bash.*duet task/);
+  assert.match(context, /prefer.*background Bash.*fugato task/);
   const guide = await partial.invoke('prompt.compose', { tools: ['Agent'] }, async () => ({ sections: [] }));
   assert.deepEqual(guide.sections, []);
   assert.equal(partial.jobs().length, 0);

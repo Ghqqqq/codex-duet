@@ -441,12 +441,12 @@ test("the Bash hook auto-approves only roundtable/forum read forms and the paire
   const f = fixture(), launcher = new URL("../plugins/codex/bin/duet", import.meta.url).pathname;
   const env = { ...f.env, PATH: path.dirname(launcher) };
   const approved = command => approveDuet({ hook_event_name: "PreToolUse", tool_name: "Bash", permission_mode: "default", session_id: "chair-session", tool_use_id: "tool-a", cwd: f.dir, tool_input: { command } }, env).hookSpecificOutput?.permissionDecision === "allow";
-  assert.equal(approved(`duet roundtable status ${f.room.roomId} --json`), true);
-  assert.equal(approved(`duet forum read ${f.room.roomId} --after 0 --limit 2 --json`), true);
-  assert.equal(approved(`duet forum read ${f.room.roomId} --resource candidate/1 --json`), true);
-  assert.equal(approved("duet forum pending --json"), true);
-  assert.equal(approved(`duet task --roundtable ${f.room.roomId} --persona critic`), true);
-  for (const command of [`duet task --roundtable ${f.room.roomId}`, `duet task --persona critic`, "duet roundtable start", `duet roundtable close ${f.room.roomId}`, `duet forum post ${f.room.roomId} --kind decision --selects 1 --unreviewed 'Recorded reason'`, `duet forum ack ${f.room.roomId} --member critic --upto 1`, `duet forum read ${f.room.roomId} --kind decision`, "duet forum pending --session foreign"]) assert.equal(approved(command), false);
+  assert.equal(approved(`fugato roundtable status ${f.room.roomId} --json`), true);
+  assert.equal(approved(`fugato forum read ${f.room.roomId} --after 0 --limit 2 --json`), true);
+  assert.equal(approved(`fugato forum read ${f.room.roomId} --resource candidate/1 --json`), true);
+  assert.equal(approved("fugato forum pending --json"), true);
+  assert.equal(approved(`fugato task --roundtable ${f.room.roomId} --persona critic`), true);
+  for (const command of [`fugato task --roundtable ${f.room.roomId}`, `fugato task --persona critic`, "fugato roundtable start", `fugato roundtable close ${f.room.roomId}`, `fugato forum post ${f.room.roomId} --kind decision --selects 1 --unreviewed 'Recorded reason'`, `fugato forum ack ${f.room.roomId} --member critic --upto 1`, `fugato forum read ${f.room.roomId} --kind decision`, "fugato forum pending --session foreign"]) assert.equal(approved(command), false);
 });
 
 test("a roundtable task's fake Codex calls forum_post as its bound member and same-thread followups retain the frozen persona", async t => {

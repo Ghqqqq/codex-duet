@@ -34,8 +34,8 @@ files. Merges preserve other TOML text, use a private timestamped backup and an
 atomic write, and are idempotent. Dry-run makes no files or runtime calls.
 
 `ask` does not forward a browser-origin prompt to Claude like a Computer Use
-app request. If the browser runtime needs an MCP origin elicitation that Duet
-does not support, Duet returns a nonpersistent `cancel` and reports
+app request. If the browser runtime needs an MCP origin elicitation that Fugato
+does not support, Fugato returns a nonpersistent `cancel` and reports
 `approval_unsupported` / `blocked`. Existing origin grants can still allow access;
 with the user's explicit consent, the parent can persist one using
 `setup --allow-browser-origin <origin>`. The task's `--approve-browser-origin`
@@ -51,7 +51,7 @@ The parent verified the installed browser service's `approval_mode`/`never_ask`
 constants on 2026-10-16; this release uses that supplied evidence. Fixture tests
 verify serialization, backups and removal. They do not establish live browser
 behavior, bypass managed policies, or grant OS permissions. Run
-`duet runtime restart` after changing browser preferences when other live work
+`fugato runtime restart` after changing browser preferences when other live work
 has ended; the next task loads the preferences in a fresh broker.
 
 ## Per-origin persistence
@@ -97,7 +97,7 @@ files. Symlinks, hard links and unsupported inline/selected TOML fail clearly.
 Multi-file repair is not a cross-file transaction; if an external writer races,
 inspect the reported/error context and retry. Setup does not open a browser,
 copy credentials, or change managed browser/network policy. Run
-`duet runtime restart` when needed to refresh cached preferences, after other
+`fugato runtime restart` when needed to refresh cached preferences, after other
 live work ends.
 
 ## Source evidence
@@ -121,7 +121,7 @@ The parent's acceptance observed that the earlier `-32601` path left a per-threa
 deny. The source proves how a **decline** is persisted and that **cancel** is not;
 `Ut` alone does not establish where the earlier transport error became a decline.
 That part remains the parent's observed runtime behavior, not a fabricated source
-trace. Duet now returns a schema-valid nonpersistent cancellation for unsupported
+trace. Fugato now returns a schema-valid nonpersistent cancellation for unsupported
 MCP elicitations, through direct and broker transports:
 
 ```json

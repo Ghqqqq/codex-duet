@@ -188,7 +188,7 @@ export function useRun(cwd, sessionId, runId, env = process.env) {
 }
 function singleOpenRun(stateDir, env) {
   const open = listAt(stateDir, env).filter(run => run.state === "open");
-  if (open.length > 1) throw Object.assign(new Error(`Multiple open Duet runs in this workspace: ${open.map(run => run.runId).join(", ")}. Select one with duet journal use <runId> or --run <id>.`), {
+  if (open.length > 1) throw Object.assign(new Error(`Multiple open Fugato runs in this workspace: ${open.map(run => run.runId).join(", ")}. Select one with fugato journal use <runId> or --run <id>.`), {
     code: "RUN_SELECTION_AMBIGUOUS", runIds: open.map(run => run.runId)
   });
   return open.length ? { stateDir, runId: open[0].runId } : null;
@@ -204,7 +204,7 @@ function target(stateDir, sessionId, runId, env, latest = false) {
     const open = singleOpenRun(stateDir, env);
     if (open) return { ...open, fallback: true };
   }
-  throw new Error("No active Duet run; use journal start, journal use <runId> or --run <id>.");
+  throw new Error("No active Fugato run; use journal start, journal use <runId> or --run <id>.");
 }
 function findRun(stateDir, runId, env) {
   id(runId, "runId");
@@ -228,7 +228,7 @@ function findRun(stateDir, runId, env) {
 }
 function requireOpen(rows, runId, task = false) {
   if (rows.some(row => row.type === "run_closed")) throw new Error(`Run ${runId} is already closed.${task
-    ? " Start a new run with duet journal start, choose another open run with --run <id>, or skip linking with --run none." : ""}`);
+    ? " Start a new run with fugato journal start, choose another open run with --run <id>, or skip linking with --run none." : ""}`);
 }
 export function validateTaskRun(cwd, runId, env = process.env) {
   if (runId === undefined || runId === "none") return null;
@@ -447,7 +447,7 @@ function viewAt(stateDir, runId, rows, env, reports) {
     });
     if (unrecordedFinish) issues.push({
       kind: "unrecorded_finish", jobId, detail: `Linked job is ${job.status} without a recorded finish.`,
-      nextAction: `Inspect duet result ${jobId} --details to retry finish recording, then ${activity ? "check the saved activity report" : "verify the evidence and record a journal verdict"}.`
+      nextAction: `Inspect fugato result ${jobId} --details to retry finish recording, then ${activity ? "check the saved activity report" : "verify the evidence and record a journal verdict"}.`
     });
     if (!activity && (finished.has(jobId) || unrecordedFinish) && !job.latestVerdict) issues.push({
       kind: "no_verdict", jobId, detail: "Finished job has no orchestrator verdict.",
@@ -520,7 +520,7 @@ export function renderRun(view) {
 }
 export function activeRunContext(cwd, sessionId, env = process.env) {
   const run = readActiveRun(cwd, sessionId, env);
-  return run ? `Active Duet run ${run.runId}: ${short(run.goal, 80)}. Run node "$CODEX_COMPANION" journal show to recover criteria, verdicts and open work.` : null;
+  return run ? `Active Fugato run ${run.runId}: ${short(run.goal, 80)}. Run node "$CODEX_COMPANION" journal show to recover criteria, verdicts and open work.` : null;
 }
 
 // Automatic linkage is best effort (storage failures and an ambiguous choice

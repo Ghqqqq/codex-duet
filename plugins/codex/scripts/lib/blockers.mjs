@@ -23,7 +23,7 @@ export function classifyCodexError(info, message) {
     case "contextWindowExceeded":
       return { code: "context_window_exceeded", message: "The thread's context window is full. Start a fresh worker with a shorter brief." };
     case "unauthorized":
-      return { code: "auth_required", message: "The Codex runtime is not authorized. Run `duet setup` and log in to the isolated home." };
+      return { code: "auth_required", message: "The Codex runtime is not authorized. Run `fugato setup` and log in to the isolated home." };
     default:
       return null;
   }

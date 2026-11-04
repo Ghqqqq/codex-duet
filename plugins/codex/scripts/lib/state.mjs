@@ -121,9 +121,9 @@ const safeJobId = id => typeof id === "string" && /^[A-Za-z0-9_-]+$/.test(id);
 // (Math.random() can produce zero, hence an empty suffix is valid).
 const legacyJobId = id => typeof id === "string" && /^(?:task|review|job)-[a-z0-9]+-[a-z0-9]{0,6}$/.test(id);
 function jobPath(stateDir, id, suffix = ".json") {
-  if (!safeJobId(id)) throw new Error("Invalid Duet job ID.");
+  if (!safeJobId(id)) throw new Error("Invalid Fugato job ID.");
   const directory = path.resolve(stateDir, JOBS_DIR_NAME), file = path.resolve(directory, `${id}${suffix}`);
-  if (path.dirname(file) !== directory) throw new Error("Invalid Duet job ID: path leaves the jobs directory.");
+  if (path.dirname(file) !== directory) throw new Error("Invalid Fugato job ID: path leaves the jobs directory.");
   return file;
 }
 function within(parent, child) {
@@ -590,7 +590,7 @@ function readStateForWrite(stateDir) {
   const rebuilt = { ...defaultState(), jobs };
   writeJsonAtomically(stateFile, rebuilt);
   try {
-    process.stderr.write(`Duet: the job index ${stateFile} was unreadable; kept it as ${path.basename(kept)} and rebuilt the index from ${jobs.length} job records.` +
+    process.stderr.write(`Fugato: the job index ${stateFile} was unreadable; kept it as ${path.basename(kept)} and rebuilt the index from ${jobs.length} job records.` +
       `${unreadable.length ? ` Unreadable job records left out until their next update: ${unreadable.join(", ")}.` : ""}\n`);
   } catch {}
   return rebuilt;
@@ -722,7 +722,7 @@ function ensureMigrated(stateDir, lockOptions = {}) {
 
 // A job served in place lives in its legacy directory until its worker ends.
 function jobStateDir(cwd, jobId, lockOptions = {}) {
-  if (!safeJobId(jobId)) throw new Error("Invalid Duet job ID.");
+  if (!safeJobId(jobId)) throw new Error("Invalid Fugato job ID.");
   const stateDir = resolveStateDir(cwd);
   const status = ensureMigrated(stateDir, lockOptions);
   const pendingDir = status.pending.find(item => item.id === jobId)?.stateDir;
@@ -797,7 +797,7 @@ function mergeSnapshot(state, current) {
 }
 
 function commitState(stateDir, previousState, state, protectedId = null) {
-  for (const job of state.jobs ?? []) if (!safeJobId(job?.id)) throw new Error("Invalid Duet job ID.");
+  for (const job of state.jobs ?? []) if (!safeJobId(job?.id)) throw new Error("Invalid Fugato job ID.");
   const nextJobs = pruneJobs(state.jobs ?? [], stateDir, new Map(), protectedId);
   const nextState = {
     version: STATE_VERSION,

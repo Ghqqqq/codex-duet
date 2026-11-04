@@ -110,7 +110,7 @@ import {
 // Preserve the launcher identity across blocking availability/startup work.
 const LAUNCH_PARENT_PID = process.ppid;
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
-const DUET_INVOCATION = process.argv[1] === path.join(ROOT_DIR, "bin", "duet");
+const DUET_INVOCATION = ["fugato", "duet"].some(name => process.argv[1] === path.join(ROOT_DIR, "bin", name));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
 // Delegated workers (--report) answer with this schema, so the parent gets a
 // declared status and findings instead of inferring them from prose.
@@ -143,7 +143,7 @@ function writeDirectLineSync(payload) {
 }
 
 const COMMAND_USAGE = {
-  journal: `Usage: duet journal <start|use|add|close|show|validate|list> [options]
+  journal: `Usage: fugato journal <start|use|add|close|show|validate|list> [options]
 Durable run criteria, verdicts and decisions in the isolated home.
   start [--switch]  Stdin JSON: {"goal":"...","criteria":["..."]}; prints {runId}.
     --switch leaves the previous run open, selects the new run and also prints previousRunId.
@@ -172,7 +172,7 @@ Start/use need CODEX_COMPANION_SESSION_ID. Add/close/show/validate use the sessi
 Without an active run, add/close and task linking use the sole open workspace run; with several open
 runs add/close require journal use <runId> or --run, and tasks stay unlinked. Only use/start change the active pointer.
 Show/validate fall back to the newest workspace run when none is active.`,
-  task: `Usage: duet task [options] <<'DUET_TASK'
+  task: `Usage: fugato task [options] <<'DUET_TASK'
 Read the brief only from stdin; implies --direct. Fresh unless --to/--thread/--continue/--resume/--resume-last.
   --help, -h  Show help without starting anything; unknown task flags are errors.
   --name <label>  Prefer this worker name on a fresh thread; follow-ups keep their name.
@@ -194,9 +194,9 @@ Read the brief only from stdin; implies --direct. Fresh unless --to/--thread/--c
     CODEX_COMPANION_FORK_BUDGET_BYTES sets the transcript slice budget (default 2 MiB).
   --no-claude-md  Disable automatic Claude instruction forwarding for a fresh thread.
     CODEX_COMPANION_CLAUDE_MD=0 also disables it. Existing threads retain their instructions.
-  --model, -m <model|spark>  Built-in gpt-6-astra, overridden by duet setup --default-model.
+  --model, -m <model|spark>  Built-in gpt-6-astra, overridden by fugato setup --default-model.
     Explicit spark is resolved by the runtime.
-  --effort <effort>  Built-in xhigh, overridden by duet setup --default-effort.
+  --effort <effort>  Built-in xhigh, overridden by fugato setup --default-effort.
     Accepts none, minimal, low, medium, high, xhigh, max and efforts in the isolated model cache.
   --fast  Priority speed; --normal  Normal speed (fresh default); choose one.
   --cwd, -C <dir>  Workspace directory; --session <id>  Override the Claude session id.
@@ -212,40 +212,40 @@ Read the brief only from stdin; implies --direct. Fresh unless --to/--thread/--c
   --question-timeout-sec <s>  Answer deadline (900); --timeout-sec <s>  Wait budget (3600; max 3600).
 Direct conflicts: follow, detached, background, json, feed-limit, min-interval-sec.
 Run each task/answer/wait as Bash(command: <shell below>, run_in_background: true, timeout: 600000).
-duet task --model '<model>' --effort '<effort>' --normal <<'DUET_TASK'
+fugato task --model '<model>' --effort '<effort>' --normal <<'DUET_TASK'
 <brief: objective, context, owned paths, constraints, acceptance criteria>
 DUET_TASK
 Parallel jobs: dispatch separate task calls; use disjoint owned paths or separate --cwd values.
 Follow-up (replace Ada with the report's worker):
-duet task --to Ada <<'DUET_TASK'
+fugato task --to Ada <<'DUET_TASK'
 Apply the requested follow-up within the original owned paths.
 DUET_TASK
 Use single-quoted arguments and DUET_TASK/DUET_ANSWER heredocs. Double quotes, pipes,
 compound commands and flags outside the permission hook's allowlist use normal permissions.
-Result: the report arrives with the completion notification. Only if missing: duet result <worker>.
+Result: the report arrives with the completion notification. Only if missing: fugato result <worker>.
 Report v2: status, worker, jobId, summary; nonempty blockers/question/changedFiles/checks/assumptions/keyFindings;
 optional usage (inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, totalTokens)
 contains integer counts for this turn only, is omitted when unknown, and precedes next and details.
 question.optionsOmitted counts choices removed to fit the 2000-byte envelope excluding summary.
-next is the suggested command or null; details is duet result '<jobId>' --details, always the exact job.
+next is the suggested command or null; details is fugato result '<jobId>' --details, always the exact job.
   completed: verify the summary, diff and checks; checks.ran is captured, checks.claimed is Codex's account.
-  running: duet wait <worker> in background Bash; wait for its notification.
-  needs_answer: use next verbatim, or duet answer <worker> --question '<questionId>' with stdin.
+  running: fugato wait <worker> in background Bash; wait for its notification.
+  needs_answer: use next verbatim, or fugato answer <worker> --question '<questionId>' with stdin.
     A bare answer selects whatever question is pending now, possibly a newer one. See answer --help.
-  error: check duet status before resubmitting. For stopped/blocked/failed work, inspect --details.
+  error: check fugato status before resubmitting. For stopped/blocked/failed work, inspect --details.
 Never parse output files, poll or run two waits for one job. Continue user-stopped work only with consent.
 Compatibility: node "$CODEX_COMPANION" <subcommand> still works. Its task accepts positional text,
 --prompt-file <file>, --report/--json, --follow (feed wait), --detached (return handles),
 --background (legacy launch), and --feed-limit <n> (60; 0 unlimited), outside direct mode.`,
-  models: `duet models lists models offered by the current Codex account.
-Usage: duet models [--json] [--all]
+  models: `fugato models lists models offered by the current Codex account.
+Usage: fugato models [--json] [--all]
 Uses app-server model/list, falling back to the isolated model cache; reports the source.
   --json  Model descriptions, efforts, context windows and effective tiers with sources.
   --all  Include hidden models; --help, -h  Help without starting the runtime.`,
-  setup: `duet setup reports invocation availability, selected runtime source and readiness.
+  setup: `fugato setup reports invocation availability, selected runtime source and readiness.
   --agent-memory <on|off>  Workspace/role memory in the isolated home (default off).
-  --max-concurrent <n|off>  Duet-wide worker turn limit (default off).
-Usage: duet setup [options]
+  --max-concurrent <n|off>  Fugato-wide worker turn limit (default off).
+Usage: fugato setup [options]
 Check isolated runtime readiness or change setup; --help, -h exits without changes.
   --cwd, -C <dir>  Workspace; --json  JSON output; --dry-run  Preview a setup change.
   --sync-tools  Sync tools; --profile <chrome|codex-app>  Tool profile; --replace-cua  Replace CUA config.
@@ -263,14 +263,14 @@ Check isolated runtime readiness or change setup; --help, -h exits without chang
   --computer-use-approval <mirror|ask>  App policy; --list-computer-apps  List apps.
   --allow-computer-app <bundle-id>, --revoke-computer-app <bundle-id>  Change saved apps (repeatable).
   --enable-review-gate, --disable-review-gate  Toggle stop-time review gate (always read-only, also in plan mode).`,
-  review: `Usage: duet review [options]
+  review: `Usage: fugato review [options]
 Read-only native review; no focus text. --help, -h exits without starting a review.
   --base <ref>  Base revision; --scope <auto|working-tree|branch>  Review target.
   --model, -m <model>  Model; --cwd, -C <dir>  Workspace; --json  JSON output.
   --effort <effort>  Reasoning effort; model and effort default to the saved worker defaults.
   --args-stdin  Read raw review arguments via a single-quoted heredoc (e.g. DUET_ARGS), without shell expansion.
   --wait, --background  Accepted routing hints; this helper stays in the foreground.`,
-  "adversarial-review": `Usage: duet adversarial-review [options] [focus text]
+  "adversarial-review": `Usage: fugato adversarial-review [options] [focus text]
 Read-only adversarial review. --help, -h shows help.
 Unknown flags within 2 edits of a known option are rejected as likely typos;
 other unknown flags remain focus text. Use -- for literal typo-like focus text.
@@ -280,49 +280,49 @@ other unknown flags remain focus text. Use -- for literal typo-like focus text.
   --args-stdin  Read raw review arguments via a single-quoted heredoc (e.g. DUET_ARGS), without shell expansion.
   --wait, --background  Accepted routing hints; this helper stays in the foreground.
   --  Treat remaining tokens, including help flags, as literal focus text.`,
-  transfer: `Usage: duet transfer [--source <claude-jsonl>] [--cwd <dir>] [--json]
+  transfer: `Usage: fugato transfer [--source <claude-jsonl>] [--cwd <dir>] [--json]
 Import a Claude transcript; source defaults to the current session transcript.
   --args-stdin  Read raw arguments from stdin without shell expansion (use a single-quoted heredoc).
   --cwd, -C  Workspace; --json  JSON output; --help, -h  Show help.`,
-  status: `Usage: duet status [worker|jobId|--thread <id>] [options]
+  status: `Usage: fugato status [worker|jobId|--thread <id>] [options]
 Show session jobs or a selected worker/job/thread; --all includes other sessions.
-Example: duet status
+Example: fugato status
   --wait  Wait for completion; --timeout-ms <ms>  Budget; --poll-interval-ms <ms>  Poll interval.
   --owner <id>  Renew that owner; omit for observation.
   --args-stdin  Read raw arguments from stdin without shell expansion (use a single-quoted heredoc).
   --cwd, -C <dir>  Workspace; --json  JSON output; --help, -h  Help.`,
-  result: `Usage: duet result <worker|jobId> [--details] [--cwd <dir>]
+  result: `Usage: fugato result <worker|jobId> [--details] [--cwd <dir>]
 Read report v2 without starting a turn. Use when a completion notification lacks its report.
   --details  Full report: handles, settings, evidence, paths and recovery commands.
   --report  Report v2 (also the default); --json alone  Stored payload.
   --thread <id>  Latest tracked turn on that thread; jobId selects an older turn.
   --args-stdin  Read raw arguments from stdin without shell expansion (use a single-quoted heredoc).
   --cwd, -C <dir>  Workspace; --help, -h  Help.
-Example: duet result Ada --details`,
-  wait: `Usage: duet wait <worker|jobId> [options]
+Example: fugato result Ada --details`,
+  wait: `Usage: fugato wait <worker|jobId> [options]
 Resolve the owner and wait with direct output, renewing its lease. Never run two waits for one job.
 Run in background Bash; the report arrives with the completion notification.
-Only if the report is missing: duet result <worker>.
-Example: duet wait Ada
+Only if the report is missing: fugato result <worker>.
+Example: fugato wait Ada
   --owner <id>  Explicit owner; --after-question <id>  Wait past that question.
   --timeout-sec <s>  Budget (3600; max 3600); --quiet  Suppress progress.
-  --details  Full report instead of report v2; --direct  Implied by duet.
+  --details  Full report instead of report v2; --direct  Implied by fugato.
   --cwd, -C <dir>  Workspace; --help, -h  Help without attaching.
 Direct conflicts: json, feed-limit, min-interval-sec. The compatibility companion's non-direct
 wait also accepts --report, --json, --feed-limit <n> (60; 0 unlimited) and --min-interval-sec <s>.`,
-  adopt: `Usage: duet adopt <job-id> [--cwd <dir>] [--json]
+  adopt: `Usage: fugato adopt <job-id> [--cwd <dir>] [--json]
 Take ownership of an orphaned job; --json prints its new owner and wait command.
   --cwd, -C  Workspace; --help, -h  Show help without adopting.`,
-  answer: `Usage: duet answer <worker|jobId> --question '<questionId>' [options] <<'DUET_ANSWER'
+  answer: `Usage: fugato answer <worker|jobId> --question '<questionId>' [options] <<'DUET_ANSWER'
 Use the report's next command verbatim, or retain its displayed question ID explicitly.
 Resolve the owner, submit stdin once, and wait on the same turn.
 Run ONE background Bash call (run_in_background: true, timeout: 600000):
-duet answer Ada --question '<questionId>' <<'DUET_ANSWER'
+fugato answer Ada --question '<questionId>' <<'DUET_ANSWER'
 <answer text>
 DUET_ANSWER
 Never pass answer text on the command line or start a second wait.
 Replace <questionId> with the ID you saw. --question rejects a stale/answered ID.
-A bare duet answer <worker> answers whatever question is pending now, which may be newer
+A bare fugato answer <worker> answers whatever question is pending now, which may be newer
 than the one you saw. Native SendMessage already pins the displayed question and is unaffected.
 Computer Use approvals accept only an exact displayed option label, its number 1-4,
 or call/once/task/always/deny/no. Answers are trimmed and case-insensitive; exact labels
@@ -333,25 +333,25 @@ A different owner or attached wait is refused without submitting.
   --question <id>  Pin the displayed question; omission selects the currently pending question.
   --timeout-sec <s>  Wait budget (3600; max 3600); --quiet  JSON line only; --direct  Implied.
   --cwd, -C <dir>  Workspace; --help, -h  Help without answering.
-The report arrives with the completion notification; only if missing: duet result <worker>.
+The report arrives with the completion notification; only if missing: fugato result <worker>.
 The compatibility companion supports --json receipts without --direct.`,
-  runtime: `Usage: duet runtime <status|restart> [--cwd <dir>] [--json]
+  runtime: `Usage: fugato runtime <status|restart> [--cwd <dir>] [--json]
 Inspect or retire this workspace's shared Codex runtime.
   status  Show the selected Codex binary, source, version and saved broker without starting a runtime.
   restart  Retire the broker only when idle; the next task starts a fresh broker.
 Busy brokers refuse restart and report running workspace workers.
   --cwd, -C <dir>  Workspace; --json  JSON output; --help, -h  Help without contacting the broker.`,
-  cancel: `Usage: duet cancel [<worker|jobId> | --all] [--cwd <dir>] [--json]
+  cancel: `Usage: fugato cancel [<worker|jobId> | --all] [--cwd <dir>] [--json]
 Cancel the selected active job and report whether interruption was confirmed.
-Example: duet cancel Ada
+Example: fugato cancel Ada
 Omit the target only when the session has one active job.
   --all  Cancel every active job of this Claude session in the workspace; cannot be combined with a target.
   --args-stdin  Read raw arguments from stdin without shell expansion (use a single-quoted heredoc).
   --cwd, -C <dir>  Workspace; --json  JSON confirmation; --help, -h  Help without cancelling.`,
-  cleanup: `Usage: duet cleanup [--dry-run] [--days <N>] [--json]
+  cleanup: `Usage: fugato cleanup [--dry-run] [--days <N>] [--json]
 Remove eligible ended jobs, inactive runs, markers and unreferenced threads.
   --dry-run  Preview only; --days  Retention age; --json  JSON details; --help, -h  Show help without cleanup.`,
-  "ultra-codex": `Usage: duet ultra-codex [on|off|status] [options]
+  "ultra-codex": `Usage: fugato ultra-codex [on|off|status] [options]
 Set or inspect ultra orchestration for this Claude session (default action: status).
   on replaces another active mode; off disables ultra only; status reports the active mode.
   --quick, --thorough  Scale for on (default auto); choose at most one.
@@ -363,7 +363,7 @@ Set or inspect ultra orchestration for this Claude session (default action: stat
   --cwd, -C <dir>  Workspace; --session <id>  Override the Claude session id.
   --json  JSON output; --help, -h  Show help without changing mode.
 Tasks run through /codex:ultra-codex <task>; this CLI accepts controls only.`,
-  pair: `Usage: duet pair [on|off|status] [options]
+  pair: `Usage: fugato pair [on|off|status] [options]
 Set or inspect pair orchestration for this Claude session (default action: status).
   on replaces another active mode; off disables pair only; status reports the active mode.
   Pair uses one primary Codex thread and at most two rework rounds; it has no mode options.
@@ -371,7 +371,7 @@ Set or inspect pair orchestration for this Claude session (default action: statu
   --cwd, -C <dir>  Workspace; --session <id>  Override the Claude session id.
   --json  JSON output; --help, -h  Show help without changing mode.
 Tasks run through /codex:pair <task>; this CLI accepts controls only.`,
-  duel: `Usage: duet duel [on|off|status] [options]
+  duel: `Usage: fugato duel [on|off|status] [options]
 Set or inspect duel orchestration for this Claude session (default action: status).
   on replaces another active mode; off disables duel only; status reports the active mode.
   --rounds <n>  Total adversarial rounds for on, including the first (1-3; default 3).
@@ -379,7 +379,7 @@ Set or inspect duel orchestration for this Claude session (default action: statu
   --cwd, -C <dir>  Workspace; --session <id>  Override the Claude session id.
   --json  JSON output; --help, -h  Show help without changing mode.
 Tasks run through /codex:duel <task>; this CLI accepts controls only.`,
-  roundtable: `Usage: duet roundtable [on|off|status] [options]
+  roundtable: `Usage: fugato roundtable [on|off|status] [options]
 Set or inspect roundtable orchestration for this Claude session (default action: status).
   on replaces another active mode; off disables roundtable only.
   --intensity light|standard|deep|full  Default intensity for on (fresh default standard).
@@ -388,10 +388,10 @@ Set or inspect roundtable orchestration for this Claude session (default action:
   --cwd, -C <dir>  Workspace; --session <id>  Override the Claude session id.
   --json  JSON output; --help, -h  Show help without changing mode.
 Tasks run through /codex:roundtable <task>. Room commands: start, status <roomId>, pause, resume, close.`,
-  "task-worker": `Usage: duet task-worker --job-id <id> [--cwd <dir>]
+  "task-worker": `Usage: fugato task-worker --job-id <id> [--cwd <dir>]
 Internal detached worker entry point; --job-id selects a stored task.
   --cwd, -C  Workspace; --help, -h  Show help without starting a worker.`,
-  "task-resume-candidate": `Usage: duet task-resume-candidate [--cwd <dir>] [--json]
+  "task-resume-candidate": `Usage: fugato task-resume-candidate [--cwd <dir>] [--json]
 Find the latest resumable task in this session; --json prints its handles.
   --cwd, -C  Workspace; --help, -h  Show help.`
 };
@@ -402,12 +402,12 @@ function usageFor(subcommand) {
 
 function printUsage(subcommand) {
   console.log(usageFor(subcommand) ?? [
-    "Usage: duet <subcommand> [options]",
+    "Usage: fugato <subcommand> [options]",
     ...Object.values(COMMAND_USAGE).map(usage => `  ${usage.split("\n").find(line => line.startsWith("Usage: ")).slice("Usage: ".length)}`),
-    'Run duet <subcommand> --help (or -h) for flags and examples.',
-    "duet task: one owned job per background Bash call; report v2 arrives with the completion notification.",
+    'Run fugato <subcommand> --help (or -h) for flags and examples.',
+    "fugato task: one owned job per background Bash call; report v2 arrives with the completion notification.",
     "All companion commands accept --session <id>, overriding CODEX_COMPANION_SESSION_ID.",
-    "Help exits before starting anything. duet task and answer read text only from stdin."
+    "Help exits before starting anything. fugato task and answer read text only from stdin."
   ].join("\n"));
 }
 
@@ -525,8 +525,8 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   const canAccess = (file, mode) => {
     try { fs.accessSync(file, mode); return fs.statSync(file).isFile(); } catch { return false; }
   };
-  const bundledDuet = path.join(ROOT_DIR, "bin", "duet");
-  const pathDuet = executableOnPath("duet");
+  const bundledDuet = path.join(ROOT_DIR, "bin", "fugato");
+  const pathDuet = executableOnPath("fugato");
   const duetPath = pathDuet && canAccess(bundledDuet, fs.constants.X_OK) && fs.realpathSync(pathDuet) === fs.realpathSync(bundledDuet) ? pathDuet : bundledDuet;
   const companionPath = process.env.CODEX_COMPANION || null;
   const invocation = {
@@ -544,8 +544,8 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   }
   if (codexStatus.warning) nextSteps.push(codexStatus.warning.message);
   const quote = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
-  nextSteps.push(`Invocation: duet ${invocation.duet.available ? `works at ${duetPath}` : "is unavailable"}; CODEX_COMPANION ${companionAvailable ? "works" : companionPath ? "points to an unreadable file" : "is unset"}.`);
-  if (invocation.duet.available) nextSteps.push(`Use: ${duetPath === pathDuet ? "duet" : quote(duetPath)} task --cwd ${quote(workspaceRoot)} <<'BRIEF'\n<brief>\nBRIEF`);
+  nextSteps.push(`Invocation: fugato ${invocation.duet.available ? `works at ${duetPath}` : "is unavailable"}; CODEX_COMPANION ${companionAvailable ? "works" : companionPath ? "points to an unreadable file" : "is unset"}.`);
+  if (invocation.duet.available) nextSteps.push(`Use: ${duetPath === pathDuet ? "fugato" : quote(duetPath)} task --cwd ${quote(workspaceRoot)} <<'BRIEF'\n<brief>\nBRIEF`);
   if (authStatus.status === "unreachable") {
     nextSteps.push(UNREACHABLE_GUIDANCE);
   } else if (authStatus.status === "unknown") {
@@ -597,7 +597,7 @@ function projectDocsSummary() {
 
 async function handleModels(argv) {
   const { options, positionals } = parseCommandInput(argv, { booleanOptions: ["json", "all"] });
-  if (positionals.length) throw new Error("Usage: duet models [--json] [--all]");
+  if (positionals.length) throw new Error("Usage: fugato models [--json] [--all]");
   const catalog = await listModels({ all: Boolean(options.all) });
   const defaults = workerDefaultsSetup();
   const tiers = { strong: defaults.defaultModel, effort: defaults.defaultEffort, routine: defaults.ultraRoutineModel };
@@ -1015,7 +1015,7 @@ function threadBusyBlocker(workspaceRoot, stored) {
   const recoveryCommand = `node ${quote(fileURLToPath(import.meta.url))} status ${quote(stored.id)} --cwd ${quote(workspaceRoot)} --json`;
   const condition = ACTIVE.has(stored.status) ? "is already running" : "has an unresolved turn";
   const cancelCommand = ACTIVE.has(stored.status) || unresolvedTask(stored)
-    ? `node ${quote(path.join(ROOT_DIR, "bin", "duet"))} cancel ${quote(stored.id)} --cwd ${quote(workspaceRoot)} --json` : null;
+    ? `node ${quote(path.join(ROOT_DIR, "bin", "fugato"))} cancel ${quote(stored.id)} --cwd ${quote(workspaceRoot)} --json` : null;
   const ownerReport = directReport(progressSnapshot(stored), stored);
   const blocker = { code: "thread_busy", predecessorJobId: stored.id, predecessorStatus: stored.status,
     message: `Codex thread ${stored.threadId} ${condition} in task ${stored.id}. ${cancelCommand ? "Use recoveryCommand to check it, or cancelCommand to interrupt that exact turn and confirm it stopped." : "Resolve that predecessor with the recovery command before continuing."}`,
@@ -1721,7 +1721,7 @@ async function handleTask(argv) {
     throw new Error("--dispatch-nonce requires --direct, a session id, and a valid nonce (1-1024 identifier characters).");
   }
   validateDirectOptions(argv, DIRECT_OPTION_CONFLICTS.task, options);
-  if (DUET_INVOCATION && (positionals.length || options["prompt-file"] !== undefined)) throw new Error("Pass the duet task brief only on stdin.");
+  if (DUET_INVOCATION && (positionals.length || options["prompt-file"] !== undefined)) throw new Error("Pass the fugato task brief only on stdin.");
   if (options.fork) {
     for (const flag of ["to", "thread", "continue", "resume", "resume-last"]) {
       if (options[flag] !== undefined) throw new Error(`--fork cannot be combined with --${flag}. Use --to for a follow-up after the fork completes.`);
@@ -2293,7 +2293,7 @@ export async function reconcileLostTurn(workspaceRoot, job, { turnResult = null,
       if (result.turnStatus === "interrupted") {
         // For a failed job with a result, unresolvedTask above established a
         // transport loss (including legacy diagnostics). A dead wrapper alone
-        // is insufficient evidence. Recorded Duet stops always take precedence.
+        // is insufficient evidence. Recorded Fugato stops always take precedence.
         const reason = stopReason ?? (latest.status === "failed" && latest.result ? "codex_runtime_restarted" : null);
         if (reason) Object.assign(result, { interruptionReason: reason, interruptionConfirmed: true });
         if (stopReason) provenance.recovery.interruptRequested = true;
@@ -3144,7 +3144,7 @@ async function handleOrchestrationMode(argv, modeName) {
     const preamble = options["for-command"]
       ? `Usage: /codex:${verb} ${usage}\nIf the arguments describe a task, Read ${PROTOCOL_PATH} (protocol v${payload.protocolVersion}) before orchestrating; otherwise do not read it.\nFor this task, apply the shared sections and "${heading}" only. Task-prefix options override saved options; a one-shot task leaves the session mode unchanged.\n`
       : "";
-    const defaultLine = defaultMode === "off" ? "" : `default mode: ${defaultMode} (duet setup --default-mode)\n`;
+    const defaultLine = defaultMode === "off" ? "" : `default mode: ${defaultMode} (fugato setup --default-mode)\n`;
     const modelLine = personaModels ? `persona models: ${Object.entries(personaModels).map(([id, entry]) => `${id} ${entry.model.value}/${entry.effort.value}`).join(", ")}`
       : `models: worker ${models.model}/${models.effort}, ultra routine ${models.routineModel}`;
     const roomLine = latestRoom ? `latest room: ${latestRoom.roomId} (${latestRoom.status}, ${latestRoom.intensity}); needs the chair: ${latestRoom.attention.length}; members ${latestRoom.members.map(member => `${member.name}:${member.status} workspace ${member.workspace.path} (${member.workspace.hasChanges === null ? "changes unknown" : member.workspace.hasChanges ? "changed" : "clean"})`).join(", ")}; open items ${latestRoom.counts.openItems}\n` : "";
@@ -3323,7 +3323,7 @@ async function handleJournal(argv) {
   }
   if (action === "list") {
     const runs = listRuns(cwd);
-    outputCommandResult(runs, `${runs.map(run => `${run.runId} ${run.state}${run.judgment ? ` (${run.judgment})` : ""}: ${snippet(run.goal, 100)}`).join("\n") || "No Duet runs."}\n`, options.json);
+    outputCommandResult(runs, `${runs.map(run => `${run.runId} ${run.state}${run.judgment ? ` (${run.judgment})` : ""}: ${snippet(run.goal, 100)}`).join("\n") || "No Fugato runs."}\n`, options.json);
     return;
   }
   if (action === "show") {

@@ -52,10 +52,10 @@ function rememberNotice(id, deliveryId) {
   noticeTurns.set(id, deliveryId);
   if (noticeTurns.size > 256) noticeTurns.delete(noticeTurns.keys().next().value);
 }
-const noticeId = text => typeof text === 'string' && /^(?:The coordinator sent a message while you were working:\n)?\[Duet roundtable notice (roundtable:[a-zA-Z0-9:_-]{1,240})\](?:\n|$)/.exec(text)?.[1];
+const noticeId = text => typeof text === 'string' && /^(?:The coordinator sent a message while you were working:\n)?\[(?:Fugato|Duet) roundtable notice (roundtable:[a-zA-Z0-9:_-]{1,240})\](?:\n|$)/.exec(text)?.[1];
 function wakeText(attempt) {
   const suffix = '\n\nRead the forum, answer what is addressed to you, and continue toward the roundtable goal.';
-  const text = noticeId(attempt.text) ? attempt.text : `[Duet roundtable notice ${attempt.deliveryId}]\n${attempt.text}`;
+  const text = noticeId(attempt.text) ? attempt.text : `[Fugato roundtable notice ${attempt.deliveryId}]\n${attempt.text}`;
   const available = MAX_NOTICE_CHARS - suffix.length;
   if (text.endsWith(suffix) && text.length <= MAX_NOTICE_CHARS) return text;
   return (text.length > available ? text.slice(0, available - 1) + '…' : text) + suffix;
@@ -64,7 +64,7 @@ async function waitingNotice($, entry, key, attempt, lease) {
   if (attempt.prompted || await observed($, lease, () => $.clock.now()) - attempt.readyAt < WAKE_GRACE_MS) return;
   await change($, key, current => ({ ...current, attempt: { ...current.attempt, prompted: true } }), lease);
   const result = await observed($, lease, () => $.session.append({ message: { type: 'user', content: [{ type: 'text',
-    text: `Roundtable ${entry.roomId}: ${entry.name} have updates waiting; run \`duet roundtable status ${entry.roomId}\` to deliver them.` }] } }));
+    text: `Roundtable ${entry.roomId}: ${entry.name} have updates waiting; run \`fugato roundtable status ${entry.roomId}\` to deliver them.` }] } }));
   if (result?.deny !== undefined) await change($, key, current => ({ ...current, attempt: { ...current.attempt, prompted: false } }), lease);
 }
 
@@ -142,7 +142,7 @@ async function run($, state, args, { input = '', timeoutMs = 5000, deadline, lea
       if (resolved.exitCode !== 0 || !/^(\/|[A-Za-z]:[\\/])/.test(executable) || /[\r\n]/.test(executable)) throw new Error('Node executable unavailable.');
       lease.loop.node = executable;
     }
-    request = { argv: [lease.loop.node, `${$.plugin.root}/bin/duet`, ...args, '--cwd', state.cwd, '--session', state.session], cwd: state.cwd, input };
+    request = { argv: [lease.loop.node, `${$.plugin.root}/bin/fugato`, ...args, '--cwd', state.cwd, '--session', state.session], cwd: state.cwd, input };
   } else request = await command($, state, args, input, timing);
   // Room commands are session-scoped and deliberately reject --cwd. Keep the
   // helper's process cwd and Node resolution, omitting only its CLI cwd pair.
@@ -292,7 +292,7 @@ async function deliverMember($, context, entry, deadline, lease, wake = false) {
     if (!active(job) && !entry.wake) { await finish(maxSeq); return; }
     const text = entry.text;
     if (typeof text !== 'string' || !text.trim() || text.length > 65536) return;
-    attempt = { maxSeq, text: `[Duet roundtable notice roundtable:${entry.roomId}:${entry.name}:${maxSeq}]\n${text}`, wake: entry.wake, jobId: job.id, phase: active(job) ? 'steer' : 'idle',
+    attempt = { maxSeq, text: `[Fugato roundtable notice roundtable:${entry.roomId}:${entry.name}:${maxSeq}]\n${text}`, wake: entry.wake, jobId: job.id, phase: active(job) ? 'steer' : 'idle',
       deliveryId: `roundtable:${entry.roomId}:${entry.name}:${maxSeq}` };
     record = { ...record, attempt };
     await write($, key, { ...record, receipt: undefined }, lease);

@@ -87,7 +87,7 @@ export function register(on) {
                 confirm = entries.filter(entry => unconfirmed.has(`${sessionId}:${entry.jobId}`));
                 release = entries.filter(entry => !unconfirmed.has(`${sessionId}:${entry.jobId}`));
                 const existing = e.context ?? [];
-                const line = `Duet: ${release.length === 1 ? "1 worker" : `${release.length} workers`} ended while nothing was waiting for ${release.length === 1 ? "it" : "them"}: ${release.map(entry =>
+                const line = `Fugato: ${release.length === 1 ? "1 worker" : `${release.length} workers`} ended while nothing was waiting for ${release.length === 1 ? "it" : "them"}: ${release.map(entry =>
                   `${entry.worker} ${entry.status}${entry.reason ? ` (${entry.reason})` : ""} — ${entry.details}`).join("; ")}`;
                 if (release.length && Array.isArray(existing) && existing.every(item => typeof item === "string" && item.length <= 100000)
                     && existing.reduce((sum, item) => sum + item.length, line.length) <= 200000) context = [...existing, line];

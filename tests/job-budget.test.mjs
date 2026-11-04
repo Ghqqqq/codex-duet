@@ -166,8 +166,8 @@ test("budgets default off; setup previews, saves and resets defaults and explici
   json(f.call("setup", "--default-max-minutes", "off", "--default-max-tokens", "off", "--json"));
   assert.equal(json(f.call("setup", "--json")).defaultMaxTokens, "off");
   const permission = command => approveDuet({ hook_event_name: "PreToolUse", tool_name: "Bash", permission_mode: "default", session_id: "fixture-session", tool_use_id: "budget-tool", cwd: f.repo, tool_input: { command } }, { ...f.env, PATH: path.dirname(process.execPath) });
-  assert.equal(permission("duet task --max-minutes 2.5 --max-tokens 300").hookSpecificOutput.permissionDecision, "allow");
-  assert.deepEqual(permission("duet task --max-tokens 1.5"), {});
+  assert.equal(permission("fugato task --max-minutes 2.5 --max-tokens 300").hookSpecificOutput.permissionDecision, "allow");
+  assert.deepEqual(permission("fugato task --max-tokens 1.5"), {});
   assert.equal(f.call("task", "--max-tokens", "0", "fixture").status, 1);
   assert.equal(f.call("setup", "--default-max-minutes", "0", "--json").status, 1);
 });

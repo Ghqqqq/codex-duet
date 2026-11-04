@@ -20,7 +20,7 @@ installed browser/desktop tools; preview the change first from the repository
 root:
 
 ```bash
-plugins/codex/bin/duet setup --sync-tools --profile codex-app --replace-cua --dry-run --json
+plugins/codex/bin/fugato setup --sync-tools --profile codex-app --replace-cua --dry-run --json
 ```
 
 After reviewing the preview, rerun without `--dry-run` to apply. The defaults
@@ -57,7 +57,7 @@ to **Codex Computer Use.app**. Setup does not grant OS permissions or run live t
 `tools.cuaReplReason` when it cannot launch. Other assets and extension connections
 remain unprobed. Missing optional CUA tools do not by themselves make core
 runtime/invocation/authentication readiness (`ready`) false.
-After tool/browser configuration changes, run `duet runtime restart` when
+After tool/browser configuration changes, run `fugato runtime restart` when
 other workers have finished to reload configuration on the next task. Restart
 Claude when switching to a different isolated home. A changed Codex binary is
 handled automatically; see [runtime selection](#runtime-selection).
@@ -87,16 +87,16 @@ choice); `setup --list-browser-origins --json` includes the same. See
 
 ## Claude permission mapping (opt-in)
 
-`duet setup --permission-mapping claude|off` controls native agents' mapping
+`fugato setup --permission-mapping claude|off` controls native agents' mapping
 from Claude permission modes to Codex sandbox and approval policy. The default
 is `off`: the configured Codex sandbox and existing approval behavior apply.
 The setting is saved as `permission_mapping` in `<isolated-home>/duet/config.toml`.
 Run this change separately from other setup changes; `--dry-run` previews it.
 
 ```bash
-duet setup --permission-mapping claude --dry-run
-duet setup --permission-mapping claude
-duet setup --permission-mapping off
+fugato setup --permission-mapping claude --dry-run
+fugato setup --permission-mapping claude
+fugato setup --permission-mapping off
 ```
 
 With mapping enabled, the native adapter supplies the current Claude mode:
@@ -135,17 +135,17 @@ off, worktree placement alone does not confine a full-access Codex worker.
 ## Task budgets (opt-in)
 
 Both defaults are `off`. Save limits for new task turns with
-`duet setup --default-max-minutes <n|off>` and
-`duet setup --default-max-tokens <n|off>` (`default_max_minutes` and
-`default_max_tokens` in the shared Duet config). Minutes accept a positive
+`fugato setup --default-max-minutes <n|off>` and
+`fugato setup --default-max-tokens <n|off>` (`default_max_minutes` and
+`default_max_tokens` in the shared Fugato config). Minutes accept a positive
 number, including fractions; tokens require a positive integer. The two flags
 can combine with each other, `--dry-run` and `--json`, but run separately from
 other setup changes.
 
 ```bash
-duet setup --default-max-minutes 10 --default-max-tokens 100000 --dry-run
-duet setup --default-max-minutes 10 --default-max-tokens 100000
-duet setup --default-max-minutes off --default-max-tokens off
+fugato setup --default-max-minutes 10 --default-max-tokens 100000 --dry-run
+fugato setup --default-max-minutes 10 --default-max-tokens 100000
+fugato setup --default-max-minutes off --default-max-tokens off
 ```
 
 Override either default for one task with `--max-minutes <n>` or
@@ -165,8 +165,8 @@ and `--json`, but run separately from other setup changes.
 
 | Flag | Default | Effect and example |
 | --- | --- | --- |
-| `--agent-memory on\|off` | `off` | Load Duet-owned memory keyed by canonical workspace and agent role (the preset type for native agents). Enable with `duet setup --agent-memory on`; disable with `duet setup --agent-memory off`. |
-| `--max-concurrent <n\|off>` | `off` | Queue new Codex turns at a Duet-wide cap across workspaces/processes sharing this home. Set a positive integer with `duet setup --max-concurrent 4`; clear with `duet setup --max-concurrent off`. |
+| `--agent-memory on\|off` | `off` | Load Fugato-owned memory keyed by canonical workspace and agent role (the preset type for native agents). Enable with `fugato setup --agent-memory on`; disable with `fugato setup --agent-memory off`. |
+| `--max-concurrent <n\|off>` | `off` | Queue new Codex turns at a Fugato-wide cap across workspaces/processes sharing this home. Set a positive integer with `fugato setup --max-concurrent 4`; clear with `fugato setup --max-concurrent off`. |
 
 Memory is stored under `<isolated-home>/duet/agent-memory/<workspace-hash>/<role-hash>/MEMORY.md`
 and loaded up to 200 lines / 25 KiB. Workers may update it only when their
@@ -181,11 +181,11 @@ out with `CODEX_COMPANION_GIT_CONTEXT=0`. Skills declared by the plugin's public
 agent definition can be preloaded as bounded text; skills merely invoked in
 the parent are not forwarded. The shipped native/preset definitions currently
 declare no skills. Fork import omissions are visible as `forkSlice` in
-`duet result <worker> --details`; see [worker context](worker-operations.md#worker-context).
+`fugato result <worker> --details`; see [worker context](worker-operations.md#worker-context).
 
 ## Default worker models
 
-Discover the current account's model names with `duet models` (or `--json`),
+Discover the current account's model names with `fugato models` (or `--json`),
 then choose using the returned descriptions and supported efforts. Add `--all`
 to include hidden models. Agents load the model-invocable `codex:models` skill
 when asked to check, compare or change worker models or efforts, or when a
@@ -208,7 +208,7 @@ invalid or malformed preferences fall back to the built-in value; reading them
 does not throw.
 
 ```text
-duet setup --default-model <model|default> [--default-effort <effort|default>] [--ultra-routine-model <model|default>]
+fugato setup --default-model <model|default> [--default-effort <effort|default>] [--ultra-routine-model <model|default>]
 ```
 
 Each flag can also be used alone. The three flags may combine with one another
@@ -217,16 +217,16 @@ and `--dry-run`, but not with another setup change such as `--default-mode` or
 `/codex:setup` passes the same flags:
 
 ```bash
-duet setup --default-model gpt-6.1-sol --default-effort high --ultra-routine-model gpt-6.1-sol --dry-run
-duet setup --default-model gpt-6.1-sol --default-effort high --ultra-routine-model gpt-6.1-sol
+fugato setup --default-model gpt-6.1-sol --default-effort high --ultra-routine-model gpt-6.1-sol --dry-run
+fugato setup --default-model gpt-6.1-sol --default-effort high --ultra-routine-model gpt-6.1-sol
 /codex:setup --default-model gpt-6-astra --default-effort xhigh
-duet setup --ultra-routine-model spark
+fugato setup --ultra-routine-model spark
 ```
 
 Use `default` to remove the corresponding saved key and restore its built-in:
 
 ```bash
-duet setup --default-model default --default-effort default --ultra-routine-model default
+fugato setup --default-model default --default-effort default --ultra-routine-model default
 ```
 
 Model names use the existing alias normalization (`spark` remains an alias for
@@ -239,23 +239,23 @@ The selected model/runtime must support the effort. `--default-model` and
 `--ultra-routine-model` must also appear in the isolated model cache when it is
 available; hidden models count. When the cache was fetched within the last
 24 hours, an unknown name is refused before any write, with a hint to refresh
-the cache through `duet models` and retry. With an older cache, or without a
+the cache through `fugato models` and retry. With an older cache, or without a
 usable cache, a syntactically valid name is accepted with a warning. Codex
-refreshes the cache whenever it starts a runtime, so `duet models` also
-refreshes it; `duet models --all` includes hidden models. Cache validation does
+refreshes the cache whenever it starts a runtime, so `fugato models` also
+refreshes it; `fugato models --all` includes hidden models. Cache validation does
 not prove that a later dispatch will succeed.
 
 The setup change returns a JSON report with `file`, `defaultModel`,
 `defaultEffort` and `ultraRoutineModel`, showing each effective value and its
-`source` (`saved` or `built-in`). No-argument `duet setup` status includes the
+`source` (`saved` or `built-in`). No-argument `fugato setup` status includes the
 same effective values; human output adds
 `Default models: worker <model>/<effort>, ultra routine <routineModel>.`
-Mode reminders name the effective values. `duet ultra-codex status`,
-`duet pair status` and `duet duel status` show
+Mode reminders name the effective values. `fugato ultra-codex status`,
+`fugato pair status` and `fugato duel status` show
 `models: worker <model>/<effort>, ultra routine <routineModel>`; their JSON has
 `models: { model, effort, routineModel }`.
 
-`duet models` prefers the official app-server `model/list` API and falls back to
+`fugato models` prefers the official app-server `model/list` API and falls back to
 the isolated cache when the runtime or method is unavailable. It reports the
 source and fetch time. The JSON envelope is `{ source, fetchedAt, models, tiers }`;
 each model has `slug`, `displayName`, `description`, `efforts`, `defaultEffort`,
@@ -269,27 +269,27 @@ unavailable, the command exits nonzero with a `/codex:setup` hint.
 
 ## Worker dispatch
 
-`duet setup --dispatch auto|native|bash|default` changes the guidance Claude
+`fugato setup --dispatch auto|native|bash|default` changes the guidance Claude
 receives about dispatching workers. Run it separately from other setup changes;
 `--dry-run` previews the change. The saved `dispatch` key lives in
-`<isolated-home>/duet/config.toml`; `duet setup --json` reports the effective route.
+`<isolated-home>/duet/config.toml`; `fugato setup --json` reports the effective route.
 
 | Route | Guidance |
 | --- | --- |
 | `auto` (built-in default) | Start with the native agent; prefer background Bash after a recent native-unavailable observation. |
 | `native` | Always advertise native dispatch, even with a recorded unavailable observation. |
-| `bash` | Use background `duet task` through `codex:native-fallback` from the first dispatch. |
+| `bash` | Use background `fugato task` through `codex:native-fallback` from the first dispatch. |
 | `default` | Remove the saved route and restore `auto`. |
 
-Duet records an unavailable observation when the host never delivers the native
+Fugato records an unavailable observation when the host never delivers the native
 turn start. `auto` honors it for 24 hours after the last observation, or until
-`duet setup --dispatch` is run without `--dry-run`. These settings change guidance
+`fugato setup --dispatch` is run without `--dry-run`. These settings change guidance
 rather than disable a tool: explicit native calls remain possible. See the
 [dispatch recipe](direct-mode.md#native-subagent-default).
 
 ## Roundtable persona models
 
-`duet setup --persona-model <id>=<model>[:<effort>]` saves defaults in
+`fugato setup --persona-model <id>=<model>[:<effort>]` saves defaults in
 `[roundtable.personas.<id>]` in `<isolated-home>/duet/config.toml`. Repeat it
 for different personas; `<id>=default` removes both saved fields. A model-only
 change clears an earlier saved effort, allowing the intensity's built-in effort
@@ -305,11 +305,11 @@ intensity shifts, per-room overrides and examples.
 
 ## Default orchestration mode
 
-`duet setup --default-mode off|ultra|pair|duel|roundtable` saves the mode for fresh Claude
+`fugato setup --default-mode off|ultra|pair|duel|roundtable` saves the mode for fresh Claude
 sessions and `/clear`. Run it separately from other setup changes; add
 `--dry-run` to preview it. The `defaultMode` key lives in
 `<isolated-home>/duet/config.toml`; `off` is stored explicitly. Missing or invalid
-values also mean `off`, the default for new installs. `duet setup --json` and
+values also mean `off`, the default for new installs. `fugato setup --json` and
 each mode's `status --json` report `defaultMode`.
 
 This is opt-in because active orchestration consumes Codex quota, and duel also
@@ -341,12 +341,12 @@ only read. The isolated file is validated, backed up privately if it exists and
 written atomically; a second pass changes nothing.
 
 ```bash
-duet setup --list-computer-apps --json          # read-only preview
-duet setup --computer-use-approval ask          # stop syncing
-duet setup --computer-use-approval mirror       # default
-duet setup --allow-computer-app com.google.Chrome
-duet setup --revoke-computer-app com.apple.finder
-duet task --approve-computer-app com.google.Chrome <<'DUET_TASK'
+fugato setup --list-computer-apps --json          # read-only preview
+fugato setup --computer-use-approval ask          # stop syncing
+fugato setup --computer-use-approval mirror       # default
+fugato setup --allow-computer-app com.google.Chrome
+fugato setup --revoke-computer-app com.apple.finder
+fugato task --approve-computer-app com.google.Chrome <<'DUET_TASK'
 <brief for the explicitly approved app>
 DUET_TASK
 ```
@@ -376,8 +376,8 @@ Details: [Computer Use approvals](computer-use-approvals.md#forwarded-approvals-
 ## Browser and computer-use tooling
 
 ```bash
-duet setup --sync-tools --dry-run   # preview
-duet setup --sync-tools             # apply
+fugato setup --sync-tools --dry-run   # preview
+fugato setup --sync-tools             # apply
 ```
 
 Copies only allowlisted browser/computer-use tool settings into the isolated home
@@ -392,9 +392,9 @@ end, including on failure; they never claim an existing user tab.
 ## Browser origin consent
 
 ```bash
-duet setup --allow-browser-origin https://www.example.com
-duet setup --revoke-browser-origin https://www.example.com
-duet setup --list-browser-origins
+fugato setup --allow-browser-origin https://www.example.com
+fugato setup --revoke-browser-origin https://www.example.com
+fugato setup --list-browser-origins
 ```
 
 These write the browser runtime's own persisted approval file
@@ -402,7 +402,7 @@ These write the browser runtime's own persisted approval file
 browser service auto-approves exactly that origin without a prompt. Allowing an
 origin also removes stale per-thread denies for it. Origins must be bare
 `scheme://host[:port]` values: no paths, trailing slash, wildcards or userinfo.
-Only add origins the user has explicitly approved; Duet never adds one after a
+Only add origins the user has explicitly approved; Fugato never adds one after a
 denial.
 
 `task --approve-browser-origin <origin>` is narrower: it approves only the
@@ -415,9 +415,9 @@ the browser runtime does not persist as a deny. Details:
 ## Model transport
 
 ```bash
-duet setup --transport status   # read-only
-duet setup --transport http
-duet setup --transport websocket
+fugato setup --transport status   # read-only
+fugato setup --transport http
+fugato setup --transport websocket
 ```
 
 Switches the isolated home between the WebSocket and HTTP ChatGPT provider. Use
@@ -480,13 +480,13 @@ aliases even when their names contain no memory-directory component. This also
 covers symlinked configuration and memory directories. Later contexts are ignored
 because this event has no agent attribution. CLAUDE.md edits apply from the next
 Claude session. The forwarded text is capped at 60,000 UTF-16 units,
-including executor framing and omission notes. `duet result <worker> --details`
+including executor framing and omission notes. `fugato result <worker> --details`
 includes `claudeMd` metadata: source, completeness, approximate status and omissions.
 
 A valid loaded inventory remains authoritative even when the capture budget
 truncates it: omissions are reported without scanning filtered-out files back
 in. If the first inventory is unavailable or invalid, no snapshot is saved;
-Duet uses an approximate startup scan of
+Fugato uses an approximate startup scan of
 readable managed policy, user CLAUDE.md/rules and the ancestors of the Claude
 session's directory (the worker cwd when that is unknown). It cannot
 reproduce effective settings, exclusions, external-import approvals, inline
@@ -512,7 +512,7 @@ session and a fresh task to apply changed instructions. To disable forwarding,
 start a fresh task:
 
 ```bash
-duet task --fresh --no-claude-md <<'DUET_TASK'
+fugato task --fresh --no-claude-md <<'DUET_TASK'
 <brief>
 DUET_TASK
 ```
@@ -520,8 +520,8 @@ DUET_TASK
 `CODEX_COMPANION_CLAUDE_MD=0` disables forwarding globally for processes that
 inherit it. Opting out on a thread that already has forwarded instructions is
 rejected; use a fresh task. These opt-outs do not disable Codex's own AGENTS.md
-loading or its CLAUDE.md project fallback. `duet setup --project-docs agents-only`
-removes Duet's exact `project_doc_fallback_filenames = ["CLAUDE.md"]` default
+loading or its CLAUDE.md project fallback. `fugato setup --project-docs agents-only`
+removes Fugato's exact `project_doc_fallback_filenames = ["CLAUDE.md"]` default
 from the isolated config; custom lists remain unchanged.
 When forwarding covers every project CLAUDE.md on the worker's path and no
 `.codex/config.toml` on that path sets `project_doc_fallback_filenames`, the thread
@@ -530,7 +530,7 @@ reject per-thread config, the compatibility retry drops the override, so Codex's
 own CLAUDE.md fallback stays on and project instructions can arrive twice; see
 [delivery to workers](claude-md.md#delivery-to-workers).
 
-`duet task --fork` imports the current Claude transcript into a new Codex thread,
+`fugato task --fork` imports the current Claude transcript into a new Codex thread,
 then runs the stdin brief. The recorded label is “imported Claude conversation
 (fidelity not verified)”. It does not promise a lossless copy of Claude's context.
 `--source '<jsonl>'` overrides the source; the file must resolve beneath
@@ -553,4 +553,4 @@ use `--to` after the fork completes.
 | `CODEX_COMPANION_TRANSCRIPT_PATH` | Current Claude JSONL transcript, exported by SessionStart; `--source` overrides it for imports |
 
 Without a session ID, the launcher warns and scopes jobs to the workspace; they
-are not linked to a Claude session. Use `duet task --help` for dispatch options.
+are not linked to a Claude session. Use `fugato task --help` for dispatch options.

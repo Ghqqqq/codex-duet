@@ -15,7 +15,7 @@ import { PERSONA_IDS } from "./lib/roundtable-personas.mjs";
 import { budgetLimit } from "./lib/job-budget.mjs";
 import { readHookInput } from "./lib/fs.mjs";
 
-const launcher = fileURLToPath(new URL("../bin/duet", import.meta.url));
+const launchers = Object.fromEntries(["fugato", "duet"].map(name => [name, fileURLToPath(new URL(`../bin/${name}`, import.meta.url))]));
 const quote = value => `'${value.replace(/'/g, `'"'"'`)}'`;
 const safeId = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const target = value => /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(value);
@@ -33,13 +33,14 @@ const schemas = Object.fromEntries(Object.entries(COMMAND_OPTIONS).map(([verb, o
   }];
 }));
 
-export function trustedLauncher(env = process.env, cwd = process.cwd()) {
+export function trustedLauncher(env = process.env, cwd = process.cwd(), name = "duet") {
   try {
-    if (Object.keys(env).some(key => /^BASH_FUNC_duet(?:%%|\(\))$/.test(key))) return false;
+    const launcher = launchers[name];
+    if (Object.keys(env).some(key => key === `BASH_FUNC_${name}%%` || key === `BASH_FUNC_${name}()`)) return false;
     if (typeof env.PATH !== "string") return false;
     const expected = fs.realpathSync(launcher);
     for (const directory of [...env.PATH.split(path.delimiter), path.dirname(launcher)]) {
-      const candidate = path.resolve(cwd, directory || ".", "duet");
+      const candidate = path.resolve(cwd, directory || ".", name);
       try {
         fs.accessSync(candidate, fs.constants.X_OK);
         if (!fs.statSync(candidate).isFile()) continue;
@@ -59,7 +60,7 @@ export function approveDuet(input, env = process.env) {
   if (input?.hook_event_name !== "PreToolUse" || input.tool_name !== "Bash"
       || !["default", "acceptEdits", "bypassPermissions", "dontAsk", "auto"].includes(input.permission_mode)
       || !safeId(input.session_id)) return {};
-  // Claude's Bash sandbox must permit Duet's network and local sockets. Its
+  // Claude's Bash sandbox must permit Fugato's network and local sockets. Its
   // bypass flag is independent of the worker's validated --sandbox choice;
   // preserve it in updatedInput while still attaching the delivery binding.
   const command = input.tool_input?.command;
@@ -68,21 +69,24 @@ export function approveDuet(input, env = process.env) {
   const first = newline < 0 ? command : command.slice(0, newline);
   const heredoc = /[ \t]+<<'([A-Z][A-Z0-9_]{2,31})'$/.exec(first);
   const header = heredoc ? first.slice(0, heredoc.index) : first;
-  let resolved;
-  try {
-    resolved = fs.realpathSync(launcher);
-    fs.accessSync(resolved, fs.constants.X_OK);
-    if (!fs.statSync(resolved).isFile()) return {};
-  } catch { return {}; }
   // Only these exact launcher spellings are allowed. The quoted form also
   // works when the plugin path has shell syntax.
-  const executable = ["duet", quote(resolved), ...(/^[A-Za-z0-9_./:=,@%+-]+$/.test(resolved) ? [resolved] : [])]
-    .find(value => header.startsWith(value) && /^[ \t]$/.test(header[value.length] ?? ""));
+  let resolved, executable, launcherName;
+  for (const [name, launcher] of Object.entries(launchers)) {
+    try {
+      const candidate = fs.realpathSync(launcher);
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (!fs.statSync(candidate).isFile()) continue;
+      executable = [name, quote(candidate), ...(/^[A-Za-z0-9_./:=,@%+-]+$/.test(candidate) ? [candidate] : [])]
+        .find(value => header.startsWith(value) && /^[ \t]$/.test(header[value.length] ?? ""));
+      if (executable) { resolved = candidate; launcherName = name; break; }
+    } catch { /* An unavailable launcher is not trusted. */ }
+  }
   if (!executable) return {};
   const argumentsHeader = header.slice(executable.length).replace(/^[ \t]+/, "");
   // Recognize our own fully quoted absolute rewrite on a repeated hook call.
   if (!/^(?:task|answer|wait|result|status|cancel|runtime|roundtable|forum)(?=[ \t]|$)/.test(argumentsHeader)
-      && !(executable !== "duet" && /^'(?:task|answer|wait|result|status|cancel|runtime|roundtable|forum)'(?=[ \t]|$)/.test(argumentsHeader))) return {};
+      && !(executable !== launcherName && /^'(?:task|answer|wait|result|status|cancel|runtime|roundtable|forum)'(?=[ \t]|$)/.test(argumentsHeader))) return {};
   if (heredoc) {
     if (newline < 0) return {};
     const lines = command.slice(newline + 1).split("\n");
@@ -164,7 +168,7 @@ export function approveDuet(input, env = process.env) {
   if (flags.has("source") && !flags.get("fork")) return {};
   if (flags.has("continue") && ["to", "thread", "fresh", "resume", "resume-last", "sandbox", "model", "effort", "fast", "normal"].some(key => flags.has(key))) return {};
   if (flags.has("help") && (heredoc || [...flags.keys()].some(key => !["help", "session", "cwd"].includes(key)))) return {};
-  if (executable === "duet" && !trustedLauncher(env, input.cwd)) return {};
+  if (executable === launcherName && !trustedLauncher(env, input.cwd, launcherName)) return {};
   // Re-emit validated words literally: unquoted arguments (including our own
   // bindings) can still expand through zsh global aliases or =command lookup.
   const binding = [...(flags.has("session") ? [] : ["--session", input.session_id]), ...(delivers ? ["--tool-use-id", input.tool_use_id] : [])];

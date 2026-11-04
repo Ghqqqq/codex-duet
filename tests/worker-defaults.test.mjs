@@ -120,7 +120,7 @@ test("model setup validates both tiers against the isolated catalog and warns wh
   const before = snapshot(f.dir);
   const unknown = f.call("setup", "--default-model", "unknown-model", "--json");
   assert.equal(unknown.status, 1);
-  assert.match(unknown.stderr, /duet models/);
+  assert.match(unknown.stderr, /fugato models/);
   assert.equal(f.call("setup", "--ultra-routine-model", "unknown-model").status, 1);
   assert.deepEqual(snapshot(f.dir), before);
   const saved = json(f.call("setup", "--default-model", "fixture-hidden", "--ultra-routine-model", "fixture-hidden", "--json"));
@@ -133,11 +133,11 @@ test("model setup validates both tiers against the isolated catalog and warns wh
   fs.writeFileSync(cache, JSON.stringify({ models }));
   const undated = f.call("setup", "--ultra-routine-model", "new-routine", "--json");
   assert.deepEqual([stale, undated].map(result => ({ status: result.status,
-    ageWarning: result.status === 0 && JSON.parse(result.stdout).warnings.some(warning => /cache.*(?:48 hours|unknown age).*duet models/.test(warning))
+    ageWarning: result.status === 0 && JSON.parse(result.stdout).warnings.some(warning => /cache.*(?:48 hours|unknown age).*fugato models/.test(warning))
   })), [{ status: 0, ageWarning: true }, { status: 0, ageWarning: true }]);
   fs.rmSync(cache);
   const unchecked = json(f.call("setup", ...SETTINGS, "--json"));
-  assert.ok(unchecked.warnings.some(warning => /could not be checked.*duet models/.test(warning)));
+  assert.ok(unchecked.warnings.some(warning => /could not be checked.*fugato models/.test(warning)));
   assert.equal(readWorkerDefaults(f.env).model, "saved-worker");
   assert.ok(fs.existsSync(file));
 });

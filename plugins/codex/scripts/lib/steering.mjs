@@ -31,14 +31,14 @@ async function locked(jobFile, action) {
   const file = inboxPath(jobFile), deadline = Date.now() + 2000;
   let release;
   while (!(release = tryAcquirePidLock(`${file}.lock`))) {
-    if (Date.now() >= deadline) throw new Error("Duet steering inbox is busy.");
+    if (Date.now() >= deadline) throw new Error("Fugato steering inbox is busy.");
     await pause(10);
   }
   try {
     let inbox;
     try { inbox = read(file); }
     catch (error) { if (error.code !== "ENOENT") throw error; inbox = { version: 1, deliveries: [] }; }
-    if (inbox.version !== 1 || !Array.isArray(inbox.deliveries)) throw new Error("Invalid Duet steering inbox.");
+    if (inbox.version !== 1 || !Array.isArray(inbox.deliveries)) throw new Error("Invalid Fugato steering inbox.");
     // Compact terminal rows from older inboxes too, without losing receipts.
     let compacted = false;
     for (const row of inbox.deliveries) if (TERMINAL.has(row.status) && typeof row.text === "string") {
@@ -80,7 +80,7 @@ export async function handoffSteering(cwd, jobId, { deliveryId, text, sessionId,
   if (!sessionId) throw new Error("steer requires the owning Claude session.");
   const jobFile = resolveJobFile(cwd, jobId);
   const refused = await locked(jobFile, (inbox, job) => {
-    if (job.sessionId !== sessionId || (ownerId && job.ownerId !== ownerId)) throw new Error("Duet steering job ownership changed.");
+    if (job.sessionId !== sessionId || (ownerId && job.ownerId !== ownerId)) throw new Error("Fugato steering job ownership changed.");
     const existing = inbox.deliveries.find(row => row.deliveryId === deliveryId);
     if (existing) {
       if ((existing.textHash ?? digest(existing.text)) !== digest(text)) throw new Error("Steering delivery ID already belongs to different text.");

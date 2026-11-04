@@ -1,5 +1,5 @@
 {
-  "description": "Session lifecycle, orchestration mode reminder and the optional stop-time review gate for Duet.",
+  "description": "Session lifecycle, orchestration mode reminder and the optional stop-time review gate for Fugato.",
   "modules": ["./register.mjs"],
   "hooks": {
     "PreToolUse": [

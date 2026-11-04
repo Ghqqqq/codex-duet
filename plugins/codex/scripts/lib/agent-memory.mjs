@@ -35,7 +35,7 @@ export function prepareAgentMemory({ workspace, role = "worker" }, env = process
         content = lines.slice(0, 200).join("\n");
       } finally { fs.closeSync(fd); }
     }
-    return { text: `\n\n### Duet agent memory (${role})\nDuet-owned memory: ${file}\nUse this memory for this workspace and role. Update MEMORY.md only when the current sandbox already permits this path; do not widen the sandbox for memory. Keep durable notes concise.\n${content}${bounded ? "\n[Memory truncated to 200 lines / 25 KB.]" : ""}`,
+    return { text: `\n\n### Fugato agent memory (${role})\nFugato-owned memory: ${file}\nUse this memory for this workspace and role. Update MEMORY.md only when the current sandbox already permits this path; do not widen the sandbox for memory. Keep durable notes concise.\n${content}${bounded ? "\n[Memory truncated to 200 lines / 25 KB.]" : ""}`,
       agentMemory: { enabled: true, path: file, role, bounded } };
   } catch { return { text: "", agentMemory: { enabled: true, unavailable: true } }; }
 }

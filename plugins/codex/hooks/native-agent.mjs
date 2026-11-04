@@ -16,7 +16,7 @@ const HEARTBEAT_MS = 30000;
 const EARLY_HANDLES_MS = 1500;
 const READY = 'Native Codex workers ready: Agent(subagent_type: "codex:codex-native", prompt) — optional first line "DUET: <flags>"; SendMessage to continue or answer; stop from /tasks; live progress shows inside the agent and in codex-live.';
 const GUIDE_ID = 'codex:native-dispatch';
-const NATIVE_GUIDE = 'Native Codex workers are ready. Dispatch Codex with Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (a valid caller name is kept when free; otherwise the plugin assigns a scientist name and reports it in context); use codex:codex-reviewer for read-only review, codex:codex-investigator for read-only investigation, or codex:codex-implementer for workspace-write implementation. Presets inherit saved model/effort/speed defaults. An optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast|--normal --fork --cwd <dir> sets task flags; preset sandbox overrides are refused. The agent result is the Duet report; continue a worker or answer its question with SendMessage. In-process teammates support bounded assignments, parent follow-ups and stop; team task claiming, plan approval and peer mailboxes are unsupported. Browser work and Computer Use run natively: an app not yet approved arrives as an approval question answered through SendMessage. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.';
+const NATIVE_GUIDE = 'Native Codex workers are ready. Dispatch Codex with Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (a valid caller name is kept when free; otherwise the plugin assigns a scientist name and reports it in context); use codex:codex-reviewer for read-only review, codex:codex-investigator for read-only investigation, or codex:codex-implementer for workspace-write implementation. Presets inherit saved model/effort/speed defaults. An optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast|--normal --fork --cwd <dir> sets task flags; preset sandbox overrides are refused. The agent result is the Fugato report; continue a worker or answer its question with SendMessage. In-process teammates support bounded assignments, parent follow-ups and stop; team task claiming, plan approval and peer mailboxes are unsupported. Browser work and Computer Use run natively: an app not yet approved arrives as an approval question answered through SendMessage. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.';
 const PERSON_ORIGINS = ['composer', 'bridge', 'sdk'];
 const GUIDANCE_TTL_MS = 60000;
 let guidanceCache = null;
@@ -570,7 +570,7 @@ function reportMarkdown(props, model = 'unknown') {
         || report.blockers.some(blocker => ['native_capacity', 'native_binding_gone', 'native_message_too_large'].includes(blocker?.code)
           && report.next === admissionBlocked(blocker.code, {}).next))))))
     || !(report.notice === undefined || typeof report.notice === 'string')
-    || !(report.details === null || (typeof report.details === 'string' && report.details.startsWith('duet result ')))
+    || !(report.details === null || (typeof report.details === 'string' && /^(?:fugato|duet) result /.test(report.details)))
     || !((typeof report.jobId === 'string' && /^(task|review|job)-/.test(report.jobId))
       || (Array.isArray(report.blockers) && report.blockers.length > 0
         && report.blockers.every(blocker => typeof blocker?.code === 'string' && blocker.code.startsWith('native_'))))) return null;
@@ -621,7 +621,7 @@ function reportMarkdown(props, model = 'unknown') {
   return [...(lines.length + tail.length > 60 ? [...lines.slice(0, 59 - tail.length), '…'] : lines), ...tail].join('\n');
 }
 // Details name the exact job: a worker name moves to its newest job after a follow-up.
-const nativeDetails = state => state.jobId ? `duet result '${state.jobId}' --details` : state.worker ? `duet result ${state.worker} --details` : null;
+const nativeDetails = state => state.jobId ? `fugato result '${state.jobId}' --details` : state.worker ? `fugato result ${state.worker} --details` : null;
 function blocked(message, state = {}, code = 'native_adapter_error') {
   const summary = boundedText(message, 1200), blockers = [{ code, message: summary }];
   return { status: 'blocked', worker: state.worker || null, jobId: state.jobId || null, summary,
@@ -743,7 +743,7 @@ async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = 
     if (!inventories.has(scope)) inventories.set(scope, (async () => {
       const status = await snapshot($, value, ['status', '--all', '--json'], {
         ...timing, timeoutMs: await lookupBudget(key), requireSuccess: true });
-      if (!Array.isArray(status.running) || !Array.isArray(status.recent) || !Object.hasOwn(status, 'latestFinished')) throw new Error('Incomplete Duet binding inventory.');
+      if (!Array.isArray(status.running) || !Array.isArray(status.recent) || !Object.hasOwn(status, 'latestFinished')) throw new Error('Incomplete Fugato binding inventory.');
       // --all spans every session in this workspace; index it once per prune.
       return new Map([...status.running, status.latestFinished, ...status.recent].filter(Boolean)
         .map(job => [JSON.stringify([job.sessionId, job.id]), job]));
@@ -927,13 +927,13 @@ async function node($, timeoutMs = 10000) {
 }
 async function processBudget($, { deadline, timeoutMs = 15000, reserveMs = 0 } = {}) {
   const remaining = deadline === undefined ? timeoutMs : Math.min(timeoutMs, deadline - await $.clock.now() - reserveMs);
-  if (remaining < 1) throw new Error('Native stop confirmation deadline expired; inspect duet status.');
+  if (remaining < 1) throw new Error('Native stop confirmation deadline expired; inspect fugato status.');
   return Math.floor(remaining);
 }
 async function command($, state, args, input = '', timing = {}) {
   // ProcessSpawnRequest.input writes the whole string and closes stdin (also
   // for an empty string). Do not use process.run's differently named stdin.
-  return { argv: [await node($, timing.deadline === undefined ? 10000 : await processBudget($, { ...timing, timeoutMs: 500 })), `${$.plugin.root}/bin/duet`, ...args, '--cwd', state.cwd, '--session', state.session,
+  return { argv: [await node($, timing.deadline === undefined ? 10000 : await processBudget($, { ...timing, timeoutMs: 500 })), `${$.plugin.root}/bin/fugato`, ...args, '--cwd', state.cwd, '--session', state.session,
     ...(['task', 'answer', 'wait'].includes(args[0]) ? ['--claude-permission-mode', state.claudePermissionMode ?? state.permissionMode ?? 'unknown', '--native-cwd', state.nativeHostCwd ?? state.cwd, ...(state.isolation ? ['--native-isolation', state.isolation] : [])] : []),
     ...(args[0] === 'task' ? ['--session-cwd', await $.session.root(), ...(isNativeType(state.type) ? ['--agent-type', state.type] : [])] : [])], cwd: state.cwd, input };
 }
@@ -980,7 +980,7 @@ function parseReport(stdout, code, stderr = '', lookup = false) {
     && /(?:unknown|unsupported|unexpected|unrecognized|invalid).*--dispatch-nonce|--dispatch-nonce.*(?:unknown|unsupported|unexpected|unrecognized|not supported)/i.test(text);
   const line = stdout.trimEnd().split('\n').filter(line => line.startsWith('{')).at(-1);
   if (!line) {
-    const error = new Error(`Duet returned no JSON report (exit ${code}); inspect the job with duet status.`);
+    const error = new Error(`Fugato returned no JSON report (exit ${code}); inspect the job with fugato status.`);
     error.nonceFlagRejected = flagRejected(stdout + '\n' + stderr);
     throw error;
   }
@@ -988,7 +988,7 @@ function parseReport(stdout, code, stderr = '', lookup = false) {
   try { report = JSON.parse(stdout.trim()); }
   catch { report = JSON.parse(line); }
   if (report?.status === 'error') {
-    const error = new Error(report.summary || report.error || 'Duet failed.');
+    const error = new Error(report.summary || report.error || 'Fugato failed.');
     // The companion has exited unsuccessfully with a structured, jobless
     // error. Only an authoritative empty nonce lookup can prove no launch;
     // a lost pipe, absent JSON or signal without an exit code is insufficient.
@@ -997,7 +997,7 @@ function parseReport(stdout, code, stderr = '', lookup = false) {
     throw error;
   }
   if (!lookup && (!report || typeof report !== 'object' || Array.isArray(report) || !REPORT_STATUSES.has(report.status))) {
-    const error = new Error('Duet returned an invalid report status; inspect the job with duet status.');
+    const error = new Error('Fugato returned an invalid report status; inspect the job with fugato status.');
     error.protocolError = true;
     throw error;
   }
@@ -1007,11 +1007,11 @@ function parseReport(stdout, code, stderr = '', lookup = false) {
 async function snapshot($, state, args, { requireSuccess = false, ...timing } = {}) {
   const request = await command($, state, args, '', timing);
   const result = await $.process.run(request.argv, { cwd: request.cwd, timeoutMs: await processBudget($, timing) });
-  if (result.isStdoutTruncated) throw new Error('Duet recovery response was truncated; inspect duet status.');
+  if (result.isStdoutTruncated) throw new Error('Fugato recovery response was truncated; inspect fugato status.');
   const report = parseReport(result.stdout, result.exitCode, result.stderr, args[0] === 'status');
   // Only an absence claim needs a successful lookup; terminal reports such as
   // an interrupted job's `result --report` legitimately exit nonzero.
-  if (requireSuccess && result.exitCode !== 0) throw new Error('Duet recovery lookup did not exit successfully; inspect duet status before retrying.');
+  if (requireSuccess && result.exitCode !== 0) throw new Error('Fugato recovery lookup did not exit successfully; inspect fugato status before retrying.');
   return report;
 }
 // Admission's generation remains even if a rejected turn never creates an
@@ -1058,9 +1058,9 @@ async function saveReport($, state, report) {
 async function handles($, state, jobId, recovery = false, persist = true, { waitMs = 0, report, ...timing } = {}) {
   const args = ['status', jobId, '--json', ...(waitMs ? ['--wait', '--timeout-ms', String(waitMs), '--poll-interval-ms', '250'] : [])];
   const { job, recovery: notice } = await snapshot($, state, args, timing);
-  if (!job || job.sessionId !== state.session) throw new Error('Duet job is missing or belongs to another session.');
-  if (state.intent?.kind === 'task' && job.dispatchNonce !== state.intent.nonce) throw new Error('Duet dispatch nonce does not match the native launch intent.');
-  if (state.jobId === job.id && state.ownerId && state.ownerId !== job.ownerId) throw new Error('Duet job ownership changed; refusing to adopt another owner implicitly.');
+  if (!job || job.sessionId !== state.session) throw new Error('Fugato job is missing or belongs to another session.');
+  if (state.intent?.kind === 'task' && job.dispatchNonce !== state.intent.nonce) throw new Error('Fugato dispatch nonce does not match the native launch intent.');
+  if (state.jobId === job.id && state.ownerId && state.ownerId !== job.ownerId) throw new Error('Fugato job ownership changed; refusing to adopt another owner implicitly.');
   if (notice) job.recovery = notice;
   const unresolved = [...ACTIVE, ...RECOVERY_STATUSES].includes(job.recovery?.status)
     || (job.result?.inferredCompletion === true && job.result.turnEnded === false);
@@ -1082,11 +1082,11 @@ async function reconcile($, state, recovery = false, allowAbsent = false, { pers
     if (!error.nonceFlagRejected) throw error;
     status = await lookup(args); // Compatibility with an older companion.
   }
-  if (!Array.isArray(status.running) || !Array.isArray(status.recent) || !Object.hasOwn(status, 'latestFinished')) throw new Error('Incomplete Duet nonce reconciliation.');
+  if (!Array.isArray(status.running) || !Array.isArray(status.recent) || !Object.hasOwn(status, 'latestFinished')) throw new Error('Incomplete Fugato nonce reconciliation.');
   const jobs = [...(status.running || []), status.latestFinished, ...(status.recent || [])].filter(Boolean);
   const matches = jobs.filter(job => job.sessionId === state.session && job.dispatchNonce === state.intent.nonce);
   if (allowAbsent && matches.length === 0) return null;
-  if (matches.length !== 1) throw new Error('Native launch intent has no unique recorded job. Refusing to redispatch; inspect duet status before retrying.');
+  if (matches.length !== 1) throw new Error('Native launch intent has no unique recorded job. Refusing to redispatch; inspect fugato status before retrying.');
   return handles($, state, matches[0].id, recovery, persist, { ...timing, report });
 }
 async function drive($, e, state, progress) {
@@ -1100,7 +1100,7 @@ async function drive($, e, state, progress) {
     if (!state.incoming && !state.intent && bindingTurn(state) === undefined && !state.jobId) {
       await nativeHostState($, 'native-unavailable');
       return { ...blocked('The host did not deliver the native turn start; nothing was dispatched.', state, 'native_adapter_unavailable'),
-        next: 'Run `duet status` first, then use background Bash `duet task` as described in the `codex:native-fallback` skill.' };
+        next: 'Run `fugato status` first, then use background Bash `fugato task` as described in the `codex:native-fallback` skill.' };
     }
     return blocked('Native dispatch context unavailable (store full, oversized message, or failed turn.start); nothing was launched.', state);
   }
@@ -1162,7 +1162,7 @@ async function drive($, e, state, progress) {
       } else if (answeringDisplayedQuestion && !pending) {
         await save($, state);
         const current = await companion($, state, ['result', state.jobId, '--report']);
-        if (current.jobId !== state.jobId) throw new Error('Duet report does not match the recorded job handle.');
+        if (current.jobId !== state.jobId) throw new Error('Fugato report does not match the recorded job handle.');
         state.status = current.status;
         // An unresolved recovery is not evidence that the old question ended.
         // Preserve its recovery actions and let finalization keep it unanswered.
@@ -1260,7 +1260,7 @@ async function drive($, e, state, progress) {
   }
   await progress.start();
   for (;;) {
-    if (!report.jobId || report.jobId !== state.jobId) throw new Error('Duet report does not match the recorded job handle.');
+    if (!report.jobId || report.jobId !== state.jobId) throw new Error('Fugato report does not match the recorded job handle.');
     state.status = report.status;
     await saveReport($, state, report);
     if (!ACTIVE.includes(report.status)) break;
@@ -1313,7 +1313,7 @@ async function cancel($, state, deadline) {
     // have been checked. An attempted interrupt alone does not finish a turn.
     delete state.finishedAt;
   } catch (error) {
-    state.cancellation = { status: 'unconfirmed', message: 'Cancellation unconfirmed; inspect duet status. Owner-loss and question timeout remain the fallback.',
+    state.cancellation = { status: 'unconfirmed', message: 'Cancellation unconfirmed; inspect fugato status. Owner-loss and question timeout remain the fallback.',
       error: String(error?.message || error).slice(0, 200) };
   }
   await save($, state, { turnId: state.intent?.turnId,
@@ -1339,7 +1339,7 @@ async function stopJob($, state, deadline) {
   // Read its report before publishing any closure, including on turn.complete.
   if (!confirmed && !ACTIVE.includes(job.status) && job.interruptionConfirmed !== true) {
     report = await snapshot($, state, ['result', job.id, '--report'], { deadline, timeoutMs: 500 });
-    if (report.jobId !== job.id) throw new Error('Duet report does not match the recorded job handle.');
+    if (report.jobId !== job.id) throw new Error('Fugato report does not match the recorded job handle.');
     if (RECOVERY_STATUSES.includes(report.status)) {
       state.status = report.status;
       delete state.finishedAt;
@@ -1355,7 +1355,7 @@ async function stopJob($, state, deadline) {
   return { job, report };
 }
 // An open turn whose stop could not be confirmed may have ended since (for
-// example through duet cancel); the job record decides.
+// example through fugato cancel); the job record decides.
 async function recheck($, state) {
   const job = state.jobId ? await handles($, state, state.jobId, true)
     : state.intent?.kind === 'task' ? await reconcile($, state, true) : null;
@@ -1377,7 +1377,7 @@ const cancelledReport = (state, status) => ({ status, worker: state.worker || nu
 // the step cannot confirm its own stop. The host has killed the owner wait,
 // which makes the worker interrupt; turn.complete records the confirmation.
 const stoppingReport = state => ({ status: 'interrupted', worker: state.worker || null, jobId: state.jobId,
-  summary: `Stopped from /tasks. The owner wait was stopped, so the worker interrupts the Codex turn and ends the commands it started; duet status ${state.worker || state.jobId} shows the recorded confirmation.`,
+  summary: `Stopped from /tasks. The owner wait was stopped, so the worker interrupts the Codex turn and ends the commands it started; fugato status ${state.worker || state.jobId} shows the recorded confirmation.`,
   next: nativeNext(state, 'interrupted'), details: nativeDetails(state) });
 async function stoppedReport($, state) {
   const deadline = await $.clock.now() + 4500;
@@ -1386,7 +1386,7 @@ async function stoppedReport($, state) {
   const { job } = stopped;
   if (ACTIVE.includes(job.status)) return cancelledReport(state, state.status);
   const report = stopped.report || await snapshot($, state, ['result', job.id, '--report'], { deadline, timeoutMs: 500 });
-  if (report.jobId !== job.id) throw new Error('Duet report does not match the recorded job handle.');
+  if (report.jobId !== job.id) throw new Error('Fugato report does not match the recorded job handle.');
   if (RECOVERY_STATUSES.includes(report.status)) return report;
   return { ...report, status: job.status, worker: job.agentName || null, jobId: job.id, next: nativeNext(state, job.status) };
 }
@@ -1962,7 +1962,7 @@ export function register(on) {
             // No process calls here: the host refuses them in a stopped dispatch.
             stopping = true;
             report = state.jobId ? stoppingReport(state)
-              : blocked('Stopped from /tasks before Duet recorded the job; run duet status --all before retrying.', state, 'native_stop_unconfirmed');
+              : blocked('Stopped from /tasks before Fugato recorded the job; run fugato status --all before retrying.', state, 'native_stop_unconfirmed');
           }
           report ||= blocked(error?.message || 'Native adapter failed.', state);
           uncertain ||= state.intent?.turnId === e.turnId && (error.protocolError || !state.jobId || UNSETTLED.includes(state.status));
@@ -2028,7 +2028,7 @@ export function register(on) {
     } finally { running.listeners.delete(listener); listener.close(); }
   }).catch(async function* ($, e, next) {
     if (!e.agentId || (!await isRoundtableNoticeTurn($, e) && knownTypes.has(e.agentId) && !isNativeType(knownTypes.get(e.agentId)))) return yield* next(e);
-    return yield* finish(e, blocked('Native adapter hook failed; inspect duet status before retrying.', { agentId: e.agentId }));
+    return yield* finish(e, blocked('Native adapter hook failed; inspect fugato status before retrying.', { agentId: e.agentId }));
   });
   on('turn.complete', async ($, e, next) => {
     if (e.isAborted && await ours($, e.agentId)) {
@@ -2039,7 +2039,7 @@ export function register(on) {
       // A cancelled wait may report owner_stopped before this callback. Still
       // cancel its recorded job; do not rely on the report's status label.
       // stopJob closes the turn (for a later SendMessage) only with evidence it
-      // ended; a job that may still run keeps it open until duet cancel.
+      // ended; a job that may still run keeps it open until fugato cancel.
       if (state?.intent?.turnId === e.turnId) {
         const deadline = await $.clock.now() + 4500;
         // An aborted step may have synthesized its stop report because process

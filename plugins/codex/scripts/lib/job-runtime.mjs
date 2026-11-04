@@ -447,13 +447,13 @@ export function directReport(payload, job = {}, env = process.env) {
     ["context_window_exceeded", "provider_refused", "auth_required"].includes(blocker.code));
   const nextCommand = target => busy ? busy.answerCommand ?? report.blockers.find(blocker => blocker.code === "thread_busy")?.recoveryCommand ?? null
     // Setup needs no thread, and a fresh task suits any task job, resumable or not.
-    : runtimeBlocker && (runtimeBlocker.code === "auth_required" || job.jobClass === "task") ? runtimeBlocker.code === "auth_required" ? "duet setup" : `duet task --fresh${cwdOption}`
+    : runtimeBlocker && (runtimeBlocker.code === "auth_required" || job.jobClass === "task") ? runtimeBlocker.code === "auth_required" ? "fugato setup" : `fugato task --fresh${cwdOption}`
     : !target || ["completed", "ownership_moved"].includes(full.status) ? null
-    : full.status === "needs_answer" ? full.question?.id ? `duet answer ${target} --question ${quote(full.question.id)}` : null
-    : ACTIVE.has(full.status) ? `duet wait ${target}`
-    : resumableTask(job) ? `duet task --to ${target}` : null;
+    : full.status === "needs_answer" ? full.question?.id ? `fugato answer ${target} --question ${quote(full.question.id)}` : null
+    : ACTIVE.has(full.status) ? `fugato wait ${target}`
+    : resumableTask(job) ? `fugato task --to ${target}` : null;
   report.next = nextCommand(command);
-  report.details = jobId ? `duet result ${quote(jobId)}${cwdOption} --details` : null;
+  report.details = jobId ? `fugato result ${quote(jobId)}${cwdOption} --details` : null;
   if (envelopeBytes(report) > 2000) {
     // Blocker commands act on the predecessor, not the refused job. Use its
     // recorded ID without parsing shell text; full details keep the originals.
@@ -461,7 +461,7 @@ export function directReport(payload, job = {}, env = process.env) {
       const predecessor = full.blockers[index].predecessorJobId;
       if (typeof predecessor !== "string" || !predecessor) return;
       for (const [key, action] of [["cancelCommand", "cancel"], ["recoveryCommand", "status"]]) {
-        if (blocker[key]) blocker[key] = `duet ${action} ${duetTarget(predecessor)} --json`;
+        if (blocker[key]) blocker[key] = `fugato ${action} ${duetTarget(predecessor)} --json`;
       }
     });
     report.next = nextCommand(command);
@@ -472,7 +472,7 @@ export function directReport(payload, job = {}, env = process.env) {
   if (cwdOption && jobId && envelopeBytes(report) > 2000) {
     const exact = duetTarget(jobId);
     report.next = nextCommand(exact);
-    if (envelopeBytes(report) > 2000) report.details = `duet result ${quote(jobId)} --details`;
+    if (envelopeBytes(report) > 2000) report.details = `fugato result ${quote(jobId)} --details`;
   }
   if (envelopeBytes(report) > 2000) {
     // Legacy blockers may have no target metadata. Omit an oversized command

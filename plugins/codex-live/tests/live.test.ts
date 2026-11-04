@@ -100,7 +100,8 @@ test('clearing the final job hides its row and retains its record', async ($, on
   await ui.press({ key: 'clear-finished' });
   expect(writes.at(-1)?.selectedId).toBe(null);
   expect(writes.at(-1)?.jobs.map(job => job.id)).toEqual([job.id]);
-  expect(await ui.find({ key: 'hidden-notice' })).toBeDefined();
+  expect((await ui.find({ key: 'hidden-notice' }))?.text).toBe('Finished jobs are hidden. Their records follow your Fugato');
+  expect((await ui.find({ key: 'hidden-notice-1' }))?.text).toBe('cleanup settings.');
   expect(await ui.find({ key: 'clear-finished' })).toBe(undefined);
   await ui.unmount();
 });

@@ -131,7 +131,7 @@ function parseStopReviewOutput(rawOutput, jobId) {
     return {
       ok: false,
       kind: "findings",
-      reason: `Codex stop-time review found issues that still need fixes before ending the session: ${reason}${jobId ? `\nReview job ${jobId}: duet result ${jobId}` : ""}`
+      reason: `Codex stop-time review found issues that still need fixes before ending the session: ${reason}${jobId ? `\nReview job ${jobId}: fugato result ${jobId}` : ""}`
     };
   }
 

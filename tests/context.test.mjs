@@ -141,7 +141,7 @@ test("review reservations expire with their wrapper after review/start", async t
   } finally { next?.release(); }
 });
 
-test("Duet concurrency is off by default and atomically queues across processes until confirmed end", async t => {
+test("Fugato concurrency is off by default and atomically queues across processes until confirmed end", async t => {
   const f = fixture(t), directory = path.join(f.env.CODEX_COMPANION_HOME, "duet", "concurrency");
   assert.equal(contextSetup({ env: f.env }).maxConcurrent, "off");
   tryAcquireConcurrency({ limit: "off", env: f.env }).release();

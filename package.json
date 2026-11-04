@@ -1,9 +1,9 @@
 {
-  "name": "codex-duet",
-  "version": "1.5.0",
+  "name": "fugato",
+  "version": "1.6.0",
   "private": true,
   "type": "module",
-  "description": "Duet: delegate coding, research and review from Claude Code to parallel Codex workers.",
+  "description": "Fugato: delegate coding, research and review from Claude Code to parallel Codex workers.",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=18.18.0"

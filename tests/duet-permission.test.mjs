@@ -49,6 +49,24 @@ test("permission grammar binds session-wide cancellation and runtime actions onl
   }), [true, true, true, false, false, false, false]);
 });
 
+test("fugato uses the legacy launcher's permission grammar and trust boundary", () => {
+  const f = fixture(), canonical = fs.realpathSync(fileURLToPath(new URL("../plugins/codex/bin/fugato", import.meta.url)));
+  const quotedCanonical = `'${canonical.replace(/'/g, `'"'"'`)}'`;
+  const command = heredoc("fugato task --sandbox read-only --cwd '/tmp/a b'");
+  const approved = approveDuet(input(command), f.env).hookSpecificOutput;
+  const legacy = approveDuet(input(command.replace("fugato", "duet")), f.env).hookSpecificOutput;
+  assert.equal(approved.permissionDecision, "allow");
+  assert.deepEqual(approved, { ...legacy, updatedInput: { ...legacy.updatedInput,
+    command: legacy.updatedInput.command.replace(quotedLauncher, quotedCanonical) } });
+  assert.equal(approveDuet(input(`${quotedCanonical} status`), f.env).hookSpecificOutput.permissionDecision, "allow");
+  assert.equal(approveDuet(input(`${canonical} status`), f.env).hookSpecificOutput.permissionDecision, "allow");
+  assert.deepEqual(approveDuet(input("fugato 'status'"), f.env), {});
+  assert.deepEqual(approveDuet(input("fugato setup"), f.env), {});
+  fs.writeFileSync(path.join(f.root, "fugato"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  assert.deepEqual(approveDuet(input("fugato status"), { ...f.env, PATH: `${f.root}:${f.env.PATH}` }), {});
+  assert.deepEqual(approveDuet(input("fugato status"), { ...f.env, "BASH_FUNC_fugato%%": "() { :; }" }), {});
+});
+
 test("permission grammar rejects unsafe commands and untrusted bindings while quoting approved commands literally", () => {
   const f = fixture(), invoke = (command, overrides = {}, env = f.env) => approveDuet({ ...input(command), ...overrides }, env);
   const unsafe = [

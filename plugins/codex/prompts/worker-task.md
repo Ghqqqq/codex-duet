@@ -26,7 +26,7 @@ existing user tab. Close the owned tab at the end, including on failure. Report
 "Tab <id> is already part of browser session <session-id>" as the distinct
 stale_browser_tab_claim blocker with the full session ID; do not steal the claim.
 Origin approval flags require the user's explicit consent for each origin.
-The parent supplies flags; Duet may inherit recorded browser-origin and
+The parent supplies flags; Fugato may inherit recorded browser-origin and
 computer-app grants on `--to`, `--thread`, or `--continue` only from jobs in the
 same Claude session and originally dispatched there. Adoption into another
 session does not re-authorize foreign request grants; runtime-only approvals

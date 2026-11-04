@@ -5,7 +5,7 @@ Claude plans, writes the full brief and accepts every diff. The primary worker
 uses the configured worker model (default `gpt-6-astra`) and worker effort
 (default `xhigh`) at normal speed, independently of ultra's stage-based tiers.
 User model, effort and speed choices take precedence. Change the saved model
-and effort with `duet setup --default-model <model> --default-effort <effort>`;
+and effort with `fugato setup --default-model <model> --default-effort <effort>`;
 see [Default worker models](configuration.md#default-worker-models). The mode
 reminder and status name the effective values.
 
@@ -23,9 +23,9 @@ Usage: /codex:pair [on [<task>] | off | status | <task>]
 /codex:pair status
 /codex:pair off
 
-duet pair on
-duet pair status --for-command
-duet pair off
+fugato pair on
+fugato pair status --for-command
+fugato pair off
 ```
 
 Pair has no mode options: no scale, worker-cap or rounds flags. No arguments
@@ -105,7 +105,7 @@ Pair uses the same [session record and lifecycle](state-and-retention.md#orchest
 and single [protocol file](../plugins/codex/prompts/ultra-codex-protocol.md) as the
 other modes. Read the complete current file for a task, then apply shared
 sections and **Pair mode** only. Controls do not load the body into Claude's
-context. `duet pair status --for-command` reports its current path and body hash;
+context. `fugato pair status --for-command` reports its current path and body hash;
 an edit anywhere invalidates that common version.
 
 **Reminder template** (placeholders):

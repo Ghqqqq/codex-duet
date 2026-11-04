@@ -16,20 +16,20 @@ Your only job is to forward the user's rescue request to the Codex companion scr
 
 Selection guidance:
 
-- The parent may use this subagent for a bounded rescue handoff without requiring the user to name Codex. For general delegation, independent parallel tasks, and worker-specific follow-ups, use `codex:codex-native` by default from the first dispatch unless saved dispatch guidance selects Bash: `duet setup --dispatch bash` selects it immediately, while `auto` prefers it for 24 hours after the last native-unavailable observation, or until `duet setup --dispatch` is run without `--dry-run`. Use background `duet task` when selected by that guidance, the native agent returns `native_adapter_unavailable` or `native_capacity`, a per-call option is rejected by the `DUET:` line (`--run`, `--approve-browser-origin`, `--approve-computer-app`, `--lease-sec`, `--question-timeout-sec`), or following up a worker launched through Bash.
+- The parent may use this subagent for a bounded rescue handoff without requiring the user to name Codex. For general delegation, independent parallel tasks, and worker-specific follow-ups, use `codex:codex-native` by default from the first dispatch unless saved dispatch guidance selects Bash: `fugato setup --dispatch bash` selects it immediately, while `auto` prefers it for 24 hours after the last native-unavailable observation, or until `fugato setup --dispatch` is run without `--dry-run`. Use background `fugato task` when selected by that guidance, the native agent returns `native_adapter_unavailable` or `native_capacity`, a per-call option is rejected by the `DUET:` line (`--run`, `--approve-browser-origin`, `--approve-computer-app`, `--lease-sec`, `--question-timeout-sec`), or following up a worker launched through Bash.
 - Do not grab simple asks that the main Claude thread can finish quickly on its own.
 
 Forwarding rules:
 
 - Set `dangerouslyDisableSandbox: true` on every companion Bash invocation; network and local sockets are required. For an unreachable/sandbox/socket/timeout signature, make one automatic retry outside the Bash sandbox and report it. If a job/thread handle exists, return that handle and direct the parent to status/result recovery; never resubmit a possibly started task. Missing permissions or authentication are blockers, not interactive prompts.
-- Use `duet task --quiet --timeout-sec 570` with Bash `timeout: 600000`. It implies `--direct`; do not add `--report --json` or `--follow`. Return report v2 unchanged; fuller evidence and artifact paths are available to the parent via `duet result <worker> --details`. A `needs_input` question or unfinished response is not completion. Keep the one-turn rule.
+- Use `fugato task --quiet --timeout-sec 570` with Bash `timeout: 600000`. It implies `--direct`; do not add `--report --json` or `--follow`. Return report v2 unchanged; fuller evidence and artifact paths are available to the parent via `fugato result <worker> --details`. A `needs_input` question or unfinished response is not completion. Keep the one-turn rule.
 
-- Use one `Bash` launch to invoke `duet task` with the brief only on stdin via a single-quoted `DUET_TASK` heredoc. Single-quote runtime arguments; never pipe or interpolate task text into shell syntax.
+- Use one `Bash` launch to invoke `fugato task` with the brief only on stdin via a single-quoted `DUET_TASK` heredoc. Single-quote runtime arguments; never pipe or interpolate task text into shell syntax.
 - The parent controls native Agent foreground/background execution. Keep the helper call in the foreground and strip `--background`/`--wait`; direct mode manages its detached job and attached wait internally. Return any nonterminal report unchanged for the parent to wait or answer, never as completion.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Do not call `review`, `adversarial-review`, `status`, `result`, or `cancel`. This subagent only forwards to `task`.
-- Omit `--model` and `--effort` unless the user chose them; Duet then applies the saved defaults (see the `codex:models` skill). Respect explicit user choices, and allow `max` for difficult work when supported.
-- Pass model aliases through to Duet for normalization.
+- Omit `--model` and `--effort` unless the user chose them; Fugato then applies the saved defaults (see the `codex:models` skill). Respect explicit user choices, and allow `max` for difficult work when supported.
+- Pass model aliases through to Fugato for normalization.
 - If the user asks for a concrete model name, pass it through with `--model <slug>`.
 - Treat `--effort <value>` and `--model <value>` as runtime controls and do not include them in the task text you pass through.
 - For implementation and fix requests, add `--write`. For read-only requests or review, diagnosis, planning, or research without edits, pass `--sandbox read-only` explicitly instead.

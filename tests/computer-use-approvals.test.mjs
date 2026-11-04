@@ -12,7 +12,7 @@ const script = new URL("../plugins/codex/scripts/codex-companion.mjs", import.me
 const USER_FILE = '# user\'s Codex app\n[apps]\nallowed = ["com.google.Chrome", "com.apple.finder", "not a bundle id"]\ndenied = ["com.evil.App"]\n';
 
 // Every fixture owns a temporary user home (the "Codex app" side, read-only)
-// and a temporary isolated home (the Duet side), both under the test root.
+// and a temporary isolated home (the Fugato side), both under the test root.
 function fixture(behavior = "review-ok") {
   const dir = makeTempDir(); installFakeCodex(dir, behavior);
   const repo = path.join(dir, "repo"); fs.mkdirSync(repo); initGitRepo(repo);
