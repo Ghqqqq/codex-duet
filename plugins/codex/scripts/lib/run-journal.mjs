@@ -381,6 +381,7 @@ function viewAt(stateDir, runId, rows, env, reports) {
     if (row.type === "job_started") {
       started.add(row.jobId);
       jobs.set(row.jobId, { agentName: row.agentName ?? null, jobId: row.jobId, workspaceRoot: row.workspaceRoot ?? rows[0].cwd, cwd: row.cwd ?? row.workspaceRoot ?? rows[0].cwd, threadId: row.threadId ?? null, status: "queued", brief: row.brief, report: null, latestVerdict: jobs.get(row.jobId)?.latestVerdict ?? null,
+        ...(row.purpose === "roundtable" ? { purpose: row.purpose, roomId: row.roomId, persona: row.persona } : {}),
         ...(row.followUpOf ? { followUpOf: row.followUpOf } : {}), ...(row.continuationOf ? { continuationOf: row.continuationOf } : {}) });
     }
     if (row.type === "job_finished" && jobs.has(row.jobId)) {
@@ -410,6 +411,14 @@ function viewAt(stateDir, runId, rows, env, reports) {
     } catch { /* pruned or unavailable */ }
   }
   const linked = [...jobs.values()];
+  const activityCounts = new Map();
+  for (const job of linked) {
+    if (job.purpose !== "roundtable") continue;
+    const key = JSON.stringify([job.roomId, job.persona]);
+    const count = activityCounts.get(key) ?? { roomId: job.roomId, persona: job.persona, count: 0 };
+    count.count++;
+    activityCounts.set(key, count);
+  }
   // Explicit resolution or lineage resolves rework, never a shared thread. A
   // later rejection reopens it; a previous acceptance cannot erase that.
   const resolved = new Set();
@@ -429,7 +438,7 @@ function viewAt(stateDir, runId, rows, env, reports) {
   }
   const issues = [];
   for (const job of linked) {
-    const jobId = job.jobId;
+    const jobId = job.jobId, activity = job.purpose === "roundtable";
     const unrecordedFinish = started.has(jobId) && !finished.has(jobId)
       && ["completed", "failed", "cancelled", "interrupted", "blocked", "needs_input", "error"].includes(liveStatus.get(jobId));
     if (started.has(jobId) && !finished.has(jobId) && ["queued", "running"].includes(liveStatus.get(jobId))) issues.push({
@@ -438,9 +447,9 @@ function viewAt(stateDir, runId, rows, env, reports) {
     });
     if (unrecordedFinish) issues.push({
       kind: "unrecorded_finish", jobId, detail: `Linked job is ${job.status} without a recorded finish.`,
-      nextAction: `Inspect duet result ${jobId} --details to retry finish recording, then verify the evidence and record a journal verdict.`
+      nextAction: `Inspect duet result ${jobId} --details to retry finish recording, then ${activity ? "check the saved activity report" : "verify the evidence and record a journal verdict"}.`
     });
-    if ((finished.has(jobId) || unrecordedFinish) && !job.latestVerdict) issues.push({
+    if (!activity && (finished.has(jobId) || unrecordedFinish) && !job.latestVerdict) issues.push({
       kind: "no_verdict", jobId, detail: "Finished job has no orchestrator verdict.",
       nextAction: "Inspect the saved report and verify its criteria, then record a journal verdict."
     });
@@ -465,7 +474,8 @@ function viewAt(stateDir, runId, rows, env, reports) {
   }
   const withdrawnCriteria = [...withdrawn.values()];
   return { runId, directory: runDir(stateDir, runId), goal: rows[0].goal, criteria, withdrawnCriteria, jobs: linked, decisions,
-    openItems: linked.filter(job => !job.latestVerdict || (["REWORK", "REASSIGN"].includes(job.latestVerdict.verdict) && !resolved.has(job.jobId))).map(job => ({ jobId: job.jobId, reason: job.latestVerdict?.verdict ?? "no_verdict" })),
+    ...(activityCounts.size ? { activityCounts: [...activityCounts.values()] } : {}),
+    openItems: linked.filter(job => (!job.latestVerdict && job.purpose !== "roundtable") || (["REWORK", "REASSIGN"].includes(job.latestVerdict?.verdict) && !resolved.has(job.jobId))).map(job => ({ jobId: job.jobId, reason: job.latestVerdict?.verdict ?? "no_verdict" })),
     criterionResults: [...criteria, ...withdrawnCriteria.map(item => item.criterion).filter(criterion => !criteria.includes(criterion))].map(criterion =>
       withdrawn.has(criterion) ? { ...criterionResults.get(criterion), ...withdrawn.get(criterion), result: "withdrawn" }
         : criterionResults.get(criterion) ?? { criterion, result: "unchecked", evidence: null }), issues,
@@ -493,9 +503,15 @@ export function renderValidation(result) {
   return [`Run ${result.runId}: ${result.ok ? "no open issues" : `${result.issues.length} open issue(s)`} (record completeness).`, ...result.issues.map(renderIssue)].join("\n") + "\n";
 }
 export function renderRun(view) {
+  const jobLine = job => `  ${job.agentName ?? "worker"} ${job.jobId} thread=${job.threadId ?? "?"} ${job.status} verdict=${job.latestVerdict?.verdict ?? "none"}; brief=${job.brief ?? "?"} report=${job.report ?? "pending"}`;
+  const activity = view.jobs.filter(job => job.purpose === "roundtable");
   const lines = [`Run ${view.runId} (${view.state}${view.closed ? `: ${view.closed.judgment}` : ""}): ${short(view.goal, 240)}`, `Files: ${view.directory}`, "Criteria:",
     ...view.criterionResults.map((item, index) => `  ${index + 1}. ${short(item.criterion)} — ${item.result}${item.reason ? `; reason: ${short(item.reason)}` : ""}${item.evidence ? `; evidence: ${short(item.evidence)}` : ""}`), "Jobs:",
-    ...view.jobs.map(job => `  ${job.agentName ?? "worker"} ${job.jobId} thread=${job.threadId ?? "?"} ${job.status} verdict=${job.latestVerdict?.verdict ?? "none"}; brief=${job.brief ?? "?"} report=${job.report ?? "pending"}`),
+    ...view.jobs.filter(job => job.purpose !== "roundtable").map(jobLine),
+    ...(activity.length ? [`Activity jobs (${activity.length}):`, ...view.activityCounts.flatMap(({ roomId, persona, count }) => [
+      `  ${roomId} / ${persona} (${count} job(s)):`,
+      ...activity.filter(job => job.roomId === roomId && job.persona === persona).map(job => `  ${jobLine(job)}`)
+    ])] : []),
     ...(view.usageTotals ? [renderUsageTotals(view.usageTotals)] : []),
     "Decisions:", ...view.decisions.map(item => `  ${short(item.summary)}; basis: ${short(item.basis)}${item.risk ? `; risk: ${short(item.risk)}` : ""}`),
     "Open:", ...(view.issues.length ? view.issues.map(renderIssue) : ["  none"]),
@@ -526,6 +542,7 @@ export function linkJournalJob(job, brief, env = process.env) {
         atomic(file, brief);
         try {
           append(stateDir, run.runId, "job_started", { jobId, workspaceRoot: job.workspaceRoot, cwd: job.cwd ?? job.request?.cwd ?? job.workspaceRoot, agentName: job.agentName ?? null, threadId: job.threadId ?? null, title: job.title, model: job.model, effort: job.effort, sandbox: job.sandbox,
+            ...(job.request?.roundtable ? { purpose: "roundtable", roomId: job.request.roundtable.roomId, persona: job.request.roundtable.persona } : {}),
             ...(job.followUpOf ? { followUpOf: job.followUpOf } : {}), ...(job.continuationOf ? { continuationOf: job.continuationOf } : {}), brief: relative });
         } catch (error) { fs.unlinkSync(file); throw error; }
       }

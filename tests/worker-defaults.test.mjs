@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { lifecycleHarness } from "./fake-codex-fixture.mjs";
-import { readWorkerDefaults } from "../plugins/codex/scripts/lib/setup-config.mjs";
+import { readWorkerDefaults, readPersonaModels, personaModelsSetup } from "../plugins/codex/scripts/lib/setup-config.mjs";
+import { PERSONAS } from "../plugins/codex/scripts/lib/roundtable-personas.mjs";
 
 const { fs, path, fixture, json, direct, run, hook } = await lifecycleHarness();
 const BUILTIN = { model: "gpt-6-astra", effort: "xhigh", routineModel: "gpt-6.1-sol" };
@@ -10,6 +11,69 @@ const preferenceFile = f => path.join(f.env.CODEX_COMPANION_HOME, "duet", "confi
 const snapshot = dir => fs.readdirSync(dir, { recursive: true }).sort().map(name => {
   const file = path.join(dir, name);
   return [name, fs.statSync(file).isFile() ? fs.readFileSync(file).toString("base64") : null];
+});
+
+test("persona mappings preview, save, report field sources and reset independently of worker defaults", () => {
+  const f = fixture(), file = preferenceFile(f), initial = snapshot(f.dir);
+  const flags = ["--persona-model", "critic=saved-critic:xhigh", "--persona-model", "improver=spark"];
+  const preview = json(f.call("setup", ...flags, "--dry-run", "--json"));
+  assert.deepEqual(snapshot(f.dir), initial);
+  assert.deepEqual(preview.personaModels.critic, { model: { value: "saved-critic", source: "saved" }, effort: { value: "xhigh", source: "saved" } });
+  assert.ok(preview.warnings.some(warning => /could not be checked/.test(warning)));
+  json(f.call("setup", "--default-mode", "roundtable", "--json"));
+  fs.appendFileSync(file, '# keep\n[custom]\nvalue = "untouched"\n');
+  const before = fs.readFileSync(file, "utf8");
+  const saved = json(f.call("setup", ...flags, "--json"));
+  assert.equal(fs.readFileSync(saved.backups[0], "utf8"), before);
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(saved.backups[0]).mode & 0o777, 0o600);
+  assert.match(fs.readFileSync(file, "utf8"), /\["roundtable"\."personas"\."critic"\]/);
+  assert.deepEqual(readPersonaModels({ ...f.env, CLAUDE_PLUGIN_DATA: undefined }), {
+    critic: { model: "saved-critic", effort: "xhigh" }, improver: { model: "gpt-5.3-codex-spark" }
+  });
+  assert.equal(saved.personaModels.improver.effort.source, "built-in");
+  assert.deepEqual(json(f.call("setup", ...flags, "--json")).changedFiles, []);
+  assert.deepEqual(json(f.call("setup", "--json")).personaModels, saved.personaModels);
+  json(f.call("setup", "--persona-model", "critic=other-critic", "--json"));
+  assert.deepEqual(readPersonaModels(f.env).critic, { model: "other-critic" });
+  json(f.call("setup", "--persona-model", "critic=default", "--persona-model", "improver=default", "--json"));
+  assert.deepEqual(readPersonaModels(f.env), {});
+  for (const [id, persona] of Object.entries(PERSONAS)) {
+    assert.deepEqual(personaModelsSetup({ env: f.env }).personaModels[id], {
+      model: { value: persona.model, source: "built-in" }, effort: { value: persona.effort, source: "built-in" }
+    });
+  }
+  assert.ok(fs.readFileSync(file, "utf8").startsWith(before));
+  assert.deepEqual(readWorkerDefaults(f.env), BUILTIN);
+});
+
+test("persona mapping batches reject invalid ids, models, efforts and mixed setup changes before writes", () => {
+  const f = fixture(), before = snapshot(f.dir);
+  for (const args of [
+    ["--persona-model", "unknown=valid"], ["--persona-model", "critic=../model"],
+    ["--persona-model", "critic=model:unlisted"], ["--persona-model", "critic=model:"],
+    ["--persona-model", "critic=default:high"], ["--persona-model", "critic=model", "--persona-model", "critic=other"],
+    ["--persona-model", "critic=model", "--persona-model", "improver=invalid:effort"],
+    ["--persona-model", "critic=model", "--default-mode", "roundtable"],
+    ["--persona-model", "critic=model", "--default-effort", "high"],
+    ["--persona-model", "critic=model", "--default-max-tokens", "100"],
+    ["--persona-model", "critic=model", "--sync-tools"]
+  ]) {
+    assert.equal(f.call("setup", ...args).status, 1, args.join(" "));
+    assert.deepEqual(snapshot(f.dir), before);
+  }
+  const cache = path.join(f.env.CODEX_COMPANION_HOME, "models_cache.json");
+  fs.mkdirSync(path.dirname(cache), { recursive: true });
+  const models = [{ slug: "fixture-persona", supported_reasoning_levels: [{ effort: "ultra" }] }];
+  fs.writeFileSync(cache, JSON.stringify({ fetched_at: new Date().toISOString(), models }));
+  const cached = snapshot(f.dir);
+  assert.equal(f.call("setup", "--persona-model", "critic=unknown-model").status, 1);
+  assert.deepEqual(snapshot(f.dir), cached);
+  json(f.call("setup", "--persona-model", "critic=fixture-persona:ultra", "--json"));
+  assert.deepEqual(readPersonaModels(f.env), { critic: { model: "fixture-persona", effort: "ultra" } });
+  fs.writeFileSync(cache, JSON.stringify({ fetched_at: new Date(Date.now() - 48 * 3600000).toISOString(), models }));
+  const stale = json(f.call("setup", "--persona-model", "critic=new-persona", "--json"));
+  assert.ok(stale.warnings.some(warning => /48 hours/.test(warning)));
 });
 
 test("worker defaults preview, save and reset together while preserving unrelated preferences", () => {

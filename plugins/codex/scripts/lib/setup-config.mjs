@@ -9,6 +9,7 @@ import { resolveIsolatedCodexHome } from "./codex-home.mjs";
 import { cachedReasoningEfforts, readModelCache } from "./models.mjs";
 import { BUILTIN_WORKER_DEFAULTS, MODE_NAMES } from "./ultra-codex-mode.mjs";
 import { BUDGET_NOTE, budgetLimit } from "./job-budget.mjs";
+import { PERSONAS, PERSONA_IDS } from "./roundtable-personas.mjs";
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function scan(text) {
@@ -408,7 +409,7 @@ function savedDefaultMode(text) {
 }
 /** @param {{ mode?: string, env?: NodeJS.ProcessEnv, dryRun?: boolean }} [options] */
 export function defaultModeSetup({ mode, env = process.env, dryRun = false } = {}) {
-  if (mode !== undefined && mode !== "off" && !MODE_NAMES.includes(mode)) throw new Error("--default-mode must be off, ultra, pair, or duel.");
+  if (mode !== undefined && mode !== "off" && !MODE_NAMES.includes(mode)) throw new Error("--default-mode must be off, ultra, pair, duel, or roundtable.");
   const { root, file } = duetConfig(env), before = read(root, file);
   // Store off explicitly; a missing or invalid preference also means off.
   const after = mode === undefined ? before : setTomlField(before, ["defaultMode"], mode);
@@ -416,6 +417,53 @@ export function defaultModeSetup({ mode, env = process.env, dryRun = false } = {
 }
 
 const DISPATCH_ROUTES = ["auto", "native", "bash"];
+// Saved roundtable persona defaults live in [roundtable.personas.<id>] as
+// model and effort; resolveRoster falls back to built-in values per persona.
+export function readPersonaModels(env = process.env) {
+  const { root, file } = duetConfig(env), text = read(root, file), mapping = {};
+  for (const id of PERSONA_IDS) {
+    const model = readTomlField(text, ["roundtable", "personas", id, "model"]);
+    const effort = readTomlField(text, ["roundtable", "personas", id, "effort"]);
+    if (typeof model === "string" || typeof effort === "string") {
+      mapping[id] = { ...(typeof model === "string" ? { model } : {}), ...(typeof effort === "string" ? { effort } : {}) };
+    }
+  }
+  return mapping;
+}
+
+function personaModelsSummary(text) {
+  return Object.fromEntries(PERSONA_IDS.map(id => [id, Object.fromEntries(["model", "effort"].map(key => {
+    const saved = readTomlField(text, ["roundtable", "personas", id, key]);
+    return [key, { value: typeof saved === "string" ? saved : PERSONAS[id][key], source: typeof saved === "string" ? "saved" : "built-in" }];
+  }))]));
+}
+/** @param {{ models?: string[], env?: NodeJS.ProcessEnv, dryRun?: boolean }} [options] */
+export function personaModelsSetup({ models = [], env = process.env, dryRun = false } = {}) {
+  if (!Array.isArray(models)) throw new Error("--persona-model must be repeatable id=model[:effort], or id=default.");
+  const warnings = [], seen = new Set();
+  // Validate the entire batch through the shared worker-default checks before editing.
+  const changes = models.map(value => {
+    const match = typeof value === "string" && /^([^=]+)=([^=]+)$/.exec(value);
+    if (!match || !PERSONA_IDS.includes(match[1])) throw new Error(`--persona-model needs id=model[:effort] or id=default; ids: ${PERSONA_IDS.join(", ")}.`);
+    const [, id, setting] = match;
+    if (seen.has(id)) throw new Error(`--persona-model repeats ${id}; specify each persona once.`);
+    seen.add(id);
+    if (setting === "default") return { id, model: undefined, effort: undefined };
+    const colon = setting.lastIndexOf(":"), model = colon < 0 ? setting : setting.slice(0, colon), effort = colon < 0 ? undefined : setting.slice(colon + 1);
+    if (!model || model === "default" || effort === "" || effort === "default") throw new Error("--persona-model needs id=model[:effort], or id=default to reset both values.");
+    let checkedModel;
+    try {
+      checkedModel = checkedWorkerPreference("defaultModel", model, env, warnings);
+      if (effort !== undefined) checkedWorkerPreference("defaultEffort", effort, env, warnings);
+    }
+    catch (error) { throw new Error(error.message.replaceAll("--default-model", "--persona-model").replaceAll("--default-effort", "--persona-model effort")); }
+    return { id, model: checkedModel, effort };
+  });
+  const { root, file } = duetConfig(env), before = read(root, file);
+  const after = changes.reduce((text, { id, model, effort }) => setTomlField(setTomlField(text, ["roundtable", "personas", id, "model"], model), ["roundtable", "personas", id, "effort"], effort), before);
+  return { file, personaModels: personaModelsSummary(after), warnings, ...apply(root, [{ file, before, after }], dryRun) };
+}
+
 /** @param {{ mode?: string, env?: NodeJS.ProcessEnv, dryRun?: boolean }} [options] */
 export function permissionMappingSetup({ mode, env = process.env, dryRun = false } = {}) {
   if (mode !== undefined && !["off", "claude"].includes(mode)) throw new Error("--permission-mapping must be claude or off.");
@@ -514,29 +562,30 @@ export function readWorkerDefaults(env = process.env) {
   const values = workerDefaultsSummary(env);
   return { model: values.defaultModel.value, effort: values.defaultEffort.value, routineModel: values.ultraRoutineModel.value };
 }
+function checkedWorkerPreference(key, value, env, warnings, catalog = readModelCache(env)) {
+  const cacheAgeMs = catalog?.fetchedAt ? Date.now() - Date.parse(catalog.fetchedAt) : null;
+  const normalized = value === "default" ? undefined : workerPreference(key, value, env);
+  const flag = key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
+  if (normalized === null) {
+    throw new Error(key === "defaultEffort"
+      ? `--${flag} must be ${[...new Set([...VALID_REASONING_EFFORTS, ...cachedReasoningEfforts(env)])].join(", ")}, or default. Additional efforts require a supporting entry in Codex's isolated model cache; the static set applies when the cache is missing.`
+      : `--${flag} must be a model name (1–100 letters, digits, dots, underscores, colons or hyphens, starting with a letter or digit), or default.`);
+  }
+  if (normalized !== undefined && key !== "defaultEffort") {
+    if (catalog && !catalog.models.some(model => model.slug === normalized)) {
+      if (cacheAgeMs !== null && cacheAgeMs >= 0 && cacheAgeMs <= 24 * 3600000) throw new Error(`--${flag}: ${normalized} is not listed in Codex's isolated model cache. Run duet models to refresh the cache, then retry.`);
+      const age = cacheAgeMs === null ? "of unknown age (missing fetched_at)" : cacheAgeMs < 0 ? "of unknown age (future fetched_at)" : `${Math.floor(cacheAgeMs / 3600000)} hours old`;
+      warnings.push(`Warning: model ${normalized} is not listed in the isolated model cache, which is ${age}. Run duet models to refresh the cache and check available model names.`);
+    }
+    if (!catalog) warnings.push(`Warning: model ${normalized} could not be checked because the isolated model cache is unavailable. Run duet models to check available model names.`);
+  }
+  return normalized;
+}
 /** @param {{ defaultModel?: string, defaultEffort?: string, ultraRoutineModel?: string, env?: NodeJS.ProcessEnv, dryRun?: boolean }} [options] */
 export function workerDefaultsSetup({ defaultModel, defaultEffort, ultraRoutineModel, env = process.env, dryRun = false } = {}) {
   const warnings = [], catalog = readModelCache(env);
-  const cacheAgeMs = catalog?.fetchedAt ? Date.now() - Date.parse(catalog.fetchedAt) : null;
-  const changes = Object.entries({ defaultModel, defaultEffort, ultraRoutineModel }).filter(([, value]) => value !== undefined).map(([key, value]) => {
-    const normalized = value === "default" ? undefined : workerPreference(key, value, env);
-    if (normalized === null) {
-      const flag = key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
-      throw new Error(key === "defaultEffort"
-        ? `--${flag} must be ${[...new Set([...VALID_REASONING_EFFORTS, ...cachedReasoningEfforts(env)])].join(", ")}, or default. Additional efforts require a supporting entry in Codex's isolated model cache; the static set applies when the cache is missing.`
-        : `--${flag} must be a model name (1–100 letters, digits, dots, underscores, colons or hyphens, starting with a letter or digit), or default.`);
-    }
-    if (normalized !== undefined && key !== "defaultEffort") {
-      const flag = key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
-      if (catalog && !catalog.models.some(model => model.slug === normalized)) {
-        if (cacheAgeMs !== null && cacheAgeMs >= 0 && cacheAgeMs <= 24 * 3600000) throw new Error(`--${flag}: ${normalized} is not listed in Codex's isolated model cache. Run duet models to refresh the cache, then retry.`);
-        const age = cacheAgeMs === null ? "of unknown age (missing fetched_at)" : cacheAgeMs < 0 ? "of unknown age (future fetched_at)" : `${Math.floor(cacheAgeMs / 3600000)} hours old`;
-        warnings.push(`Warning: model ${normalized} is not listed in the isolated model cache, which is ${age}. Run duet models to refresh the cache and check available model names.`);
-      }
-      if (!catalog) warnings.push(`Warning: model ${normalized} could not be checked because the isolated model cache is unavailable. Run duet models to check available model names.`);
-    }
-    return [key, normalized];
-  });
+  const changes = Object.entries({ defaultModel, defaultEffort, ultraRoutineModel }).filter(([, value]) => value !== undefined)
+    .map(([key, value]) => [key, checkedWorkerPreference(key, value, env, warnings, catalog)]);
   if (!changes.length) return workerDefaultsSummary(env);
   const { root, file } = duetConfig(env), before = read(root, file);
   const after = changes.reduce((text, [key, value]) => setTomlField(text, [key], value), before);

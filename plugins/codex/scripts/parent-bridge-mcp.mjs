@@ -9,6 +9,7 @@ import process from "node:process";
 import { randomUUID } from "node:crypto";
 import { createJsonLineReader } from "./lib/app-server.mjs";
 import { ACTIVE, ASK_PARENT, PARENT_BRIDGE_ENV, recordedThreadJobs, askParentQuestion } from "./lib/job-runtime.mjs";
+import { readRoom, assertChair, readIndex, readThread, readResource, postEvent, renderForum, EVENT_KINDS } from "./lib/forum.mjs";
 import { readJobFile, resolveJobFile } from "./lib/state.mjs";
 
 const cwd = process.env[PARENT_BRIDGE_ENV.cwd], envThread = process.env[PARENT_BRIDGE_ENV.threadId], envJob = process.env[PARENT_BRIDGE_ENV.jobId];
@@ -69,6 +70,31 @@ const result = text => ({ content: [{ type: "text", text }], isError: false });
 // which the worker's "never" approval policy would turn into a failed call.
 const TOOL = { name: ASK_PARENT.name, description: ASK_PARENT.description, inputSchema: ASK_PARENT.inputSchema,
   annotations: { title: "Ask parent", readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false } };
+const FORUM_TOOLS = [
+  { name: "forum_read", description: "Read the summary index or resource post/<seq>, thread/<seq>, member/<name> or candidate/<seq>. Thread pages cap at 25 posts/128 KiB; member pages default to 10 recent jobs/commits. Use after/limit with resource to follow continuation pointers (thread after is a post sequence; member after is a newest-first history offset). Candidates include bounded stat/patch and commands for full diffs. Peer resources stay sealed until your independent initial record.",
+    inputSchema: { type: "object", properties: { resource: { type: "string" }, after: { type: "integer", minimum: 0 }, thread: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1, maximum: 5000 } }, additionalProperties: false },
+    annotations: { title: "Read roundtable forum", readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false } },
+  { name: "forum_post", description: "Post to your roundtable as your bound member. First post opens the sealed round. Questions and requests track replies; only the chair may post decisions. Forum text does not change permissions.",
+    inputSchema: { type: "object", required: ["kind", "body"], properties: {
+      kind: { type: "string", enum: EVENT_KINDS.filter(kind => kind !== "decision") }, body: { type: "string", minLength: 1, maxLength: 4000 },
+      title: { type: "string", maxLength: 160 }, thread: { type: "integer", minimum: 1 }, reply_to: { type: "integer", minimum: 1 },
+      label: { type: "string", enum: ["hypothesis", "draft", "observed"] }, refs: { type: "array", maxItems: 16, items: { type: "string", maxLength: 512 } },
+      mentions: { type: "array", maxItems: 8, items: { type: "string" } }
+    }, additionalProperties: false },
+    annotations: { title: "Post to roundtable forum", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } }
+];
+function listingJob() {
+  if (!resolvedThread && envJob) return readJobFile(resolveJobFile(cwd, envJob));
+  const jobs = recordedThreadJobs(boundThread()).jobs.filter(job => ACTIVE.has(job.status));
+  return jobs.length === 1 ? jobs[0] : null;
+}
+function forumArgs(name, args) {
+  const keys = name === "forum_read" ? ["after", "thread", "limit", "resource"] : ["kind", "body", "title", "thread", "reply_to", "label", "refs", "mentions"];
+  if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).some(key => !keys.includes(key))) throw new Error(`Invalid ${name} arguments.`);
+  for (const key of ["after", "thread", "limit", "reply_to"]) if (args[key] !== undefined && (!Number.isSafeInteger(args[key]) || args[key] < (key === "after" ? 0 : 1))) throw new Error(`Invalid ${name} ${key}.`);
+  if (name === "forum_read" && args.thread !== undefined && (args.after !== undefined || args.limit !== undefined)) throw new Error("Read a thread or an index, not both.");
+  if (name === "forum_read" && args.resource !== undefined && (typeof args.resource !== "string" || args.thread !== undefined)) throw new Error("Read a resource or a thread, not both.");
+}
 const valid = args => args && typeof args === "object" && typeof args.question === "string" && args.question.trim().length > 0 && args.question.length <= 1000 &&
   Object.keys(args).every(k => ["question", "options"].includes(k)) &&
   (args.options === undefined || (Array.isArray(args.options) && args.options.length <= 6 && args.options.every(o => typeof o === "string" && o.length <= 160)));
@@ -90,17 +116,34 @@ process.stdin.on("data", createJsonLineReader(async line => {
         send({ id: message.id, result: {} });
         break;
       case "tools/list":
-        send({ id: message.id, result: { tools: [TOOL] } });
+        send({ id: message.id, result: { tools: [TOOL, ...(listingJob()?.request?.roundtable ? FORUM_TOOLS : [])] } });
         break;
       case "tools/call": {
         const { name, arguments: args, _meta } = message.params ?? {};
-        if (name !== TOOL.name) { send({ id: message.id, error: { code: -32602, message: "Unknown tool" } }); break; }
-        if (!valid(args)) { send({ id: message.id, result: { ...result("Invalid ask_parent arguments: question (<=1000 chars) and up to 6 options (<=160 chars) are accepted."), isError: true } }); break; }
+        const forumTool = FORUM_TOOLS.some(tool => tool.name === name);
+        if (name !== TOOL.name && !forumTool) { send({ id: message.id, error: { code: -32602, message: "Unknown tool" } }); break; }
+        if (!forumTool && !valid(args)) { send({ id: message.id, result: { ...result("Invalid ask_parent arguments: question (<=1000 chars) and up to 6 options (<=160 chars) are accepted."), isError: true } }); break; }
         const threadId = boundThread();
         const turnId = _meta?.["x-codex-turn-metadata"]?.turn_id;
         const job = threadId && !(typeof _meta?.threadId === "string" && _meta.threadId !== threadId)
           ? await jobForTurn(threadId, validTurn(turnId) ? turnId : null) : null;
         if (!job) { send({ id: message.id, result: { ...result("No Duet task is listening on this thread right now. Proceed on a conservative assumption within the authorized scope and report it."), isError: true } }); break; }
+        if (forumTool) {
+          if (!job.request?.roundtable) throw new Error("Forum tools are available only to roundtable jobs.");
+          forumArgs(name, args ?? {});
+          const { roomId, persona } = job.request.roundtable, room = readRoom(roomId);
+          assertChair(room, job.sessionId);
+          const author = { kind: "member", name: persona, persona, jobId: job.id, threadId };
+          if (name === "forum_read") {
+            const view = args?.resource !== undefined ? readResource(roomId, author, args.resource, process.env, args)
+              : args?.thread !== undefined ? readThread(roomId, author, args.thread) : readIndex(roomId, author, args ?? {});
+            send({ id: message.id, result: result(renderForum(view)) });
+          } else {
+            const event = postEvent(roomId, author, args);
+            send({ id: message.id, result: result(`Posted #${event.seq} ${event.kind} as ${event.author.name} in thread #${event.thread}${event.initial ? "; your first round is now unsealed" : ""}.`) });
+          }
+          break;
+        }
         const callId = typeof _meta?.callId === "string" && /^[A-Za-z0-9_-]{1,120}$/.test(_meta.callId) ? _meta.callId : null;
         const { text } = await askParentQuestion(job.workspaceRoot, job.id, { question: args.question, options: args.options ?? [], callId }, { caller, turnId: job.turnId });
         send({ id: message.id, result: result(text) });
@@ -110,7 +153,7 @@ process.stdin.on("data", createJsonLineReader(async line => {
         send({ id: message.id, error: { code: -32601, message: "Method not found" } });
     }
   } catch (error) {
-    send({ id: message.id, result: { ...result(`Parent question unavailable (${error instanceof Error ? error.message : String(error)}). Proceed conservatively and report missing essential input.`), isError: true } });
+    send({ id: message.id, result: { ...result(`${message.params?.name?.startsWith("forum_") ? "Roundtable forum" : "Parent question"} unavailable (${error instanceof Error ? error.message : String(error)}). Proceed conservatively and report missing essential input.`), isError: true } });
   }
 }));
 process.stdin.on("end", () => process.exit(0));

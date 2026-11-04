@@ -287,9 +287,25 @@ turn start. `auto` honors it for 24 hours after the last observation, or until
 rather than disable a tool: explicit native calls remain possible. See the
 [dispatch recipe](direct-mode.md#native-subagent-default).
 
+## Roundtable persona models
+
+`duet setup --persona-model <id>=<model>[:<effort>]` saves defaults in
+`[roundtable.personas.<id>]` in `<isolated-home>/duet/config.toml`. Repeat it
+for different personas; `<id>=default` removes both saved fields. A model-only
+change clears an earlier saved effort, allowing the intensity's built-in effort
+adjustment. Ordinary worker defaults do not override this mapping.
+
+Run mapping changes separately from all other setup changes. `--dry-run --json`
+validates and previews without writing. Persona ids, model syntax/catalog and
+supported reasoning efforts are checked before any write. Setup JSON includes
+`personaModels.<id>.model` and `.effort`, each `{ value, source }` with source
+`saved` or `built-in`; reported built-in efforts are for standard intensity.
+See [Roundtable models](roundtable.md#models-and-redefinition) for defaults,
+intensity shifts, per-room overrides and examples.
+
 ## Default orchestration mode
 
-`duet setup --default-mode off|ultra|pair|duel` saves the mode for fresh Claude
+`duet setup --default-mode off|ultra|pair|duel|roundtable` saves the mode for fresh Claude
 sessions and `/clear`. Run it separately from other setup changes; add
 `--dry-run` to preview it. The `defaultMode` key lives in
 `<isolated-home>/duet/config.toml`; `off` is stored explicitly. Missing or invalid
@@ -298,8 +314,9 @@ each mode's `status --json` report `defaultMode`.
 
 This is opt-in because active orchestration consumes Codex quota, and duel also
 consumes Claude quota. Each fresh session uses the mode's standard options:
-ultra has auto scale and auto workers, pair has no options, and duel has three
-rounds. Per-session `on`, `off` and switches leave the saved default unchanged;
+ultra has auto scale and auto workers, pair has no options, duel has three
+rounds, and roundtable has standard intensity with a chair-recommended roster.
+Per-session `on`, `off` and switches leave the saved default unchanged;
 resume and compaction preserve the session's choice, including off. Save `off`
 to stop automatic activation in future sessions.
 

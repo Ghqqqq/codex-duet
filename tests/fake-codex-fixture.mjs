@@ -837,6 +837,43 @@ async function handleLine(line) {
           break;
         }
 
+        if (BEHAVIOR === "roundtable-forum") {
+          send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
+          const config = (state.lastThreadResume?.threadId === thread.id ? state.lastThreadResume : state.lastThreadStart).config.mcp_servers.duet_parent;
+          const child = require("node:child_process").spawn(config.command, config.args, { env: { ...process.env, ...config.env }, stdio: ["pipe", "pipe", "pipe"] });
+          let buffer = "", errorText = "", serial = 0;
+          const replies = new Map();
+          child.stderr.on("data", chunk => { errorText += chunk; });
+          child.stdout.on("data", chunk => {
+            buffer += chunk;
+            let end;
+            while ((end = buffer.indexOf("\\n")) >= 0) {
+              const reply = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
+              const receive = replies.get(reply.id); if (receive) receive(reply);
+            }
+          });
+          const call = (method, params = {}) => new Promise((resolve, reject) => {
+            const id = ++serial;
+            const timer = setTimeout(() => { replies.delete(id); reject(new Error("Fixture forum MCP timeout: " + errorText)); }, 10000);
+            replies.set(id, reply => { clearTimeout(timer); replies.delete(id); resolve(reply); });
+            child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\\n");
+          });
+          const tool = (name, args) => call("tools/call", { name, arguments: args, _meta: { threadId: thread.id, "x-codex-turn-metadata": { turn_id: turnId } } });
+          try {
+            await call("initialize");
+            const listing = await call("tools/list");
+            const before = await tool("forum_read", {});
+            const forged = await tool("forum_post", { kind: "finding", body: "Forged", author: "chair" });
+            const posted = await tool("forum_post", { kind: "finding", title: "Fixture evidence", body: "The fake Codex called its bound member tool.", refs: ["fixture:verification"] });
+            const after = await tool("forum_read", {});
+            const saved = loadState();
+            saved.forumCalls = [...(saved.forumCalls || []), { listing, before, forged, posted, after }];
+            saveState(saved);
+          } finally { child.stdin.end(); child.kill(); }
+          emitTurnCompleted(thread.id, turnId, { completed: { type: "agentMessage", id: "forum-done", phase: "final_answer", text: JSON.stringify({ status: "completed", summary: "Posted fixture evidence to the roundtable.", key_findings: [], assumptions: [], verification: [], blockers: [], question: null }) } });
+          break;
+        }
+
         if (BEHAVIOR === "parent-question-sequence") {
           send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
           sendParentQuestion(thread.id, turnId, 1);

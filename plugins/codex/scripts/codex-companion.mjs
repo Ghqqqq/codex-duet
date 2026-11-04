@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 
 import { spawnDetached } from "./lib/process.mjs";
+import { createRoom, readRoom, listRooms, assertChair, roundtableStatus, postEvent, readIndex, readThread, readResource, pending, ack, setStatus, updateMember, validateMember, renderForum, renderRoundtableStatus, renderAttention } from "./lib/forum.mjs";
+import { resolveRoster, personaInstructions, CHAIR_CARD, PERSONA_IDS } from "./lib/roundtable-personas.mjs";
+import { closeMemberWorkspaces } from "./lib/roundtable-workspaces.mjs";
+import { readPersonaModels } from "./lib/setup-config.mjs";
+import { readActiveRun } from "./lib/run-journal.mjs";
 import { handoffSteering } from "./lib/steering.mjs";
 import { codexRuntimeDiagnostic, executableOnPath, isolatedCodexCommand } from "./lib/codex-home.mjs";
 import { getWorkspaceRuntimeStatus, restartBrokerRuntime } from "./lib/broker-lifecycle.mjs";
@@ -8,7 +13,7 @@ import { UNREACHABLE_GUIDANCE } from "./lib/runtime-errors.mjs";
 import { getToolAvailability, syncToolConfig } from "./lib/tool-config.mjs";
 import { buildWorkerReport, parseStructuredReport, persistTaskArtifacts, taskArtifactPaths } from "./lib/worker-report.mjs";
 import { normalizeBrowserOrigins, normalizeBundleIds } from "./lib/server-requests.mjs";
-import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, defaultModeSetup, permissionMappingSetup, readTomlField, dispatchSetup, dispatchPreference, contextSetup, budgetDefaultsSetup, workerDefaultsSetup, readWorkerDefaults, normalizeRequestedModel, isSupportedReasoningEffort, ensureBrowserApproval, ensureComputerUseApproval, ensureProjectDocs, projectDocsSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
+import { browserOriginSetup, computerUseSetup, transportSetup, defaultSandboxSetup, defaultModeSetup, permissionMappingSetup, readTomlField, dispatchSetup, dispatchPreference, contextSetup, budgetDefaultsSetup, personaModelsSetup, workerDefaultsSetup, readWorkerDefaults, normalizeRequestedModel, isSupportedReasoningEffort, ensureBrowserApproval, ensureComputerUseApproval, ensureProjectDocs, projectDocsSetup, SANDBOX_MODES } from "./lib/setup-config.mjs";
 import { budgetLimit, newJobBudget } from "./lib/job-budget.mjs";
 import { listModels, renderModels } from "./lib/models.mjs";
 import { activityReader, formatActivity, redactActivity, snippet } from "./lib/activity.mjs";
@@ -20,7 +25,7 @@ import { startRun, useRun, addEntry, closeRun, showRun, listRuns, renderRun, val
 import { recordFinishedJob, recordedThreadJobs, uniqueTurnAttribution } from "./lib/job-runtime.mjs";
 import { listSessionJobs, updateJob, unresolvedTask, withoutPrivateActivity } from "./lib/state.mjs";
 import { markReportEmitted } from "./lib/report-delivery.mjs";
-import { clearMode, effectiveMaxWorkers, modeFile, PAIR_MAX_REWORK_ROUNDS, PROTOCOL_PATH, protocolVersion, readMode, setMode } from "./lib/ultra-codex-mode.mjs";
+import { clearMode, effectiveMaxWorkers, modeFile, PAIR_MAX_REWORK_ROUNDS, PROTOCOL_PATH, protocolVersion, readMode, setMode, validateRoundtableOptions } from "./lib/ultra-codex-mode.mjs";
 import { snapshotWorkspace, compareWorkspaceSnapshots, workspaceChangeAttribution } from "./lib/workspace-changes.mjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -374,6 +379,15 @@ Set or inspect duel orchestration for this Claude session (default action: statu
   --cwd, -C <dir>  Workspace; --session <id>  Override the Claude session id.
   --json  JSON output; --help, -h  Show help without changing mode.
 Tasks run through /codex:duel <task>; this CLI accepts controls only.`,
+  roundtable: `Usage: duet roundtable [on|off|status] [options]
+Set or inspect roundtable orchestration for this Claude session (default action: status).
+  on replaces another active mode; off disables roundtable only.
+  --intensity light|standard|deep|full  Default intensity for on (fresh default standard).
+  --roles id,id  Unique persona ids for on; otherwise the chair recommends a roster.
+  --for-command  With status, print a versioned task-only protocol Read instruction.
+  --cwd, -C <dir>  Workspace; --session <id>  Override the Claude session id.
+  --json  JSON output; --help, -h  Show help without changing mode.
+Tasks run through /codex:roundtable <task>. Room commands: start, status <roomId>, pause, resume, close.`,
   "task-worker": `Usage: duet task-worker --job-id <id> [--cwd <dir>]
 Internal detached worker entry point; --job-id selects a stored task.
   --cwd, -C  Workspace; --help, -h  Show help without starting a worker.`,
@@ -561,6 +575,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     permissionMapping: permissionMappingSetup().permissionMapping,
     permissionMappingLimits: PERMISSION_LIMITS,
     ...workerDefaultsSetup(),
+    personaModels: personaModelsSetup().personaModels,
     ...budgetDefaultsSetup(),
     browserOrigins: browserOriginSetup(),
     computerUse: computerUseSummary(),
@@ -597,7 +612,7 @@ async function handleModels(argv) {
 async function handleSetup(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "cua-template", "chatgpt-resources", "transport", "profile", "default-sandbox", "default-mode", "permission-mapping", "dispatch", "default-model", "default-effort", "ultra-routine-model", "browser-approval", "computer-use-approval", "project-docs", "agent-memory", "max-concurrent", "default-max-minutes", "default-max-tokens"],
-    repeatableOptions: ["allow-browser-origin", "revoke-browser-origin", "allow-computer-app", "revoke-computer-app"],
+    repeatableOptions: ["allow-browser-origin", "revoke-browser-origin", "allow-computer-app", "revoke-computer-app", "persona-model"],
     booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "sync-tools", "dry-run", "list-browser-origins", "list-computer-apps", "replace-cua"]
   });
   validatePositionalArity(positionals, 0, "setup");
@@ -610,6 +625,12 @@ async function handleSetup(argv) {
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
   const actionsTaken = [];
+  if (options["persona-model"] !== undefined) {
+    if (Object.keys(options).some(key => !["persona-model", "cwd", "session", "json", "dry-run"].includes(key))) throw new Error("Run --persona-model separately from other setup changes.");
+    const report = personaModelsSetup({ models: options["persona-model"], dryRun: Boolean(options["dry-run"]) });
+    outputResult(options.json ? report : `${JSON.stringify(report, null, 2)}\n`, options.json);
+    return;
+  }
   if (options["default-max-minutes"] !== undefined || options["default-max-tokens"] !== undefined) {
     if (Object.keys(options).some(key => !["default-max-minutes", "default-max-tokens", "cwd", "session", "json", "dry-run"].includes(key))) throw new Error("Run budget defaults separately from other setup changes.");
     const report = budgetDefaultsSetup({ maxMinutes: options["default-max-minutes"], maxTokens: options["default-max-tokens"], dryRun: Boolean(options["dry-run"]) });
@@ -1061,7 +1082,7 @@ async function executeTaskRun(request) {
   request.onProgress?.(`Sandbox: ${sandbox}; approval policy: ${approvalPolicy}${request.detached ? " (Computer Use app requests are forwarded to the parent)" : ""}. Captured workspace baseline (${before.status}).`);
 
   const runtime = new JobRuntime(workspaceRoot, request.jobId, { foreground: !request.detached, parentPid: LAUNCH_PARENT_PID, onProgress: request.onProgress });
-  let result;
+  let result, memberThreadId = null;
   try {
     if (!request.detached) runtime.abort.signal.throwIfAborted();
     result = await runAppServerTurn(workspaceRoot, {
@@ -1087,11 +1108,17 @@ async function executeTaskRun(request) {
     permissionPolicy: request.permissionPolicy,
     approvedBrowserOrigins: request.approvedBrowserOrigins ?? [],
     approvedComputerApps: request.approvedComputerApps ?? [],
-    onProgress: request.onProgress,
+    onProgress: request.roundtable ? progress => {
+      request.onProgress?.(progress);
+      if (progress?.threadId && !memberThreadId) {
+        updateMember(request.roundtable.roomId, request.roundtable.persona, { threadId: progress.threadId });
+        memberThreadId = progress.threadId;
+      }
+    } : request.onProgress,
     signal: runtime.abort.signal,
     onParentQuestion: message => runtime.question(message),
     onApprovalRequest: request.detached ? approval => runtime.approval(approval) : undefined,
-    parentBridge: { cwd: workspaceRoot, questionTimeoutSec: readStoredJob(workspaceRoot, request.jobId)?.questionTimeoutSec ?? 900 },
+    parentBridge: { cwd: workspaceRoot, ...(request.roundtable ? { roundtable: request.roundtable } : {}), questionTimeoutSec: readStoredJob(workspaceRoot, request.jobId)?.questionTimeoutSec ?? 900 },
     persistThread: taskMetadata.title !== "Codex Stop Gate Review",
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
   }); } catch (error) {
@@ -1333,7 +1360,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
   // another worker, even if a competing launcher has not published handles yet.
   if (duplicateDispatch) return { ...duplicateDispatch, dispatchReused: true };
   try {
-    const linkedRun = linkJournalJob({ ...record, cwd: identity.cwd, model: identity.model, effort: identity.effort, request: { run: identity.run } }, taskBrief(identity));
+    const linkedRun = linkJournalJob({ ...record, cwd: identity.cwd, model: identity.model, effort: identity.effort, request: { run: identity.run, ...(identity.roundtable ? { roundtable: identity.roundtable } : {}) } }, taskBrief(identity));
     if (linkedRun) {
       Object.assign(record, linkedRun);
       updateJob(workspaceRoot, record.id, () => linkedRun);
@@ -1368,7 +1395,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrows
   return record;
 }
 
-function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins = [], approvedComputerApps = [], resumeLast, threadId, jobId, report, detached = false, developerInstructions, claudeMd, skills, agentType, agentMemory, claudeInstructionsBase, gitContext, budget, permissionPolicy }) {
+function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins = [], approvedComputerApps = [], resumeLast, threadId, jobId, report, detached = false, developerInstructions, claudeMd, skills, agentType, agentMemory, claudeInstructionsBase, gitContext, budget, permissionPolicy, roundtable }) {
   return {
     cwd,
     model,
@@ -1379,6 +1406,7 @@ function buildTaskRequest({ cwd, model, effort, serviceTier, prompt, write, sand
     claudeMd,
     skills, agentType, agentMemory, claudeInstructionsBase, gitContext, budget,
     ...(permissionPolicy ? { permissionPolicy } : {}),
+    ...(roundtable ? { roundtable } : {}),
     write,
     sandbox,
     approvedBrowserOrigins,
@@ -1780,9 +1808,30 @@ async function handleTask(argv) {
   // listed bundle ids, only for this job's turn.
   const approvedComputerApps = normalizeBundleIds(options["approve-computer-app"] ?? grantRequest?.approvedComputerApps ?? []);
   const lifecycle = { budget, owner: options.owner, leaseSec: seconds(options["lease-sec"] ?? process.env.CODEX_COMPANION_LEASE_SEC, options.direct ? 1800 : 180, "--lease-sec"), questionTimeoutSec: seconds(options["question-timeout-sec"], 900, "--question-timeout-sec") };
+  if ((options.roundtable !== undefined) !== (options.persona !== undefined)) throw new Error("--roundtable and --persona must be supplied together.");
+  const previousRoundtable = continued?.request?.roundtable ?? previousRequest?.roundtable
+    ?? (options.thread ? latestThreadJob(cwd, options.thread)?.request?.roundtable : null);
+  const roundtable = options.roundtable !== undefined ? { roomId: options.roundtable, persona: options.persona } : previousRoundtable;
+  if ((continued || options.thread) && options.roundtable !== undefined &&
+      (!previousRoundtable || previousRoundtable.roomId !== roundtable.roomId || previousRoundtable.persona !== roundtable.persona)) {
+    throw new Error("A resumed thread keeps its original roundtable/persona binding; start a fresh thread to seat a new member.");
+  }
+  const seating = roundtable ? validateMember(roundtable.roomId, roundtable.persona, getCurrentClaudeSessionId()) : null;
+  if (seating?.member.threadId && seating.member.threadId !== (continued?.threadId ?? options.thread)) throw new Error("Roundtable member already has a thread; continue that thread with --to or --thread.");
+  // Member activity always journals to the room's run, never the session's
+  // current active run; a room without a run journals nowhere.
+  if (seating) {
+    const roomRun = seating.room.runId ?? "none";
+    if (options.run !== undefined && options.run !== roomRun) throw new Error(`Roundtable ${seating.room.roomId} records its activity in run ${roomRun}; omit --run.`);
+    options.run = roomRun;
+    const workspace = seating.member.workspace?.path ?? seating.room.workspaceRoot;
+    if (fs.realpathSync(cwd) !== fs.realpathSync(workspace)) {
+      throw new Error(`Roundtable member ${roundtable.persona} must use its recorded workspace; pass --cwd ${JSON.stringify(workspace)}.`);
+    }
+  }
   const defaults = readWorkerDefaults();
-  const model = normalizeRequestedModel(options.model) ?? recordedSettings.model ?? defaults.model;
-  const effort = normalizeReasoningEffort(options.effort) ?? recordedSettings.effort ?? defaults.effort;
+  const model = normalizeRequestedModel(options.model) ?? seating?.member.model ?? recordedSettings.model ?? defaults.model;
+  const effort = normalizeReasoningEffort(options.effort) ?? seating?.member.effort ?? recordedSettings.effort ?? defaults.effort;
   if (options.fast && options.normal) throw new Error("Choose either --fast or --normal.");
   const serviceTier = options.fast ? "priority" : options.normal || options.fast === false ? null : recordedSettings.serviceTier ?? null;
   const prompt = readTaskPrompt(cwd, options, positionals);
@@ -1831,6 +1880,11 @@ async function handleTask(argv) {
   const claudeInstructionsBase = claudeInstructions.developerInstructions;
   Object.assign(claudeInstructions, { claudeInstructionsBase, agentType, gitContext: gitContext(cwd), skills: skillContext.skills, agentMemory: memoryContext.agentMemory,
     developerInstructions: threadId ? contextRequest?.developerInstructions ?? null : (claudeInstructionsBase ?? "") + skillContext.text + memoryContext.text || null });
+  if (roundtable) {
+    claudeInstructions.roundtable = roundtable;
+    if (!threadId) claudeInstructions.developerInstructions = [claudeInstructions.developerInstructions,
+      personaInstructions(roundtable.persona, { roomId: roundtable.roomId, goal: seating.room.goal })].filter(Boolean).join("\n\n");
+  }
   let forkRequest = {};
   if (options.fork) {
     if (!prompt.trim()) throw new Error("Provide the task --fork brief on stdin.");
@@ -1869,7 +1923,8 @@ async function handleTask(argv) {
   if (options.background || options.detached || options.follow || options.direct) {
     ensureCodexAvailable(cwd);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, true, { cwd, continued, threadId, resumeLast, prompt, model, effort, agentName, nativeAgentName, run: options.run, dispatchNonce, dispatchToolUseId, report: Boolean(options.report || options.detached || options.follow || options.direct) });
+    if (roundtable && !threadId) updateMember(roundtable.roomId, roundtable.persona, { claim: true });
+    const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, true, { cwd, continued, threadId, resumeLast, prompt, model, effort, agentName, nativeAgentName, run: options.run, roundtable, dispatchNonce, dispatchToolUseId, report: Boolean(options.report || options.detached || options.follow || options.direct) });
     if (job.dispatchReused) {
       await waitForJob(workspaceRoot, job, { owner: job.ownerId, timeoutSec: options["timeout-sec"], direct: true, quiet: options.quiet, toolUseId: dispatchToolUseId });
       return;
@@ -1897,6 +1952,7 @@ async function handleTask(argv) {
     if (options.run !== undefined) request.run = options.run;
     if (inheritance?.details) request.settingsInheritance = inheritance.details;
     Object.assign(request, forkRequest);
+    if (roundtable) updateMember(roundtable.roomId, roundtable.persona, { status: "active", jobIds: [job.id], ...(threadId ? { threadId } : {}) });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     if (options.follow || options.direct) {
       // Native-like single call: submit, then stay attached as the owner until the
@@ -1919,11 +1975,13 @@ async function handleTask(argv) {
     return;
   }
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, false, { cwd, continued, threadId, resumeLast, prompt, model, effort, agentName, nativeAgentName, run: options.run, dispatchToolUseId, report: Boolean(options.report) });
+  if (roundtable && !threadId) updateMember(roundtable.roomId, roundtable.persona, { claim: true });
+  const job = buildTaskJob(workspaceRoot, taskMetadata, write, sandbox, approvedBrowserOrigins, lifecycle, approvedComputerApps, false, { cwd, continued, threadId, resumeLast, prompt, model, effort, agentName, nativeAgentName, run: options.run, roundtable, dispatchToolUseId, report: Boolean(options.report) });
   job.request = buildTaskRequest({ ...claudeInstructions, budget, permissionPolicy, cwd, model, effort, serviceTier, prompt, write, sandbox, approvedBrowserOrigins, approvedComputerApps, resumeLast, threadId, jobId: job.id, report: Boolean(options.report) });
   if (options.run !== undefined) job.request.run = options.run;
   if (inheritance?.details) job.request.settingsInheritance = inheritance.details;
   Object.assign(job.request, forkRequest);
+  if (roundtable) updateMember(roundtable.roomId, roundtable.persona, { status: "active", jobIds: [job.id], ...(threadId ? { threadId } : {}) });
   await runForegroundCommand(
     job,
     (progress) =>
@@ -3024,7 +3082,8 @@ async function handleAnswer(argv) {
 const MODE_COMMANDS = {
   ultra: { label: "Ultra-codex", verb: "ultra-codex", heading: "Ultra mode", usage: "[on [--quick|--thorough] [--max-workers <n|auto|unlimited>] [<task>] | off | status | [--quick|--thorough] [--max-workers <n|auto|unlimited>] <task>]" },
   pair: { label: "Pair", verb: "pair", heading: "Pair mode", usage: "[on [<task>] | off | status | <task>]" },
-  duel: { label: "Duel", verb: "duel", heading: "Duel mode", usage: "[on [--rounds <n>] [<task>] | off | status | [--rounds <n>] <task>]" }
+  duel: { label: "Duel", verb: "duel", heading: "Duel mode", usage: "[on [--rounds <n>] [<task>] | off | status | [--rounds <n>] <task>]" },
+  roundtable: { label: "Roundtable", verb: "roundtable", heading: "Roundtable mode", usage: "[on [--intensity light|standard|deep|full] [--roles id,id] [<task>] | off | status | [--intensity light|standard|deep|full] [--roles id,id] <task>]" }
 };
 function renderOrchestrationMode(activeMode, requestedName) {
   const { label, verb } = MODE_COMMANDS[requestedName];
@@ -3033,6 +3092,7 @@ function renderOrchestrationMode(activeMode, requestedName) {
   const { options } = activeMode;
   const cap = requestedName === "ultra" ? (options.maxWorkers === "auto" ? `${effectiveMaxWorkers("auto")} (auto)` : options.maxWorkers) : null;
   const description = requestedName === "ultra" ? `scale: ${options.scale}; max workers: ${cap}`
+    : requestedName === "roundtable" ? `intensity: ${options.intensity}; roles: ${options.roles?.join(",") ?? "recommend for confirmation"}`
     : requestedName === "pair" ? `one primary Codex worker; max rework rounds: ${PAIR_MAX_REWORK_ROUNDS}` : `Claude vs Codex; max rounds: ${options.rounds}`;
   return `${label} mode: on for this session since ${activeMode.since ?? "unknown"} (${description}). Turn it off with /codex:${verb} off.`;
 }
@@ -3056,9 +3116,9 @@ function modeJobLines(running) {
 }
 async function handleOrchestrationMode(argv, modeName) {
   const { label, verb, heading, usage } = MODE_COMMANDS[modeName];
-  const modeOptions = modeName === "ultra" ? ["quick", "thorough", "max-workers"] : modeName === "duel" ? ["rounds"] : [];
+  const modeOptions = modeName === "ultra" ? ["quick", "thorough", "max-workers"] : modeName === "duel" ? ["rounds"] : modeName === "roundtable" ? ["intensity", "roles"] : [];
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", ...(modeName === "ultra" ? ["max-workers"] : modeName === "duel" ? ["rounds"] : [])],
+    valueOptions: ["cwd", ...(modeName === "ultra" ? ["max-workers"] : modeName === "duel" ? ["rounds"] : modeName === "roundtable" ? ["intensity", "roles"] : [])],
     booleanOptions: ["json", "for-command", ...(modeName === "ultra" ? ["quick", "thorough"] : [])]
   });
   const action = positionals[0] ?? "status";
@@ -3072,12 +3132,23 @@ async function handleOrchestrationMode(argv, modeName) {
     const mode = sessionId ? readMode(workspaceRoot, sessionId) : null;
     const defaultMode = defaultModeSetup().defaultMode;
     const models = readWorkerDefaults();
-    const payload = { ...modePayload(mode, modeName, sessionId), defaultMode, models };
+    const personaModels = modeName === "roundtable" ? personaModelsSetup().personaModels : null;
+    // Bare roundtable status also reports the session's latest room; outside a
+    // session (or for the slash-command preamble) there is no room to show.
+    let latestRoom = null;
+    if (modeName === "roundtable" && sessionId && !options["for-command"]) {
+      try { latestRoom = roundtableStatus({ sessionId }); } catch { latestRoom = null; }
+    }
+    const payload = { ...modePayload(mode, modeName, sessionId), defaultMode, models, ...(personaModels ? { personaModels } : {}),
+      ...(modeName === "roundtable" && !options["for-command"] ? { latestRoom, attentionCount: latestRoom?.attention.length ?? 0 } : {}) };
     const preamble = options["for-command"]
       ? `Usage: /codex:${verb} ${usage}\nIf the arguments describe a task, Read ${PROTOCOL_PATH} (protocol v${payload.protocolVersion}) before orchestrating; otherwise do not read it.\nFor this task, apply the shared sections and "${heading}" only. Task-prefix options override saved options; a one-shot task leaves the session mode unchanged.\n`
       : "";
     const defaultLine = defaultMode === "off" ? "" : `default mode: ${defaultMode} (duet setup --default-mode)\n`;
-    const text = `${renderOrchestrationMode(mode, modeName)}\nmodels: worker ${models.model}/${models.effort}, ultra routine ${models.routineModel}\n${defaultLine}${preamble}`;
+    const modelLine = personaModels ? `persona models: ${Object.entries(personaModels).map(([id, entry]) => `${id} ${entry.model.value}/${entry.effort.value}`).join(", ")}`
+      : `models: worker ${models.model}/${models.effort}, ultra routine ${models.routineModel}`;
+    const roomLine = latestRoom ? `latest room: ${latestRoom.roomId} (${latestRoom.status}, ${latestRoom.intensity}); needs the chair: ${latestRoom.attention.length}; members ${latestRoom.members.map(member => `${member.name}:${member.status} workspace ${member.workspace.path} (${member.workspace.hasChanges === null ? "changes unknown" : member.workspace.hasChanges ? "changed" : "clean"})`).join(", ")}; open items ${latestRoom.counts.openItems}\n` : "";
+    const text = `${latestRoom ? renderAttention(latestRoom) : ""}${renderOrchestrationMode(mode, modeName)}\n${modelLine}\n${defaultLine}${roomLine}${preamble}`;
     outputCommandResult(payload, text, options.json);
     return;
   }
@@ -3085,12 +3156,17 @@ async function handleOrchestrationMode(argv, modeName) {
   const supplied = modeName === "ultra" ? {
     scale: options.quick ? "quick" : options.thorough ? "thorough" : "auto",
     ...(options["max-workers"] !== undefined ? { maxWorkers: ["auto", "unlimited"].includes(options["max-workers"]) ? options["max-workers"] : Number(options["max-workers"]) } : {})
-  } : modeName === "duel" && options.rounds !== undefined ? { rounds: Number(options.rounds) } : {};
+  } : modeName === "duel" && options.rounds !== undefined ? { rounds: Number(options.rounds) }
+    : modeName === "roundtable" ? {
+      ...(options.intensity !== undefined ? { intensity: options.intensity } : {}),
+      ...(options.roles !== undefined ? { roles: options.roles.split(",") } : {})
+    } : {};
   // Reject numeric input before readMode can discard workspace-legacy records.
   // setMode remains responsible for all write validation and option inheritance.
   if (Object.hasOwn(supplied, "maxWorkers") && !["auto", "unlimited"].includes(supplied.maxWorkers) &&
       (!Number.isInteger(supplied.maxWorkers) || supplied.maxWorkers < 1 || supplied.maxWorkers > 64)) throw new Error("--max-workers must be an integer from 1 to 64, auto or unlimited.");
   if (Object.hasOwn(supplied, "rounds") && (!Number.isInteger(supplied.rounds) || supplied.rounds < 1 || supplied.rounds > 3)) throw new Error("--rounds must be an integer from 1 to 3.");
+  if (modeName === "roundtable") validateRoundtableOptions(supplied);
   const previous = readMode(workspaceRoot, sessionId);
   if (action === "on") {
     const mode = setMode(workspaceRoot, sessionId, { name: modeName, options: supplied });
@@ -3118,6 +3194,119 @@ async function handleOrchestrationMode(argv, modeName) {
     ...modeJobLines(running)
   ];
   outputCommandResult(payload, `${lines.join("\n")}\n`, options.json);
+}
+
+function forumNumber(value, name) {
+  if (value === undefined) return undefined;
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`--${name} requires a non-negative integer.`);
+  return Number(value);
+}
+function roundtableOptions(options, allowed, command) {
+  for (const key of Object.keys(options)) if (!["json", "session", ...allowed].includes(key)) throw new Error(`${command} does not accept --${key}.`);
+}
+
+// Room operations are separate from the orchestration-mode on/off handler.
+async function handleRoundtable(argv) {
+  const { options, positionals } = parseCommandInput(argv, COMMAND_OPTIONS.roundtable);
+  const [action, roomId] = positionals, sessionId = getCurrentClaudeSessionId();
+  if (!["start", "status", "pause", "resume", "close"].includes(action) || positionals.length !== (action === "start" ? 1 : 2)) {
+    throw new Error("roundtable takes start, status <roomId>, pause <roomId>, resume <roomId> or close <roomId>.");
+  }
+  roundtableOptions(options, action === "start" ? ["intensity", "roles", "run", "cwd", "persona-model"]
+    : action === "close" ? ["title", "label", "selects", "unreviewed"] : [], `roundtable ${action}`);
+  if (action === "start") {
+    const cwd = resolveCommandWorkspace(options), overrides = {};
+    for (const value of options["persona-model"] ?? []) {
+      const match = /^([^=]+)=(.+)$/.exec(value);
+      if (!match || !PERSONA_IDS.includes(match[1])) throw new Error("--persona-model needs a known persona=model[:effort].");
+      const [, persona, setting] = match, separator = setting.lastIndexOf(":");
+      const suffix = separator < 0 ? null : setting.slice(separator + 1);
+      const hasEffort = suffix !== null;
+      if (hasEffort && (!suffix || !isSupportedReasoningEffort(suffix))) throw new Error("Invalid persona effort.");
+      const model = normalizeRequestedModel(hasEffort ? setting.slice(0, separator) : setting);
+      if (!model || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(model)) throw new Error("Invalid persona model.");
+      if (Object.hasOwn(overrides, persona)) throw new Error(`Duplicate --persona-model for ${persona}.`);
+      overrides[persona] = { model, ...(hasEffort ? { effort: normalizeReasoningEffort(suffix) } : {}) };
+    }
+    const intensity = options.intensity ?? "standard";
+    const members = resolveRoster({ intensity, roles: options.roles?.split(",").map(id => id.trim()), mapping: readPersonaModels(), overrides });
+    for (const member of members) {
+      member.model = normalizeRequestedModel(member.model);
+      member.effort = normalizeReasoningEffort(member.effort);
+      if (!member.model || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(member.model) || !member.effort) throw new Error(`Invalid saved model/effort for ${member.persona}.`);
+    }
+    const runId = options.run === undefined ? readActiveRun(cwd, sessionId)?.runId ?? null : validateTaskRun(cwd, options.run)?.runId ?? null;
+    const room = createRoom({ sessionId, workspaceRoot: cwd, goal: readStdinIfPiped(), intensity, members, runId });
+    const payload = { roomId: room.roomId, runId, intensity, members: room.members.map(({ persona, name, model, effort, workspace }) => ({ persona, name, model, effort, workspace,
+      header: `DUET: --model ${model} --effort ${effort} --normal --roundtable ${room.roomId} --persona ${persona} --cwd ${JSON.stringify(workspace.path)}` })), chairCard: CHAIR_CARD };
+    outputCommandResult(payload, `${JSON.stringify(payload, null, 2)}\n`, options.json);
+    return;
+  }
+  // Closing with its decision in one command means the delivery pass that
+  // follows this tool call already sees a closed room and wakes nobody.
+  let closing = null;
+  if (action === "close") {
+    const body = readStdinIfPiped();
+    if (body?.trim() || ["title", "label", "selects", "unreviewed"].some(name => options[name] !== undefined)) {
+      closing = postEvent(roomId, { kind: "chair", name: "chair", sessionId }, { kind: "decision", body: body?.trim() ? body : options.title,
+        title: options.title, label: options.label, selects: forumNumber(options.selects, "selects"), unreviewed: options.unreviewed });
+    }
+  }
+  const payload = action === "status" ? roundtableStatus({ sessionId, roomId })
+    : setStatus(roomId, { pause: "paused", resume: "open", close: "closed" }[action]);
+  if (closing) payload.closingDecision = { seq: closing.seq, title: closing.title, selects: closing.selects ?? null };
+  if (action === "close") {
+    payload.selectedCandidate = roundtableStatus({ sessionId, roomId }).selectedCandidate;
+    payload.workspaceCleanup = closeMemberWorkspaces(payload);
+  }
+  const selectionLine = action === "close" ? `Selected candidate: ${payload.selectedCandidate ? `#${payload.selectedCandidate.seq} (${payload.selectedCandidate.reviewed ? "reviewed" : `unreviewed; override: ${payload.selectedCandidate.unreviewed}`})` : "none"}\n` : "";
+  outputCommandResult(payload, action === "status" ? renderRoundtableStatus(payload) : `${selectionLine}${JSON.stringify(payload, null, 2)}\n`, options.json);
+}
+
+async function handleForum(argv) {
+  const { options, positionals } = parseCommandInput(argv, { ...COMMAND_OPTIONS.forum,
+    valueOptions: [...COMMAND_OPTIONS.forum.valueOptions, "status"] });
+  const [action, roomId] = positionals, sessionId = getCurrentClaudeSessionId();
+  if (!["read", "post", "pending", "ack", "member"].includes(action) || positionals.length !== (action === "pending" ? 1 : 2)) throw new Error("forum takes read <roomId>, post <roomId>, pending, ack <roomId> or member <roomId>.");
+  const allowed = { read: ["after", "thread", "limit", "resource"], post: ["kind", "thread", "reply-to", "title", "label", "ref", "mention", "selects", "unreviewed"], pending: [], ack: ["member", "upto"], member: ["member", "status"] };
+  roundtableOptions(options, allowed[action], `forum ${action}`);
+  if (action === "pending") {
+    const payload = listRooms(sessionId).filter(room => room.status === "open").flatMap(room => {
+      const entries = pending(room.roomId).map(entry => ({ roomId: room.roomId, roomStatus: room.status, ...entry }));
+      // Chair notices have no member cursor. The native hook deduplicates their
+      // sequences, without advancing anyone's read/notification cursors.
+      const view = readIndex(room.roomId, { kind: "chair", name: "chair", sessionId }, { after: 0, limit: 5000 });
+      const events = view.events.filter(event => event.author.kind !== "chair" && (event.mentions.includes("chair") ||
+        (event.open && ["question", "request"].includes(event.kind) && !event.mentions.length)))
+        .map(({ seq, kind, title, delta }) => ({ seq, kind, title, delta }));
+      if (events.length) entries.push({ roomId: room.roomId, roomStatus: view.room.status, name: "chair", events,
+        text: `Roundtable ${room.roomId}: ${events.length} updates for chair. Read the forum.` });
+      return entries;
+    });
+    outputCommandResult(payload, `${payload.map(entry => entry.text).join("\n")}\n`, options.json);
+    return;
+  }
+  assertChair(readRoom(roomId), sessionId);
+  const author = { kind: "chair", name: "chair", sessionId };
+  let payload;
+  if (action === "read") {
+    if (options.resource !== undefined && options.thread !== undefined) throw new Error("forum read --resource cannot be combined with --thread.");
+    if (options.thread !== undefined && (options.after !== undefined || options.limit !== undefined)) throw new Error("forum read --thread cannot be combined with --after or --limit.");
+    payload = options.resource !== undefined ? readResource(roomId, author, options.resource, process.env, { after: forumNumber(options.after, "after"), limit: forumNumber(options.limit, "limit") })
+      : options.thread !== undefined ? readThread(roomId, author, forumNumber(options.thread, "thread"))
+      : readIndex(roomId, author, { after: forumNumber(options.after, "after"), limit: forumNumber(options.limit, "limit") });
+  } else if (action === "post") {
+    payload = postEvent(roomId, author, { kind: options.kind, body: readStdinIfPiped(), title: options.title, label: options.label,
+      thread: forumNumber(options.thread, "thread"), replyTo: forumNumber(options["reply-to"], "reply-to"), refs: options.ref, mentions: options.mention,
+      selects: forumNumber(options.selects, "selects"), unreviewed: options.unreviewed });
+  } else if (action === "member") {
+    if (!options.member || options.status !== "stopped") throw new Error("forum member requires --member and --status stopped.");
+    payload = updateMember(roomId, options.member, { status: "stopped" });
+  } else {
+    if (!options.member || options.upto === undefined) throw new Error("forum ack requires --member and --upto.");
+    payload = ack(roomId, options.member, forumNumber(options.upto, "upto"));
+  }
+  outputCommandResult(payload, action === "read" ? renderForum(payload) : `${JSON.stringify(payload)}\n`, options.json);
 }
 
 async function handleJournal(argv) {
@@ -3194,6 +3383,9 @@ async function main() {
   }
 
   switch (subcommand) {
+    case "forum":
+      await handleForum(argv);
+      break;
     case "journal":
       await handleJournal(argv);
       break;
@@ -3256,6 +3448,21 @@ async function main() {
     case "runtime":
       await handleRuntime(argv);
       break;
+    case "roundtable": {
+      // Mode-control seam: bare status/no action belongs here. The room CLI
+      // owns start, status <roomId>, pause, resume and close at integration.
+      const { positionals } = parseCommandInput(argv, { rejectUnknown: false,
+        valueOptions: ["cwd", "intensity", "roles"], booleanOptions: ["json", "for-command"] });
+      const action = positionals[0] ?? "status";
+      // on/off and bare status are mode controls; start, status <roomId>,
+      // pause, resume and close manage rooms.
+      if (["on", "off", "status"].includes(action) && !(action === "status" && positionals.length > 1)) {
+        await handleOrchestrationMode(argv, "roundtable");
+        break;
+      }
+      await handleRoundtable(argv);
+      break;
+    }
     case "ultra-codex":
       await handleOrchestrationMode(argv, "ultra");
       break;

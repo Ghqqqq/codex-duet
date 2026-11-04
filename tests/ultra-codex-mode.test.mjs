@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { makeTempDir, initGitRepo, run } from "./helpers.mjs";
 import { buildEnv } from "./fake-codex-fixture.mjs";
-import { clearMode, effectiveMaxWorkers, pruneModes, readMode, setMode, modeFile } from "../plugins/codex/scripts/lib/ultra-codex-mode.mjs";
+import { clearMode, effectiveMaxWorkers, pruneModes, readMode, setMode, modeFile, protocolVersion, PROTOCOL_PATH } from "../plugins/codex/scripts/lib/ultra-codex-mode.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 import { defaultModeSetup, dispatchPreference, readNativeUnavailable } from "../plugins/codex/scripts/lib/setup-config.mjs";
 import { runWithRetainedStdin } from "./stdin-fixture.mjs";
@@ -16,7 +16,8 @@ const SESSION = "11111111-aaaa-4bbb-8ccc-000000000001";
 const MODES = [
   { name: "ultra", verb: "ultra-codex", flags: ["--thorough", "--max-workers", "4"], options: { scale: "thorough", maxWorkers: 4 } },
   { name: "pair", verb: "pair", flags: [], options: {} },
-  { name: "duel", verb: "duel", flags: ["--rounds", "2"], options: { rounds: 2 } }
+  { name: "duel", verb: "duel", flags: ["--rounds", "2"], options: { rounds: 2 } },
+  { name: "roundtable", verb: "roundtable", flags: ["--intensity", "deep", "--roles", "steward,critic,improver"], options: { intensity: "deep", roles: ["steward", "critic", "improver"] } }
 ];
 function fixture() {
   const dir = makeTempDir(), repo = path.join(dir, "repo");
@@ -80,6 +81,7 @@ test("modes switch on and off across workspaces while reminders and lifecycle st
     assert.equal(fs.statSync(f.modeFile(SESSION)).mode & 0o777, 0o600);
     const reminder = f.prompt("substantive task").stdout.trim();
     assert.ok(reminder.length > 0);
+    assert.ok(reminder.includes(`v${protocolVersion()}`));
     assert.equal(f.prompt("task", "another-session").stdout, "");
     assert.equal(f.prompt(`/codex:${mode.verb} off`).stdout, "");
     assert.equal(f.lifecycle("SessionEnd", { reason: "prompt_input_exit", cwd: other }).status, 0);
@@ -123,27 +125,31 @@ test("mode replacement and targeted off leave running jobs and other sessions in
   const next = f.json(f.call("duel", "on", "--json"));
   assert.deepEqual(next.replacedMode, first.activeMode);
   assert.deepEqual(next.runningJobs.map(job => job.jobId), ["running"]);
+  const roundtable = f.json(f.call("roundtable", "on", "--json"));
+  assert.deepEqual(roundtable.replacedMode, next.activeMode);
+  assert.deepEqual(roundtable.runningJobs.map(job => job.jobId), ["running"]);
   const before = fs.readFileSync(f.modeFile(SESSION), "utf8");
   assert.equal(f.json(f.call("pair", "off", "--json")).wasOn, false);
   assert.equal(fs.readFileSync(f.modeFile(SESSION), "utf8"), before);
   assert.deepEqual(fs.readdirSync(path.dirname(f.modeFile(SESSION))), [`${SESSION}.json`]);
-  assert.equal(f.json(f.call("duel", "off", "--json")).wasOn, true);
+  assert.equal(f.json(f.call("roundtable", "off", "--json")).wasOn, true);
   assert.deepEqual(JSON.parse(fs.readFileSync(stateFile, "utf8")).jobs, jobs);
 });
 
 test("default-mode setup previews, persists and initializes only fresh sessions", () => {
   const f = fixture(), file = path.join(f.env.CODEX_COMPANION_HOME, "duet", "config.toml");
   assert.equal(defaultModeSetup({ env: f.env }).defaultMode, "off");
-  assert.equal(f.json(f.call("setup", "--default-mode", "pair", "--dry-run", "--json")).defaultMode, "pair");
+  assert.equal(f.json(f.call("setup", "--default-mode", "roundtable", "--dry-run", "--json")).defaultMode, "roundtable");
   assert.equal(fs.existsSync(file), false);
-  f.json(f.call("setup", "--default-mode", "pair", "--json"));
+  f.json(f.call("setup", "--default-mode", "roundtable", "--json"));
   fs.appendFileSync(file, '# preserved\n[custom]\nvalue = "untouched"\n');
   const preference = fs.readFileSync(file, "utf8");
-  assert.equal(defaultModeSetup({ env: { ...f.env, CLAUDE_PLUGIN_DATA: undefined } }).defaultMode, "pair");
+  assert.equal(defaultModeSetup({ env: { ...f.env, CLAUDE_PLUGIN_DATA: undefined } }).defaultMode, "roundtable");
   for (const source of ["startup", "clear"]) {
     setMode(f.repo, SESSION, { name: "duel" }, f.env);
     assert.equal(f.lifecycle("SessionStart", { source }).status, 0);
-    assert.equal(readMode(f.repo, SESSION, f.env).name, "pair");
+    assert.equal(readMode(f.repo, SESSION, f.env).name, "roundtable");
+    assert.deepEqual(readMode(f.repo, SESSION, f.env).options, { intensity: "standard", roles: null });
   }
   clearMode(f.repo, SESSION, f.env);
   assert.equal(f.lifecycle("SessionStart", { source: "resume" }).status, 0);
@@ -229,7 +235,10 @@ test("mode CLI rejects malformed controls before writes and keeps command preamb
     ["setup", "--default-mode", "invalid"], ["setup", "--default-mode", "pair", "--sync-tools"],
     ["ultra-codex", "on", "--max-workers", "65"], ["ultra-codex", "on", "--quick", "--thorough"],
     ["duel", "on", "--rounds", "4"], ["pair", "status", "--rounds", "2"],
-    ["pair", "on", "task text"], ["pair", "on", "--session", "../invalid"]
+    ["pair", "on", "task text"], ["pair", "on", "--session", "../invalid"],
+    ["roundtable", "on", "--intensity", "unknown"], ["roundtable", "on", "--intensity", "constructor"],
+    ["roundtable", "on", "--roles", "critic,unknown"], ["roundtable", "on", "--roles", "critic,critic"],
+    ["roundtable", "on", "--roles", "critic,"], ["roundtable", "off", "--intensity", "light"]
   ]) {
     assert.equal(f.call(...args).status, 1, args.join(" "));
     assert.equal(fs.readFileSync(file, "utf8"), before);
@@ -244,6 +253,19 @@ test("mode CLI rejects malformed controls before writes and keeps command preamb
     assert.equal(fs.readFileSync(file, "utf8"), before);
   }
   assert.equal(f.call("pair", "--help").status, 0);
+  const protocol = fs.readFileSync(PROTOCOL_PATH, "utf8");
+  assert.equal(protocol.split("\n")[0], `<!-- Ultra-codex protocol v${protocolVersion(protocol)} -->`);
+});
+
+test("roundtable options survive reactivation and status is a mode control", () => {
+  const f = fixture();
+  const on = f.json(f.call("roundtable", "on", "--intensity", "full", "--roles", "critic,integrator", "--json"));
+  const again = f.json(f.call("roundtable", "on", "--json"));
+  assert.deepEqual(again.activeMode, on.activeMode);
+  const before = fs.readFileSync(f.modeFile(SESSION), "utf8");
+  assert.deepEqual(f.json(f.call("roundtable", "--json", "status")).activeMode, on.activeMode);
+  assert.equal(f.json(f.call("roundtable", "--json")).mode, "on");
+  assert.equal(fs.readFileSync(f.modeFile(SESSION), "utf8"), before);
 });
 
 test("ultra caps survive reactivation and legacy records migrate without rewriting on read", () => {
@@ -262,7 +284,10 @@ test("ultra caps survive reactivation and legacy records migrate without rewriti
     assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).schemaVersion, 2);
   }
   assert.deepEqual([effectiveMaxWorkers("auto", 1), effectiveMaxWorkers("auto", 18)], [1, 16]);
-  for (const value of ["broken JSON", { schemaVersion: 2, name: "duel", options: { rounds: 4 } }, { sessionId: "foreign", scale: "quick" }]) {
+  for (const value of ["broken JSON", { schemaVersion: 2, name: "duel", options: { rounds: 4 } },
+    { schemaVersion: 2, name: "roundtable", options: { intensity: ["standard"], roles: null } },
+    { schemaVersion: 2, name: "roundtable", options: { intensity: "standard", roles: ["critic", "critic"] } },
+    { sessionId: "foreign", scale: "quick" }]) {
     const bytes = typeof value === "string" ? value : JSON.stringify(value); fs.writeFileSync(file, bytes);
     assert.equal(readMode(f.repo, SESSION, f.env), null);
     assert.equal(f.prompt("task").stdout, "");

@@ -6,12 +6,22 @@ export const COMMAND_OPTIONS = {
   // Host-hook only; the permission hook's public verb allowlist excludes it.
   "reserve-name": { valueOptions: [], internalValueOptions: ["session-cwd", "preferred"], booleanOptions: [] },
   task: {
-    valueOptions: ["model", "effort", "cwd", "name", "prompt-file", "thread", "to", "continue", "run", "source", "sandbox", "lease-sec", "question-timeout-sec", "owner", "timeout-sec", "feed-limit", "max-minutes", "max-tokens"],
+    valueOptions: ["model", "effort", "cwd", "name", "prompt-file", "thread", "to", "continue", "run", "source", "sandbox", "lease-sec", "question-timeout-sec", "owner", "timeout-sec", "feed-limit", "max-minutes", "max-tokens", "roundtable", "persona"],
     // Companion-only values: the permission hook does not auto-approve these.
     internalValueOptions: ["session-cwd", "dispatch-nonce", "tool-use-id", "agent-name"],
     repeatableOptions: ["approve-browser-origin", "approve-computer-app"],
     booleanOptions: ["json", "report", "write", "resume-last", "resume", "fresh", "fork", "background", "detached", "follow", "direct", "quiet", "fast", "normal", "no-claude-md"],
     aliasMap: { m: "model" }
+  },
+  roundtable: {
+    valueOptions: ["intensity", "roles", "run", "cwd", "title", "label", "selects", "unreviewed"],
+    repeatableOptions: ["persona-model"],
+    booleanOptions: ["json"]
+  },
+  forum: {
+    valueOptions: ["after", "thread", "limit", "resource", "kind", "reply-to", "title", "label", "member", "upto", "selects", "unreviewed"],
+    repeatableOptions: ["ref", "mention"],
+    booleanOptions: ["json"]
   },
   answer: {
     valueOptions: ["cwd", "question", "owner", "timeout-sec"],

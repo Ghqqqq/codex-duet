@@ -11,7 +11,7 @@
   <a href="#install">Install</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#how-it-works">How it works</a> ·
-  <a href="#three-orchestration-modes">Modes</a> ·
+  <a href="#four-orchestration-modes">Modes</a> ·
   <a href="#features">Features</a> ·
   <a href="#documentation">Docs</a>
 </p>
@@ -111,7 +111,7 @@ Duet also ships its own dispatch and acceptance rules, so neither is required.
 
 Every command and flag: [docs/commands.md](docs/commands.md).
 
-## Three orchestration modes
+## Four orchestration modes
 
 Pick the mode by the shape of the task. Claude always plans, writes the briefs
 and accepts the work; the modes differ in who does the work and how it is
@@ -127,7 +127,15 @@ checked.
 
 Run a task once with `/codex:<mode> <task>`, keep the mode for the session with
 `on`, and clear it with `off`. One mode is active at a time, and
-`setup --default-mode ultra|pair|duel` starts every fresh session in one.
+`setup --default-mode ultra|pair|duel|roundtable` starts every fresh session in one.
+
+### Roundtable: persistent personas, one shared goal
+
+[Roundtable](docs/roundtable.md) seats two to six Codex personas that experiment,
+implement and review together through a shared forum. Claude chairs and accepts
+the final candidate on evidence. Choose `light`, `standard`, `deep` or `full`,
+or supply `--roles`; redefine each persona's model with `setup --persona-model`.
+Start with `/codex:roundtable <task>` or `/codex:roundtable on`.
 
 ### Ultra: fan out like native Ultracode
 
@@ -248,7 +256,8 @@ stay available through `result --details`. → [Commands](docs/commands.md)
 | Setting | Default | Change it with |
 | --- | --- | --- |
 | Model · effort · speed | configured; built-in `gpt-6-astra` · `xhigh` · normal (ultra uses the configured routine model, default `gpt-6.1-sol`, or worker model by stage) | `duet models` lists what your account offers; `setup --default-model …`, `--default-effort …`, `--ultra-routine-model …`; `--model`, `--effort`, `--fast` per call |
-| Orchestration mode in a fresh session | off | `setup --default-mode ultra\|pair\|duel` |
+| Orchestration mode in a fresh session | off | `setup --default-mode ultra\|pair\|duel\|roundtable` |
+| Roundtable intensity · persona models | standard · [per-persona built-ins](docs/roundtable.md#models-and-redefinition) | `/codex:roundtable --intensity … <task>`; `setup --persona-model id=model[:effort]` |
 | Codex sandbox | full access, like the Codex app's own full-access mode | `setup --default-sandbox …`, or `--sandbox` per call |
 | Claude permission mapping | off | `setup --permission-mapping claude` maps native modes to Codex sandbox/approvals |
 | Task time · token budgets | off · off | `setup --default-max-minutes <n\|off>`, `--default-max-tokens <n\|off>`; `--max-minutes`, `--max-tokens` per task |
@@ -273,7 +282,7 @@ of each setting:
 | Topic | Page |
 | --- | --- |
 | Native/Bash dispatch, reports, questions, stops and recovery | [Direct mode](docs/direct-mode.md) · [Worker lifecycle](docs/worker-lifecycle.md) |
-| Orchestration modes and shared protocol | [Ultra-codex](docs/ultra-codex.md) · [Pair](docs/pair.md) · [Duel](docs/duel.md) |
+| Orchestration modes and shared protocol | [Ultra-codex](docs/ultra-codex.md) · [Pair](docs/pair.md) · [Duel](docs/duel.md) · [Roundtable](docs/roundtable.md) |
 | Optional CLAUDE.md policy for proactive delegation | [CLAUDE.md policy](docs/claude-md.md) |
 | Run journal format and commands | [Run journal](docs/run-journal.md) |
 | All slash commands and companion subcommands | [Commands](docs/commands.md) |

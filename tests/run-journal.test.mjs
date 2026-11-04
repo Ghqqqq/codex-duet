@@ -48,6 +48,72 @@ function linked(f, runId, jobId = "job-fixture") {
   return { ...job, ...linkedRun };
 }
 
+test("roundtable activity preserves dispatch purpose and terminal states without requiring delivery verdicts", () => {
+  const f = fixture(), runId = f.start();
+  const members = [
+    { roomId: "rt-first", persona: "critic", status: "completed" },
+    { roomId: "rt-first", persona: "critic", status: "failed" },
+    { roomId: "rt-first", persona: "improver", status: "completed" },
+    { roomId: "rt-second", persona: "critic", status: "cancelled" }
+  ];
+  const activity = members.map(({ roomId, persona, status }, index) => {
+    const job = { id: `job-activity-${index}`, workspaceRoot: f.cwd, sessionId: SESSION, jobClass: "task",
+      agentName: persona, status, request: { roundtable: { roomId, persona } } };
+    return { ...job, ...linkJournalJob(job, "Roundtable exploration\n", f.env) };
+  });
+  assert.deepEqual(f.rows(runId).filter(row => row.type === "job_started").map(({ purpose, roomId, persona }) => ({ purpose, roomId, persona })),
+    members.map(({ roomId, persona }) => ({ purpose: "roundtable", roomId, persona })));
+
+  storeJob(f, { ...activity[0], status: "running" });
+  assert.deepEqual(validateRun(f.cwd, SESSION, runId, f.env).issues.map(issue => issue.kind), ["unfinished_job", "unchecked_criterion"]);
+  storeJob(f, activity[0]);
+  assert.deepEqual(validateRun(f.cwd, SESSION, runId, f.env).issues.map(issue => issue.kind), ["unrecorded_finish", "unchecked_criterion"],
+    "activity still requires a recorded finish, but never an automatic verdict");
+  for (const job of activity) {
+    delete job.request.roundtable;
+    assert.equal(finishJournalJob(job, { status: job.status, summary: "Recorded exploration outcome" }, f.env), true);
+  }
+  assert.deepEqual(f.rows(runId).filter(row => row.type === "job_finished").map(row => row.status), members.map(member => member.status));
+  const delivery = linked(f, runId, "job-delivery");
+  assert.equal(finishJournalJob(delivery, { status: "completed" }, f.env), true);
+  fs.rmSync(path.join(f.state, "jobs"), { recursive: true });
+  const view = json(f.journal(["show"]));
+  assert.deepEqual(view.jobs.slice(0, activity.length).map(({ purpose, roomId, persona, status }) => ({ purpose, roomId, persona, status })),
+    members.map(member => ({ purpose: "roundtable", ...member })), "purpose is fixed at dispatch and survives job pruning");
+  assert.equal(view.jobs.at(-1).purpose, undefined, "ordinary jobs keep their existing shape");
+  assert.deepEqual(view.activityCounts, [
+    { roomId: "rt-first", persona: "critic", count: 2 },
+    { roomId: "rt-first", persona: "improver", count: 1 },
+    { roomId: "rt-second", persona: "critic", count: 1 }
+  ]);
+  assert.deepEqual(view.openItems, [{ jobId: delivery.id, reason: "no_verdict" }]);
+  const text = f.call(["journal", "show"]);
+  assert.equal(text.status, 0, text.stderr);
+  const [ordinaryText, activityText] = text.stdout.split("\nJobs:\n")[1].split("\nActivity jobs (4):\n");
+  assert.match(ordinaryText, /job-delivery/);
+  assert.doesNotMatch(ordinaryText, /job-activity/);
+  assert.match(activityText, /rt-first \/ critic \(2 job\(s\)\)/);
+  assert.match(activityText, /rt-first \/ improver \(1 job\(s\)\)/);
+  assert.match(activityText, /rt-second \/ critic \(1 job\(s\)\)/);
+  for (const job of activity) assert.ok(activityText.includes(`${job.id} thread=? ${job.status}`));
+
+  const validation = f.journal(["validate"]);
+  assert.equal(validation.status, 2, validation.stderr);
+  const issues = JSON.parse(validation.stdout);
+  assert.deepEqual(issues.issues.map(issue => [issue.kind, issue.jobId]), [["no_verdict", delivery.id], ["unchecked_criterion", undefined]]);
+  const refused = f.journal(["close"], { judgment: "passed", summary: "Activity alone cannot satisfy criteria" });
+  assert.equal(refused.status, 2, refused.stderr);
+  assert.deepEqual(JSON.parse(refused.stdout), issues);
+  json(f.journal(["add", "verdict"], { ...verdict(delivery.id), criteria: [], reason: `Delivery cites ${activity[0].id}` }));
+  assert.deepEqual(validateRun(f.cwd, SESSION, runId, f.env).issues.map(issue => issue.kind), ["unchecked_criterion"]);
+  json(f.journal(["add", "verdict"], { ...verdict(activity[0].id, "REWORK"), criteria: [] }));
+  assert.deepEqual(validateRun(f.cwd, SESSION, runId, f.env).issues.map(issue => issue.kind), ["open_rework", "unchecked_criterion"],
+    "an explicit activity verdict retains normal rejection semantics");
+  json(f.journal(["add", "verdict"], { ...verdict(activity[0].id), reason: "Explicit delivery acceptance of the activity candidate" }));
+  assert.deepEqual(json(f.journal(["validate"])), { runId, ok: true, issues: [] });
+  assert.deepEqual(json(f.journal(["close"], { judgment: "passed", summary: "Delivery evidence accepted" })).openIssues, []);
+});
+
 test("status and journal show total known job usage and count jobs without usage after pruning", t => {
   const f = fixture(), runId = f.start("Account for worker usage", []);
   const usages = [

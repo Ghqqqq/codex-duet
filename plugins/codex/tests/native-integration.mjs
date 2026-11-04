@@ -18,6 +18,7 @@ import { isC2Report } from '../scripts/lib/report-delivery.mjs';
 import { updateJob } from '../scripts/lib/state.mjs';
 import { register as reportHooks } from '../hooks/report-delivery.mjs';
 import { lifecycleStoreSize } from '../hooks/lifecycle-hooks.mjs';
+import { createRoom, postEvent, readRoom, setStatus, updateMember, pending as forumPending } from '../scripts/lib/forum.mjs';
 
 const plugin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const captures = [];
@@ -100,7 +101,7 @@ function fixture(behavior, name = 'native-worker', { mutable = false, memoryStor
   const pluginState = new Map();
   let now = 1800000000000;
   const timers = new Set();
-  let controller = new AbortController(), agents = [], hooks;
+  let controller = new AbortController(), agents = [], hooks, toolHooks;
   let modelCalls = 0, onWait, syntheticUsage;
   const $ = {
     plugin: { name: 'codex', root: plugin },
@@ -224,10 +225,12 @@ function fixture(behavior, name = 'native-worker', { mutable = false, memoryStor
   };
   function reload(record = true, install = register) {
     if (record) capture.events.push({ event: 'reload', store: readStore() });
-    hooks = new Map();
+    hooks = new Map(); toolHooks = [];
     install((event, matcher, fn) => {
       if (typeof matcher === 'function') fn = matcher;
-      const entry = { fn }; hooks.set(event === 'ui.render' ? `${event}:${matcher.component}` : event, entry);
+      const entry = { fn, matcher: typeof matcher === 'function' ? null : matcher };
+      if (event === 'tool.call') toolHooks.push(entry);
+      else hooks.set(event === 'ui.render' ? `${event}:${matcher.component}` : event, entry);
       return { catch(handler) { entry.catch = handler; } };
     });
   }
@@ -241,7 +244,19 @@ function fixture(behavior, name = 'native-worker', { mutable = false, memoryStor
       called = true;
       return cached = bottom(input);
     }, { signal: controller.signal });
-    const hook = hooks.get(event === 'ui.render' ? `${event}:${e.component}` : event);
+    // Roundtable's unfiltered post-tool hook composes with the native Agent
+    // matcher; model the host's hook frames instead of overwriting either one.
+    const hook = event === 'tool.call' ? { fn: async ($, e, next) => {
+      const dispatch = async (index, input) => {
+        const current = toolHooks[index];
+        if (!current) return next(input);
+        const onward = Object.assign(value => dispatch(index + 1, value), { signal: next.signal });
+        if (current.matcher?.tool && current.matcher.tool !== input.tool) return onward(input);
+        try { return await current.fn($, input, onward); }
+        catch (error) { if (!current.catch) throw error; return current.catch($, input, onward); }
+      };
+      return dispatch(0, e);
+    } } : hooks.get(event === 'ui.render' ? `${event}:${e.component}` : event);
     if (event === 'turn.step') {
       const value = (async function* () {
         try { return yield* (hook ? hook.fn($, e, next) : next(e)); }
@@ -342,6 +357,480 @@ function steer(f, job, deliveryId, text) {
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout);
 }
+
+function nativeRoom(f, personas = ['critic']) {
+  const env = { ...f.env, CODEX_COMPANION_SESSION_ID: 'native-session' };
+  const room = createRoom({ sessionId: 'native-session', workspaceRoot: `${f.root}/repo`, goal: 'Reach a checked shared result',
+    members: personas.map(persona => ({ name: persona, persona, model: 'gpt-6-astra', effort: 'high' })) }, env);
+  return { room, env, header: `DUET: --roundtable ${room.roomId} --persona critic\n`,
+    post: (kind, mentions = [], title = 'Check the candidate') => postEvent(room.roomId, { kind: 'chair', name: 'chair' },
+      { kind, mentions, title, body: 'Fixture forum update' }, env) };
+}
+async function notifierTick(f) {
+  await f.invoke('session.start', {}, async () => ({}));
+  const ticks = [...f.timers].filter(timer => timer.ms === 10000);
+  assert.equal(ticks.length, 1, 'One notifier per session, including repeated registration/start');
+  f.wakes ||= [];
+  f.$.session.send = async input => { f.wakes.push(clone(input)); return { isDelivered: true }; };
+  return async () => {
+    const before = f.wakes.length;
+    await ticks[0].fn();
+    assert.equal(f.wakes.length, before, 'Timer-origin sends would skip every native hook');
+  };
+}
+const roundtableWakes = f => f.wakes || [];
+const wakePass = (f, input = {}, bottom = async () => ({ result: { text: 'Tool result' } })) =>
+  f.invoke('tool.call', { tool: 'Bash', command: 'duet roundtable status', tool_use_id: 'roundtable-tool', ...input }, bottom);
+async function receiveNotice(f, notice, number) {
+  // A tool-hook-origin send excludes only that tool frame; the member's
+  // native turn hooks still run. Timer-origin sends must never reach here.
+  return f.turn('The coordinator sent a message while you were working:\n' + notice.text +
+    '\n\nAddress this before completing your current task.', number, false, { wake: true });
+}
+
+test('native roundtable header preserves caller identity and same-thread binding', async () => {
+  const f = fixture('review-ok', 'critic'), rt = nativeRoom(f);
+  await f.turn(rt.header + 'Give an independent first result.', 1);
+  const first = f.jobs()[0];
+  assert.equal(first.agentName, 'critic');
+  assert.deepEqual(first.request.roundtable, { roomId: rt.room.roomId, persona: 'critic' });
+  assert.deepEqual(f.readStore()['native:v2:native-session:native-agent'].roundtable, first.request.roundtable);
+  await f.turn(rt.header + 'Continue the same roundtable.', 2);
+  const second = f.jobs().find(job => job.id !== first.id);
+  assert.equal(second.threadId, first.threadId);
+  assert.deepEqual(second.request.roundtable, first.request.roundtable);
+  const tasks = f.capture.processes.filter(call => call.kind === 'spawn' && call.request.argv[2] === 'task');
+  assert.ok(tasks[0].request.argv.includes('--roundtable'));
+  assert.ok(tasks[0].request.argv.includes('--persona'));
+  assert.equal(tasks[1].request.argv.includes('--roundtable'), false);
+  assert.equal(tasks[1].request.argv.includes('--persona'), false);
+  const invalid = fixture('review-ok', 'critic');
+  assert.equal((await invalid.turn('DUET: --roundtable rt-test-room\nMissing persona.', 1)).status, 'blocked');
+  assert.equal((await invalid.turn('DUET: --roundtable rt-test-room --persona unknown\nUnknown persona.', 2)).status, 'blocked');
+  assert.equal(invalid.jobs().length, 0);
+});
+
+test('roundtable notifier steers a running member once through the durable inbox', async () => {
+  const f = fixture('steer-applied', 'critic'), rt = nativeRoom(f);
+  const pending = f.turn(rt.header + 'Work until the forum notice arrives.', 1);
+  try {
+    await until(() => f.jobs().find(job => job.turnId));
+    await f.advance(1500);
+    const event = rt.post('decision');
+    const tick = await notifierTick(f);
+    // Lose the steering receipt and then the ack; neither may replay the seq.
+    const run = f.$.process.run;
+    let ackFailed = false, receiptLost = false, release, entered;
+    const gate = new Promise(resolve => { release = resolve; });
+    const waiting = new Promise(resolve => { entered = resolve; });
+    f.$.process.run = async (argv, init) => {
+      if (argv[2] === 'forum' && argv[3] === 'pending' && !entered.done) {
+        entered.done = true; entered(); await gate;
+      }
+      if (argv[2] === 'forum' && argv[3] === 'ack' && !ackFailed) { ackFailed = true; throw new Error('Lost ack'); }
+      const result = await run(argv, init);
+      if (argv[2] === 'steer' && !receiptLost) { receiptLost = true; throw new Error('Lost steering receipt'); }
+      return result;
+    };
+    const firstTick = tick();
+    await waiting;
+    await tick(); await wakePass(f); // Both paths share the in-flight lease.
+    release(); await firstTick;
+    assert.equal((await pending).status, 'completed');
+    await tick(); await tick();
+    assert.equal(f.codexState().steers.length, 1);
+    assert.match(f.codexState().steers[0].input[0].text, /Call forum_read/);
+    assert.equal(readRoom(rt.room.roomId, rt.env).members[0].notifiedSeq, event.seq);
+    assert.equal(f.jobs().length, 1);
+    assert.deepEqual(roundtableWakes(f), [], 'Running members receive steering directly');
+    assert.ok(f.capture.processes.filter(call => call.kind === 'run' && call.request.argv[2] === 'steer')
+      .every(call => call.request.init.timeoutMs <= 12000));
+  } finally { f.abort(); await pending.catch(() => {}); }
+});
+
+test('roundtable notifier settles one wake across ack failure and reload', async () => {
+  const f = fixture('review-ok', 'critic'), rt = nativeRoom(f);
+  await f.turn(rt.header + 'Finish the first contribution.', 1);
+  const initial = postEvent(rt.room.roomId, 'critic', { kind: 'idea', body: 'Independent record' }, rt.env);
+  const event = rt.post('request', ['critic']);
+  const agent = (await f.$.agent.list())[0]; agent.status = 'completed';
+  const run = f.$.process.run; let rejectAck = true, staleActive = true, deferredLost = false;
+  f.$.process.run = async (argv, init) => {
+    if (rejectAck && argv[2] === 'forum' && argv[3] === 'ack') throw new Error('Ack temporarily unavailable');
+    const result = await run(argv, init);
+    if (argv[2] === 'steer' && !deferredLost) { deferredLost = true; throw new Error('Deferred receipt lost'); }
+    if (staleActive && argv[2] === 'status') {
+      const snapshot = JSON.parse(result.stdout);
+      if (snapshot.job) { snapshot.job.status = 'running'; staleActive = false; return { ...result, stdout: JSON.stringify(snapshot) }; }
+    }
+    return result;
+  };
+  let tick = await notifierTick(f);
+  await tick(); await tick(); await wakePass(f);
+  assert.equal(roundtableWakes(f).length, 1); assert.equal(roundtableWakes(f)[0].to, agent.id);
+  assert.equal(JSON.parse(f.capture.processes.find(call => call.request.argv[2] === 'steer').value.stdout).status, 'deferred');
+  assert.match(roundtableWakes(f)[0].text, /Read the forum, answer what is addressed to you/);
+  await receiveNotice(f, roundtableWakes(f)[0], 2); await tick();
+  assert.equal(readRoom(rt.room.roomId, rt.env).members[0].notifiedSeq, 0);
+  const reply = postEvent(rt.room.roomId, 'chair', { kind: 'finding', body: 'Reply without a mention', replyTo: initial.seq }, rt.env);
+  const log = `${f.root}/isolated/duet/roundtables/${rt.room.roomId}/events.jsonl`;
+  fs.writeFileSync(log, fs.readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.stringify({ ...JSON.parse(line), at: '2020-01-01T00:00:00.000Z' })).join('\n') + '\n');
+  await tick(); f.reload(); rejectAck = false;
+  tick = await notifierTick(f); await tick();
+  assert.equal(readRoom(rt.room.roomId, rt.env).members[0].notifiedSeq, event.seq);
+  await tick();
+  assert.equal(roundtableWakes(f).length, 1);
+  assert.equal(readRoom(rt.room.roomId, rt.env).members[0].notifiedSeq, reply.seq);
+  rt.post('decision', [], 'A later notice with an uncertain send receipt');
+  const send = f.$.session.send;
+  f.$.session.send = async input => { await send(input); throw new Error('Send receipt lost'); };
+  const now = await f.$.clock.now(); f.$.clock.now = async () => now + 5001;
+  const result = { result: { text: 'Unchanged despite notification failure' } };
+  assert.equal(await wakePass(f, {}, async () => result), result);
+  await tick(); await wakePass(f);
+  assert.equal(roundtableWakes(f).length, 2, 'An ambiguous send must not repeat before the grace period');
+  assert.equal(readRoom(rt.room.roomId, rt.env).members[0].notifiedSeq, reply.seq, 'Sending without a member receipt remains unacked');
+});
+
+test('roundtable notifier never wakes stopped, closed, paused, ambiguous or unrelated agents', async () => {
+  const f = fixture('review-ok', 'critic'), rt = nativeRoom(f);
+  await f.turn(rt.header + 'Finish the first contribution.', 1);
+  rt.post('decision');
+  const agent = (await f.$.agent.list())[0]; agent.status = 'completed';
+  const tick = await notifierTick(f), original = f.$.agent.list;
+  await tick(); // Prepare a wake before safety conditions change.
+  let now = await f.$.clock.now(); f.$.clock.now = async () => now;
+  const check = async () => { now += 5001; await tick(); await wakePass(f); };
+  const key = 'native:v2:native-session:native-agent', state = f.readStore()[key];
+  await f.$.store.set('native:v2:native-session:duplicate', { ...state, agentId: 'duplicate' });
+  f.$.agent.list = async () => [agent, { ...agent, id: 'duplicate' }];
+  await check();
+  assert.equal(readRoom(rt.room.roomId, rt.env).members[0].notifiedSeq, 0);
+  f.$.agent.list = original; await f.$.store.delete('native:v2:native-session:duplicate');
+  await f.$.store.set(key, { ...state, roundtable: { roomId: 'rt-other-room', persona: 'critic' } });
+  await check(); await f.$.store.set(key, state);
+  const run = f.$.process.run;
+  const stale = await run([process.execPath, `${plugin}/bin/duet`, 'forum', 'pending', '--session', 'native-session', '--json'],
+    { cwd: `${f.root}/repo`, timeoutMs: 5000 });
+  f.$.process.run = async (argv, init) => argv[2] === 'forum' && argv[3] === 'pending' ? stale : run(argv, init);
+  setStatus(rt.room.roomId, 'paused', rt.env); await check();
+  assert.equal(readRoom(rt.room.roomId, rt.env).members[0].notifiedSeq, 0);
+  f.$.process.run = run;
+  setStatus(rt.room.roomId, 'open', rt.env);
+  // The stop hook persists the member even after the Codex job completed.
+  await f.invoke('turn.complete', { agentId: agent.id, turnId: state.turnId, isAborted: true }, async () => ({}));
+  assert.equal(readRoom(rt.room.roomId, rt.env).members[0].status, 'stopped');
+  await check();
+  const killed = nativeRoom(f);
+  updateMember(killed.room.roomId, 'critic', { status: 'active', jobIds: [state.jobId], threadId: state.threadId }, killed.env);
+  await f.$.store.set(key, { ...state, roundtable: { roomId: killed.room.roomId, persona: 'critic' } });
+  agent.status = 'killed'; killed.post('decision'); await check();
+  assert.equal(readRoom(killed.room.roomId, killed.env).members[0].status, 'stopped');
+  setStatus(rt.room.roomId, 'closed', rt.env);
+  f.$.process.run = async (argv, init) => argv[2] === 'forum' && argv[3] === 'pending' ? stale : run(argv, init);
+  await f.$.store.set(key, state); agent.status = 'completed'; await check();
+  assert.equal(readRoom(rt.room.roomId, rt.env).members[0].notifiedSeq, 0);
+  assert.deepEqual(roundtableWakes(f), []);
+});
+
+test('roundtable notifier coalesces chair mentions and open requests into one notice per seq', async () => {
+  const f = fixture('review-ok', 'critic'), rt = nativeRoom(f);
+  postEvent(rt.room.roomId, 'critic', { kind: 'finding', title: 'Chair evidence', body: 'Observed', mentions: ['chair'] }, rt.env);
+  postEvent(rt.room.roomId, 'critic', { kind: 'question', title: 'Choose the constraint', body: 'Open request' }, rt.env);
+  const tick = await notifierTick(f); await tick(); await tick();
+  const notices = f.capture.notices.filter(notice => notice.message.content[0].text.includes('chair updates'));
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].agentId, undefined);
+  assert.equal(notices[0].message.type, 'user');
+  assert.match(notices[0].message.content[0].text, /#1 finding "Chair evidence"; #2 question "Choose the constraint"/);
+  assert.equal(readRoom(rt.room.roomId, rt.env).members[0].indexCursor, 0);
+});
+
+test('roundtable deferred notices cannot answer a question that appears during steering', async () => {
+  const f = fixture('parent-question-sequence', 'critic'), rt = nativeRoom(f);
+  const asked = await f.turn(rt.header + 'Ask before proceeding.', 1);
+  const key = 'native:v2:native-session:native-agent', state = f.readStore()[key];
+  rt.post('decision');
+  // Model the exact race: discovery sees running/no question, steer sees the
+  // newly parked question, and its fallback must perform a fresh job lookup.
+  await f.$.store.set(key, { ...state, status: 'running', answer: undefined });
+  const run = f.$.process.run; let first = true, notice;
+  f.$.process.run = async (argv, init) => {
+    const result = await run(argv, init);
+    if (argv[2] === 'status' && first) {
+      first = false;
+      const value = JSON.parse(result.stdout); delete value.job.pendingQuestion;
+      return { ...result, stdout: JSON.stringify(value) };
+    }
+    if (argv[2] === 'steer') notice = init.stdin;
+    return result;
+  };
+  await (await notifierTick(f))(); await wakePass(f);
+  assert.deepEqual(roundtableWakes(f), []);
+  assert.match(notice, /^\[Duet roundtable notice /);
+  // Also model a tool-hook wake reaching a member after its question appeared.
+  await f.$.store.set(key, state);
+  const report = await receiveNotice(f, { to: 'critic', text: notice }, 2);
+  assert.deepEqual(report, asked);
+  assert.equal(f.readStore()[`native:roundtable:v1:native-session:${rt.room.roomId}:critic`].receipt.status, 'deferred');
+  assert.equal(f.jobs()[0].pendingQuestion.answer, undefined);
+  assert.equal(f.capture.processes.filter(call => call.request.argv[2] === 'answer').length, 0);
+  assert.equal(readRoom(rt.room.roomId, rt.env).members[0].notifiedSeq, 0);
+});
+
+test('roundtable wake claims reconcile receipts or retry once on the same idle job', async () => {
+  const f = fixture('review-ok', 'critic'), rt = nativeRoom(f);
+  await f.turn(rt.header + 'Finish first.', 1);
+  (await f.$.agent.list())[0].status = 'completed';
+  const event = rt.post('decision');
+  let tick = await notifierTick(f); await tick(); await wakePass(f);
+  assert.equal(roundtableWakes(f).length, 1);
+  assert.equal(readRoom(rt.room.roomId, rt.env).members[0].notifiedSeq, 0, 'A queued send is not a member receipt');
+  const key = `native:roundtable:v1:native-session:${rt.room.roomId}:critic`, claimed = f.readStore()[key];
+  await f.$.store.set(key, { ...claimed, receipt: { deliveryId: claimed.attempt.deliveryId, turnId: 'never-launched', status: 'received' } });
+  f.reload(); tick = await notifierTick(f);
+  let now = await f.$.clock.now(); f.$.clock.now = async () => now;
+  await tick(); await wakePass(f); assert.equal(roundtableWakes(f).length, 1);
+  assert.equal(readRoom(rt.room.roomId, rt.env).members[0].notifiedSeq, 0, 'A received notice that never launched stays unacked');
+  now += 120001;
+  const run = f.$.process.run;
+  f.$.process.run = async (argv, init) => {
+    const result = await run(argv, init);
+    if (argv[2] === 'status') { const value = JSON.parse(result.stdout);
+      value.job.status = 'running'; return { ...result, stdout: JSON.stringify(value) }; }
+    return result;
+  };
+  await tick(); await wakePass(f); assert.equal(roundtableWakes(f).length, 1, 'Never retry an active job');
+  f.$.process.run = run; now += 5001;
+  await tick(); await wakePass(f); await tick();
+  assert.equal(roundtableWakes(f).length, 2);
+  assert.deepEqual(roundtableWakes(f)[0], roundtableWakes(f)[1], 'The single retry retains the exact delivery id and text');
+  now += 120001; f.reload(); tick = await notifierTick(f);
+  await tick(); await wakePass(f); await tick();
+  assert.equal(roundtableWakes(f).length, 2, 'No third send even after another grace period and reload');
+  await receiveNotice(f, roundtableWakes(f)[1], 2);
+  const claim = f.readStore()[`native:roundtable:v1:native-session:${rt.room.roomId}:critic`];
+  assert.equal(claim.receipt.deliveryId, claim.attempt.deliveryId);
+  assert.equal(claim.receipt.status, 'accepted');
+  await tick();
+  assert.equal(readRoom(rt.room.roomId, rt.env).members[0].notifiedSeq, event.seq);
+  await receiveNotice(f, roundtableWakes(f)[0], 3);
+  assert.equal(f.jobs().length, 2, 'A duplicate host delivery cannot dispatch twice');
+});
+
+test('a stalled wake send releases the chair tool result and later notifier passes', async () => {
+  const f = fixture('review-ok', 'critic'), rt = nativeRoom(f);
+  await f.turn(rt.header + 'Finish first.', 1);
+  (await f.$.agent.list())[0].status = 'completed';
+  rt.post('decision');
+  const tick = await notifierTick(f); await tick();
+  const send = f.$.session.send;
+  let release, entered;
+  const sending = new Promise(resolve => { entered = resolve; });
+  f.$.session.send = async input => { entered(); await new Promise(resolve => { release = resolve; }); return send(input); };
+  const result = { result: { text: 'Tool result' } }, pass = wakePass(f, {}, async () => result);
+  await sending;
+  const bound = [...f.timers].find(timer => timer.once && timer.ms === 12000);
+  f.timers.delete(bound); await bound.fn();
+  assert.equal(await pass, result, 'A stalled host send cannot hold the chair tool result');
+  const processes = f.capture.processes.length;
+  await tick();
+  assert.ok(f.capture.processes.length > processes, 'The abandoned pass no longer keeps later passes out');
+  release(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(roundtableWakes(f).length, 1);
+  assert.equal(readRoom(rt.room.roomId, rt.env).members[0].notifiedSeq, 0, 'The fenced pass stays unacknowledged');
+});
+
+test('roundtable callbacks cannot send or write after session end or session change', async () => {
+  const f = fixture('review-ok', 'critic'), rt = nativeRoom(f);
+  await f.turn(rt.header + 'Finish first.', 1); rt.post('decision');
+  const run = f.$.process.run;
+  let release, entered;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  f.$.process.run = async (argv, init) => {
+    const result = await run(argv, init);
+    if (argv[2] === 'forum' && argv[3] === 'pending') { entered(); await gate; }
+    return result;
+  };
+  const tick = await notifierTick(f), pending = tick(); await waiting;
+  await f.invoke('session.end', {}, async () => ({}));
+  const store = f.readStore(), processes = f.capture.processes.length;
+  release(); await pending; await tick();
+  assert.deepEqual(f.readStore(), store); assert.equal(f.capture.processes.length, processes);
+  // A changed scope also invalidates an in-flight callback without session.end.
+  f.$.process.run = run;
+  await wakePass(f, {}, async () => { await f.invoke('session.end', {}, async () => ({})); return {}; });
+  assert.deepEqual(f.readStore(), store);
+  assert.equal(f.capture.processes.length, processes);
+  const second = await notifierTick(f);
+  f.$.agent.list = async () => { f.$.session.id = async () => 'replacement-session'; return []; };
+  await second();
+  assert.deepEqual(f.readStore(), store);
+  assert.deepEqual(roundtableWakes(f), []);
+});
+
+test('roundtable chair work rotates with bounded ticks and reserves member delivery', async () => {
+  const f = fixture('review-ok', 'critic'), member = nativeRoom(f);
+  await f.turn(member.header + 'Finish first.', 1); member.post('decision');
+  (await f.$.agent.list())[0].status = 'completed';
+  const rooms = Array.from({ length: 5 }, () => nativeRoom(f));
+  for (const rt of rooms) postEvent(rt.room.roomId, 'critic', { kind: 'question', body: 'Chair must choose' }, rt.env);
+  const tick = await notifierTick(f);
+  await tick();
+  const notices = () => f.capture.notices.filter(notice => notice.message.content[0].text.includes('chair updates'));
+  assert.equal(notices().length, 2);
+  assert.equal(f.readStore()[`native:roundtable:v1:native-session:${member.room.roomId}:critic`].attempt.phase, 'ready');
+  await wakePass(f); assert.equal(roundtableWakes(f).length, 1);
+  await receiveNotice(f, roundtableWakes(f)[0], 2);
+  // Exhaust the chair budget after one room, without delaying the test. The
+  // next cursor must refer to the unattempted room, not skip past it forever.
+  const run = f.$.process.run; let now = await f.$.clock.now();
+  f.$.clock.now = async () => now;
+  f.$.process.run = async (argv, init) => {
+    const result = await run(argv, init);
+    if (argv[2] === 'roundtable' && rooms.some(rt => rt.room.roomId === argv[4])) now += 10000;
+    return result;
+  };
+  await tick(); await tick(); await tick();
+  assert.equal(notices().length, 5);
+  for (const rt of rooms) assert.equal(notices().filter(notice => notice.message.content[0].text.includes(rt.room.roomId)).length, 1);
+});
+
+test('roundtable notifier records share a bounded budget and prune closed rooms and ended sessions', async () => {
+  const f = fixture('review-ok', 'critic', { hostOnly: true, memoryStore: true }), rt = nativeRoom(f);
+  const prefix = 'native:roundtable:v1:native-session:', stopped = 'native:roundtable-stopped:v1:native-session:critic';
+  await f.$.store.set(prefix + rt.room.roomId + ':critic', { upto: 1, receipt: { deliveryId: 'old', status: 'accepted' } });
+  await f.$.store.set(prefix + rt.room.roomId + ':chair', { upto: 1 });
+  await f.$.store.set(stopped, { session: 'native-session', roomId: rt.room.roomId, persona: 'critic', synced: true });
+  setStatus(rt.room.roomId, 'closed', rt.env);
+  const tick = await notifierTick(f); await tick();
+  assert.equal(Object.keys(f.readStore()).filter(key => key.startsWith('native:roundtable')).length, 0);
+  const open = nativeRoom(f);
+  postEvent(open.room.roomId, 'critic', { kind: 'question', body: 'Needs room in the store' }, open.env);
+  // Protected claims are retained; capacity refuses additional notices safely.
+  for (let i = 0; i < 256; i++) await f.$.store.set(prefix + `rt-retained-${i}:critic`, { attempt: { deliveryId: `pending-${i}` } });
+  await tick();
+  assert.equal(Object.keys(f.readStore()).filter(key => key.startsWith(prefix)).length, 256);
+  assert.equal(f.capture.notices.filter(notice => notice.message.content[0].text.includes('chair updates')).length, 0);
+  await f.invoke('session.end', {}, async () => ({}));
+  assert.equal(Object.keys(f.readStore()).filter(key => key.startsWith('native:roundtable')).length, 0);
+  await f.$.store.set('unrelated:large', 'x'.repeat(800 * 1024));
+  const restarted = await notifierTick(f); await restarted();
+  assert.equal(f.capture.notices.filter(notice => notice.message.content[0].text.includes('chair updates')).length, 0);
+  await f.$.store.delete('unrelated:large'); await restarted();
+  assert.equal(f.capture.notices.filter(notice => notice.message.content[0].text.includes('chair updates')).length, 1);
+});
+
+test('roundtable chair cursor is restored after a definite append refusal', async () => {
+  const f = fixture('review-ok', 'critic'), rt = nativeRoom(f);
+  postEvent(rt.room.roomId, 'critic', { kind: 'question', body: 'Please choose' }, rt.env);
+  const append = f.$.session.append; let refused = true;
+  f.$.session.append = async input => refused ? { deny: 'Temporarily refused' } : append(input);
+  const tick = await notifierTick(f); await tick();
+  const key = `native:roundtable:v1:native-session:${rt.room.roomId}:chair`;
+  assert.equal(f.readStore()[key].upto, undefined);
+  refused = false; await tick(); await tick();
+  assert.equal(f.readStore()[key].upto, 1);
+  assert.equal(f.capture.notices.filter(notice => notice.message.content[0].text.includes('chair updates')).length, 1);
+});
+
+test('roundtable timer records a ready idle wake without sending or spawning', async () => {
+  const f = fixture('review-ok', 'critic'), rt = nativeRoom(f);
+  await f.turn(rt.header + 'Finish first.', 1); rt.post('decision');
+  const notices = f.capture.notices.length;
+  const spawns = []; f.$.agent.spawn = async input => { spawns.push(input); return { agentId: 'unexpected' }; };
+  const tick = await notifierTick(f); await tick(); await tick();
+  const claim = f.readStore()[`native:roundtable:v1:native-session:${rt.room.roomId}:critic`].attempt;
+  assert.equal(claim.phase, 'ready'); assert.ok(Number.isFinite(claim.readyAt));
+  assert.match(claim.text, /^\[Duet roundtable notice roundtable:/);
+  assert.match(claim.text, /continue toward the roundtable goal\.$/);
+  assert.deepEqual(roundtableWakes(f), []); assert.deepEqual(spawns, []);
+  assert.equal(f.jobs().length, 1); assert.equal(f.capture.notices.length, notices);
+});
+
+test('roundtable main-loop tool hook delivers once to the bound id and continues its thread', async () => {
+  const f = fixture('review-ok', 'critic'), rt = nativeRoom(f);
+  await f.turn(rt.header + 'Finish first.', 1);
+  const first = f.jobs()[0], agent = (await f.$.agent.list())[0]; agent.status = 'completed';
+  postEvent(rt.room.roomId, 'critic', { kind: 'idea', body: 'Independent record' }, rt.env);
+  // Ended agents disappear from the host list; the durable binding owns the id.
+  f.$.agent.list = async () => [];
+  const run = f.$.process.run;
+  f.$.process.run = async (argv, init) => {
+    const result = await run(argv, init);
+    if (argv[2] === 'forum' && argv[3] === 'pending') {
+      const entries = JSON.parse(result.stdout);
+      for (const entry of entries) if (entry.name === 'critic') entry.text = 'Long forum summary. '.repeat(1000);
+      return { ...result, stdout: JSON.stringify(entries) };
+    }
+    return result;
+  };
+  const tick = await notifierTick(f);
+  await wakePass(f, { agentId: 'subagent' }, async () => { rt.post('request', ['critic']); return {}; });
+  assert.deepEqual(roundtableWakes(f), [], 'Subagent tool calls cannot deliver idle wakes');
+  const result = { result: { text: 'Chair post completed' } };
+  assert.equal(await wakePass(f, {}, async () => {
+    assert.deepEqual(roundtableWakes(f), [], 'Delivery runs after the tool completes');
+    rt.post('request', ['critic']); return result;
+  }), result);
+  const [notice] = roundtableWakes(f);
+  assert.equal(notice.to, agent.id); assert.equal(notice.text.length, 8192);
+  assert.match(notice.text, /^\[Duet roundtable notice roundtable:/);
+  assert.match(notice.text, /…\n\nRead the forum, answer what is addressed to you, and continue toward the roundtable goal\.$/);
+  const processes = f.capture.processes.length;
+  await wakePass(f); assert.equal(f.capture.processes.length, processes, 'Main-loop passes are throttled');
+  await receiveNotice(f, notice, 2); await tick();
+  assert.equal(f.jobs().length, 2);
+  const followup = f.jobs().find(job => job.id !== first.id);
+  assert.equal(followup.threadId, first.threadId);
+  assert.deepEqual(followup.request.roundtable, first.request.roundtable);
+  const task = f.capture.processes.filter(call => call.kind === 'spawn' && call.request.argv[2] === 'task').at(-1);
+  assert.equal(task.request.input, notice.text);
+  assert.equal(roundtableWakes(f).length, 1);
+});
+
+test('roundtable chair mentions bypass coalescing while member mentions wait', () => {
+  const f = fixture('review-ok', 'critic', { hostOnly: true, memoryStore: true }), rt = nativeRoom(f, ['critic', 'improver']);
+  postEvent(rt.room.roomId, 'critic', { kind: 'idea', body: 'Independent critic record' }, rt.env);
+  postEvent(rt.room.roomId, 'improver', { kind: 'idea', body: 'Independent improver record' }, rt.env);
+  const peer = postEvent(rt.room.roomId, 'improver', { kind: 'request', body: 'Peer request', mentions: ['critic'] }, rt.env);
+  assert.deepEqual(forumPending(rt.room.roomId, { now: Date.parse(peer.at) + 29999 }, rt.env), []);
+  const chair = rt.post('request', ['improver']);
+  const immediate = forumPending(rt.room.roomId, { now: Date.parse(chair.at) }, rt.env);
+  assert.deepEqual(immediate.map(entry => entry.name), ['improver']);
+  assert.equal(immediate[0].wake, true);
+  assert.deepEqual(forumPending(rt.room.roomId, { now: Date.parse(peer.at) + 30000 }, rt.env).map(entry => entry.name), ['critic', 'improver']);
+});
+
+test('roundtable undelivered ready wake prompts the chair once after the grace period', async () => {
+  const f = fixture('review-ok', 'critic'), rt = nativeRoom(f);
+  await f.turn(rt.header + 'Finish first.', 1); rt.post('decision');
+  const notices = () => f.capture.notices.filter(notice => notice.message.content[0].text.includes('have updates waiting'));
+  let tick = await notifierTick(f); await tick();
+  let now = await f.$.clock.now(); f.$.clock.now = async () => now;
+  now += 119999; await tick(); assert.equal(notices().length, 0);
+  now += 2; await tick();
+  assert.equal(notices().length, 1);
+  const notice = notices()[0];
+  assert.equal(notice.agentId, undefined); assert.equal(notice.message.type, 'user');
+  assert.equal(notice.message.content[0].text, `Roundtable ${rt.room.roomId}: critic have updates waiting; run \`duet roundtable status ${rt.room.roomId}\` to deliver them.`);
+  now += 120001; f.reload(); tick = await notifierTick(f); await tick(); await tick();
+  assert.equal(notices().length, 1); assert.deepEqual(roundtableWakes(f), []);
+  await wakePass(f); assert.equal(roundtableWakes(f).length, 1);
+});
+
+test('roundtable wake reports a removed member workspace once to the chair', async () => {
+  const f = fixture('review-ok', 'critic'), rt = nativeRoom(f);
+  await f.turn(rt.header + 'Finish first.', 1); rt.post('decision');
+  const key = 'native:v2:native-session:native-agent';
+  await f.$.store.set(key, { ...f.readStore()[key], cwd: `${f.root}/removed-worktree` });
+  const tick = await notifierTick(f); await tick(); await tick(); await wakePass(f);
+  const notices = f.capture.notices.filter(notice => notice.message.content[0].text.includes('workspace was removed'));
+  assert.equal(notices.length, 1); assert.match(notices[0].message.content[0].text, /critic cannot continue/);
+  assert.equal(f.jobs().length, 1);
+  assert.deepEqual(roundtableWakes(f), []);
+});
 
 test('native steering applies to the running turn without a continuation', async () => {
   const f = fixture('steer-applied');
@@ -3181,6 +3670,7 @@ function replayCaptures() {
       fs.mkdirSync(`${copy}/scripts/lib`, { recursive: true });
       fs.copyFileSync(`${plugin}/scripts/lib/agent-name-pool.mjs`, `${copy}/scripts/lib/agent-name-pool.mjs`);
       fs.copyFileSync(`${plugin}/scripts/lib/display-text.mjs`, `${copy}/scripts/lib/display-text.mjs`);
+      fs.copyFileSync(`${plugin}/scripts/lib/roundtable-personas.mjs`, `${copy}/scripts/lib/roundtable-personas.mjs`);
       fs.copyFileSync(`${plugin}/tests/native-agent.test.ts`, `${copy}/tests/native-agent.test.ts`);
       fs.writeFileSync(`${copy}/tests/native-captures.mjs`, source);
       // Captures contain varying job ids, timings and process chunk boundaries.

@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.5.0
+
+### Features
+
+- Roundtable mode: `/codex:roundtable <task>` runs once and `/codex:roundtable on` keeps it for the session (`setup --default-mode roundtable` for fresh sessions). Persistent Codex members work around one complete goal while Claude chairs with a fixed moderator card: it publishes the goal and acceptance criteria, protects independent inquiry and accepts the final candidate on evidence. Members are Codex-only, named by persona, and each persona appears at most once.
+- Six personas, defined as working habits rather than job roles and grounded in philosophy of science and sociology of groups: `conjecturer`, `critic`, `steward`, `improver`, `integrator`, `calibrator`. Intensities set the default roster: `light` (improver, critic), `standard` (conjecturer, critic, improver), `deep` (adds integrator and steward), `full` (all six). `--roles id,id` picks any nonempty subset.
+- Each persona has its own built-in Codex model and effort, shifted by intensity. Save your own with `duet setup --persona-model id=model[:effort]` (`id=default` resets), stored as `[roundtable.personas.<id>]` in the isolated config; `duet roundtable start --persona-model` overrides one room.
+- A threaded, append-only forum per room with kinds `idea`, `finding`, `question`, `request`, `intent`, `candidate` and the chair-only `decision`. The first round is sealed: a member sees no peer posts until it has posted its own independent record. A mentioned question or request needs a reply in its thread. There are no private messages. Members use bound `forum_read`/`forum_post` tools; the chair uses `duet forum read|post`. Reads by id (`post/<seq>`, `thread/<seq>`, `member/<name>`, `candidate/<seq>`) are bounded and page explicitly; candidate reads include a bounded diff of the member's worktree.
+- Mentions and chair decisions wake idle members on their existing Codex thread; running members receive notices through steering. Member posts coalesce for 30 seconds, members acknowledge receipt, and an unacknowledged wake is retried once. When a wake waits for the chair's next tool call, the chair is told to run `duet roundtable status <roomId>`, which delivers it; if status still lists the member a minute later, the chair sends it one short continue message.
+- Each member works in a Duet-owned detached Git worktree that lasts for the room. Close removes only worktrees still clean at their base and reports kept ones with their commits and dirty files. Outside Git, members share the workspace.
+- `duet roundtable status <roomId>` leads with only what needs the chair (open questions and requests, stalled wakes, blocked jobs, unreviewed candidates, missing workspaces), each with a resource pointer; bare status shows the latest room's attention first.
+- Candidate selection has a review gate: a decision with `--selects <seq>` requires a later `finding` on that candidate by another member, or an explicit `--unreviewed "<reason>"` that the decision records. `duet roundtable close <roomId> --title … [--selects …]` records the closing decision and closes the room in one step, so idle members are not woken to read it.
+- Roundtable jobs are recorded in the run journal as activity (`purpose: "roundtable"`, room and persona) without verdicts.
+
+### Fixes
+
+- A resumed agent whose resume carried no agent type is no longer recorded as a non-Codex agent, so its later turns keep running on its Codex thread.
+
+### Known limits
+
+- The personas, intensities and per-persona models are starting points; no comparative evaluation has been run yet.
+- There are no thread subscriptions: a member hears about mentions, chair decisions and replies in threads it joined. An idle member's wake waits for the chair's next tool call or status command.
+- Claude subagents cannot take member seats. There is no roundtable-wide token or cost cap; per-job `--max-minutes`/`--max-tokens` still apply.
+
 ## 1.4.13
 
 ### Features

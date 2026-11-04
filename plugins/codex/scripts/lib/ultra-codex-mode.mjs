@@ -4,6 +4,7 @@ import os from "node:os";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolveStateRoot } from "./state.mjs";
+import { INTENSITIES, PERSONA_IDS } from "./roundtable-personas.mjs";
 
 // One orchestration mode per Claude session, shared across workspaces. Keep
 // the ultra-codex directory and module path for compatibility with old sessions.
@@ -12,19 +13,27 @@ export const ULTRA_SCALES = ["auto", "quick", "thorough"];
 export const DEFAULT_MAX_WORKERS = "auto";
 export const PAIR_MAX_REWORK_ROUNDS = 2;
 export const DEFAULT_DUEL_ROUNDS = 3;
-export const MODE_NAMES = ["ultra", "pair", "duel"];
+export const MODE_NAMES = ["ultra", "pair", "duel", "roundtable"];
 const MODE_DIR = "ultra-codex";
 const SESSION_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
-const COMMAND_PROMPT = /^\s*\/(?:codex:)?(?:ultra-codex|pair|duel)(?=\s|$)/;
-const OPTION_KEYS = { ultra: ["scale", "maxWorkers"], pair: [], duel: ["rounds"] };
+const COMMAND_PROMPT = /^\s*\/(?:codex:)?(?:ultra-codex|pair|duel|roundtable)(?=\s|$)/;
+const OPTION_KEYS = { ultra: ["scale", "maxWorkers"], pair: [], duel: ["rounds"], roundtable: ["intensity", "roles"] };
 
 function isObject(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
 function validSavedCap(value) { return value === "auto" || value === "unlimited" || (Number.isInteger(value) && value > 0); }
 function validRounds(value) { return Number.isInteger(value) && value >= 1 && value <= 3; }
+function validRoles(value) {
+  return value === null || (Array.isArray(value) && value.length > 0 && new Set(value).size === value.length && value.every(id => PERSONA_IDS.includes(id)));
+}
+function validIntensity(value) { return typeof value === "string" && Object.hasOwn(INTENSITIES, value); }
+export function validateRoundtableOptions(options) {
+  if (Object.hasOwn(options, "intensity") && !validIntensity(options.intensity)) throw new Error("--intensity must be light, standard, deep or full.");
+  if (Object.hasOwn(options, "roles") && !validRoles(options.roles)) throw new Error(`--roles must be a nonempty comma-separated list of unique persona ids: ${PERSONA_IDS.join(", ")}.`);
+}
 function validOptions(name, options) {
   return isObject(options) && Object.keys(options).length === OPTION_KEYS[name].length &&
     Object.keys(options).every(key => OPTION_KEYS[name].includes(key)) &&
-    (name === "pair" || (name === "duel" ? validRounds(options.rounds) :
+    (name === "pair" || (name === "roundtable" ? validIntensity(options.intensity) && validRoles(options.roles) : name === "duel" ? validRounds(options.rounds) :
       ULTRA_SCALES.includes(options.scale) && validSavedCap(options.maxWorkers)));
 }
 
@@ -94,7 +103,7 @@ export function setMode(cwd, sessionId, input = {}, env = process.env) {
   if (!isObject(input)) throw new Error("Mode input must be an object.");
   const named = Object.hasOwn(input, "name") || Object.hasOwn(input, "options");
   const name = named ? input.name : "ultra";
-  if (!MODE_NAMES.includes(name)) throw new Error("Mode must be ultra, pair or duel.");
+  if (!MODE_NAMES.includes(name)) throw new Error("Mode must be ultra, pair, duel or roundtable.");
   if (Object.keys(input).some(key => !(named ? ["name", "options"] : OPTION_KEYS.ultra).includes(key))) throw new Error("Do not mix mode input shapes or options from another mode.");
   const supplied = named ? (Object.hasOwn(input, "options") ? input.options : {}) : input;
   if (!isObject(supplied) || Object.keys(supplied).some(key => !OPTION_KEYS[name].includes(key))) throw new Error(`Invalid options for ${name} mode.`);
@@ -102,13 +111,15 @@ export function setMode(cwd, sessionId, input = {}, env = process.env) {
   if (Object.hasOwn(supplied, "maxWorkers") && !(supplied.maxWorkers === "auto" || supplied.maxWorkers === "unlimited" ||
       (Number.isInteger(supplied.maxWorkers) && supplied.maxWorkers >= 1 && supplied.maxWorkers <= 64))) throw new Error("--max-workers must be an integer from 1 to 64, auto or unlimited.");
   if (Object.hasOwn(supplied, "rounds") && !validRounds(supplied.rounds)) throw new Error("--rounds must be an integer from 1 to 3.");
+  if (name === "roundtable") validateRoundtableOptions(supplied);
   // Validate everything before readMode's legacy cleanup or any filesystem write.
   const file = modeFile(cwd, sessionId, env);
   const previous = readMode(cwd, sessionId, env);
   const matching = previous?.name === name ? previous : null;
   const options = name === "ultra"
     ? { scale: supplied.scale ?? "auto", maxWorkers: supplied.maxWorkers ?? matching?.options.maxWorkers ?? DEFAULT_MAX_WORKERS }
-    : name === "duel" ? { rounds: supplied.rounds ?? matching?.options.rounds ?? DEFAULT_DUEL_ROUNDS } : {};
+    : name === "duel" ? { rounds: supplied.rounds ?? matching?.options.rounds ?? DEFAULT_DUEL_ROUNDS }
+    : name === "roundtable" ? { intensity: supplied.intensity ?? matching?.options.intensity ?? "standard", roles: supplied.roles === undefined ? matching?.options.roles ?? null : supplied.roles } : {};
   const record = { schemaVersion: 2, sessionId, name, options, since: matching?.since ?? new Date().toISOString() };
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${process.pid}.tmp`;
@@ -168,6 +179,7 @@ export function reminderText(mode, protocolPath = PROTOCOL_PATH, models = BUILTI
   const suffix = `v${version} to substantive tasks; re-read ${protocolPath} unless its full text (first line: <!-- Ultra-codex protocol v${version} -->) is already in context from an earlier Read. Reminder/preamble version mentions do not count.`;
   if (name === "pair") return `Pair mode on (one primary Codex worker on ${model}/${effort}, max ${PAIR_MAX_REWORK_ROUNDS} rework rounds). Apply pair protocol ${suffix}`;
   if (name === "duel") return `Duel mode on (Claude vs Codex on ${model}/${effort}, max ${options.rounds} rounds). Apply duel protocol ${suffix}`;
+  if (name === "roundtable") return `Roundtable mode on (intensity ${options.intensity}, roles ${options.roles?.join(",") ?? "recommend roster for confirmation"}; persona models from duet setup --persona-model). Apply Roundtable mode protocol ${suffix}`;
   const cap = options.maxWorkers === "unlimited" ? "no worker cap" : `max ${effectiveMaxWorkers(options.maxWorkers)} workers${options.maxWorkers === "auto" ? " (auto)" : ""}`;
   return `Ultra-codex mode on (${options.scale}, ${cap}, routine ${routineModel}, strong ${model}). Apply protocol ${suffix}`;
 }

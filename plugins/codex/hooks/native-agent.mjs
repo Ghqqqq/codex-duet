@@ -3,10 +3,13 @@
 import { cleanDisplayText } from '../scripts/lib/display-text.mjs';
 import { lifecycleStoreSize, forgetLifecycle, pendingLifecycle, captureStartContext, lifecycleBrief, observeStop, prepareLifecycleStep, abandonLifecycleStop } from './lifecycle-hooks.mjs';
 import { registerSteering } from './steering.mjs';
+import { registerRoundtableNotifier, startRoundtableNotifier, stopRoundtableMember, roundtableNotice, settleRoundtableNotice, isRoundtableNoticeTurn } from './roundtable-notifier.mjs';
+import { PERSONA_IDS } from '../scripts/lib/roundtable-personas.mjs';
 import { AGENT_TYPE, PRESETS, isNativeType, applyPreset } from './presets.mjs';
 import { PREFIX, BINDING_FAILED, keyFor, bindingFailedKey, startedTypes, knownTypes, ours } from './native-identity.mjs';
 import { register as teammateReceive, teammateUnsupported, paneTeammate } from './native-teams.mjs';
 export { AGENT_TYPE } from './presets.mjs';
+export { command, processBudget, ended };
 const ACTIVE = ['queued', 'running'];
 const WAIT_TIMEOUT_SEC = '3600';
 const HEARTBEAT_MS = 30000;
@@ -113,7 +116,7 @@ async function activityModel($, jobId) {
 const stateSize = state => JSON.stringify(state ?? null).length * 4;
 const finished = state => state?.finishedAt && !state.incoming
   && state.status !== 'needs_answer' && state.answer?.status !== 'needs_answer';
-const ALLOWED = '--model, --effort, --sandbox, --fast/--normal, --cwd, --fork, --max-minutes, --max-tokens';
+const ALLOWED = '--model, --effort, --sandbox, --fast/--normal, --cwd, --fork, --max-minutes, --max-tokens, --roundtable, --persona';
 // Display only: an entry exists only while this module owns a live flight.
 const liveProgress = new Map();
 const toolAgents = new Map(), agentDisplays = new Map();
@@ -661,12 +664,14 @@ function parsePrompt(text) {
       if (inline !== undefined || (seen.has('--fast') && seen.has('--normal'))) invalid();
       flags.push(flag); continue;
     }
-    if (!['--model', '--effort', '--sandbox', '--cwd', '--max-minutes', '--max-tokens'].includes(flag)) invalid();
+    if (!['--model', '--effort', '--sandbox', '--cwd', '--max-minutes', '--max-tokens', '--roundtable', '--persona'].includes(flag)) invalid();
     const value = inline ?? tokens[++i];
     if (!value || value.startsWith('--') || value.includes('\0')) invalid();
+    if (flag === '--persona' && !PERSONA_IDS.includes(value)) invalid();
     if (flag === '--cwd') cwd = value;
     else flags.push(flag, value);
   }
+  if (seen.has('--roundtable') !== seen.has('--persona')) invalid();
   return { brief: newline < 0 ? '' : text.slice(newline + 1), flags, cwd };
 }
 
@@ -1119,11 +1124,13 @@ async function drive($, e, state, progress) {
     // may contain that exact text as a literal example.
     const previousTurn = state.jobId || state.intent || state.answeredTurn;
     let input = previousTurn ? coordinatorBody(state.incoming.text) : state.incoming.text, args, questionChanged = false, resumedWait = false;
-    const answeringDisplayedQuestion = state.answer?.status === 'needs_answer';
+    const notice = state.incoming.notice, previousAnswer = state.answer;
+    if (notice?.duplicate) return previousAnswer || blocked('Roundtable notice already received; no work was repeated.', state);
+    const answeringDisplayedQuestion = !notice && state.answer?.status === 'needs_answer';
     if (!input.trim()) return blocked('Empty native-agent message; nothing was dispatched.', state);
     // Overlapping stop handlers may have saved a stale status; the job record
     // decides before a new message is routed as a dispatch or an answer.
-    if (state.jobId && (answeringDisplayedQuestion || ACTIVE.includes(state.status) || state.status === 'needs_answer')) {
+    if (state.jobId && (notice || answeringDisplayedQuestion || ACTIVE.includes(state.status) || state.status === 'needs_answer')) {
       // Read only: the save below persists it together with the new intent.
       const job = await handles($, state, state.jobId, false, false);
       // questionId is the question last returned to Claude, never merely the
@@ -1132,6 +1139,15 @@ async function drive($, e, state, progress) {
       questionChanged = pending?.id !== state.questionId;
       // A pending question keeps the job running; its report says needs_answer.
       if (pending) state.status = 'needs_answer';
+      if (notice) {
+        if (pending || state.status === 'needs_answer') {
+          await settleRoundtableNotice($, notice, 'deferred');
+          if (previousAnswer?.status === 'needs_answer' && previousAnswer.question?.id === pending?.id) return previousAnswer;
+          return companion($, state, ['result', state.jobId, '--report']);
+        }
+        if (ACTIVE.includes(job.status) || !ended(job, state)) return blocked('Roundtable notice is waiting for the current job to end.', state);
+        await settleRoundtableNotice($, notice, 'accepted');
+      }
       if (answeringDisplayedQuestion && !pending) {
         // The persisted displayed result fixes this message's intent, even if
         // another answer path completed the job while the adapter was unloaded.
@@ -1176,6 +1192,14 @@ async function drive($, e, state, progress) {
     } else {
       let parsed = parsePrompt(input);
       if (!parsed.brief.trim()) return blocked('Empty native-agent brief after DUET header; nothing was dispatched.', state);
+      if (parsed.flags.includes('--roundtable')) {
+        const binding = { roomId: parsed.flags[parsed.flags.indexOf('--roundtable') + 1], persona: parsed.flags[parsed.flags.indexOf('--persona') + 1] };
+        if (state.threadId && (state.roundtable?.roomId !== binding.roomId || state.roundtable?.persona !== binding.persona)) {
+          throw new Error('A native worker continuation keeps its original roundtable/persona binding.');
+        }
+        state.roundtable = binding;
+        if (state.threadId) for (const flag of ['--roundtable', '--persona']) parsed.flags.splice(parsed.flags.indexOf(flag), 2);
+      }
       try { parsed = applyPreset(parsed, state.preset, state.permissionMode); }
       catch (error) { if (error.code === 'native_preset_sandbox') return blocked(error.message, state, error.code); throw error; }
       if (state.permissionMode === 'plan') {
@@ -1528,6 +1552,7 @@ function progressFor($, e, state, publish, currentFlight) {
 
 export function register(on) {
   registerSteering(on);
+  registerRoundtableNotifier(on);
   guidanceCache = null;
   teammateReceive(on);
   let registered = false;
@@ -1689,7 +1714,9 @@ export function register(on) {
   on('agent.spawn', async ($, e, next) => {
     if (!isNativeType(e.subagentType)) {
       const result = await next(e);
-      if (result.agentId) knownTypes.set(result.agentId, e.subagentType);
+      // A fresh non-native spawn owns its id. A resume may arrive untyped for
+      // any agent, so it never overwrites what is known about that agent.
+      if (result.agentId && !e.resume && typeof e.subagentType === 'string') knownTypes.set(result.agentId, e.subagentType);
       return result;
     }
     const unsupported = await teammateUnsupported($, e);
@@ -1762,7 +1789,8 @@ export function register(on) {
       inspect: state => handles($, state, state.jobId, false, false), ended });
   }).catch(passthrough);
   on('turn.start', async ($, e, next) => {
-    const agent = await ours($, e.agentId);
+    const notice = await roundtableNotice($, e);
+    const agent = notice?.agent || await ours($, e.agentId);
     if (!agent) return next(e);
     const session = await $.session.id(), key = keyFor(session, e.agentId);
     if (dispatching.has(key)) return next(e);
@@ -1811,7 +1839,7 @@ export function register(on) {
         if (refusals.get(key)?.report.blockers[0].code === 'native_binding_gone') return await refuse('native_binding_gone');
         refusals.delete(key);
         candidate = { ...(state || { type: agent.type || AGENT_TYPE, session, agentId: e.agentId, name: (agent.name !== e.agentId && agent.name) || observedBindings.get(key)?.name,
-          bindingPending: !observedBindings.has(key) }), turnId: e.turnId, incoming: { turnId: e.turnId, text: e.text } };
+          bindingPending: !observedBindings.has(key) }), turnId: e.turnId, incoming: { turnId: e.turnId, text: e.text, ...(notice ? { notice } : {}) } };
         bindingFailed = await $.store.get(bindingFailedKey(session, e.agentId));
         if (bindingFailed) candidate.bindingPending = true;
         restoreBinding(key, candidate);
@@ -1859,7 +1887,8 @@ export function register(on) {
     const session = await $.session.id(), key = keyFor(session, e.agentId);
     const refusal = refusals.get(key);
     if (refusal && (!refusal.turnId || refusal.turnId === e.turnId)) return yield* finish(e, refusal.report);
-    const agent = await ours($, e.agentId);
+    const notice = await roundtableNotice($, e);
+    const agent = notice?.agent || await ours($, e.agentId);
     if (!agent) return yield* next(e);
     if (!await $.store.get(key) && !await $.store.get(bindingFailedKey(session, e.agentId))) {
       return yield* finish(e, admissionBlocked('native_binding_gone', { agentId: e.agentId, name: agent.name }));
@@ -1895,6 +1924,7 @@ export function register(on) {
         } catch { /* Rendering still updates on progress if timers are unavailable. */ }
         const state = await $.store.get(key) || { session, agentId: e.agentId, name: agent.name,
           ...(agent.isTeammate || agent.teammateId ? { isTeammate: true } : {}) };
+        if (notice && state.incoming?.turnId === e.turnId) state.incoming.notice = notice;
         // Display context only; never persist it or perform host I/O in render.
         running.feed.cwd = state.cwd;
         try { running.feed.home = await $.env.get('HOME'); } catch { /* Optional display shortening. */ }
@@ -1997,7 +2027,7 @@ export function register(on) {
       return yield* finish(e, await running.result);
     } finally { running.listeners.delete(listener); listener.close(); }
   }).catch(async function* ($, e, next) {
-    if (!e.agentId || (knownTypes.has(e.agentId) && !isNativeType(knownTypes.get(e.agentId)))) return yield* next(e);
+    if (!e.agentId || (!await isRoundtableNoticeTurn($, e) && knownTypes.has(e.agentId) && !isNativeType(knownTypes.get(e.agentId)))) return yield* next(e);
     return yield* finish(e, blocked('Native adapter hook failed; inspect duet status before retrying.', { agentId: e.agentId }));
   });
   on('turn.complete', async ($, e, next) => {
@@ -2005,6 +2035,7 @@ export function register(on) {
       await abandonLifecycleStop($, e).catch(() => {});
       const sessionId = await $.session.id();
       const state = await $.store.get(keyFor(sessionId, e.agentId));
+      if (state && (state.turnId === e.turnId || state.intent?.turnId === e.turnId)) await stopRoundtableMember($, state).catch(() => {});
       // A cancelled wait may report owner_stopped before this callback. Still
       // cancel its recorded job; do not rely on the report's status label.
       // stopJob closes the turn (for a later SendMessage) only with evidence it
@@ -2031,6 +2062,7 @@ export function register(on) {
   // Announce on the first prompt a person sends that reaches the model; a slash
   // command (such as /reload-plugins) may never ask the model.
   on('prompt.submit', { origin: { kind: PERSON_ORIGINS } }, async ($, e, next) => {
+    if (!e.agentId) await startRoundtableNotifier($).catch(() => {});
     if (!registered || e.command || !PERSON_ORIGINS.includes(e.origin?.kind)) return next(e);
     if (!await nativeGuidanceEnabled($)) return next(e);
     const session = await $.session.id(), key = `native:ready:v1:${session}`;

@@ -35,7 +35,7 @@ async function sessionStartContext() {
   ];
   return [
     ...routeContext,
-    `When delegating outside an orchestration mode, explicitly set model, effort and speed: \`${bash ? "duet task" : "DUET:"} --model ${model} --effort ${effort} --normal\` unless the user chose otherwise; add \`--sandbox read-only\` for investigation/review. Active ultra, pair or duel reminders and protocols take precedence.`,
+    `When delegating outside an orchestration mode, explicitly set model, effort and speed: \`${bash ? "duet task" : "DUET:"} --model ${model} --effort ${effort} --normal\` unless the user chose otherwise; add \`--sandbox read-only\` for investigation/review. Active ultra, pair, duel or roundtable reminders and protocols take precedence.`,
     `Use a fresh ${bash ? "worker" : "native agent"} per independent job; never run two jobs on one thread at once. Concurrent edits need disjoint owned paths or separate worktrees.`,
     "Briefs state the objective, owned paths, numbered acceptance criteria and verification commands.",
     "Accept only on evidence: read the actual diff and rerun checks. A success message, launch receipt or `running` payload is not completion; never simulate a worker report or notification."

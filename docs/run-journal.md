@@ -196,6 +196,19 @@ criteria and no linked jobs can pass. These checks do not establish that all
 intended workers were linked, judge the substance of evidence, resume workers,
 or replace the orchestrator's acceptance checks.
 
+## Roundtable activity
+
+Roundtable member jobs record `purpose: "roundtable"`, `roomId` and `persona`
+in `job_started` at dispatch. Their terminal states and reports remain in the
+journal. `journal show` groups them separately by room/persona with job counts;
+JSON retains all jobs in `jobs`, includes their purpose and binding, and adds
+`activityCounts` when activity is present. `validate` and `close` do not require
+a verdict for these jobs, including failed or cancelled exploration. Running
+jobs, missing finishes and missing reports still raise their usual issues.
+Activity alone never satisfies criteria. An explicit delivery verdict may cite
+activity jobs or name one as its `jobId`; its criteria and any rejection follow
+the normal acceptance rules. Purpose remains fixed by the dispatch record.
+
 ## Storage and format
 
 Under `<CODEX_COMPANION_HOME>/duet/state/` (the directory returned by

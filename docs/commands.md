@@ -209,9 +209,28 @@ breaker may be reversed by an explicit task request. There is no role flag.
 Unresolved blockers or unverified required criteria at the cap are incomplete
 outcomes. See [duel](duel.md) for flows, convergence and quota costs.
 
+### `/codex:roundtable`
+
+Persistent Codex personas pursue one goal through experiments, implementation
+and a public forum; Claude chairs and accepts the final candidate on evidence.
+The chair recommends intensity and roster for confirmation unless supplied.
+
+```text
+Usage: /codex:roundtable [on [--intensity light|standard|deep|full] [--roles id,id] [<task>] | off | status | [--intensity light|standard|deep|full] [--roles id,id] <task>]
+
+/codex:roundtable --intensity deep investigate the reconnect failure
+/codex:roundtable on --roles steward,critic,improver
+/codex:roundtable off
+```
+
+Intensities seat 2/3/5/6 members. `--roles` selects a nonempty unique subset of
+`conjecturer,critic,steward,improver,integrator,calibrator`; invalid intensity or
+persona ids fail before dispatch. There is no token cap; members are Codex-only.
+See [Roundtable](roundtable.md) for the research, mapping, forum and chair.
+
 ### Orchestration controls
 
-All three commands share `[on [<mode-options>] [<task>] | off | status |
+All four commands share `[on [<mode-options>] [<task>] | off | status |
 [<mode-options>] <task>]`. No arguments means status. `on` enables the selected
 mode; `on <task>` first validates and saves settings, then runs the task with
 those returned settings. Failed activation starts no task. Exact `off`/`status`
@@ -230,8 +249,10 @@ Parse options only before task text: later option-like words remain literal.
 word (for example `/codex:pair -- status the parser`). A task keeps its selected
 mode; it never silently switches modes to evade a limit.
 
-While enabled, one hook adds a versioned reminder naming the effective model
-values to normal prompts and suppresses it for all three mode commands.
+While enabled, one hook adds a versioned mode reminder to normal prompts and
+suppresses it for all four mode commands. Ultra/pair/duel reminders name their
+effective worker defaults; roundtable names its intensity and roster selection
+and points to the persona mapping.
 Controls do not load protocol text into Claude's context. Tasks use the shared
 [protocol](../plugins/codex/prompts/ultra-codex-protocol.md), selecting shared
 sections plus their own mode section. Its body hash is computed at runtime;
@@ -247,12 +268,13 @@ pass, with adversarial confirmation of decision-driving findings and full
 acceptance for consequential/conflicting claims. Details:
 [acceptance](../plugins/codex/prompts/ultra-codex-protocol.md#accepting-a-result-every-worker-report-no-exceptions).
 
-CLI equivalents accept controls only; they never take task text or start workers:
+CLI mode controls never take task text or start workers:
 
 ```text
 duet ultra-codex [on|off|status] [options]
 duet pair [on|off|status] [options]
 duet duel [on|off|status] [options]
+duet roundtable [on|off|status] [--intensity light|standard|deep|full] [--roles id,id]
 
 duet ultra-codex on --thorough --max-workers unlimited
 duet pair on
@@ -260,7 +282,11 @@ duet duel on --rounds 2
 duet duel status --for-command
 ```
 
-Omitted action is status. All accept `--cwd <dir>`/`-C <dir>`, `--session <id>`,
+For roundtable, bare status/no action reports the mode; `status <roomId>`
+selects the room. Its start/pause/resume/close actions are room controls, not
+mode switches. Mode off/replacement leaves rooms and jobs intact.
+
+Omitted mode action is status. All accept `--cwd <dir>`/`-C <dir>`, `--session <id>`,
 `--json`, `--help`/`-h`, and `status --for-command`. Mode options are valid only
 with `on`; `--for-command` only with `status`, even when explicitly set to
 `false`. Pair rejects ultra/duel options, duel rejects ultra options, and ultra
@@ -272,7 +298,9 @@ the session ID; `on`/`off` need one, while status without one reports off.
 JSON `mode` is `on`/`off` for the requested command; `modeName` names that
 command, and `activeMode` reports the actual saved mode/options even if it is
 different. Status shows the effective worker model/effort and ultra routine
-model; JSON includes `models: { model, effort, routineModel }`.
+model; JSON includes `models: { model, effort, routineModel }`. Roundtable also
+reports `personaModels` with per-field values/sources; its text status lists
+these standard persona mappings instead of ordinary worker defaults.
 `protocolFile` and `protocolVersion` are always present. Ultra keeps
 effective `maxWorkers` (null for unlimited) plus `maxWorkersSetting`. A cross-mode
 `on` adds `replacedMode` and `runningJobs`; `off` reports `wasOn` and running jobs.
@@ -363,10 +391,18 @@ mode reminders and status show the effective models too. For built-ins,
 precedence, examples and validation limits, see
 [Default worker models](configuration.md#default-worker-models).
 
-`duet setup --default-mode off|ultra|pair|duel` saves the orchestration mode for
+`duet setup --default-mode off|ultra|pair|duel|roundtable` saves the orchestration mode for
 fresh Claude sessions and `/clear` (default `off`); run it separately from other
 setup changes, with `--dry-run` to preview. See
 [default orchestration mode](configuration.md#default-orchestration-mode).
+
+`duet setup --persona-model id=model[:effort]` saves a persona mapping;
+repeat the flag for different ids, or use `id=default` to remove both fields.
+Run it separately from other setup changes; `--dry-run --json` previews without
+writes. Setup JSON includes `personaModels` with effective model/effort values
+and per-field `saved`/`built-in` sources. Model-only changes clear the saved
+effort. See [persona models](roundtable.md#models-and-redefinition).
+
 `duet setup --dispatch auto|native|bash|default` selects Claude's dispatch
 guidance; run it separately from other setup changes. See
 [worker dispatch](configuration.md#worker-dispatch).
@@ -473,6 +509,12 @@ the next task starts a fresh broker. Both commands accept `--cwd <dir>` and
 | `duet ultra-codex [on\|off\|status]` | Ultra session controls; task text belongs in the slash command |
 | `duet pair [on\|off\|status]` | Pair session controls; one primary Codex thread |
 | `duet duel [on\|off\|status]` | Duel session controls; `on --rounds <n>` sets 1–3 total rounds |
+| `duet roundtable [on\|off\|status]` | Roundtable session mode controls; `on --intensity … --roles …` selects defaults |
+| `duet roundtable start [--intensity …] [--roles id,id] [--persona-model id=model[:effort]]… [--run <runId>] [--json]` | Goal on stdin; returns room, member headers and chair card |
+| `duet roundtable status <roomId> [--json]` / `pause\|resume <roomId>` | Inspect or control the room |
+| `duet roundtable close <roomId> [--title t] [--label l] [--selects n] [--unreviewed reason]` | Close the room; with a title, `--selects` or a body on stdin, first records the chair's closing decision under the review gate. Closing does not cancel jobs |
+| `duet forum read <roomId> [--after n] [--thread n] [--limit n] [--json]` | Chair index/thread reads |
+| `duet forum post <roomId> --kind <kind> [--thread n] [--reply-to n] [--title t] [--label l] [--ref r]… [--mention m]…` | Chair posts, body on stdin; see [forum](roundtable.md#the-forum) |
 | `duet cleanup --dry-run --json` / `duet cleanup --json` | Preview/apply retention with read-only inert workspace reporting; text output includes manual removal hints; `--days N` overrides the period |
 | `duet journal <start\|use\|add\|validate\|close\|show\|list>` | Criteria (including `add withdraw`), verdicts and decisions; `start --switch` selects a new run while leaving the old one open; `use <runId>` selects an existing open run for the session |
 

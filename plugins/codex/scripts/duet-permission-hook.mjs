@@ -11,6 +11,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { COMMAND_ALIASES, COMMAND_OPTIONS, DIRECT_OPTION_CONFLICTS } from "./lib/command-options.mjs";
 import { SANDBOX_MODES, isSupportedReasoningEffort, normalizeRequestedModel } from "./lib/setup-config.mjs";
+import { PERSONA_IDS } from "./lib/roundtable-personas.mjs";
 import { budgetLimit } from "./lib/job-budget.mjs";
 import { readHookInput } from "./lib/fs.mjs";
 
@@ -80,8 +81,8 @@ export function approveDuet(input, env = process.env) {
   if (!executable) return {};
   const argumentsHeader = header.slice(executable.length).replace(/^[ \t]+/, "");
   // Recognize our own fully quoted absolute rewrite on a repeated hook call.
-  if (!/^(?:task|answer|wait|result|status|cancel|runtime)(?=[ \t]|$)/.test(argumentsHeader)
-      && !(executable !== "duet" && /^'(?:task|answer|wait|result|status|cancel|runtime)'(?=[ \t]|$)/.test(argumentsHeader))) return {};
+  if (!/^(?:task|answer|wait|result|status|cancel|runtime|roundtable|forum)(?=[ \t]|$)/.test(argumentsHeader)
+      && !(executable !== "duet" && /^'(?:task|answer|wait|result|status|cancel|runtime|roundtable|forum)'(?=[ \t]|$)/.test(argumentsHeader))) return {};
   if (heredoc) {
     if (newline < 0) return {};
     const lines = command.slice(newline + 1).split("\n");
@@ -139,11 +140,25 @@ export function approveDuet(input, env = process.env) {
       flags.set(name, value);
     } else return {};
   }
+  if (verb === "task" && (flags.has("roundtable") !== flags.has("persona") ||
+      (flags.has("roundtable") && (!/^rt-[a-z0-9]+-[a-z0-9-]+$/.test(flags.get("roundtable")) || !PERSONA_IDS.includes(flags.get("persona")))))) return {};
+  const forumReadOnly = verb === "roundtable" || verb === "forum";
+  if (forumReadOnly) {
+    const action = positionals[0];
+    const allowed = verb === "roundtable" && action === "status" ? ["json", "session"]
+      : verb === "forum" && action === "read" ? ["json", "session", "after", "thread", "limit", "resource"]
+      : verb === "forum" && action === "pending" ? ["json", "session"] : null;
+    if (!allowed || [...flags.keys()].some(key => !allowed.includes(key))) return {};
+    if (positionals.length !== (action === "pending" ? 1 : action === "status" && positionals.length === 1 ? 1 : 2)) return {};
+    if (positionals[1] && !/^rt-[a-z0-9]+-[a-z0-9-]+$/.test(positionals[1])) return {};
+    for (const key of ["after", "thread", "limit"]) if (flags.has(key) && (!/^\d+$/.test(flags.get(key)) || !Number.isSafeInteger(+flags.get(key)) || +flags.get(key) < (key === "after" ? 0 : 1))) return {};
+    if (flags.has("thread") && (flags.has("after") || flags.has("limit"))) return {};
+  }
   const cancelAll = verb === "cancel" && flags.get("all");
   if (cancelAll && positionals.length) return {};
   if (verb === "runtime" && !flags.has("help") && (positionals.length !== 1 || !["status", "restart"].includes(positionals[0]))) return {};
   const needsTarget = ["answer", "wait"].includes(verb) || (verb === "cancel" && !cancelAll) || (verb === "result" && !flags.has("thread"));
-  if (positionals.length > (verb === "task" ? 0 : 1) || (needsTarget && !flags.has("help") && positionals.length !== 1)) return {};
+  if ((!forumReadOnly && positionals.length > (verb === "task" ? 0 : 1)) || (needsTarget && !flags.has("help") && positionals.length !== 1)) return {};
   if ((flags.has("fast") && flags.has("normal")) || ["to", "thread", "fresh"].filter(key => flags.has(key)).length > 1) return {};
   if (flags.get("fork") && ["to", "thread", "continue", "resume", "resume-last"].some(key => flags.has(key))) return {};
   if (flags.has("source") && !flags.get("fork")) return {};

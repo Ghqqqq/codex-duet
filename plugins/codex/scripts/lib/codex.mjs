@@ -227,11 +227,11 @@ export function parentBridgeConfig(bridge) {
   for (const key of ["TMPDIR"]) if (process.env[key]) env[key] = process.env[key];
   return { mcp_servers: { [PARENT_BRIDGE_SERVER]: {
     command: process.execPath, args: [fileURLToPath(new URL("../parent-bridge-mcp.mjs", import.meta.url))], env,
-    enabled: true, enabled_tools: ["ask_parent"], omit_tools_from: ["code_mode", "deferred"],
+    enabled: true, enabled_tools: ["ask_parent", ...(bridge.roundtable ? ["forum_read", "forum_post"] : [])], omit_tools_from: ["code_mode", "deferred"],
     // Workers reject tool approvals ("never", or the granular policy that only
     // forwards MCP elicitations); without this (and the tool's readOnlyHint)
     // Codex rejects the call as "requires approval".
-    tools: { ask_parent: { approval_mode: "approve" } },
+    tools: { ask_parent: { approval_mode: "approve" }, ...(bridge.roundtable ? { forum_read: { approval_mode: "approve" }, forum_post: { approval_mode: "approve" } } : {}) },
     startup_timeout_sec: 30, tool_timeout_sec: Math.min(86400, (bridge.questionTimeoutSec ?? 900) + 120)
   } } };
 }
