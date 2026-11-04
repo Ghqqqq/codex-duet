@@ -1,4 +1,4 @@
-# /codex:duel — Claude versus Codex, with Claude as relay
+# /fugato:duel — Claude versus Codex, with Claude as relay
 
 Duel pairs one Claude `general-purpose` subagent with one Codex worker for a
 bounded contested design, high-risk claim or adversarial change. The Claude
@@ -28,13 +28,13 @@ Back to the [README](../README.md). Compare [pair](pair.md) for one executor and
 ## Commands and round budget
 
 ```text
-Usage: /codex:duel [on [--rounds <n>] [<task>] | off | status | [--rounds <n>] <task>]
+Usage: /fugato:duel [on [--rounds <n>] [<task>] | off | status | [--rounds <n>] <task>]
 
-/codex:duel --rounds 2 compare these two designs
-/codex:duel on --rounds 2
-/codex:duel on --rounds 2 fix the parser race
-/codex:duel status
-/codex:duel off
+/fugato:duel --rounds 2 compare these two designs
+/fugato:duel on --rounds 2
+/fugato:duel on --rounds 2 fix the parser race
+/fugato:duel status
+/fugato:duel off
 
 fugato duel on --rounds 2
 fugato duel status --for-command

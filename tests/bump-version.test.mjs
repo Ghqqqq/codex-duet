@@ -43,11 +43,11 @@ function makeVersionFixture() {
     }
   });
   writeJson(path.join(root, "plugins", "codex", ".claude-plugin", "plugin.json"), {
-    name: "codex",
+    name: "fugato",
     version: "1.0.2"
   });
   writeJson(path.join(root, "plugins", "codex-live", ".claude-plugin", "plugin.json"), {
-    name: "codex-live",
+    name: "fugato-live",
     version: "1.0.2"
   });
   writeJson(path.join(root, ".claude-plugin", "marketplace.json"), {
@@ -56,11 +56,11 @@ function makeVersionFixture() {
     },
     plugins: [
       {
-        name: "codex",
+        name: "fugato",
         version: "1.0.2"
       },
       {
-        name: "codex-live",
+        name: "fugato-live",
         version: "1.0.2"
       }
     ]
@@ -103,22 +103,22 @@ test("bump-version check mode reports stale metadata", () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /plugins\/codex\/\.claude-plugin\/plugin\.json version/);
   assert.match(result.stderr, /plugins\/codex-live\/\.claude-plugin\/plugin\.json version/);
-  assert.match(result.stderr, /plugins\[codex-live\]\.version/);
+  assert.match(result.stderr, /plugins\[fugato-live\]\.version/);
   assert.match(result.stderr, /\.claude-plugin\/marketplace\.json metadata\.version/);
 });
 
-test("bump-version detects drift in each codex-live version independently", () => {
+test("bump-version detects drift in each fugato-live version independently", () => {
   for (const target of ["manifest", "marketplace"]) {
     const root = makeVersionFixture();
     const file = path.join(root, target === "manifest"
       ? "plugins/codex-live/.claude-plugin/plugin.json" : ".claude-plugin/marketplace.json");
     const json = readJson(file);
     if (target === "manifest") json.version = "0.0.0";
-    else json.plugins.find(plugin => plugin.name === "codex-live").version = "0.0.0";
+    else json.plugins.find(plugin => plugin.name === "fugato-live").version = "0.0.0";
     writeJson(file, json);
     const result = run("node", [SCRIPT, "--root", root, "--check"], { cwd: ROOT });
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /codex-live/);
+    assert.match(result.stderr, target === "manifest" ? /plugins\/codex-live\// : /plugins\[fugato-live\]/);
   }
 });
 
@@ -133,7 +133,7 @@ test("bump-version locates marketplace plugins by name", () => {
   assert.equal(result.status, 0, result.stderr);
   const plugins = readJson(file).plugins;
   assert.equal(plugins.find(plugin => plugin.name === "unrelated").version, "9.0.0");
-  for (const name of ["codex", "codex-live"]) {
+  for (const name of ["fugato", "fugato-live"]) {
     assert.equal(plugins.find(plugin => plugin.name === name).version, "1.2.3");
   }
   const check = run("node", [SCRIPT, "--root", root, "--check"], { cwd: ROOT });

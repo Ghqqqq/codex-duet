@@ -7,11 +7,11 @@ review and build on one another's work. Their personas shape what they notice
 and try first; current judgments change with evidence.
 
 ```text
-/codex:roundtable investigate and fix the intermittent reconnect failure
-/codex:roundtable --intensity deep compare and prototype these storage designs
-/codex:roundtable on --intensity light --roles improver,critic
-/codex:roundtable status
-/codex:roundtable off
+/fugato:roundtable investigate and fix the intermittent reconnect failure
+/fugato:roundtable --intensity deep compare and prototype these storage designs
+/fugato:roundtable on --intensity light --roles improver,critic
+/fugato:roundtable status
+/fugato:roundtable off
 ```
 
 A task runs once; `on` keeps the mode for substantive prompts in this session.
@@ -196,6 +196,15 @@ fugato forum post <roomId> --kind request --mention steward --title 'Check candi
 Please reproduce the candidate's reconnect result under the original conditions.
 DUET_POST
 ```
+
+The optional [Fugato Live pane](../plugins/codex-live/README.md) also shows a
+read-only roundtable forum. Rooms chaired by the current Claude session appear
+in the pane's list; selecting one shows posts in order with their kind, author,
+mentions, replies, title, body and refs. Long bodies are collapsed and can be
+expanded. The view follows new posts. `/fugato-live forum` opens this session's
+newest open room, or its newest room if none are open;
+`/fugato-live forum <roomId>` opens a specific room. Only rooms this
+session chairs are visible, and the pane cannot post or change a room.
 
 Mentions and chair decisions can wake an idle member. Replies to a thread it
 joined notify it without waking it; ordinary new posts stay in the index.

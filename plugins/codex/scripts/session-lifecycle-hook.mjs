@@ -27,11 +27,11 @@ async function sessionStartContext() {
   const bash = dispatch === "bash" || Boolean(unavailable);
   const routeContext = bash ? [
     dispatch === "bash"
-      ? 'The saved dispatch preference is bash: dispatch through background Bash `fugato task`; load the `codex:native-fallback` skill and follow it. Do not use codex:codex-native.'
-      : `Native dispatch was unavailable on this host at ${unavailable.at} (missing turn start); prefer background Bash \`fugato task\` through the \`codex:native-fallback\` skill. This observation is honored for 24 hours after the last observation, or until \`fugato setup --dispatch\` is run without \`--dry-run\`.`
+      ? 'The saved dispatch preference is bash: dispatch through background Bash `fugato task`; load the `fugato:native-fallback` skill and follow it. Do not use fugato:codex-native.'
+      : `Native dispatch was unavailable on this host at ${unavailable.at} (missing turn start); prefer background Bash \`fugato task\` through the \`fugato:native-fallback\` skill. This observation is honored for 24 hours after the last observation, or until \`fugato setup --dispatch\` is run without \`--dry-run\`.`
   ] : [
-    'Dispatch Codex natively by default from the first dispatch: Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (a valid caller name is kept when free; otherwise the plugin assigns a scientist name; the name appears in the Agent result); an optional first prompt line DUET: <flags> sets task flags. The agent result is the Fugato report; use SendMessage to the named agent for follow-ups and answers.',
-    "If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it."
+    'Dispatch Codex natively by default from the first dispatch: Agent(subagent_type: "fugato:codex-native", prompt: "<brief>") (a valid caller name is kept when free; otherwise the plugin assigns a scientist name; the name appears in the Agent result); an optional first prompt line DUET: <flags> sets task flags. The agent result is the Fugato report; use SendMessage to the named agent for follow-ups and answers.',
+    "If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `fugato:native-fallback` skill and follow it."
   ];
   return [
     ...routeContext,

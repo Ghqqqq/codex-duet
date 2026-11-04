@@ -1,14 +1,15 @@
 import { atom, read } from 'claude-code';
 import type { Register, Timer } from 'claude-code';
 import type { CodexLiveState } from '../types';
-import { feedLines, feedWindow, fit, footerLayout, paneLayout, jobRow, jobRowColor,
-  messageLines, scrollFeed, selectedJob, togglePrompt, width } from './layout';
+import { feedLines, feedWindow, fit, footerLayout, paneLayout, tableRow, listTitle, emptyLines, sessionFooter,
+  scrollFeed, selectedJob, toggleForumPosts, togglePrompt, width } from './layout';
 import type { FeedLines, Span } from './layout';
-import { clearFinished, jobLifecycle, normalizeSessions, usageLines, visibleSessions } from './model';
+import { clearFinished, jobLifecycle, normalizeSessions, visibleForums, visibleSessions } from './model';
 import { createPoller } from './poll';
+import { forumId, forumOrder, isolatedHome, readForumRoom, selectedForum } from './forum';
 import { checkedView, nativeActivity, updateFailure, viewports, writeView } from './runtime';
 
-const view = atom({ plugin: 'codex-live', key: 'view' } as const,
+const view = atom({ plugin: 'fugato-live', key: 'view' } as const,
   { jobs: [], selectedId: null, nowMs: 0 } as CodexLiveState);
 import { limitChars } from './text';
 
@@ -18,15 +19,31 @@ export const register: Register = on => {
   // content anchors survive different wrapping without render-time state writes.
   let poll: ReturnType<typeof createPoller> | undefined;
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'codex-live', description: 'Open the read-only Codex jobs pane' });
+    await $.command.register({ name: 'fugato-live', description: 'Open the read-only Fugato jobs and forum pane' });
     if (!timer) { poll = createPoller($); timer = $.clock.every(1000, () => poll!()); }
     return next(e);
   });
 
-  on('command.run', { command: 'codex-live' }, async ($, e) => {
-    if (!['composer', 'bridge', 'sdk'].includes(e.origin.kind)) return { text: 'Open Codex activity by running /codex-live yourself.' };
+  on('command.run', { command: 'fugato-live' }, async ($, e) => {
+    if (!['composer', 'bridge', 'sdk'].includes(e.origin.kind)) return { text: 'Open Codex activity by running /fugato-live yourself.' };
     const target = e.args.trim();
-    if (target) {
+    if (/^forum(?:\s|$)/.test(target)) {
+      await poll?.(true);
+      const session = await $.session.id();
+      const id = target.slice(5).trim();
+      const state = checkedView($, await read($, view));
+      const room = id ? await readForumRoom($, await isolatedHome($), session, id)
+        : visibleForums(state).filter(room => room.sessionId === session).sort(forumOrder)[0];
+      if (!room) return { text: id ? `Roundtable ${limitChars(id, 128)} was not found in this Claude session.`
+        : 'No roundtables in this Claude session yet.' };
+      const selectedId = forumId(room);
+      if (!await writeView($, latest => ({ ...latest, selectedId,
+        forumRooms: [...visibleForums(latest).filter(old => old.roomId !== room.roomId).sort(forumOrder).slice(0, 3),
+          { ...room, viewedPosts: room.postCount }],
+        feeds: { ...latest.feeds, [selectedId]: latest.feeds?.[selectedId] ?? { feedOffset: 0, following: true, seenLines: 0 } } }))) {
+        return { text: 'Roundtable could not be selected.' };
+      }
+    } else if (target) {
       const activity = await nativeActivity($, target).catch(() => undefined);
       if (!activity) return { text: `No unique Codex activity found for ${limitChars(target, 100)}.` };
       const selectedId = activity.threadId ? `thread:${activity.threadId}` : activity.jobId;
@@ -35,62 +52,61 @@ export const register: Register = on => {
         return { text: 'Codex activity could not be selected.' };
       }
     }
-    await $.ui.open({ id: 'codex-live', title: 'Codex', focus: true });
+    await $.ui.open({ id: 'fugato-live', title: 'Fugato', focus: true });
     await poll?.(true);
-    return { text: 'Codex pane opened.' };
+    return { text: 'Fugato pane opened.' };
   });
 
-  on('ui.scroll', { component: 'Pane', requestId: 'codex-live' }, async ($, e) => {
+  on('ui.scroll', { component: 'Pane', requestId: 'fugato-live' }, async ($, e) => {
     const surface = await $.session.surface().catch(() => null);
     const measured = viewports.get(surface ?? 'terminal') ?? viewports.values().next().value;
     const columns = measured?.columns ?? 0;
     if (!columns || !e.by) return {};
     await writeView($, state => {
       state = normalizeSessions(state);
-      const job = selectedJob(state);
+      const job = selectedForum(state) ?? selectedJob(state);
       if (!job) return state;
-      const { bodyRows, pinnedRows, footerRows, rows } = paneLayout(state, job, e.bodyRows);
+      const { bodyRows, pinnedRows, footerRows, rows } = paneLayout(state, job, e.bodyRows, false, columns);
+      const id = 'roomId' in job ? forumId(job) : job.id;
       // A wheel over pinned chrome does not move the transcript beneath it.
       if (e.pointer && (e.pointer.row < pinnedRows || e.pointer.row >= bodyRows - footerRows ||
           e.pointer.column < 0 || e.pointer.column >= columns)) return state;
-      const lines = feedLines(job, state.nowMs, columns, state.feeds?.[job.id]);
-      const next = scrollFeed(lines, rows, state.feeds?.[job.id], e.by, bodyRows, e.contentRows, !!e.pointer);
-      return { ...state, feeds: { ...state.feeds, [job.id]: { ...next, columns, surface: surface ?? 'terminal' } } };
+      const lines = feedLines(job, state.nowMs, columns, state.feeds?.[id]);
+      const next = scrollFeed(lines, rows, state.feeds?.[id], e.by, bodyRows, e.contentRows, !!e.pointer);
+      return { ...state, feeds: { ...state.feeds, [id]: { ...next, columns, surface: surface ?? 'terminal' } } };
     });
     // Consume the move; render compensates for any retained engine offset.
     return {};
-  }).catch(() => ({ deny: 'Codex feed kept its window' }));
+  }).catch(() => ({ deny: 'Fugato feed kept its window' }));
 
-  on('ui.render', { component: 'Pane', requestId: 'codex-live' }, async ($, e) => {
+  on('ui.render', { component: 'Pane', requestId: 'fugato-live' }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e);
     const state = normalizeSessions(checkedView($, await read($, view)));
     const columns = Math.max(0, Math.floor(e.props.bodyColumns));
     const failure = updateFailure();
-    const selected = selectedJob(state);
-    const { bodyRows, header, nameHint, rows } = paneLayout(state, selected, e.props.scroll.bodyRows, !!failure || !!state.discoveryWarning);
+    const selected = selectedForum(state) ?? selectedJob(state);
+    const selectedId = selected && ('roomId' in selected ? forumId(selected) : selected.id);
+    const { bodyRows, header, top, nameHint, rows } = paneLayout(state, selected, e.props.scroll.bodyRows, !!failure || !!state.discoveryWarning, columns);
     viewports.set(e.surface, { columns, bodyRows });
     const engineOffset = Math.max(0, Math.floor(e.props.scroll.offset));
     const jobs = visibleSessions(state);
-    const lines: FeedLines = selected ? feedLines(selected, state.nowMs, columns, state.feeds?.[selected.id])
-      : messageLines([state.discoveryWarning ?? 'No Codex jobs in this session yet. They appear here when Claude starts one.',
-        ...usageLines(state.usageByJob ?? {}, state.usagePartial ? 'Codex session total (partial history)' : 'Codex session total')].join('\n'), columns)
-        .map((spans, i) => ({ key: `empty-${i}`, spans: spans.map(span => ({ ...span, color: 'subtle' as const })) }));
-    if (!selected && (state.hiddenFinishedBefore !== undefined || state.hiddenJobIds?.length)) lines.push(
-      ...messageLines('Finished jobs are hidden. Their records follow your Fugato cleanup settings.', columns)
-        .map((spans, i) => ({ key: i ? `hidden-notice-${i}` : 'hidden-notice',
-          spans: spans.map(span => ({ ...span, color: 'subtle' as const })) })));
-    const window = selected ? feedWindow(lines, rows, state.feeds?.[selected.id]) : { lines: lines.slice(0, rows), following: true, newLines: 0 };
-    const needsHistory = jobs.length > 1 && (!header.rows || header.toggle);
+    const lines: FeedLines = selected ? feedLines(selected, state.nowMs, columns, state.feeds?.[selectedId!])
+      : emptyLines(columns);
+    const window = selected ? feedWindow(lines, rows, state.feeds?.[selectedId!]) : { lines: lines.slice(0, rows), following: true, newLines: 0 };
+    const hiddenForums = visibleForums(state).sort(forumOrder)
+      .filter(room => !header.forumRooms.some(shown => shown.roomId === room.roomId)).map(forumId);
+    const compactIds = [...jobs.map(job => job.id), ...hiddenForums];
+    const needsHistory = !!header.toggle || !header.workerRows && compactIds.some(id => id !== selectedId);
     // Preserve normal labels when they fit; compact keyboard controls remain
     // registered even when an explicitly opened pane clips their final cells.
     const clearRoom = columns - (needsHistory ? 5 : 0);
     const clearText = clearRoom >= 14 ? 'Clear finished' : clearRoom >= 5 ? 'Clear' : '';
     const clearHotkey = clearText ? undefined : 'c';
     const clearWidth = width(clearText) + (clearHotkey ? 3 : 0);
-    const canClear = jobs.some(job => jobLifecycle(job).finished);
-    const tinyClear = !!selected && !header.rows && canClear;
-    const tinyHistory = !!selected && jobs.length > 1 && !header.rows;
-    const historyText = fit(`+${jobs.length - 1} more`, Math.max(0, columns - 3 - (tinyClear ? clearWidth + 2 : 0)));
+    const canClear = jobs.some(job => jobLifecycle(job).finished) || visibleForums(state).some(room => room.status === 'closed');
+    const tinyClear = !header.clear && canClear;
+    const tinyHistory = !!selected && !header.workerRows && compactIds.some(id => id !== selectedId);
+    const historyText = fit(`+${compactIds.filter(id => id !== selectedId).length} more`, Math.max(0, columns - 3 - (tinyClear ? clearWidth + 2 : 0)));
     const footerColumns = Math.max(0, columns - (tinyHistory ? width(historyText) + 4 : 0)
       - (tinyClear ? clearWidth + 2 : 0));
     const fullToggleText = header.more ? `+${header.more} more` : '− Show fewer';
@@ -104,28 +120,41 @@ export const register: Register = on => {
       await writeView($, latest => clearFinished(latest, now));
       await poll?.(true);
     };
-    const footer = failure ? { left: fit(`Pane update failed · ${failure}`, footerColumns), jump: '', gap: '', color: 'error' as const }
-      : state.discoveryWarning ? { left: fit(state.discoveryWarning, footerColumns), jump: '', gap: '', color: 'warning' as const }
-      : selected ? footerLayout(selected, state, footerColumns, window.following, window.newLines) : undefined;
+    const footer = failure ? { left: fit(`Pane update failed · ${failure}`, footerColumns), right: '', jump: '', gap: '', color: 'error' as const }
+      : state.discoveryWarning ? { left: fit(state.discoveryWarning, footerColumns), right: '', jump: '', gap: '', color: 'warning' as const }
+      : selected ? footerLayout(selected, state, footerColumns, window.following, window.newLines) : sessionFooter(state, footerColumns);
     const jumpToBottom = async () => {
       await writeView($, latest => ({ ...latest, feeds: { ...latest.feeds,
-        [selected!.id]: { ...latest.feeds?.[selected!.id], feedOffset: 0, following: true, seenLines: 0,
+        [selectedId!]: { ...latest.feeds?.[selectedId!], feedOffset: 0, following: true, seenLines: 0,
           anchor: undefined, seenItems: undefined } } }));
     };
     const toggle = async (turnId: string) => {
       await writeView($, latest => {
         latest = normalizeSessions(latest);
-        const job = selectedJob(latest);
-        if (!job || job.id !== selected?.id || !job.turns.some(turn => turn.id === turnId && turn.prompt !== undefined)) return latest;
-        const currentRows = paneLayout(latest, job, bodyRows).rows;
-        return { ...latest, feeds: { ...latest.feeds, [job.id]: {
-          ...togglePrompt(job, latest.nowMs, columns, currentRows, latest.feeds?.[job.id], turnId), surface: e.surface,
+        const job = selectedForum(latest) ?? selectedJob(latest);
+        if (!job || latest.selectedId !== selectedId || ('roomId' in job
+          ? !job.posts?.some(post => `post:${post.seq}` === turnId)
+          : !job.turns.some(turn => turn.id === turnId && turn.prompt !== undefined))) return latest;
+        const currentRows = paneLayout(latest, job, bodyRows, false, columns).rows;
+        return { ...latest, feeds: { ...latest.feeds, [selectedId!]: {
+          ...togglePrompt(job, latest.nowMs, columns, currentRows, latest.feeds?.[selectedId!], turnId), surface: e.surface,
+        } } };
+      });
+    };
+    const toggleAll = async () => {
+      await writeView($, latest => {
+        const room = selectedForum(latest);
+        if (!room || latest.selectedId !== selectedId) return latest;
+        const currentRows = paneLayout(latest, room, bodyRows, false, columns).rows;
+        return { ...latest, feeds: { ...latest.feeds, [selectedId!]: {
+          ...toggleForumPosts(room, latest.nowMs, columns, currentRows, latest.feeds?.[selectedId!]), surface: e.surface,
         } } };
       });
     };
     const select = async (id: string) => {
-      await writeView($, latest => visibleSessions(latest).some(job => job.id === id)
-        ? normalizeSessions({ ...latest, selectedId: id, feeds: { ...latest.feeds,
+      await writeView($, latest => (visibleSessions(latest).some(job => job.id === id) || visibleForums(latest).some(room => forumId(room) === id))
+        ? normalizeSessions({ ...latest, selectedId: id, forumRooms: latest.forumRooms?.map(room => forumId(room) === id
+          ? { ...room, viewedPosts: room.postCount } : room), feeds: { ...latest.feeds,
           [id]: latest.feeds?.[id] ?? { feedOffset: 0, following: true, seenLines: 0 } } }) : latest);
       await poll?.(true);
     };
@@ -141,20 +170,23 @@ export const register: Register = on => {
       if (text.length > remaining) text = remaining > 0
         ? `${limitChars(text, remaining - 1)}…` : '';
       remaining -= text.length;
-      return <Text color={span.color} bold={span.bold} strikethrough={span.strikethrough}
+      return <Text color={span.color} bold={span.bold} italic={span.italic} dimColor={span.dim}
         wrap="truncate-end">{text}</Text>;
     }); };
+    const tableEntries = [...header.forumRooms, ...header.jobs];
     return <Box key="pane" flexDirection="column" width={columns} height={engineOffset + bodyRows + 1} minHeight={0} flexShrink={1}>
       {engineOffset > 0 && <Box key="engine-offset-pad" height={engineOffset} flexShrink={0} />}
-      {header.jobs.map(job => {
-        const isSelected = selected?.id === job.id;
-        const row = jobRow(job, isSelected, columns, state.nowMs, state.newSessionIds?.includes(job.id));
-        return <Box key={`header-${job.id}`} height={1} flexShrink={0} overflow="hidden">
-          <Button key={job.id} plain onPress={() => select(job.id)}><Text wrap="truncate-end"><Text color="suggestion">{row.selector}</Text><Text
-            color={jobRowColor(job)}>{row.bullet}</Text><Text bold={isSelected} color="text">{row.label}</Text>
-            <Text color="subtle">{row.summary}</Text><Text color="suggestion">{row.marker}</Text>{row.gap}<Text color="subtle">{row.meta}</Text></Text></Button>
-        </Box>;
-      })}
+      {!!header.titleRows && <Box key="list-title" height={1} flexShrink={0} overflow="hidden">
+        <Text wrap="truncate-end">{drawSpans(listTitle(state, columns))}</Text>
+      </Box>}
+      {header.forumRooms.map(room => <Box key={`header-${forumId(room)}`} height={1} flexShrink={0} overflow="hidden">
+        <Button key={forumId(room)} plain onPress={() => select(forumId(room))}><Text wrap="truncate-end">
+          {drawSpans(tableRow(room, selectedId === forumId(room), columns, state, tableEntries))}</Text></Button>
+      </Box>)}
+      {header.jobs.map(job => <Box key={`header-${job.id}`} height={1} flexShrink={0} overflow="hidden">
+        <Button key={job.id} plain onPress={() => select(job.id)}><Text wrap="truncate-end">
+          {drawSpans(tableRow(job, selectedId === job.id, columns, state, tableEntries))}</Text></Button>
+      </Box>)}
       {(header.toggle || header.clear) && <Box key="header-toggle" flexDirection="row" height={1} flexShrink={0} overflow="hidden">
         {headerToggle && <Button key="toggle-jobs" plain hotkey={compactToggle ? 'j' : undefined} onPress={async () => {
           await writeView($, latest => {
@@ -171,11 +203,16 @@ export const register: Register = on => {
       {header.rows > 0 && <Box key="header-rule" height={1} flexShrink={0}>
         <Text color="subtle" wrap="truncate-end">{'─'.repeat(columns)}</Text>
       </Box>}
+      {top.map((spans, i) => <Box key={`forum-pinned-${i}`} height={1} flexShrink={0} overflow="hidden">
+        <Text wrap="truncate-end">{drawSpans(spans)}</Text>
+      </Box>)}
       <Box key="transcript" flexDirection="column" height={rows} minHeight={0} flexShrink={1} overflow="hidden">
         {Array.from({ length: rows }, (_, i) => {
           const line = window.lines[i];
           return <Box key={line?.key ?? `padding-${i}`} height={1} flexShrink={0} overflow="hidden">
-            {line?.togglePromptId ? <Button key={`toggle-prompt-${line.togglePromptId}`} plain onPress={() => toggle(line.togglePromptId!)}>
+            {line?.togglePostId ? <Button key={`toggle-post-${line.key}`} plain onPress={() => toggle(line.togglePostId!)}>
+              <Text wrap="truncate-end">{drawSpans(line.spans)}</Text>
+            </Button> : line?.togglePromptId ? <Button key={`toggle-prompt-${line.togglePromptId}`} plain onPress={() => toggle(line.togglePromptId!)}>
               <Text wrap="truncate-end">{drawSpans(line.spans)}</Text>
             </Button> : <Text wrap="truncate-end">{line?.spans.length ? drawSpans(line.spans) : ' '}</Text>}
           </Box>;
@@ -184,16 +221,22 @@ export const register: Register = on => {
       {nameHint && <Box key="name-reuse-hint" height={1} flexShrink={0} overflow="hidden">
         <Text color="subtle" wrap="truncate-end">{fit(nameHint, columns)}</Text>
       </Box>}
+      {footer && bodyRows > 2 && <Box key="footer-rule" height={1} flexShrink={0}><Text color="subtle" wrap="truncate-end">{'─'.repeat(columns)}</Text></Box>}
       {footer && bodyRows > 0 && <Box key="footer" flexDirection="row" height={1} flexShrink={0} overflow="hidden" gap={0}>
         <Box key="live-status" width={width(footer.left)} flexShrink={0}>
-          <Text color={footer.color} wrap="truncate-end">{footer.left}</Text>
+          <Text color={footer.color} wrap="truncate-end">{'leftSpans' in footer ? drawSpans(footer.leftSpans) : footer.left}</Text>
         </Box>
+        {'toggle' in footer && <>
+          <Text wrap="truncate-end">{footer.toggleGap}</Text>
+          <Button key="toggle-forum-posts" plain onPress={toggleAll}><Text color="suggestion" wrap="truncate-end">{footer.toggle}</Text></Button>
+        </>}
         <Text wrap="truncate-end">{footer.gap}</Text>
+        {footer.right && <Text key="footer-tokens" color="subtle" wrap="truncate-end">{footer.right}</Text>}
         {!window.following && !failure && !state.discoveryWarning && <Button key="jump-bottom" plain hotkey="b" onPress={jumpToBottom}>
           <Text color="suggestion" wrap="truncate-end">{footer.jump}</Text></Button>}
         {tinyHistory && <Button key="toggle-jobs" plain hotkey="j" onPress={() => {
-          const index = jobs.findIndex(job => job.id === selected!.id);
-          return select(jobs[(index + 1) % jobs.length]!.id);
+          const index = compactIds.indexOf(selectedId!);
+          return select(compactIds[(index + 1) % compactIds.length]!);
         }}><Text color="subtle" wrap="truncate-end">{historyText}</Text></Button>}
         {tinyClear && columns >= clearWidth + 2 && <Text>  </Text>}
         {tinyClear && <Button key="clear-finished" plain hotkey={clearHotkey} onPress={clear}><Text color="subtle">{clearText}</Text></Button>}

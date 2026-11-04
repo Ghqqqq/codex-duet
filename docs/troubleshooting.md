@@ -8,7 +8,7 @@ Back to the [README](../README.md). Moving from Duet to Fugato? Follow the
 **`fugato: command not found` after install.** Reload plugins or start a new Claude
 session so the plugin's `bin/` is on PATH. You can also invoke the installed
 plugin's absolute launcher, for example `'/absolute/path/plugins/codex/bin/fugato'
-task --help`. `/codex:setup` reports the resolved launcher path and availability.
+task --help`. `/fugato:setup` reports the resolved launcher path and availability.
 SessionStart supplies the session ID and dispatch guidance; do not construct a
 second runtime or submit a replacement for a job that may already exist.
 
@@ -27,7 +27,7 @@ Check setup's selected runtime source: a stale `CODEX_COMPANION_BIN` or
 `<isolated-home>/runtime.json` pin takes precedence over PATH. Point
 `CODEX_COMPANION_BIN` at the absolute path of the installed executable, or set
 `runtime.json`'s `codexBinary` to that path, then run `fugato runtime restart` when
-workers have finished and rerun `/codex:setup`. See [runtime selection](configuration.md#runtime-selection).
+workers have finished and rerun `/fugato:setup`. See [runtime selection](configuration.md#runtime-selection).
 
 **Reload shared runtime configuration.** Run `fugato runtime status` to see the
 selected binary, its source/version and the saved workspace broker's PID,
@@ -40,7 +40,7 @@ also requires a reachable broker with the supported idle-shutdown control.
 Both commands accept `--cwd <dir>` and `--json`. Restart Claude when changing
 the isolated home; that is separate from restarting its workspace broker.
 
-**Native agent unavailable.** `Agent(subagent_type: "codex:codex-native")` needs
+**Native agent unavailable.** `Agent(subagent_type: "fugato:codex-native")` needs
 the supported function-hook module. Native dispatch is the default from the first
 assignment; the readiness notice is informational. If the model fallback runs,
 it returns `native_adapter_unavailable` and does not solve the assignment. This
@@ -105,7 +105,7 @@ Bash sandbox caused it, retry outside the sandbox rather than logging in again.
 Setup's 45-second total deadline and the standalone availability probes'
 60-second overall deadline guard against hangs. Codex executable probes cap at
 20 seconds, initialization at 30 seconds and account/config requests at 20
-seconds each within the remaining deadline (see [setup](commands.md#codexsetup)
+seconds each within the remaining deadline (see [setup](commands.md#fugatosetup)
 for all stage limits). These are generous safeguards, not normal startup timings.
 If a pinned runtime is broken, optional PATH Codex version/help diagnostics
 also share setup's deadline, capped at 20 seconds each and skipped when no time
@@ -206,7 +206,7 @@ More: [worker operations](worker-operations.md) and
 
 ## Sign in with an API key
 
-`/codex:setup` checks the isolated home's authentication and prints an isolated
+`/fugato:setup` checks the isolated home's authentication and prints an isolated
 wrapper command when login is needed. To use an API key instead of ChatGPT
 browser login, keep that command's absolute wrapper path and `--home` value,
 and use `login --with-api-key`. With `OPENAI_API_KEY` already set in your terminal:
@@ -230,10 +230,12 @@ sessions and workspaces. Inspect `fugato status --all` in each workspace, ask th
 owning sessions to stop their work as needed, then use `fugato runtime restart`
 to retire idle brokers. Keep a backup of the isolated home before downgrading.
 
-When rolling back from 1.6.0, use Claude Code's plugin manager to uninstall
-`codex@fugato` and the optional `codex-live@fugato`, then remove the `fugato`
-marketplace entry. In a separate clone of `Ghqqqq/fugato`, find the earlier
-version's release commit; releases are commits on `main`, not tags. For example, `git log --oneline --grep '1\.4\.11'`
+When rolling back from 1.7.0, use Claude Code's plugin manager to uninstall
+`fugato@fugato` and the optional `fugato-live@fugato`. For a 1.6.0 install,
+uninstall `codex@fugato` and the optional `codex-live@fugato` instead. Then remove
+the `fugato` marketplace entry. In a separate clone of `Ghqqqq/fugato`, find the
+earlier version's release commit; releases are commits on `main`, not tags.
+For example, `git log --oneline --grep '1\.4\.11'`
 finds candidates for 1.4.11. Check the chosen commit out in a separate directory
 and confirm its version in `.claude-plugin/marketplace.json`. Register that
 checkout as a local marketplace, then install from it. The example below applies
@@ -273,7 +275,7 @@ same absolute wrapper path and home printed by setup's login command:
 node '/absolute/path/plugins/codex/scripts/codex-isolated.mjs' --home '/absolute/path/to/isolated-home' logout
 ```
 
-Then uninstall `codex@fugato` (and `codex-live@fugato` if installed) through Claude
+Then uninstall `fugato@fugato` (and `fugato-live@fugato` if installed) through Claude
 Code's plugin manager. Once jobs and idle brokers have exited, remove the
 isolated-home directory to delete its credentials, threads and Fugato data.
 Earlier releases may also have left `~/.claude/plugins/data/codex-duet/state/`,
@@ -305,7 +307,7 @@ should be kept.
   false` and leaves them running.
 - `--fork` imports are labelled “imported Claude conversation (fidelity not
   verified)”; use an explicit brief for facts and acceptance criteria.
-- `codex-live` shows prompts and matched `ask_parent` answers on fresh and resumed
+- `fugato-live` shows prompts and matched `ask_parent` answers on fresh and resumed
   threads. The bridge preserves Codex's `_meta.callId`; if the runtime omits it
   or a stored answer has no valid call ID, that answer cannot be matched and is
   not shown.
@@ -337,7 +339,7 @@ should be kept.
   it after the 5 s grace. A signalled stop is immediate.
 - The owner lease is lifecycle coordination between local processes, not an
   authentication boundary.
-- Codex tokens appear in Fugato notices, reports and `codex-live`, not Claude's
+- Codex tokens appear in Fugato notices, reports and `fugato-live`, not Claude's
   `/usage`; native host usage remains null.
 - Agent teammates require a local in-process loop and verified coordinator
   messages. Team task claiming, plan approval, peer/unverified mailboxes and

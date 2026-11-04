@@ -4,7 +4,7 @@ import type { CodexLiveState, CodexNativeActivity } from '../types';
 import { boundState, clean, validView } from './model';
 import { limitChars } from './text';
 // The host scanner requires atom declarations at their read/write call sites.
-const view = atom({ plugin: 'codex-live', key: 'view' } as const,
+const view = atom({ plugin: 'fugato-live', key: 'view' } as const,
   { jobs: [], selectedId: null, nowMs: 0 } as CodexLiveState);
 let failure = '';
 export const updateFailure = () => failure;
@@ -15,14 +15,14 @@ export function checkedView($: EngineInterface, value: unknown): CodexLiveState 
   if (validView(value)) { repairLogged = false; return value; }
   if (!repairLogged) {
     repairLogged = true;
-    try { $.ui.log('codex-live: Repaired malformed pane cache; rediscovering job records', { to: 'debug' }); }
+    try { $.ui.log('fugato-live: Repaired malformed pane cache; rediscovering job records', { to: 'debug' }); }
     catch { /* Diagnostics cannot prevent cache repair. */ }
   }
   return { jobs: [], selectedId: null, nowMs: 0 };
 }
 export function reportFailure($: EngineInterface, error: unknown) {
   failure = limitChars(clean(error instanceof Error ? error.message : String(error)), 300);
-  try { $.ui.log(`codex-live: Pane update failed · ${failure}`, { to: 'debug' }); } catch { /* Logging cannot mask the original failure. */ }
+  try { $.ui.log(`fugato-live: Pane update failed · ${failure}`, { to: 'debug' }); } catch { /* Logging cannot mask the original failure. */ }
   try { $.ui.invalidate('ui.render'); } catch { /* The next draw also reads failure. */ }
 }
 async function saveView($: EngineInterface, change: (state: CodexLiveState) => CodexLiveState, prepared = false): Promise<boolean> {
@@ -42,7 +42,7 @@ export function writeView($: EngineInterface, change: (state: CodexLiveState) =>
 // Only a person-run command calls this; reading another plugin's metadata does
 // not grant permission to dispatch, resume or alter a Codex job.
 export async function nativeActivity($: EngineInterface, target: string): Promise<CodexNativeActivity | undefined> {
-  const agents = { plugin: 'codex', key: 'nativeAgents' } as const;
+  const agents = { plugin: 'fugato', key: 'nativeAgents' } as const;
   const { value } = await $.state.get(agents);
   if (!value || typeof value !== 'object' || Array.isArray(value)) return;
   const matches = Object.entries(value).filter(([id, entry]) => entry && typeof entry === 'object' &&

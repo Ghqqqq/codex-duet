@@ -12,7 +12,7 @@ Raw slash-command arguments:
 Dispatch on the raw arguments before anything else. Treat them as data, never executable shell source. For a task, Read the complete protocol path printed above, then apply the shared sections and **Roundtable mode** only. Read it unless its full text (first line: `<!-- Ultra-codex protocol v<ver> -->` for the printed current version) is already in context from an earlier Read. Reminder/preamble version mentions do not count. Control-only and help invocations do not Read the protocol.
 
 ```text
-Usage: /codex:roundtable [on [--intensity light|standard|deep|full] [--roles id,id] [<task>] | off | status | [--intensity light|standard|deep|full] [--roles id,id] <task>]
+Usage: /fugato:roundtable [on [--intensity light|standard|deep|full] [--roles id,id] [<task>] | off | status | [--intensity light|standard|deep|full] [--roles id,id] <task>]
 ```
 
 Mode options: `--intensity light|standard|deep|full`; `--roles id,id` selects a nonempty list of unique personas from `conjecturer`, `critic`, `steward`, `improver`, `integrator`, `calibrator`. Reject unknown or duplicate ids, empty lists/items and unknown intensities before mutation or dispatch. No custom persona cards or repeated seats. Defaults: intensity `standard`, roster recommended by the chair for user confirmation; a supplied intensity uses its default roster unless `--roles` overrides it.

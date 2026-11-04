@@ -1,4 +1,4 @@
-# /codex:pair — one executor, Claude acceptance
+# /fugato:pair — one executor, Claude acceptance
 
 Pair is for a bounded task that one Codex worker can complete end to end.
 Claude plans, writes the full brief and accepts every diff. The primary worker
@@ -15,13 +15,13 @@ and [duel](duel.md) for persistent adversarial work.
 ## Commands
 
 ```text
-Usage: /codex:pair [on [<task>] | off | status | <task>]
+Usage: /fugato:pair [on [<task>] | off | status | <task>]
 
-/codex:pair fix the failing parser test
-/codex:pair on
-/codex:pair on fix the failing parser test
-/codex:pair status
-/codex:pair off
+/fugato:pair fix the failing parser test
+/fugato:pair on
+/fugato:pair on fix the failing parser test
+/fugato:pair status
+/fugato:pair off
 
 fugato pair on
 fugato pair status --for-command

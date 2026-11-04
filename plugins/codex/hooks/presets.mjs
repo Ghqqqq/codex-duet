@@ -1,16 +1,16 @@
 // Exact declared types, never a teammate's name from classic agent_type.
-export const AGENT_TYPE = 'codex:codex-native';
+export const AGENT_TYPE = 'fugato:codex-native';
 export const PRESETS = Object.freeze({
   [AGENT_TYPE]: Object.freeze({ rolePrompt: null, sandbox: null, speed: null }),
-  'codex:codex-reviewer': Object.freeze({
+  'fugato:codex-reviewer': Object.freeze({
     rolePrompt: 'Codex reviewer role: Review the assigned changes without modifying files. Prioritize actionable correctness, regression and security findings; cite file locations and explain impact. Report checks actually run and any review limits.',
     sandbox: 'read-only', speed: null
   }),
-  'codex:codex-implementer': Object.freeze({
+  'fugato:codex-implementer': Object.freeze({
     rolePrompt: 'Codex implementer role: Implement the bounded assignment in the authorized workspace. Respect owned paths and existing changes, keep the solution focused, and run appropriate verification. Report the changes, observed checks and remaining limitations.',
     sandbox: 'workspace-write', speed: null
   }),
-  'codex:codex-investigator': Object.freeze({
+  'fugato:codex-investigator': Object.freeze({
     rolePrompt: 'Codex investigator role: Investigate the assigned question without modifying files. Trace the relevant code and evidence, distinguish observations from hypotheses, and report supported conclusions with file locations and remaining uncertainty.',
     sandbox: 'read-only', speed: null
   })

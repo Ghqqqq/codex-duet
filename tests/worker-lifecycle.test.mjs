@@ -689,10 +689,10 @@ test("internal native agent types select the declared role and reject other type
   assert.equal(invalid.status, 1);
   assert.match(invalid.stderr, /native agent type/i);
   assert.equal(fs.existsSync(path.join(f.dir, "fake-codex-state.json")), false);
-  const first = direct(f.call("task", "--agent-name", "typed-worker", "--agent-type", "codex:codex-reviewer", "--direct", "fixture"));
-  assert.equal(job(f, first.jobId).request.agentType, "codex:codex-reviewer");
-  const second = direct(f.call("task", "--to", first.worker, "--agent-type", "codex:codex-implementer", "--direct", "fixture"));
-  assert.equal(job(f, second.jobId).request.agentType, "codex:codex-reviewer", "continuations retain the original role context");
+  const first = direct(f.call("task", "--agent-name", "typed-worker", "--agent-type", "fugato:codex-reviewer", "--direct", "fixture"));
+  assert.equal(job(f, first.jobId).request.agentType, "fugato:codex-reviewer");
+  const second = direct(f.call("task", "--to", first.worker, "--agent-type", "fugato:codex-implementer", "--direct", "fixture"));
+  assert.equal(job(f, second.jobId).request.agentType, "fugato:codex-reviewer", "continuations retain the original role context");
 });
 
 test("cancel --all confirms each active session job and leaves another session's worker running", async () => {

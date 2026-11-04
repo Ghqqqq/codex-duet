@@ -104,7 +104,7 @@ function fixture(behavior, name = 'native-worker', { mutable = false, memoryStor
   let controller = new AbortController(), agents = [], hooks, toolHooks;
   let modelCalls = 0, onWait, syntheticUsage;
   const $ = {
-    plugin: { name: 'codex', root: plugin },
+    plugin: { name: 'fugato', root: plugin },
     session: { id: async () => 'native-session', cwd: async () => `${root}/repo`, root: async () => `${root}/repo`,
       append: async notice => { capture.notices.push(clone(notice)); return { message: notice.message, uuid: String(capture.notices.length) }; } },
     agent: { list: async () => agents },
@@ -286,7 +286,7 @@ function fixture(behavior, name = 'native-worker', { mutable = false, memoryStor
       ...(agentName === null ? {} : { name: agentName }), ...(number > 1 ? { resume: agentId } : {}) },
     async e => { agentName = e.name; return options.toolResult ?? { result: {} }; });
     const spawnInput = { tool_use_id: toolUseId, prompt: text, description: 'Native fake task',
-      subagentType: agentType, provider: { plugin: 'codex', tier: 'user' }, parentModel: 'haiku',
+      subagentType: agentType, provider: { plugin: 'fugato', tier: 'user' }, parentModel: 'haiku',
       background: options.background ?? true, permissionMode: options.permissionMode ?? 'default',
       fork: false, name: agentName, cwd: `${root}/repo`,
       ...(options.teammate ? { isTeammate: true } : {}),
@@ -1265,7 +1265,7 @@ test('native caller names survive reservation, case collisions and resume', asyn
 
 test('native role presets dispatch and persist roles, sandbox ceilings and saved defaults', async () => {
   for (const [role, sandbox] of [['reviewer', 'read-only'], ['implementer', 'workspace-write'], ['investigator', 'read-only']]) {
-    const type = `codex:codex-${role}`, f = fixture('review-ok', `preset-${role}`);
+    const type = `fugato:codex-${role}`, f = fixture('review-ok', `preset-${role}`);
     const first = await f.turn('DUET: --model fixture-model --effort high --fast\nFirst role assignment.', 1, false, { agentType: type });
     assert.equal(first.status, 'completed');
     const initial = f.jobs().find(job => job.id === first.jobId);
@@ -1944,11 +1944,11 @@ test('native question and blocker displays neutralize controls without changing 
   f.$.ui = { invalidate() { frames.push(renderQuestion()); } };
   const asked = await f.turn('Ask for the harmless marker.', 1);
   assert.equal(asked.status, 'needs_answer');
-  const questions = (await Promise.all(frames)).filter(text => text.includes('Question: MARK'));
+  const questions = (await Promise.all(frames)).filter(text => text.includes('? asks Claude · MARK'));
   assert.ok(questions.length > 0);
   assert.ok(questions.every(text => !/[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(text)));
   const question = await renderQuestion();
-  assert.ok(question.includes('Question: MARK ]marker TAIL'), JSON.stringify(question));
+  assert.ok(question.includes('? asks Claude · MARK ]marker TAIL'), JSON.stringify(question));
   assert.equal(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(question), false);
   assert.equal(f.jobs()[0].pendingQuestion.text, raw);
   const report = { status: 'blocked', worker: 'native-worker', jobId: asked.jobId, summary: raw,
@@ -1957,8 +1957,9 @@ test('native question and blocker displays neutralize controls without changing 
   const serialized = JSON.stringify(report);
   const markdown = renderLeaves(await f.invoke('ui.render', { component: 'AssistantMessage', props: { text: serialized } },
     async e => ({ type: 'Engine', props: { text: e.props.text } }))).join('');
-  assert.ok(markdown.includes("**Changed files**\n- src/shared.mjs\n\nchangedFiles may include other workers' edits."));
-  assert.ok(markdown.includes('**Blockers**\n- MARK \\]marker TAIL: MARK \\]marker TAIL'));
+  assert.ok(markdown.includes('  changed   src/shared.mjs'));
+  assert.ok(markdown.includes('  blocker   MARK ]marker TAIL: MARK ]marker TAIL'));
+  assert.ok(!markdown.includes(report.changedFilesNote));
   assert.equal(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(markdown), false);
   assert.equal(report.blockers[0].code, raw);
   assert.equal(JSON.parse(serialized).summary, raw);
@@ -1966,35 +1967,44 @@ test('native question and blocker displays neutralize controls without changing 
     checks: { ran: Array(10).fill('check') }, changedFiles: Array.from({ length: 10 }, (_, i) => `file-${i}`),
     keyFindings: Array(10).fill('finding'), blockers: [{ code: 'runtime_refusal', message: 'Retain this blocker.' }],
     question: { text: 'Continue?', options: Array(10).fill('option') } };
-  const rendered = renderLeaves(await f.invoke('ui.render', { component: 'AssistantMessage', props: { text: JSON.stringify(full) } },
-    async e => ({ type: 'Engine', props: { text: e.props.text } }))).join('');
-  assert.deepEqual({ blocker: rendered.includes('runtime\\_refusal'),
-    priority: rendered.indexOf('**Question**') < rendered.indexOf('**Changed files**'),
-    files: rendered.split('\n').filter(line => line.startsWith('- file-')).length, omitted: rendered.includes('+5 more'),
-    bounded: rendered.split('\n').length <= 60 }, { blocker: true, priority: true, files: 5, omitted: true, bounded: true });
+  const fullBlock = await f.invoke('ui.render', { component: 'AssistantMessage', props: { text: JSON.stringify(full) } },
+    async e => ({ type: 'Engine', props: { text: e.props.text } }));
+  const rendered = fullBlock.children.map(row => renderLeaves(row).join('')).join('\n');
+  assert.deepEqual({ blocker: rendered.includes('runtime_refusal'),
+    ordered: rendered.indexOf('  changed') < rendered.indexOf('  question'),
+    files: (rendered.match(/file-\d+/g) ?? []).length, omitted: rendered.includes('+5 more'),
+    bounded: fullBlock.children.length <= 60 }, { blocker: true, ordered: true, files: 5, omitted: true, bounded: true });
+  const outlined = await f.invoke('ui.render', { component: 'AssistantMessage', viewport: { columns: 60 },
+    props: { text: JSON.stringify({ ...report, summary: 'First paragraph.\n\nSecond paragraph.\n- Kept list marker.\n' + Array(80).fill('More summary.').join('\n') }) } },
+    async e => ({ type: 'Engine', props: { text: e.props.text } }));
+  const summaryRows = outlined.children.map(row => renderLeaves(row).join('')).filter(row => row.startsWith('▏'));
+  assert.deepEqual({ first: summaryRows.slice(0, 4), moreThanTwelve: summaryRows.length > 12,
+    bounded: outlined.children.length <= 60,
+    overflow: summaryRows.at(-1).endsWith('…') },
+  { first: ['▏First paragraph.', '▏', '▏Second paragraph.', '▏- Kept list marker.'], moreThanTwelve: true, bounded: true, overflow: true });
   assert.equal((await f.turn('Small', 2)).status, 'needs_answer');
   assert.equal((await f.turn('Small', 3)).status, 'completed');
 });
 
 test('native middle truncation preserves regional-indicator suffix order', async () => {
   const f = fixture('review-ok', 'native-worker', { mutable: true });
-  const text = 'Review command output.', command = 'node ' + 'x'.repeat(30) + '🇺🇸🇨';
+  const text = 'Review command output.', command = 'node ' + 'x'.repeat(45) + '🇺🇸🇨';
   const file = `${f.root}/bin/codex`, source = fs.readFileSync(file, 'utf8');
   const needle = 'if (BEHAVIOR.startsWith("lost-turn:") && turnId === "turn_1")';
   assert.ok(source.includes(needle));
   const item = { type: 'commandExecution', id: 'unicode-command', command, status: 'completed', exitCode: 0 };
   fs.writeFileSync(file, source.replace(needle, `items.unshift({completed:${JSON.stringify(item)}});\n${needle}`));
   assert.equal((await f.turn(text, 1, false, appendRenderPrompt(f, text))).status, 'completed');
-  const leaves = renderLeaves(await renderNativePrompt(f, text, 28));
-  const label = leaves.find(value => value.startsWith('Bash('));
+  const leaves = renderLeaves(await renderNativePrompt(f, text, 100));
+  const label = leaves.find(value => value.includes('…') && value.endsWith("🇺🇸🇨'"));
   assert.ok(label.includes('…'), label);
-  assert.ok(label.endsWith('🇺🇸🇨)'), label);
+  assert.ok(label.endsWith("🇺🇸🇨'"), label);
   assert.equal(f.jobs()[0].activity.find(event => event.type === 'commandExecution').command, command);
 });
 
 test('durable activity keeps failed exit codes and file summaries within its display bound', async () => {
   const f = fixture('review-ok', 'native-worker', { mutable: true });
-  f.$.command = { list: async () => [{ name: 'codex-live' }] };
+  f.$.command = { list: async () => [{ name: 'fugato-live' }] };
   const file = `${f.root}/bin/codex`, source = fs.readFileSync(file, 'utf8');
   const needle = 'if (BEHAVIOR.startsWith("lost-turn:") && turnId === "turn_1")';
   const items = [{ completed: { type: 'commandExecution', id: 'failed', command: 'node ' + 'x'.repeat(300), status: 'failed', exitCode: 7 } },
@@ -2008,10 +2018,11 @@ test('durable activity keeps failed exit codes and file summaries within its dis
   const texts = f.capture.notices.map(notice => notice.message.content[0].text);
   assert.ok(texts.some(text => text.includes('Bash(') && text.endsWith('Error: exit 7') && text.length <= 200));
   assert.ok(texts.some(text => text.includes('Update(') && text.endsWith('+3 −2') && text.length <= 200));
-  assert.ok(texts.some(text => text.includes('Open Codex activity: /codex-live native-worker')));
+  assert.ok(texts.some(text => text.includes('Open Codex activity: /fugato-live native-worker')));
   const markdown = renderLeaves(await f.invoke('ui.render', { component: 'AssistantMessage', props: { text: JSON.stringify(report) } },
     async e => ({ type: 'Engine', props: { text: e.props.text } }))).join('');
-  assert.match(markdown, /Codex usage \(provider: OpenAI Codex, model gpt-6-astra\): 150 input · 40 cached · 30 output · 10 reasoning · 180 total tokens/);
+  assert.match(markdown, /done · .* · 180 tokens · \/fugato-live native-worker/);
+  assert.ok(!markdown.includes('provider:'));
 });
 
 test('native run logs settle unmatched starts after confirmed cancellation', async () => {
@@ -2028,7 +2039,7 @@ test('native run logs settle unmatched starts after confirmed cancellation', asy
   ].map(([method, item]) => `send({method:${JSON.stringify(method)},params:{threadId:thread.id,turnId,item:${JSON.stringify(item)}}});\n`).join('');
   fs.writeFileSync(file, source.slice(0, at) + events + source.slice(at));
   f.stopOnWait(async () => {
-    await until(async () => renderLeaves(await renderNativePrompt(f, text)).includes(' … running'));
+    await until(async () => renderLeaves(await renderNativePrompt(f, text)).some(value => value.includes('running 0s')));
     const cancelled = spawnSync(process.execPath, [plugin + '/bin/fugato', 'cancel', f.jobs()[0].id,
       '--json', '--cwd', `${f.root}/repo`, '--session', 'native-session'], { env: f.env, encoding: 'utf8' });
     assert.equal(cancelled.status, 0, cancelled.stderr);
@@ -2044,9 +2055,10 @@ test('native run logs settle unmatched starts after confirmed cancellation', asy
   assert.equal(state.cancellation.reason, job.result.interruptionReason);
   assert.equal(state.cancellation.confirmation, 'confirmed');
   const leaves = renderLeaves(await renderNativePrompt(f, text));
-  assert.ok(leaves.includes(` ${job.status}`), JSON.stringify(leaves));
-  assert.ok(!leaves.includes(' … running'));
-  assert.ok(leaves.some(value => /^ ✓/.test(value)), 'Completed command keeps its successful outcome');
+  assert.ok(leaves.includes(' · ' + job.status), JSON.stringify(leaves));
+  assert.equal(leaves.filter(value => value === report.status).length, 1, 'One final status follows the interrupted feed');
+  assert.ok(!leaves.some(value => value.startsWith('running ')));
+  assert.ok(leaves.some(value => /^✓/.test(value)), 'Completed command keeps its successful outcome');
 });
 
 test('native headers project flags, preserve ordinary briefs and reject malformed input before dispatch', async () => {
@@ -2061,7 +2073,7 @@ test('native headers project flags, preserve ordinary briefs and reject malforme
   assert.equal(initialTask.request.input, initial);
   assert.equal(initialTask.request.argv.includes('--sandbox'), false);
   assert.equal(initialTask.request.argv.includes('--effort'), false);
-  assert.ok(renderLeaves(await renderNativePrompt(literal, initial)).includes(initial));
+  assert.ok(renderLeaves(await renderNativePrompt(literal, initial)).includes('DUET: --sandbox read-only --effort low'));
   const text = ` \tDUET:\t--sandbox danger-full-access --effort xhigh --model gpt-6-sol --fast --max-minutes 5 --max-tokens=1000\r\n${brief}`;
   assert.equal((await f.turn(text, 1, false, appendRenderPrompt(f, text))).status, 'completed');
   const first = f.jobs()[0];
@@ -2069,7 +2081,7 @@ test('native headers project flags, preserve ordinary briefs and reject malforme
   assert.equal(first.budget.maxTokens, 1000);
   assert.deepEqual(Object.fromEntries(['sandbox', 'effort', 'model', 'serviceTier', 'prompt'].map(key => [key, first.request[key]])),
     { sandbox: 'danger-full-access', effort: 'xhigh', model: 'gpt-6-sol', serviceTier: 'priority', prompt: brief });
-  assert.ok(renderLeaves(await renderNativePrompt(f, text)).includes(brief));
+  assert.ok(renderLeaves(await renderNativePrompt(f, text)).includes('Inspect only.'));
   const followup = await f.turn(frame(`DUET: --sandbox read-only --effort low\n${brief}`), 2);
   assert.equal(followup.status, 'completed');
   const continued = f.jobs().find(job => job.id === followup.jobId);
@@ -2276,7 +2288,7 @@ test('DUET first-line flags and fork carry captured instructions to the imported
   assert.ok(notices[0].message.content[0].text.includes('678'));
   assert.ok(notices[0].message.content[0].text.includes('13,023 total'));
   assert.ok(notices[0].message.content[0].text.startsWith('Codex tokens (provider: OpenAI Codex, model gpt-6-astra)'));
-  const { value: activity } = await invalid.$.state.get({ plugin: 'codex', key: 'nativeAgents' });
+  const { value: activity } = await invalid.$.state.get({ plugin: 'fugato', key: 'nativeAgents' });
   assert.equal(activity['native-agent'].jobId, planned.jobId);
   assert.equal(activity['native-agent'].threadId, continuedJob.threadId);
   assert.equal(activity['native-agent'].workspace, `${invalid.root}/repo`);
@@ -3112,7 +3124,7 @@ test('pruning bounds companion lookups and shares one inventory across bindings'
       }
       lookups++;
       if (mode === 'timeout') { now += init.timeoutMs; throw new Error('Fixture lookup timeout'); }
-      return { exitCode: 1, stdout: '', stderr: `No job found for "${argv[3]}". Run /codex:status to list known jobs.` };
+      return { exitCode: 1, stdout: '', stderr: `No job found for "${argv[3]}". Run /fugato:status to list known jobs.` };
     };
     const report = await f.turn('Keep unresolved bindings when pruning runs out of budget.', 1);
     evidence.push({ inventories, lookups, code: report.blockers[0].code });
@@ -3487,7 +3499,7 @@ test('readiness attaches once to a user prompt per session; classic startup expo
   const child = spawnSync(process.execPath, [plugin + '/scripts/session-lifecycle-hook.mjs', 'SessionStart'],
     { env: f.env, cwd: event.cwd, input: JSON.stringify(event), encoding: 'utf8' });
   assert.equal(child.status, 0, child.stderr);
-  assert.ok(JSON.parse(child.stdout).hookSpecificOutput.additionalContext.split('\n')[0].includes('codex:codex-native'));
+  assert.ok(JSON.parse(child.stdout).hookSpecificOutput.additionalContext.split('\n')[0].includes('fugato:codex-native'));
   assert.ok(fs.readFileSync(f.env.CLAUDE_ENV_FILE, 'utf8').includes(`export CODEX_COMPANION_SESSION_CWD='${event.cwd}'`));
   assert.ok(!fs.existsSync(`${f.root}/data/native-ready`));
   // The function sandbox cannot see CLAUDE_PLUGIN_DATA; readiness needs no env.
@@ -3497,8 +3509,8 @@ test('readiness attaches once to a user prompt per session; classic startup expo
   const compose = tools => f.invoke('prompt.compose', { model: 'm', promptModel: 'm', surfaces: [], tools, outputStyle: null, traits: [] },
     async () => ({ sections: [{ id: 'intro', text: 'Intro', scope: 'shared' }] }));
   const guided = await compose(['Agent', 'Bash']);
-  assert.deepEqual(guided.sections.map(section => [section.id, section.scope]), [['intro', 'shared'], ['codex:native-dispatch', 'session']]);
-  assert.ok(guided.sections[1].text.includes('codex:codex-native'));
+  assert.deepEqual(guided.sections.map(section => [section.id, section.scope]), [['intro', 'shared'], ['fugato:native-dispatch', 'session']]);
+  assert.ok(guided.sections[1].text.includes('fugato:codex-native'));
   assert.deepEqual((await compose(['Bash'])).sections.map(section => section.id), ['intro']);
   const submit = origin => f.invoke('prompt.submit', { text: 'Hello', wait: false, origin: { kind: origin }, context: ['Existing context'] },
     async e => ({ text: e.text, context: e.context, origin: e.origin }));
@@ -3550,7 +3562,7 @@ test('saved Bash routing suppresses native guidance and resetting restores it', 
   assert.deepEqual((await compose()).sections, []);
   assert.equal(reads(), 1);
   setup('default');
-  assert.deepEqual((await compose()).sections.map(section => section.id), ['codex:native-dispatch']);
+  assert.deepEqual((await compose()).sections.map(section => section.id), ['fugato:native-dispatch']);
   assert.equal((await submit()).context.length, 1);
   assert.equal(reads(), 2);
   fs.writeFileSync(`${f.root}/isolated/duet/native-unavailable.json`,
@@ -3558,11 +3570,11 @@ test('saved Bash routing suppresses native guidance and resetting restores it', 
   const unavailable = await compose();
   setup('native');
   assert.deepEqual([unavailable.sections.length, (await compose()).sections.map(section => section.id)],
-    [0, ['codex:native-dispatch']]);
+    [0, ['fugato:native-dispatch']]);
   setup('bash');
   now += 60001;
   f.$.process.run = async () => { throw new Error('Guidance read unavailable'); };
-  assert.deepEqual((await compose()).sections.map(section => section.id), ['codex:native-dispatch']);
+  assert.deepEqual((await compose()).sections.map(section => section.id), ['fugato:native-dispatch']);
 });
 
 test('first native turn stays model-free when discovery or the host turn start is unavailable', async () => {
@@ -3589,11 +3601,11 @@ test('first native turn stays model-free when discovery or the host turn start i
     assert.fail('A missing native turn start must not reach the model');
   }).then(result => JSON.parse(result.answer));
   assert.deepEqual((await partial.invoke('prompt.compose', { tools: ['Agent'] }, async () => ({ sections: [] }))).sections.map(section => section.id),
-    ['codex:native-dispatch']);
+    ['fugato:native-dispatch']);
   const unavailable = await step();
   assert.equal(unavailable.status, 'blocked');
   assert.equal(unavailable.blockers[0].code, 'native_adapter_unavailable');
-  assert.match(unavailable.next, /fugato status.*background Bash.*fugato task.*codex:native-fallback/);
+  assert.match(unavailable.next, /fugato status.*background Bash.*fugato task.*fugato:native-fallback/);
   const markerFile = `${partial.root}/isolated/duet/native-unavailable.json`;
   const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8'));
   assert.equal(marker.reason, 'missing_turn_start');

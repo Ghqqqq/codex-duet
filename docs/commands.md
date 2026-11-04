@@ -4,11 +4,15 @@ Slash commands and companion subcommands. Back to the [README](../README.md).
 
 ## Slash commands
 
-### `/codex:review`
+The Claude Code plugins are `fugato` and optional `fugato-live`. For an older
+install, follow the [upgrade guide](upgrading-from-duet.md), including updates to
+saved instructions; the old plugin names have no aliases in 1.7.0.
+
+### `/fugato:review`
 
 Runs a read-only Codex review of your uncommitted changes, or of your branch
 compared to a base such as `main` with `--base <ref>`. It supports `--wait` and
-`--background`, and takes no focus text; use `/codex:adversarial-review` for that.
+`--background`, and takes no focus text; use `/fugato:adversarial-review` for that.
 Both reviews run at the repository root, even when invoked from a subdirectory.
 Auto scope selects the whole working tree when dirty, otherwise a branch diff.
 `--scope working-tree|branch` makes that choice explicit. Default-base discovery
@@ -22,17 +26,17 @@ Omitted values use the saved worker defaults, built-in `gpt-6-astra` / `xhigh`,
 just like fresh tasks. See [worker models](configuration.md#default-worker-models).
 
 ```bash
-/codex:review
-/codex:review --base main
-/codex:review --effort high
-/codex:review --background
+/fugato:review
+/fugato:review --base main
+/fugato:review --effort high
+/fugato:review --background
 ```
 
-### `/codex:adversarial-review`
+### `/fugato:adversarial-review`
 
 A steerable review that challenges the chosen design: assumptions, tradeoffs,
 failure modes and safer alternatives.
-It uses the same review target selection as `/codex:review`, including `--base <ref>`,
+It uses the same review target selection as `/fugato:review`, including `--base <ref>`,
 and accepts focus text after the flags. It is read-only. With `--args-stdin` and
 no explicit separator, the companion reads recognized options from the start;
 the first other token starts focus, preserving its remaining text and order.
@@ -51,11 +55,11 @@ error. These raw-focus rules belong to review `--args-stdin`; direct argv and
 other commands retain their existing tokenization.
 
 ```bash
-/codex:adversarial-review
-/codex:adversarial-review --base main challenge whether this was the right caching and retry design
-/codex:adversarial-review don't miss the race in parser.js
-/codex:adversarial-review check auth --background
-/codex:adversarial-review -- --baes main
+/fugato:adversarial-review
+/fugato:adversarial-review --base main challenge whether this was the right caching and retry design
+/fugato:adversarial-review don't miss the race in parser.js
+/fugato:adversarial-review check auth --background
+/fugato:adversarial-review -- --baes main
 ```
 
 Both review slash commands pass raw `$ARGUMENTS` unchanged through `--args-stdin`
@@ -99,9 +103,9 @@ output. `fugato result <jobId> --details` exposes the complete review text/findi
 and artifact paths; the compact summary keeps its 8,000-character cap. Older
 jobs are not backfilled with artifacts.
 
-### `/codex:rescue`
+### `/fugato:rescue`
 
-Hands a one-off task to Codex through the `codex:codex-rescue` subagent: investigate
+Hands a one-off task to Codex through the `fugato:codex-rescue` subagent: investigate
 a bug, try a fix, continue a previous Codex task, or take a cheaper pass with a
 smaller model. It supports `--background`, `--wait`, `--resume` and `--fresh`.
 The subagent is a Haiku forwarder: it passes the request verbatim after extracting
@@ -110,10 +114,10 @@ prompt. Haiku is the forwarding model; Codex's model and effort come from explic
 flags or the saved worker defaults (recorded settings on follow-ups).
 
 ```bash
-/codex:rescue investigate why the tests started failing
-/codex:rescue --resume apply the top fix from the last run
-/codex:rescue --model gpt-5.4-mini --effort medium investigate the flaky integration test
-/codex:rescue --model spark fix the issue quickly
+/fugato:rescue investigate why the tests started failing
+/fugato:rescue --resume apply the top fix from the last run
+/fugato:rescue --model gpt-5.4-mini --effort medium investigate the flaky integration test
+/fugato:rescue --model spark fix the issue quickly
 ```
 
 Fresh delegated tasks use the configured worker model (default `gpt-6-astra`)
@@ -125,13 +129,13 @@ parallel work Claude honors the saved [worker dispatch](configuration.md#worker-
 route: `bash` selects background `fugato task` immediately, while `auto` prefers it
 for 24 hours after the last native-unavailable observation, or until
 `fugato setup --dispatch` is run without `--dry-run`. Otherwise Claude
-uses `codex:codex-native` from the first dispatch, without waiting for readiness.
+uses `fugato:codex-native` from the first dispatch, without waiting for readiness.
 Background `fugato task` also handles `native_adapter_unavailable`,
 `native_capacity`, per-call options the `DUET:` line rejects, or follow-ups to
-Bash-launched workers; `codex:codex-worker` is the Haiku fallback when neither
+Bash-launched workers; `fugato:codex-worker` is the Haiku fallback when neither
 path is available. See [direct mode](direct-mode.md).
 
-### `/codex:ultra-codex`
+### `/fugato:ultra-codex`
 
 Orchestrates substantive work with parallel Codex workers. Claude scouts,
 briefs, judges and integrates. Readers, independent designs/judges, area × lens
@@ -141,12 +145,12 @@ comparison, deduplication or integration. Conversation and trivial mechanical
 edits stay inline; a single-file question is not an exemption.
 
 ```text
-Usage: /codex:ultra-codex [on [--quick|--thorough] [--max-workers <n|auto|unlimited>] [<task>] | off | status | [--quick|--thorough] [--max-workers <n|auto|unlimited>] <task>]
+Usage: /fugato:ultra-codex [on [--quick|--thorough] [--max-workers <n|auto|unlimited>] [<task>] | off | status | [--quick|--thorough] [--max-workers <n|auto|unlimited>] <task>]
 
-/codex:ultra-codex on --thorough --max-workers auto
-/codex:ultra-codex --quick add --json to the cancel command and cover it with a test
-/codex:ultra-codex status
-/codex:ultra-codex off
+/fugato:ultra-codex on --thorough --max-workers auto
+/fugato:ultra-codex --quick add --json to the cancel command and cover it with a test
+/fugato:ultra-codex status
+/fugato:ultra-codex off
 ```
 
 `--quick`/`--thorough` choose depth (default `auto`), with at most one selected.
@@ -165,7 +169,7 @@ supported `max` is for adversarial verification, judging, hard debugging and dee
 architecture. Speed is normal unless requested. The mode reminder names the
 effective models. Details: [ultra-codex](ultra-codex.md).
 
-### `/codex:pair`
+### `/fugato:pair`
 
 One worker on the configured worker model (default `gpt-6-astra`) and worker
 effort (default `xhigh`) at normal speed executes a bounded task end to end.
@@ -175,18 +179,18 @@ result. An optional read-only verifier runs sequentially on a stable candidate;
 there is no fan-out. Pair has no mode options.
 
 ```text
-Usage: /codex:pair [on [<task>] | off | status | <task>]
+Usage: /fugato:pair [on [<task>] | off | status | <task>]
 
-/codex:pair on
-/codex:pair fix the failing parser test
-/codex:pair off
+/fugato:pair on
+/fugato:pair fix the failing parser test
+/fugato:pair off
 ```
 
 Recommend ultra for breadth or competing investigations, duel for contested
 designs or high-risk assumptions; switching requires an explicit mode-control
 request. See [pair](pair.md) for acceptance, limits and escalation.
 
-### `/codex:duel`
+### `/fugato:duel`
 
 One Claude general-purpose subagent versus one Codex worker on the configured
 worker model (default `gpt-6-astra`) and worker effort (default `xhigh`) at
@@ -196,11 +200,11 @@ and arbitrates: builder/breaker for implementation, independent drafts followed
 by reciprocal critique for design/analysis.
 
 ```text
-Usage: /codex:duel [on [--rounds <n>] [<task>] | off | status | [--rounds <n>] <task>]
+Usage: /fugato:duel [on [--rounds <n>] [<task>] | off | status | [--rounds <n>] <task>]
 
-/codex:duel on --rounds 2
-/codex:duel --rounds 2 compare these two designs
-/codex:duel off
+/fugato:duel on --rounds 2
+/fugato:duel --rounds 2 compare these two designs
+/fugato:duel off
 ```
 
 `--rounds` sets the total cap including the initial build/drafts and critique:
@@ -209,18 +213,18 @@ breaker may be reversed by an explicit task request. There is no role flag.
 Unresolved blockers or unverified required criteria at the cap are incomplete
 outcomes. See [duel](duel.md) for flows, convergence and quota costs.
 
-### `/codex:roundtable`
+### `/fugato:roundtable`
 
 Persistent Codex personas pursue one goal through experiments, implementation
 and a public forum; Claude chairs and accepts the final candidate on evidence.
 The chair recommends intensity and roster for confirmation unless supplied.
 
 ```text
-Usage: /codex:roundtable [on [--intensity light|standard|deep|full] [--roles id,id] [<task>] | off | status | [--intensity light|standard|deep|full] [--roles id,id] <task>]
+Usage: /fugato:roundtable [on [--intensity light|standard|deep|full] [--roles id,id] [<task>] | off | status | [--intensity light|standard|deep|full] [--roles id,id] <task>]
 
-/codex:roundtable --intensity deep investigate the reconnect failure
-/codex:roundtable on --roles steward,critic,improver
-/codex:roundtable off
+/fugato:roundtable --intensity deep investigate the reconnect failure
+/fugato:roundtable on --roles steward,critic,improver
+/fugato:roundtable off
 ```
 
 Intensities seat 2/3/5/6 members. `--roles` selects a nonempty unique subset of
@@ -246,7 +250,7 @@ override matching saved options; without a matching active mode, defaults apply.
 Normal prompts use the active mode and accept its leading per-task overrides.
 Parse options only before task text: later option-like words remain literal.
 `--` starts literal task text, including `on`, `off`, `status` or an option-like
-word (for example `/codex:pair -- status the parser`). A task keeps its selected
+word (for example `/fugato:pair -- status the parser`). A task keeps its selected
 mode; it never silently switches modes to evade a limit.
 
 While enabled, one hook adds a versioned mode reminder to normal prompts and
@@ -310,17 +314,17 @@ or resume jobs; settle conflicting writes before new assignments. User-stopped
 work continues only with consent. Natural-language stop ends new dispatch
 immediately and reports in-flight workers.
 
-### `/codex:transfer`
+### `/fugato:transfer`
 
 Creates a persistent Codex thread from the current Claude Code session and prints
 the isolated `codex-isolated.mjs --home <directory> resume <session-id>` command,
 so you can continue the same context directly in Codex. `--source <jsonl>`
 overrides the transcript path supplied by the SessionStart hook.
 
-### `/codex:status`
+### `/fugato:status`
 
 Shows running and recent Codex jobs from this Claude session in the current
-repository, or one job with `/codex:status <job-id>`. `/codex:status --all` adds
+repository, or one job with `/fugato:status <job-id>`. `/fugato:status --all` adds
 jobs from other sessions in the same workspace, each labelled with its session.
 A pending question shows its text, choices and remaining answer time without
 answering or renewing the lease. Scope filtering happens before the 50-ended-job
@@ -340,7 +344,7 @@ List status also prints input, cached-input, output and total token usage for
 the jobs shown, plus counts of jobs with and without usage. JSON exposes these
 as `usageTotals`; missing usage is counted rather than treated as zero.
 
-### `/codex:result`
+### `/fugato:result`
 
 Returns report v2: status, worker, jobId, summary, nonempty evidence, `next` and
 `details`. Add `--details` for full evidence, handles, runtime settings, artifact
@@ -349,10 +353,10 @@ app/tab/session identifiers, cleanup status and safe approval identifiers when
 captured; `--details` preserves the full stored fields. It retrieves a result
 without starting another turn.
 
-### `/codex:cancel`
+### `/fugato:cancel`
 
 Interrupts an active job and reports whether termination was confirmed.
-`/codex:cancel --all` (or `fugato cancel --all`) cancels every active job of the
+`/fugato:cancel --all` (or `fugato cancel --all`) cancels every active job of the
 current Claude session in this workspace and prints each job's outcome.
 Other sessions are untouched. `--all` cannot be combined with a worker argument;
 outside a Claude session, supply `--session <id>`.
@@ -364,14 +368,14 @@ reviews' literal-focus rules. Quoted paths with spaces work, and `$()`, backtick
 and dollar signs are not expanded by the shell. For example:
 
 ```bash
-/codex:status --cwd '/work/my repo/sub' --all
-/codex:result Ada --cwd '/work/my repo/sub' --details
+/fugato:status --cwd '/work/my repo/sub' --all
+/fugato:result Ada --cwd '/work/my repo/sub' --details
 ```
 
 Direct companion calls can use `fugato status --args-stdin <<'DUET_ARGS'` with the
 same raw arguments on stdin; choose another delimiter if a line equals `DUET_ARGS`.
 
-### `/codex:setup`
+### `/fugato:setup`
 
 Checks whether Codex is installed, reachable and logged in. If Codex is missing
 and npm is available, it can offer to install Codex for you. It also runs the
@@ -380,7 +384,7 @@ For API-key authentication, use the [isolated login procedure](troubleshooting.m
 
 ```text
 fugato setup --default-model <model|default> [--default-effort <effort|default>] [--ultra-routine-model <model|default>]
-/codex:setup --default-model <model|default> [--default-effort <effort|default>] [--ultra-routine-model <model|default>]
+/fugato:setup --default-model <model|default> [--default-effort <effort|default>] [--ultra-routine-model <model|default>]
 ```
 
 Each model/effort flag also works alone; they may combine with each other and
@@ -437,13 +441,13 @@ The optional review gate runs a targeted Codex review of Claude's last turn from
 read-only`, including in plan mode, regardless of the configured default:
 
 ```bash
-/codex:setup --enable-review-gate
-/codex:setup --disable-review-gate
+/fugato:setup --enable-review-gate
+/fugato:setup --disable-review-gate
 ```
 
 The gate reviews at most once per user turn. When Claude stops again after a gate
 block (`stop_hook_active`), the gate allows the stop with a note and does not
-re-review the follow-up changes; run `/codex:review --wait` for them. A review that
+re-review the follow-up changes; run `/fugato:review --wait` for them. A review that
 fails, times out or returns an unexpected answer also allows the stop and shows
 its reason as a note; only explicit findings block. The gate also allows the stop
 with a note, without running a review, when the Git working tree is clean
@@ -453,6 +457,14 @@ and never become `--resume-last` targets. A `BLOCK` shows up to four lines of
 findings and the review job ID with `fugato result <jobId>` for the full result.
 An eligible first stop costs one Codex review turn; skipped gates and follow-up
 stops cost none.
+
+### `/fugato-live`
+
+Opens the optional read-only live pane; `/fugato-live <name>` selects a worker.
+`/fugato-live forum` opens this session's newest open roundtable room, or its
+newest room if none are open. `/fugato-live forum <roomId>` selects a specific
+room. See the [pane reference](../plugins/codex-live/README.md) for job activity
+and forum views.
 
 ## Companion subcommands
 
@@ -464,8 +476,8 @@ descriptions, supported/default efforts and context windows, followed by Fugato'
 effective strong/effort/routine tiers and their sources. It prefers app-server
 `model/list`, falling back to the isolated model cache, and names the source.
 Hidden models require `--all`; unknown context windows are `null` in JSON.
-If neither source is available it exits nonzero and points to `/codex:setup`.
-The model-invocable `codex:models` skill explains tier selection, setup changes,
+If neither source is available it exits nonzero and points to `/fugato:setup`.
+The model-invocable `fugato:models` skill explains tier selection, setup changes,
 one-off overrides and confirmation; see [configuration](configuration.md#default-worker-models).
 
 Use `fugato <subcommand>` in a Claude session, or `plugins/codex/bin/fugato` from the
@@ -557,7 +569,7 @@ after follow-ups. `next` may use a safely resolved worker name, otherwise the
 job ID, with `--cwd` when needed; for `needs_answer` it pins `--question`. Use
 it verbatim or retain the displayed ID explicitly. A bare `fugato answer <worker>`
 answers whatever question is pending now, which may be newer than the one you
-saw. Native `codex:codex-native` agents receive follow-ups and answers via
+saw. Native `fugato:codex-native` agents receive follow-ups and answers via
 SendMessage; that path pins the displayed question. If no unanswered pending
 slot remains or the job has ended, the adapter returns the old job with a notice;
 send a subsequent new brief to start work. A slot that still exists after its

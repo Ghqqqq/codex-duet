@@ -8,7 +8,9 @@ const hash = value => createHash("sha256").update(value).digest("hex").slice(0, 
 export function agentMemoryFile(workspace, role = "worker", env = process.env) {
   let canonical = path.resolve(workspace);
   try { canonical = fs.realpathSync(canonical); } catch { /* Retain the workspace key if unavailable. */ }
-  return path.join(resolveIsolatedCodexHome(env), "duet", "agent-memory", hash(canonical), hash(role), "MEMORY.md");
+  // Keep native roles on their 1.6.0 hash keys so the plugin rename preserves existing memory.
+  const memoryRole = role.replace(/^fugato:(codex-(?:native|reviewer|investigator|implementer))$/, "codex:$1");
+  return path.join(resolveIsolatedCodexHome(env), "duet", "agent-memory", hash(canonical), hash(memoryRole), "MEMORY.md");
 }
 
 export function prepareAgentMemory({ workspace, role = "worker" }, env = process.env) {

@@ -1,10 +1,11 @@
 import { test, expect } from 'claude-code/testing';
+import { commandDisplay, fitCommand } from '../hooks/command';
 import type { On } from 'claude-code';
-import type { CodexLiveMarker, CodexLiveState } from '../types';
+import type { CodexLiveMarker, CodexLiveState, ForumRoom } from '../types';
 import { attention, attentionCounts, boundState, clearFinished, groupedSessions, normalizeSessions, visibleJobs, visibleSessions,
   collapseActivity, isAbsolutePath, jobSummary, jobView, markerView, reusedAgentName, statusLine, validView } from '../hooks/model';
 import { activityItems, eventItem, feedItems, feedLines, feedWindow, footerLayout, headerLayout, jobRow, jobRowColor, jobState,
-  normalizeFeed, paneLayout, reconcileFeed, relativePath, scrollFeed, selectedJob, width } from '../hooks/layout';
+  normalizeFeed, paneLayout, reconcileFeed, relativePath, scrollFeed, selectedJob, togglePrompt, toggleForumPosts, width, tableRow, timelineAxis, timelineSpans, emptyLines, sessionFooter } from '../hooks/layout';
 
 const createdAt = '2026-10-18T00:00:00.000Z';
 const epoch = Date.parse(createdAt);
@@ -17,16 +18,16 @@ const running = () => jobView({ id: 'job-a', status: 'running', startedAt: creat
   result: 'must not enter state', rendered: 'must not enter state',
 }, marker());
 
-const props = { title: 'Codex', isFocused: true, bodyColumns: 60,
+const props = { title: 'Fugato', isFocused: true, bodyColumns: 60,
   placement: 'dock' as const, scroll: { offset: 0, bodyRows: 16 }, view: {} };
 
-// Seed only an unset read; writes still reach the real state bottom and redraw.
-function seed(on: On, initial: CodexLiveState) {
+// Seed an unset or explicitly replaced read; writes still reach the real state bottom and redraw.
+function seed(on: On, initial: CodexLiveState, replacement?: () => CodexLiveState | undefined) {
   on('clock.now', () => ({ value: epoch }));
   on('state.get', async ($, e, next) => {
     const result = await next(e);
     if (!('value' in result)) return result;
-    const saved = (result.value?.value ?? initial) as CodexLiveState;
+    const saved = (replacement?.() ?? result.value?.value ?? initial) as CodexLiveState;
     // Stand in for the poller's private transcript cache in render-only tests.
     // The poll integration tests exercise real selected-detail hydration.
     const jobs = saved.jobs.map(job => job.id === saved.selectedId && job.detailsLoaded === false
@@ -47,12 +48,12 @@ function track(on: On) {
   on('state.set', async ($, e, next) => { const result = await next(e); writes.push(e.value); return result; });
   return writes;
 }
-const move = (by: number, bodyRows = 14) => ({ component: 'Pane' as const, requestId: 'codex-live',
+const move = (by: number, bodyRows = 14) => ({ component: 'Pane' as const, requestId: 'fugato-live',
   offset: by < 0 ? 0 : 1, by, bodyRows, contentRows: bodyRows + 1, origin: { kind: 'person' as const } });
 
 test('job status labels distinguish progress, attention and confirmed outcomes', async ($, on) => {
   for (const [status, word, color] of [
-    ['queued', 'Queued', 'inactive'], ['running', 'Running', 'claude'], ['waiting', 'Waiting for Claude', 'warning'],
+    ['queued', 'Queued', 'subtle'], ['running', 'Running', 'claude'], ['waiting', 'Waiting for Claude', 'warning'],
     ['completed', 'Done', 'success'], ['failed', 'Failed', 'error'], ['blocked', 'Needs your attention', 'error'],
     ['needs_input', 'Needs your attention', 'warning'], ['interrupted', 'Stopped', 'inactive'],
   ]) expect(jobState(jobView({ id: status, status }, marker(status)))).toEqual({ word, color });
@@ -60,8 +61,8 @@ test('job status labels distinguish progress, attention and confirmed outcomes',
   const job = jobView({ id: 'job-a', status: 'running', pendingQuestion: { text: question } }, marker());
   expect(jobState(job)).toEqual({ word: 'Question for Claude', color: 'warning' });
   seed(on, { jobs: [job], selectedId: job.id, nowMs: epoch });
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props });
-  expect((await ui.find({ key: 'live-status' }))?.text).toContain('Question for Claude');
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props });
+  expect((await ui.find({ key: 'live-status' }))?.text).toContain('needs answer');
   expect((await ui.find({ key: 'transcript' }))?.text).toContain(question);
   await ui.unmount();
 });
@@ -96,12 +97,14 @@ test('clearing the final job hides its row and retains its record', async ($, on
   const job = { ...running(), status: 'completed', completedAt: createdAt };
   seed(on, { jobs: [job], selectedId: job.id, nowMs: epoch });
   const writes = track(on);
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props });
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props });
   await ui.press({ key: 'clear-finished' });
   expect(writes.at(-1)?.selectedId).toBe(null);
   expect(writes.at(-1)?.jobs.map(job => job.id)).toEqual([job.id]);
-  expect((await ui.find({ key: 'hidden-notice' }))?.text).toBe('Finished jobs are hidden. Their records follow your Fugato');
-  expect((await ui.find({ key: 'hidden-notice-1' }))?.text).toBe('cleanup settings.');
+  expect((await ui.find({ key: 'empty-message' }))?.text).toBe('    No workers yet. They enter here when Claude starts one.');
+  expect((await ui.find({ key: 'empty-commands' }))?.text).toBe('    /fugato:pair <task>  ·  /fugato:roundtable <task>');
+  expect(emptyLines(60).slice(0, 4).map(line => width(line.spans[0]!.text))).toEqual([28, 28, 28, 28]);
+  expect((await ui.find({ key: 'footer' }))?.text).toContain('this session');
   expect(await ui.find({ key: 'clear-finished' })).toBe(undefined);
   await ui.unmount();
 });
@@ -207,18 +210,18 @@ test('live and unresolved members control lifecycle, pending questions, status c
   const codedState = boundState({ jobs: coded, selectedId: coded[0]!.id, nowMs: epoch });
   expect(validView(codedState)).toBe(true);
   expect(codedState.jobs.map(job => job.blockerCode)).toEqual(['provider_refused', 'provider_refused']);
-  for (const job of coded) expect(footerLayout(job, codedState, 200, true, 0).left.includes(job.blockerCode!)).toBe(true);
+  for (const job of coded) expect(feedLines(job, epoch, 200).flatMap(line => line.spans).map(span => span.text).join('')).toContain(job.blockerCode!);
   for (const code of ['', 'invalid code', 'bad\ncode', 'x'.repeat(65), '<bad>', 12]) {
     const malformed = jobView({ id: 'bad', status: 'blocked', report: { blockers: [{ code }] } }, marker('bad'));
     expect(malformed.blockerCode).toBe(undefined);
     expect(validView({ ...codedState, jobs: [{ ...coded[0]!, blockerCode: code }] })).toBe(false);
   }
   seed(on, codedState);
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props });
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props });
   const texts = await ui.findAll({ type: 'Text' });
-  const bullet = jobRow(coded[0]!, true, props.bodyColumns, epoch).bullet;
+  const bullet = '? ';
   expect(texts.filter(text => text.text === bullet).map(text => text.props.color))
-    .toEqual(headerLayout(codedState, selectedJob(codedState)!, props.scroll.bodyRows).jobs.map(jobRowColor));
+    .toEqual(['warning']);
   await ui.unmount();
 });
 
@@ -263,16 +266,62 @@ test('overlapping tool invocations remain distinct and completed jobs stop aband
 
 test('command outcomes retain warning and failure labels without inventing success', () => {
   for (const [status, exitCode, lifecycle, color, text] of [
-    ['completed', null, 'completed', 'warning', 'Done · exit unknown'],
-    ['completed', 0, 'completed', 'success', 'Done'],
-    ['completed', 9, 'completed', 'error', 'Error: exit 9'],
-    ['inProgress', undefined, 'started', 'inactive', 'Running…'],
-    ['cancelled', undefined, 'completed', 'inactive', 'Cancelled'],
+    ['completed', null, 'completed', 'warning', 'exit ?'],
+    ['completed', 0, 'completed', 'success', '✓'],
+    ['completed', 9, 'completed', 'error', '✗ exit 9'],
+    ['inProgress', undefined, 'started', 'claude', 'running —'],
+    ['cancelled', undefined, 'completed', 'inactive', 'cancelled'],
   ] as const) {
     const item = eventItem({ seq: 1, type: 'commandExecution', command: 'echo check', status, exitCode, lifecycle }, running(), epoch);
     expect(item.color).toBe(color);
     expect(item.results[0]!.text).toBe(text);
   }
+  const raw = '/bin/zsh -lc "node --test /workspace/tests/really-long-integration-test-file-name.mjs"';
+  const job = jobView({ id: 'a', status: 'completed', completedAt: createdAt, activity: [
+    { seq: 1, type: 'agentMessage', body: 'Checking the change.' },
+    { seq: 2, type: 'commandExecution', command: raw, exitCode: 0, lifecycle: 'completed', durationMs: 999 },
+    { seq: 3, type: 'fileChange', path: '/workspace/hooks/layout.ts', added: 6, removed: 1, status: 'completed' },
+    { seq: 4, type: 'agentMessage', body: 'All checks passed.' },
+  ] }, marker('a'));
+  for (const columns of [100, 60, 40]) {
+    const rows = feedLines(job, epoch, columns), text = rows.map(line => line.spans.map(span => span.text).join(''));
+    const command = rows.findIndex(line => line.key === 'event-2-body-0');
+    expect(text[command]!.startsWith('  › node ')).toBe(true);
+    expect(text[command]!.endsWith(' ✓')).toBe(true);
+    expect(width(text[command]!)).toBe(columns);
+    expect(rows[command + 1]?.key).toBe('event-3-body-0');
+    expect(text[command + 1]!.startsWith('  › edit hooks/layout.ts')).toBe(true);
+    expect(text[command + 1]!.endsWith('+6 −1')).toBe(true);
+    expect(text[command + 1]!).not.toContain('✓');
+    expect(rows[command + 1]?.spans.some(span => span.text === '+6' && span.color === 'diffAdded')).toBe(true);
+    expect(rows[command + 1]?.spans.some(span => span.text === '−1' && span.color === 'diffRemoved')).toBe(true);
+    expect(rows[command + 1]?.spans.some(span => span.text === 'layout.ts' && span.color === 'text')).toBe(true);
+    expect(text.some(line => /[⎿└]|Done/.test(line))).toBe(false);
+    const created = feedLines(jobView({ id: 'n', status: 'running', activity: [{ seq: 1, type: 'fileChange', path: '/workspace/new.ts', added: 2, removed: 0, status: 'completed' }] }, marker('n')), epoch, columns)
+      .map(line => line.spans.map(span => span.text).join('')).find(line => line.includes('edit new.ts'));
+    expect(created?.endsWith(' +2')).toBe(true);
+    expect(rows.find(line => line.key === 'event-4-body-0')?.spans[0]).toMatchObject({ text: '▏', color: 'success' });
+  }
+  for (const exitCode of [9, undefined]) {
+    const failed = jobView({ id: 'a', status: 'running', activity: [{ seq: 1, type: 'fileChange', path: '/workspace/layout.ts', status: 'failed', exitCode, added: 6, removed: 1 }] }, marker('a'));
+    const row = feedLines(failed, epoch, 60).find(line => line.key === 'event-1-body-0')!;
+    expect(row.spans.map(span => span.text).join('')).toBe('  › edit layout.ts'.padEnd(exitCode === undefined ? 53 : 52) + (exitCode === undefined ? '✗ error' : '✗ exit 9'));
+    expect(row.spans.some(span => span.text === 'layout.ts' && span.color === 'text')).toBe(true);
+  }
+  expect(job.events[1]?.command).toBe(raw);
+  const failure = feedLines({ ...job, status: 'blocked' }, epoch, 60).find(line => line.key === 'event-4-body-0');
+  expect(failure?.spans[0]).toMatchObject({ text: '▏', color: 'error' });
+  const explored = feedItems(jobView({ id: 'a', status: 'completed', activity: [
+    { seq: 1, type: 'commandExecution', command: "/bin/zsh -lc 'rg one'", exitCode: 0, lifecycle: 'completed', durationMs: 700 },
+    { seq: 2, type: 'commandExecution', command: '/bin/zsh -lc "rg two"', exitCode: 0, lifecycle: 'completed', durationMs: 800 },
+    { seq: 3, type: 'commandExecution', command: `/bin/zsh -lc "sed -n '1,80p' a.ts"`, exitCode: 0, lifecycle: 'completed', durationMs: 1000 },
+  ] }, marker('a')), epoch).find(item => item.rowKind === 'explored');
+  expect(explored?.title).toBe('explored 3 commands · rg ×2, sed');
+  expect(explored?.results[0]?.text).toBe('✓ 2s');
+  const environment = jobView({ id: 'a', status: 'completed', activity: [
+    `/bin/zsh -lc 'LANG=C env -u TEST rg one'`, `/bin/zsh -lc 'env -i LC_ALL=C cat README.md'`,
+  ].map((command, i) => ({ seq: i + 1, type: 'commandExecution', command, exitCode: 0, lifecycle: 'completed' })) }, marker('a'));
+  expect(feedItems(environment, epoch).find(item => item.rowKind === 'explored')?.title).toBe('explored 2 commands · rg, cat');
 });
 
 test('legacy tool totals count all retained paired events beyond the transcript cap', () => {
@@ -341,7 +390,7 @@ test('transcript projection rejects bad identities, bounds events and preserves 
   expect(rendered.flatMap(line => line.spans).map(span => span.text).join('')).toContain('👩‍💻');
   const row = jobRow({ ...clean, agentName: '艾达 👩‍💻', lastActivityAt: createdAt,
     question: { text: '检查 é?', options: [] } }, false, 12, epoch + 120000, true);
-  expect(width(Object.values(row).join('')) <= 12).toBe(true);
+  expect(width(row.map(span => span.text).join('')) <= 12).toBe(true);
 
   for (const agentName of ['Tesla-3', 'Tesla-12']) expect(reusedAgentName(jobView({ id: 'job-a', status: 'running', agentName }, marker()))).toBe(true);
   for (const agentName of [undefined, 'Tesla', 'Tesla3', 'Tesla-three', 'Tesla-3-more']) {
@@ -353,7 +402,7 @@ test('transcript projection rejects bad identities, bounds events and preserves 
 test('pane navigation preserves each selection and resumes following', async ($, on) => {
   seed(on, { jobs: fourJobs(), selectedId: 'job-0', nowMs: epoch });
   const writes = track(on);
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: inlineProps });
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props: inlineProps });
   await $.ui.scroll(move(-5));
   const stopped = writes.at(-1)?.feeds?.['job-0'];
   expect(stopped?.following).toBe(false);
@@ -377,10 +426,10 @@ test('Pane windows retained items and keeps older long bodies intact within the 
   expect(items[0]?.markdown).toBe(job.events[20]?.body);
   expect(items.at(-1)?.markdown).toBe(job.events.at(-1)?.body);
   seed(on, { jobs: [job], selectedId: job.id, nowMs: epoch });
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props });
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props });
   expect(JSON.stringify(await ui.drawn()).length < 100000).toBe(true);
   await $.ui.scroll(move(-17, 16));
-  expect((await ui.find({ key: 'transcript' }))?.text).toContain('20: ');
+  expect((await ui.find({ key: 'transcript' }))?.text).toContain('20:');
   await ui.unmount();
 });
 
@@ -433,10 +482,10 @@ test('cross-surface scroll uses the originating surface width and anchors surviv
   seed(on, { jobs: [job], selectedId: 'a', nowMs: epoch });
   const writes = track(on);
   on('session.surface', () => ({ value: 'terminal' }));
-  const terminal = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props });
-  const desktop = await $.ui.mount({ plugin: 'codex-live', surface: 'desktop', component: 'Pane', requestId: 'codex-live', props: { ...props, bodyColumns: 120 } });
+  const terminal = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props });
+  const desktop = await $.ui.mount({ plugin: 'fugato-live', surface: 'desktop', component: 'Pane', requestId: 'fugato-live', props: { ...props, bodyColumns: 120 } });
   await $.ui.scroll(move(-5, 16));
-  expect(writes.at(-1)?.feeds?.a?.feedOffset).toBe(feedLines(job, epoch, 60).length - 15 - 5);
+  expect(writes.at(-1)?.feeds?.a?.feedOffset).toBe(feedLines(job, epoch, 60).length - paneLayout({ jobs: [job], selectedId: 'a', nowMs: epoch }, job, 16).rows - 5);
   expect(writes.at(-1)?.feeds?.a?.columns).toBe(60);
   const anchor = writes.at(-1)?.feeds?.a?.anchor;
   await desktop.redraw({ ...props, bodyColumns: 100 });
@@ -449,16 +498,23 @@ test('history paging reaches retained jobs, excludes cleared history and keeps t
     completedAt: n ? new Date(epoch - 500000).toISOString() : undefined,
   }, { ...marker(`h-${n}`), createdAt: new Date(epoch - n * 1000).toISOString() }));
   const hidden = jobView({ id: 'hidden', status: 'completed', completedAt: new Date(epoch - 600000).toISOString() }, marker('hidden'));
-  seed(on, { jobs: [hidden, ...jobs], selectedId: 'h-0', nowMs: epoch, hiddenFinishedBefore: epoch - 600000 });
+  const forumRooms: ForumRoom[] = Array.from({ length: 3 }, (_, n) => ({ roomId: `rt-a-${n}`, sessionId: 'session-a',
+    goal: 'Review the release', status: 'open', intensity: 'standard', members: ['critic'], createdAt, postCount: 0 }));
+  const navigationState: CodexLiveState = { jobs: [jobs[0]!, { ...jobs[1]!, status: 'running', completedAt: '', active: true, finished: false }],
+    forumRooms, selectedId: 'forum:rt-a-0', nowMs: epoch };
+  let navigationAtWrite = -1;
+  seed(on, { jobs: [hidden, ...jobs], selectedId: 'h-0', nowMs: epoch, hiddenFinishedBefore: epoch - 600000 },
+    () => writes.length === navigationAtWrite ? navigationState : undefined);
   const writes = track(on);
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: inlineProps });
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props: inlineProps });
   const reached = new Set<string>();
   await ui.press({ key: 'toggle-jobs' });
-  for (let page = 0; page < 2; page++) {
+  const pages = paneLayout({ jobs: [hidden, ...jobs], selectedId: 'h-0', nowMs: epoch, jobsExpanded: true, hiddenFinishedBefore: epoch - 600000 }, jobs[0], inlineProps.scroll.bodyRows).header.pageCount!;
+  for (let page = 0; page < pages; page++) {
     const rows = await ui.findAll({ type: 'Button' });
     expect(rows.some(row => row.key === 'hidden')).toBe(false);
     for (const row of rows) if (row.key?.startsWith('h-')) reached.add(row.key);
-    if (page === 1) await ui.press({ key: 'h-19' });
+    if (page === pages - 1) await ui.press({ key: 'h-19' });
     await ui.press({ key: 'toggle-jobs' });
   }
   expect(reached.size).toBe(20);
@@ -476,6 +532,17 @@ test('history paging reaches retained jobs, excludes cleared history and keeps t
   expect(writes.at(-1)?.jobs.length).toBe(21);
   expect(await ui.find({ key: 'clear-finished' })).toBe(undefined);
   expect(await ui.find({ key: 'toggle-jobs' })).toBe(undefined);
+  navigationAtWrite = writes.length;
+  await ui.redraw({ ...inlineProps, scroll: { offset: 0, bodyRows: 10 } });
+  const navigation = [(await ui.find({ key: 'toggle-jobs' }))?.text];
+  await ui.press({ key: 'toggle-jobs' }); navigation.push(writes.at(-1)?.selectedId ?? undefined);
+  await ui.press({ key: 'h-1' }); navigation.push(writes.at(-1)?.selectedId ?? undefined);
+  await ui.press({ key: 'forum:rt-a-0' }); navigation.push(writes.at(-1)?.selectedId ?? undefined);
+  await ui.redraw({ ...inlineProps, scroll: { offset: 0, bodyRows: 2 } });
+  for (let i = 0; i < 3; i++) {
+    await ui.press({ key: 'toggle-jobs' }); navigation.push(writes.at(-1)?.selectedId ?? undefined);
+  }
+  expect(navigation).toEqual(['+2 more', 'h-0', 'h-1', 'forum:rt-a-0', 'h-0', 'h-1', 'forum:rt-a-2']);
   await ui.unmount();
 });
 
@@ -494,7 +561,7 @@ test('same-thread turns render one selectable row and chronological transcript',
   const state = { jobs: [second, first], selectedId: 'thread:shared', nowMs: epoch };
   seed(on, state);
   const writes = track(on);
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live',
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live',
     props: { ...props, scroll: { offset: 0, bodyRows: 30 } } });
   const rows = (await ui.findAll({ type: 'Button' })).filter(row => state.jobs.some(job => row.key === job.id) || row.key === 'thread:shared');
   expect(rows.map(row => row.key)).toEqual(['thread:shared']);
@@ -532,7 +599,7 @@ test('legacy job selection and feed anchors render as their session before the f
   expect(normalized.selectedId).toBe('thread:shared');
   expect(normalized.feeds?.['thread:shared']?.anchor?.source).toBe('job:first:event-1-body');
   expect(normalizeSessions(normalized)).toEqual(normalized);
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props });
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props });
   expect((await ui.find({ key: 'transcript' }))?.text).toContain('Old line');
   expect(await ui.find({ key: 'jump-bottom' })).not.toBe(undefined);
   expect(writes.length).toBe(0);
@@ -554,7 +621,7 @@ test('turn retention keeps twenty headers, five detailed turns and protects acti
   expect(selected.turns.filter(job => job.detailsLoaded).map(job => job.id)).toEqual(jobs.slice(-5).map(job => job.id));
   expect(selected.turns.slice(0, 15).every(job => job.detailsOmitted && !job.events.length)).toBe(true);
   seed(on, state);
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props });
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props });
   expect(await ui.find({ key: 'earlier-turns' })).toBeDefined();
   await ui.unmount();
   jobs[0] = conversationTurn('turn-0', 0);
@@ -595,7 +662,33 @@ test('each detailed turn exposes its prompt and hint clicks preserve the reading
     .filter(line => line.source === 'job:prompt-first:prompt-results');
   expect(feedItems(selected, epoch).filter(item => item.prompt).map(item => item.prompt!.turnId)).toEqual([first.id, second.id]);
   expect(first.prompt).toBe(prompt);
-  const mount = () => $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: sized });
+  const brief = feedLines({ ...first, threadId: undefined, prompt: 'x'.repeat(70) }, epoch, 60);
+  expect(brief.find(line => line.key === 'prompt-result-0')?.spans.map(span => span.text).join('')).toBe('Claude › ' + 'x'.repeat(50) + '…');
+  expect(brief.find(line => line.key === 'prompt-toggle')?.spans.map(span => span.text).join('')).toBe('         ⋯ 1 more line');
+  expect(promptRows()[0]?.spans.map(span => span.text).join('')).toBe('Claude › OBJECTIVE: Invalidate cached records.');
+  const ownBrief = 'Review the cache repair.\nCheck saved-state recovery.\nReport observed checks.';
+  const roleParagraphs = [
+    'Codex reviewer role: Review the assigned changes without modifying files. Prioritize actionable correctness, regression and security findings; cite file locations and explain impact. Report checks actually run and any review limits.',
+    'Codex investigator role: Investigate the assigned question without modifying files. Trace the relevant code and evidence, distinguish observations from hypotheses, and report supported conclusions with file locations and remaining uncertainty.',
+    'Codex implementer role: Implement the bounded assignment in the authorized workspace. Respect owned paths and existing changes, keep the solution focused, and run appropriate verification. Report the changes, observed checks and remaining limitations.',
+  ];
+  const presetBriefs = roleParagraphs.map(paragraph => {
+    const wrapped = `${paragraph}\n\n${ownBrief}`;
+    const job = { ...first, threadId: undefined, prompt: wrapped };
+    const collapsed = feedLines(job, epoch, 60);
+    const expanded = feedLines(job, epoch, 60, { feedOffset: 0, following: true, seenLines: 0, expandedPromptIds: [job.id] });
+    return [collapsed.find(line => line.key === 'prompt-result-0')?.spans.map(span => span.text).join(''),
+      collapsed.find(line => line.key === 'prompt-toggle')?.spans.map(span => span.text).join(''),
+      expanded.sources?.['prompt-results'] === wrapped + '\n', job.prompt === wrapped];
+  });
+  const literalBriefs = ['Codex reviewer role: My own instructions.\n\n' + ownBrief,
+    roleParagraphs[0] + '\n' + ownBrief];
+  expect({ presetBriefs, literalPrefixes: literalBriefs.map(prompt => feedLines({ ...first, threadId: undefined, prompt }, epoch, 60)
+    .find(line => line.key === 'prompt-result-0')?.spans.map(span => span.text).join('').startsWith('Claude › Codex reviewer role:')) }).toEqual({
+    presetBriefs: Array.from({ length: 3 }, () => ['Claude › Review the cache repair.', '         ⋯ 2 more lines', true, true]),
+    literalPrefixes: [true, true],
+  });
+  const mount = () => $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props: sized });
   let ui = await mount();
   expect((await ui.find({ key: 'toggle-prompt-prompt-first' }))?.props.plain).toBe(true);
   await ui.press({ key: 'toggle-prompt-prompt-first' });
@@ -650,4 +743,234 @@ test('parent calls match C3 history only by callId across timeouts, approvals an
   const older = jobView({ ...raw, questionHistory: undefined }, marker());
   expect(older.events.every(event => event.answer === undefined && event.questionText === undefined)).toBe(true);
   expect(jobView(raw, marker(), false).events).toEqual([]);
+});
+
+
+test('forum posts form a two-row index and expand full bodies with stable anchors and bounded widths', () => {
+  const room: ForumRoom = { roomId: 'rt-a-long', sessionId: 'session-a', goal: 'Review the proposal', status: 'open',
+    intensity: 'standard', members: ['critic'], createdAt, postCount: 1, posts: [{ seq: 1, at: createdAt,
+      author: { kind: 'member', name: 'critic' }, kind: 'finding', thread: 1, replyTo: null, title: 'Review notes',
+      body: Array.from({ length: 9 }, (_, i) => `Body line ${i + 1}`).join('\n'), label: 'observed', refs: ['review.md'], mentions: [],
+    }] };
+  const root = { ...room.posts![0]!, initial: true };
+  const chain = { ...room, postCount: 5, posts: [root,
+    { ...root, seq: 2, initial: false, kind: 'candidate' as const, replyTo: 1, title: 'Candidate', body: 'A bounded proposal.' },
+    { ...root, seq: 3, initial: false, kind: 'request' as const, replyTo: 2, mentions: ['chair'], title: 'Review', body: 'Please decide.' },
+    { ...root, seq: 4, initial: false, kind: 'decision' as const, author: { kind: 'chair', name: 'chair' }, replyTo: 3, title: 'Accepted', body: 'Proceed.' },
+    { ...root, seq: 5, initial: false, kind: 'idea' as const, title: '', body: 'Untitled first line\nHidden second line' },
+  ] };
+  const text = (line: ReturnType<typeof feedLines>[number]) => line.spans.map(span => span.text).join('');
+  for (let columns = 0; columns <= 100; columns++) {
+    const rendered = feedLines(chain, epoch + 60000, columns);
+    const title = (seq: number) => rendered.find(line => line.key === `post:${seq}-title`)!;
+    expect(rendered.length).toBe(10);
+    expect(rendered.every(line => !!line.togglePostId)).toBe(true);
+    expect(rendered.every(line => width(text(line)) <= columns)).toBe(true);
+    const expanded = togglePrompt(chain, epoch + 60000, columns, 4, undefined, 'post:1');
+    const full = feedLines(chain, epoch + 60000, columns, expanded);
+    expect(full.every(line => width(text(line)) <= columns)).toBe(true);
+    for (const following of [false, true]) {
+      const footer = footerLayout(chain, { jobs: [], selectedId: 'forum:rt-a-long', nowMs: epoch,
+        feeds: { 'forum:rt-a-long': expanded } }, columns, following, 2);
+      expect(width(footer.left + (footer.toggleGap ?? '') + (footer.toggle ?? '') + footer.gap + footer.right + footer.jump) +
+        (!following ? Math.min(3, Math.max(0, columns - width(footer.toggle ?? '') - width(footer.toggleGap ?? ''))) : 0) <= columns).toBe(true);
+    }
+    if (columns !== 60 && columns !== 100) continue;
+    expect([1, 2, 3, 4, 5].map(seq => title(seq).spans[0]!.text.length)).toEqual([15, 17, 19, 19, 15]);
+    expect(title(1).spans.some(span => span.text === 'Review notes' && span.bold)).toBe(true);
+    expect(title(5).spans.some(span => span.text === 'Untitled first line' && !span.bold && span.color === 'text')).toBe(true);
+    expect(title(1).spans.at(-1)).toMatchObject({ text: '▸', color: 'suggestion' });
+    expect(full.find(line => line.key === 'post:1-title')?.spans.at(-1)?.text).toBe('▾');
+    expect(full.filter(line => line.source === 'post:1-body').length).toBe(9);
+    expect(full.map(text).join('\n')).toContain('refs  review.md');
+    expect(full.findIndex(line => line.key === 'post:1-gap')).toBe(full.findIndex(line => line.key === 'post:1-refs') + 1);
+    expect(full[full.findIndex(line => line.key === 'post:1-gap') + 1]?.key).toBe('post:2-meta');
+    expect(feedWindow(full, 4, expanded).newLines).toBe(0);
+    const stopped = normalizeFeed(full, 4, { ...expanded, following: false, feedOffset: 5, anchor: undefined });
+    const collapsed = togglePrompt(chain, epoch, columns, 4, stopped, 'post:1');
+    expect(collapsed.anchor?.source).toBe('post:1-title');
+    const all = toggleForumPosts(chain, epoch, columns, 4, expanded);
+    expect(all.expandedPromptIds?.length).toBe(5);
+    expect(toggleForumPosts(chain, epoch, columns, 4, all).expandedPromptIds).toEqual([]);
+    expect(rendered.find(line => line.key === 'post:1-meta')?.spans.some(span => span.text.includes('first record') && span.color === 'inactive')).toBe(true);
+    expect(rendered.find(line => line.key === 'post:2-meta')?.spans.some(span => span.text.startsWith('candidate') && span.color === 'success')).toBe(true);
+    expect(rendered.find(line => line.key === 'post:3-meta')?.spans.some(span => span.text === ' → chair' && span.color === 'warning')).toBe(true);
+    expect(rendered.find(line => line.key === 'post:4-meta')?.spans.some(span => span.text.startsWith('decision') && span.color === 'claude')).toBe(true);
+  }
+  const eight = { ...room, postCount: 8, posts: Array.from({ length: 8 }, (_, i) => ({ ...root, seq: i + 1,
+    body: 'First line\nSecond line\nThird line', refs: ['review.md'] })) };
+  const partial = { feedOffset: 0, following: false, seenLines: 0, expandedPromptIds: ['post:3'] };
+  const partialLines = feedLines(eight, epoch, 60, partial);
+  const before = normalizeFeed(partialLines, 4, { ...partial, feedOffset: partialLines.findIndex(line => line.key === 'post:3-gap') });
+  const all = toggleForumPosts(eight, epoch, 60, 4, before);
+  const none = toggleForumPosts(eight, epoch, 60, 4, all);
+  const top = (view: typeof before, rows = 4) => {
+    const window = feedWindow(feedLines(eight, epoch, 60, view), rows, view);
+    return [window.lines[0]?.key, view.anchor?.source, view.following, window.following];
+  };
+  const fittingExpand = toggleForumPosts(eight, epoch, 60, 100);
+  const fitting = toggleForumPosts(eight, epoch, 60, 100, all);
+  const fittingReloaded = JSON.parse(JSON.stringify(fitting));
+  expect({ anchors: [top(before), top(all), top(none)], fitting: [fittingExpand.following,
+    feedWindow(feedLines(eight, epoch, 60, fittingExpand), 100, fittingExpand).following, fitting.following,
+    feedWindow(feedLines(eight, epoch, 60, fittingReloaded), 100, fittingReloaded).following],
+    resumed: scrollFeed(feedLines(eight, epoch, 60, fitting), 100, fitting, 1, 100, 16).following }).toEqual({
+    anchors: [['post:3-gap', 'post:3-gap', false, false], ['post:3-gap', 'post:3-gap', false, false],
+      ['post:3-title', 'post:3-title', false, false]], fitting: [false, false, false, false], resumed: true,
+  });
+});
+
+test('command cleanup follows shared vectors, redirections, heredocs and the forty-cell word limit', () => {
+  const vectors = [
+    [String.raw`/bin/zsh -lc "rg -n --hidden -g '!native-captures.mjs' 'codex:|codex@fugato' plugins"`, 'rg', "-n --hidden -g '!native-captures.mjs' 'codex:|codex@fugato' plugins"],
+    [String.raw`/bin/zsh -lc 'rg -n -g '"'"'!x'"'"' foo'`, 'rg', "-n -g '!x' foo"],
+    [String.raw`/bin/zsh -lc "git -c user.name=Ghqqqq -c user.email=a@b commit -m \"Rename main\""`, 'git', "commit -m 'Rename main'"],
+    [String.raw`/bin/zsh -lc "nl -ba plugins/codex-live/hooks/poll.ts | sed -n '1,80p'"`, 'nl', '-ba plugins/codex-live/hooks/poll.ts +1'],
+    [String.raw`/bin/zsh -lc "N=/x/node env -u CLAUDE_CONFIG_DIR npm_config_offline=true node --test a.mjs"`, 'node', '--test a.mjs'],
+    ['/usr/bin/git status --short', 'git', 'status --short'],
+    ['env -u TEST /bin/zsh -lc "git status"', 'git', 'status'],
+    ['git -C /work/repo -c user.name=Alice status', 'git', '-C . status'],
+    [String.raw`/bin/zsh -lc "cd /work/repo && npm test"`, 'cd', '. +1'],
+  ];
+  expect(vectors.map(([raw]) => { const { verb, args } = commandDisplay(raw!, '/work/repo', '/home/user', false); return [verb, args]; }))
+    .toEqual(vectors.map(([, verb, args]) => [verb, args]));
+  const scriptVectors = [
+    [`/bin/zsh -lc "python3 - <<'PY'\nfrom pathlib import Path\nPY"`, 'python3', "- <<'PY'"],
+    [`/bin/zsh -lc "cat > check.mjs <<'EOF'\nimport x\nEOF"`, 'cat', "> check.mjs <<'EOF'"],
+    ['/bin/zsh -lc "npm test 2>&1 | tail -5"', 'npm', 'test 2>&1 +1'],
+    ['/bin/zsh -lc "cd /x\nnpm test"', 'cd', '. +1'],
+    ['/bin/zsh -lc "rg foo < list.txt > out.txt"', 'rg', 'foo < list.txt > out.txt'],
+    ['cat <<EOF > a.txt\nhi\nEOF\necho done', 'cat', '<<EOF > a.txt +1'],
+    ['sort <<< "b a"', 'sort', "<<< 'b a'"],
+    ['cat <<"EOF"\nhidden && command > output\nEOF\necho done', 'cat', '<<"EOF" +1'],
+    ['cat <<-EOF\n\thidden\n\tEOF\necho done', 'cat', '<<-EOF +1'],
+    ["cat << 'EOF'\nhidden\nEOF", 'cat', "<< 'EOF'"],
+    ["cat <<A <<'B' > /x/out\nfirst\nA\nsecond\nB\necho done", 'cat', "<<A <<'B' > out +1"],
+    ["cat <<'EOF'\nhidden\nEOF_SUFFIX\nstill hidden\nEOF", 'cat', "<<'EOF'"],
+    ['cat <<EOF\nunterminated body\necho hidden', 'cat', '<<EOF'],
+    ['npm test 1>&2 0<&3 &>> /x/log || echo failed', 'npm', 'test 1>&2 0<&3 &>> log +1'],
+    ['echo one\n\necho two; echo three | cat', 'echo', 'one +3'],
+    ['echo one\\\n two\necho three', 'echo', 'one two +1'],
+    ['npm test 2\\\n>&1 | tail -5', 'npm', 'test 2>&1 +1'],
+    ['npm test 2>&\\\n1 | tail -5', 'npm', 'test 2>&1 +1'],
+    ['npm test 2>\\\n&1 | tail -5', 'npm', 'test 2>&1 +1'],
+    ['echo one &\\\n& echo two', 'echo', 'one +1'],
+    ['echo ">" "2>&1" "<<EOF" "&>"', 'echo', "'>' '2>&1' '<<EOF' '&>'"],
+  ];
+  for (const shorten of [false, true]) {
+    expect(scriptVectors.map(([raw]) => { const { verb, args } = commandDisplay(raw!, '/x', '/h', shorten); return [verb, args]; }))
+      .toEqual(scriptVectors.map(([, verb, args]) => [verb, args]));
+  }
+  for (const operator of ['>', '>>', '<', '>&', '<&', '&>', '&>>', '>|', '2>', '1>>', '0<', '3>&', '0<&']) {
+    expect(commandDisplay(`cat ${operator} "/x/a b.txt"`, '/x', '/h').args).toBe(`${operator} 'a b.txt'`);
+  }
+  const heredocPath = commandDisplay("cat <<'long/delimiter' > /x/leading/path/out.txt\nhidden\nlong/delimiter", '/x');
+  expect(fitCommand(heredocPath.program, heredocPath.words, 39)).toEqual({ verb: 'cat', args: "<<'long/delimiter' > …/path/out.txt" });
+  const redirectedPath = jobView({ id: 'a', status: 'running', request: { cwd: '/x' }, activity: [{ seq: 1,
+    type: 'commandExecution', command: 'cat 2>&1 > "/x/leading/path/my file.txt"', exitCode: 0, lifecycle: 'completed' }] }, marker('a'));
+  const redirectionRow = feedLines(redirectedPath, epoch, 40).find(line => line.key === 'event-1-body-0')!;
+  expect(redirectionRow.spans.map(span => span.text).join('')).toBe("  › cat 2>&1 > '…/path/my file.txt'".padEnd(39) + '✓');
+  expect(redirectionRow.spans).toContainEqual({ text: '2>&1', color: 'subtle' });
+  expect(redirectionRow.spans).toContainEqual({ text: '>', color: 'subtle' });
+  expect(redirectionRow.spans).toContainEqual({ text: "my file.txt'", color: 'text' });
+  const word = 'abcdefghijklmnopqrstuvwx' + 'middle'.repeat(8) + 'last-fifteen.mjs';
+  expect(commandDisplay(`node /work/repo/${word}`, '/work/repo').args).toBe(`${word.slice(0, 24)}…${word.slice(-15)}`);
+  expect(width(commandDisplay(`node ${word}`).args)).toBe(40);
+  expect(commandDisplay('echo $(printf "a && b") && node a.mjs', undefined, undefined, false).args).toBe("'$(printf \"a && b\")' +1");
+  expect(commandDisplay('/bin/dash -l -c "git -C /work/repo status"', '/work/repo').args).toBe('-C . status');
+  expect(commandDisplay('cat /home/user/cache/log.txt', '/work/repo', '/home/user').args).toBe('~/cache/log.txt');
+  expect(commandDisplay('cat /Users/me/notes.txt', '/work/repo', '/Users/me').args).toBe('~/notes.txt');
+  const nativePath = 'plugins/codex/tests/native-integration.mjs';
+  expect(commandDisplay(`node --test ${nativePath}`).args).toBe(`--test ${nativePath}`);
+  const commands = jobView({ id: 'a', status: 'running', request: { cwd: '/work/repo' }, activity: [
+    { seq: 1, type: 'commandExecution', command: `node --test ${nativePath}`, exitCode: 0, lifecycle: 'completed', durationMs: 164000 },
+    { seq: 2, type: 'commandExecution', command: 'git diff d26053a HEAD -- /work/repo/plugins/codex-live/hooks/forum.ts /work/repo/plugins/codex-live/hooks/layout.ts', exitCode: 0, lifecycle: 'completed', durationMs: 500 },
+  ] }, marker('a'));
+  const commandRow = (columns: number, key: string) => feedLines(commands, epoch, columns).find(line => line.key === key)!;
+  expect(commandRow(100, 'event-1-body-0').spans.map(span => span.text).join(''))
+    .toBe('  › node --test plugins/codex/tests/native-integration.mjs'.padEnd(92) + '✓ 2m 44s');
+  expect(commandRow(60, 'event-1-body-0').spans.map(span => span.text).join(''))
+    .toBe('  › node --test …/tests/native-integration.mjs'.padEnd(52) + '✓ 2m 44s');
+  expect(commandRow(60, 'event-2-body-0').spans.map(span => span.text).join(''))
+    .toBe('  › git diff d26053a HEAD -- …/hooks/forum.ts …/layout.ts'.padEnd(59) + '✓');
+  expect(commandRow(60, 'event-1-body-0').spans.some(span => span.text === '…/tests/' && span.color === 'subtle')).toBe(true);
+  expect(commandRow(60, 'event-1-body-0').spans.some(span => span.text === 'native-integration.mjs' && span.color === 'text')).toBe(true);
+  const spacedWord = 'a'.repeat(25) + ' ' + 'b'.repeat(20);
+  expect(commandDisplay(`echo '${spacedWord}'`).args).toBe("'" + 'a'.repeat(24) + '…' + 'b'.repeat(15) + "'");
+  const fortyCells = 'a'.repeat(19) + ' ' + 'b'.repeat(20);
+  expect(commandDisplay(`echo '${fortyCells}'`).args).toBe(`'${fortyCells}'`);
+  const compound = jobView({ id: 'a', status: 'running', activity: [{ seq: 1, type: 'commandExecution',
+    command: `node ${nativePath} && npm test`, exitCode: 0, lifecycle: 'completed' }] }, marker('a'));
+  const compoundLine = feedLines(compound, epoch, 40).find(line => line.key === 'event-1-body-0')!;
+  expect(compoundLine.spans.map(span => span.text).join('')).toBe('  › node …/native-integration.mjs +1'.padEnd(39) + '✓');
+  const spacedPath = jobView({ id: 'a', status: 'running', request: { cwd: '/work/repo' }, activity: [{ seq: 1, type: 'commandExecution',
+    command: 'cat "/work/repo/src/my file.ts"', exitCode: 0, lifecycle: 'completed' }] }, marker('a'));
+  const pathLine = feedLines(spacedPath, epoch, 60).find(line => line.key === 'event-1-body-0')!;
+  expect(pathLine.spans.map(span => span.text).join('')).toBe("  › cat 'src/my file.ts'".padEnd(59) + '✓');
+  expect(pathLine.spans).toContainEqual({ text: "'src/", color: 'subtle' });
+  expect(pathLine.spans).toContainEqual({ text: "my file.ts'", color: 'text' });
+  for (const raw of ['sed -i s/a/b/ target', 'find . -delete', 'rg foo . && touch output',
+    "/bin/zsh -lc 'sed -i s/a/b/ target'", "/bin/zsh -lc 'rg foo . && touch output'", "/bin/zsh -lc 'BASH_ENV=./reader cat README.md'",
+    'sed -n 1p -i target', 'git diff --output=output', 'rg --pre=writer foo .', 'cat README.md > output', 'BASH_ENV=./reader cat README.md',
+    'cat README.md\ntouch output']) {
+    const unsafe = jobView({ id: 'a', status: 'running', activity: [raw, 'cat README.md'].map((command, i) => ({ seq: i + 1,
+      type: 'commandExecution', command, exitCode: 0, lifecycle: 'completed' })) }, marker('a'));
+    expect(feedItems(unsafe, epoch).filter(item => item.rowKind === 'action').length).toBe(2);
+    expect(feedItems(unsafe, epoch).some(item => item.rowKind === 'explored')).toBe(false);
+    expect(unsafe.events[0]?.command).toBe(raw);
+  }
+});
+
+test('the list shares one fourteen-cell time axis and hides timeline/detail at their width thresholds', () => {
+  const live = { ...running(), agentName: 'Carnot', role: 'reviewer', startedAt: new Date(epoch + 60000).toISOString() };
+  const done = { ...running(), id: 'done', agentName: 'Sohonie', role: 'implementer', status: 'completed', active: false, finished: true,
+    completedAt: new Date(epoch + 120000).toISOString() };
+  const room: ForumRoom = { roomId: 'rt-a-axis', sessionId: 'session-a', goal: 'Review the release', status: 'open', intensity: 'deep',
+    members: ['critic'], createdAt, postCount: 2, timeline: [epoch + 30000, -(epoch + 150000)] };
+  const entries = [room, live, done], nowMs = epoch + 180000;
+  const state: CodexLiveState = { jobs: [live, done], forumRooms: [room], selectedId: done.id, nowMs, newSessionIds: [live.id] };
+  const axis = timelineAxis(entries, nowMs);
+  expect(axis).toEqual({ start: epoch, end: nowMs });
+  expect(timelineSpans(live, axis).map(span => span.text).join('')).toBe('    ━━━━━━━━━━');
+  expect(timelineSpans(done, axis).map(span => span.text).join('')).toBe('━━━━━━━━━╌╌╌╌╌');
+  expect(timelineSpans(room, axis).map(span => span.text).join('')).toBe('  ·       •   ');
+  expect(timelineSpans(room, axis).find(span => span.text === '•')?.color).toBe('claude');
+  const projected = jobView({ id: 'role', status: 'running', request: { agentType: 'fugato:fugato-reviewer', cwd: '/work/repo/subdir', model: 'gpt-6-astra', effort: 'xhigh' } }, marker('role'));
+  expect(feedItems(projected, nowMs)[0]?.title).toContain(' · reviewer · astra xhigh · subdir');
+  expect(feedItems({ ...projected, cwd: 'C:\\work\\repo' }, nowMs)[0]?.title).toContain(' · repo');
+  expect(jobView({ id: 'role', status: 'running', request: { roundtable: { persona: 'calibrator' } } }, marker('role')).role).toBe('calibrator');
+  const row = (columns: number) => tableRow(live, false, columns, state, entries);
+  expect(row(100).map(span => span.text).join('')).toContain('reviewer · astra xhigh');
+  expect(row(100).at(-1)?.color).toBe('suggestion');
+  expect(row(60).map(span => span.text).join('')).not.toContain('━');
+  expect(row(47).map(span => span.text).join('')).not.toContain('reviewer');
+  expect([100, 60, 47, 12].map(columns => width(row(columns).map(span => span.text).join('')))).toEqual([100, 60, 47, 12]);
+  const tiny = jobView({ id: 'tiny', status: 'completed', completedAt: createdAt, request: { prompt: 'A', report: true },
+    activity: [{ seq: 1, type: 'agentMessage', body: 'D' }] }, marker('tiny'));
+  const expanded = { feedOffset: 0, following: true, seenLines: 0, expandedPromptIds: ['tiny'] };
+  expect(feedLines(tiny, epoch, 9).find(line => line.key === 'prompt-result-0')?.spans.map(span => span.text).join('')).toBe('Claude › ');
+  expect(feedLines({ ...tiny, prompt: 'Hello world' }, epoch, 8, expanded).find(line => line.key === 'prompt-result-0')?.spans.map(span => span.text).join('')).toBe('Claude …');
+  expect(feedLines(tiny, epoch, 1).find(line => line.key === 'event-1-body-0')?.spans.map(span => span.text).join('')).toBe('▏');
+  const narrowRoom: ForumRoom = { ...room, posts: [{ seq: 1, at: createdAt, author: { kind: 'member', name: 'critic' }, kind: 'finding',
+    thread: 1, replyTo: null, title: 'A title', body: 'Hello world\nMore\nBody\nLines\nHere\nAnd\nHere', label: '', refs: ['src/my file.ts'], mentions: ['chair'] }] };
+  for (let columns = 0; columns <= 100; columns++) {
+    const lines = [...feedLines(tiny, epoch, columns), ...feedLines({ ...tiny, prompt: 'Hello world' }, epoch, columns, expanded),
+      ...feedLines(narrowRoom, epoch, columns), ...emptyLines(columns)];
+    expect(lines.every(line => width(line.spans.map(span => span.text).join('')) <= columns)).toBe(true);
+    expect(width(row(columns).map(span => span.text).join('')) <= columns).toBe(true);
+  }
+  expect(sessionFooter({ ...state, usageByJob: {
+    a: { model: 'gpt-6-astra', usage: { inputTokens: 609000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 609000 } },
+    b: { model: 'gpt-6-sol', usage: { inputTokens: 526000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 526000 } },
+    c: { model: 'gpt-6-terra', usage: { inputTokens: 5000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 5000 } },
+  } }, 100).right).toBe('1.14M tokens · astra 609k · sol 526k · +1');
+  const footerJob = running();
+  const footerState = { jobs: [footerJob], selectedId: footerJob.id, nowMs: epoch + 12000 };
+  const unknown = footerLayout(footerJob, footerState, 60, true, 0);
+  const known = { ...footerJob, usage: { inputTokens: 1000, cachedInputTokens: 0, outputTokens: 234, totalTokens: 1234 } };
+  expect({ unknown: [unknown.left, unknown.right], known: footerLayout(known, footerState, 60, true, 0).right,
+    zero: footerLayout({ ...known, usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 } }, footerState, 60, true, 0).right,
+    stopped: footerLayout(footerJob, footerState, 60, false, 3).jump }).toEqual({
+    unknown: ['running · 1 tool · 12s', ''], known: '1.23k tokens', zero: '0 tokens', stopped: '↓ 3 new',
+  });
 });

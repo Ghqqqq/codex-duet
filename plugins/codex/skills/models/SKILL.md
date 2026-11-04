@@ -28,7 +28,7 @@ The output identifies its source (`app-server` or the isolated Codex cache), the
 supported efforts, default efforts and the effective tiers with their sources.
 An unknown context window is shown as `unknown` (JSON `null`); the app-server
 does not currently expose that field. If neither source is available, run
-`/codex:setup` to check runtime readiness and sign-in.
+`/fugato:setup` to check runtime readiness and sign-in.
 
 ## Change defaults
 
@@ -55,7 +55,7 @@ Check that the chosen model supports the chosen effort.
 Put `DUET: --model <slug> --effort <effort>` on the first line of that native
 dispatch's prompt. This overrides that dispatch only; it does not save defaults.
 For the Bash fallback, use `fugato task --model <slug> --effort <effort> ...`
-in background Bash as described in the `codex:native-fallback` skill.
+in background Bash as described in the `fugato:native-fallback` skill.
 Follow-ups retain recorded settings unless explicitly overridden.
 
 ## Confirm

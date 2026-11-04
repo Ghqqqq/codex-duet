@@ -22,7 +22,7 @@ export const CLAUDE_MEMORY_DIR = "claude-memory";
 // or a registry of skills invoked by a different model loop. Unknown YAML is
 // left empty instead of guessing grants or parsing Claude's private formats.
 export function declaredAgentSkills(agentType, { pluginRoot = fileURLToPath(new URL("../../", import.meta.url)), cwd = undefined, env = process.env } = {}) {
-  const name = typeof agentType === "string" ? agentType.replace(/^codex:/, "") : "";
+  const name = typeof agentType === "string" ? agentType.replace(/^fugato:/, "") : "";
   if (!/^[A-Za-z0-9_-]+$/.test(name)) return [];
   try {
     const definitionFile = path.join(pluginRoot, "agents", `${name}.md`);
@@ -53,10 +53,10 @@ export function declaredAgentSkills(agentType, { pluginRoot = fileURLToPath(new 
     const skills = [];
     for (const skill of names.slice(0, 16)) {
       if (typeof skill !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/.test(skill) || [".", ".."].includes(skill)) continue;
-      const relative = skill.replace(/^codex:/, "");
+      const relative = skill.replace(/^fugato:/, "");
       // Other plugins' names cannot be resolved from this plugin's files.
       if (relative.includes(":")) continue;
-      for (const root of skill.startsWith("codex:") ? [path.join(pluginRoot, "skills")] : roots) {
+      for (const root of skill.startsWith("fugato:") ? [path.join(pluginRoot, "skills")] : roots) {
         const file = path.join(root, relative, "SKILL.md");
         try {
           if (!fs.statSync(file).isFile() || fs.statSync(file).size > 24000) continue;

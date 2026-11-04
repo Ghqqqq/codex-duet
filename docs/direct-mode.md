@@ -15,7 +15,7 @@ another Codex worker review the retry logic in src/net/.
 ### Native subagent (default)
 
 With the default `fugato setup --dispatch auto`, Claude uses
-`Agent(subagent_type: "codex:codex-native", prompt: "<brief>")` from the first
+`Agent(subagent_type: "fugato:codex-native", prompt: "<brief>")` from the first
 dispatch, without waiting for a readiness notice, unless a recent native-unavailable
 observation selects Bash guidance. `--dispatch bash` selects background
 `fugato task` immediately; `native` keeps native guidance and `default` resets to
@@ -41,8 +41,8 @@ precedence is `DUET: --effort` > explicitly supplied Agent
 `effort` (including `max`) > companion default. The shell definition's
 `effort: low` is not a Codex request; follow-ups retain recorded thread settings
 unless overridden. Native calls can be foreground or background.
-Role presets use `codex:codex-reviewer` / `codex:codex-investigator` (read-only)
-or `codex:codex-implementer` (workspace-write), retaining the usual model/effort
+Role presets use `fugato:codex-reviewer` / `fugato:codex-investigator` (read-only)
+or `fugato:codex-implementer` (workspace-write), retaining the usual model/effort
 and speed settings. Conflicting sandbox headers get `native_preset_sandbox`.
 In plan mode the worker runs with `--sandbox read-only`; a header asking for a
 writable sandbox is refused (`native_plan_mode_read_only`) and nothing starts.
@@ -61,7 +61,7 @@ explicit cancellation, or the question expires after 900 seconds by default.
 When Codex reports token usage, native notices/rendered reports show provider
 `OpenAI Codex` and model, and the result carries `usage`. The adapter's host usage
 stays null; Codex tokens are not added to Claude's `/usage` or cost. With the
-pane installed, the final notice offers `Open Codex activity: /codex-live <name>`.
+pane installed, the final notice offers `Open Codex activity: /fugato-live <name>`.
 A late answer is submitted only to the question the agent
 last returned; if another answerable question is pending, that current question
 is returned. If no unanswered pending slot remains or the job has ended, the
@@ -100,7 +100,7 @@ excerpt, an assignment word or quoting the display does not model stays visible)
 The spinner shows `<worker> · running · <elapsed>`. The `DUET:` flag line draws as
 a compact `Codex · model · effort · speed · sandbox · folder` header, with only
 supplied settings and `fork` when requested. Completion lines use colours matching
-`codex-live`; the agent view renders the report as readable markdown. These bounded projections
+`fugato-live`; the agent view renders the report as readable markdown. These bounded projections
 leave the recorded report and Claude's hand-back unchanged. Command-start lines
 are live only; other progress remains in durable notices, capped at 200 per turn
 with a final usage-notice exemption. See [progress format](worker-lifecycle.md#fallback-and-compatibility-feed-mode).
@@ -130,9 +130,9 @@ recipe according to the saved [worker dispatch](configuration.md#worker-dispatch
 route: `bash` selects Bash immediately, while `auto` prefers it for 24 hours after
 the last native-unavailable observation, or until `fugato setup --dispatch` is run
 without `--dry-run`. Otherwise SessionStart names
-`codex:codex-native` without waiting for registration evidence;
+`fugato:codex-native` without waiting for registration evidence;
 an unavailable adapter reports its fallback condition. After registration the adapter adds a
-`codex:native-dispatch` system-prompt section (`prompt.compose`, session scope)
+`fugato:native-dispatch` system-prompt section (`prompt.compose`, session scope)
 to every request that offers the Agent tool when native guidance is selected.
 That section asks for native dispatch first:
 browser work and Computer Use run natively, with unapproved apps arriving as
@@ -335,12 +335,12 @@ choose it for needed context, not context hygiene. If the import exceeds the
 source read cap, brief without `--fork`. See the
 [shared brief rules](../plugins/codex/prompts/ultra-codex-protocol.md#writing-a-brief-every-codex-assignment).
 
-### Live view with codex-live
+### Live view with fugato-live
 
-Install the separate pane plugin with `/plugin install codex-live@fugato`. New jobs
+Install the separate pane plugin with `/plugin install fugato-live@fugato`. New jobs
 ask Claude Code to open the pane; Claude Code decides whether it is shown at the
-current width. `/codex-live` opens and focuses it at any width;
-`/codex-live <name>` selects a native worker's activity. Provider/model-tagged
+current width. `/fugato-live` opens and focuses it at any width;
+`/fugato-live <name>` selects a native worker's activity. Provider/model-tagged
 token counts and session totals stay separate from Claude's usage.
 It shows the session's jobs and the selected job's prompt, Codex messages, commands,
 file changes, tool calls, plan and pending question. Resolved `ask_parent` calls
@@ -381,7 +381,7 @@ transient failures preserve the last good view. See the [pane reference](../plug
 
 ### Haiku fallback
 
-Use `Agent(subagent_type: "codex:codex-worker")` when native dispatch and
+Use `Agent(subagent_type: "fugato:codex-worker")` when native dispatch and
 background Bash are unavailable, or the user asks for a forwarding-agent
 transcript. Never pass `model` or `effort` to that Haiku agent; put Codex's choices
 in the assignment text. Its [definition](../plugins/codex/agents/codex-worker.md)
@@ -431,11 +431,11 @@ and delivered feed cursor; never submit a new task for an adoptable job. Start
 one `fugato wait <jobId> --owner '<newOwnerId>'` in background Bash. The old
 owner's wait/status/answer calls return `ownership_moved`; it must stop, never
 re-adopt. Without adoption the job is interrupted at lease expiry
-(`lease_expired`) with a continuation command. Observational `/codex:status`, `fugato status` and `fugato result` do not renew the
+(`lease_expired`) with a continuation command. Observational `/fugato:status`, `fugato status` and `fugato result` do not renew the
 lease. `fugato wait` resolves and renews the owner; an ownerless compatibility
 companion wait is observation only.
 
-`/codex:status` marks stale running jobs **orphaned**, with remaining lease seconds
+`/fugato:status` marks stale running jobs **orphaned**, with remaining lease seconds
 and an exact adopt instruction, after half the lease without renewal in direct
 mode (900 s with the default 1800 s lease), or the smaller of 65 s and half the
 lease otherwise.

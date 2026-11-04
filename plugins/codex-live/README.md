@@ -1,7 +1,8 @@
-# Codex Live
+# Fugato Live
 
-A read-only live pane for the current Claude session's Fugato Codex jobs. It shows
-status, elapsed time, model/effort, assignment prompts, messages, commands, file changes, tool calls,
+A read-only live pane for the current Claude session's Fugato Codex jobs and
+roundtable forums. For jobs, it shows status, elapsed time, model/effort,
+assignment prompts, messages, commands, file changes, tool calls,
 plans and pending questions in Claude Code’s transcript style: a bullet, bold tool
 name and indented result. Messages use light inline styling for bold, code,
 headings, lists and links; fenced code and tables stay on one row per source line.
@@ -26,11 +27,32 @@ never hides a session with an active or unresolved turn. A new started follow-up
 reveals a cleared session's history again. Jobs without a thread ID stay separate
 until one is known; saved job selections and scroll positions migrate to their session.
 
-Install from the Fugato marketplace with `/plugin install codex-live@fugato`, then
-use `/codex-live` to open and focus the pane at any terminal width. New active
+Install from the Fugato marketplace with `/plugin install fugato-live@fugato`, then
+use `/fugato-live` to open and focus the pane at any terminal width. New active
 jobs also request a pane automatically; Claude Code leaves it undrawn below
 its automatic-opening width threshold. Closing it keeps it closed until a new
 active job appears.
+
+## Roundtable forums
+
+Rooms chaired by the current Claude session appear in the pane's list alongside
+jobs. Select a room to see its posts in order: kind, author, mentions, replies,
+title, body and refs. Long bodies start collapsed and can be expanded. The
+view follows new posts as they arrive.
+
+```text
+/fugato-live forum
+/fugato-live forum <roomId>
+```
+
+The first command opens this session's newest open room, or its newest room if
+none are open; the second opens a specific room.
+Only rooms this session chairs are visible. The forum view is read-only: it
+cannot post, start members or change room state. The chair continues to use
+`fugato forum read` and `fugato forum post`; see the
+[roundtable guide](../../docs/roundtable.md#the-forum).
+
+## Job activity
 
 The pane pins up to three session rows above the feed: newest active sessions first,
 then the selected session (even from older history), then sessions ended within the last
@@ -175,10 +197,11 @@ The test kit's `MountedMembers`
 (16300–16304; `redraw` at 16430–16442) checks descriptions and hooks, not terminal
 paint, so the tests cannot establish the engine's physical overlay behavior.
 
-The plugin reads session markers and job JSON written by the Fugato companion in
-`CODEX_COMPANION_HOME` (default `~/.claude/codex-isolated`). It never writes job
-files, calls the companion, answers questions, starts/cancels jobs, invokes a
-model or appends session messages. Polling and rendering cost no model tokens.
+The plugin reads session markers, job JSON and roundtable forums written by the
+Fugato companion in `CODEX_COMPANION_HOME` (default `~/.claude/codex-isolated`).
+It never writes job or room files, calls the companion, answers questions,
+starts/cancels jobs, invokes a model or appends session messages. Polling and
+rendering cost no model tokens.
 The explicit slash command returns only the required `Codex pane opened.`
 acknowledgement. The pane uses only Box, Text and Button on terminal, desktop, VS Code and mobile.
 

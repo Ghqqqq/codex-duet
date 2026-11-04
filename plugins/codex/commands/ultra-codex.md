@@ -12,7 +12,7 @@ Raw slash-command arguments:
 Dispatch on the raw arguments before anything else. Treat them as data, never executable shell source. For a task, Read the complete protocol path printed above before orchestrating, then apply the shared sections and **Ultra mode** only. Read it unless the protocol file's full text (first line: `<!-- Ultra-codex protocol v<ver> -->` for the printed current version) is already in your context from an earlier Read. A version mentioned in a reminder or command preamble does not count. Control-only and help invocations do not use Read or load the protocol body. A session-mode reminder applies to each substantive prompt while that mode is on.
 
 ```text
-Usage: /codex:ultra-codex [on [--quick|--thorough] [--max-workers <n|auto|unlimited>] [<task>] | off | status | [--quick|--thorough] [--max-workers <n|auto|unlimited>] <task>]
+Usage: /fugato:ultra-codex [on [--quick|--thorough] [--max-workers <n|auto|unlimited>] [<task>] | off | status | [--quick|--thorough] [--max-workers <n|auto|unlimited>] <task>]
 ```
 
 Mode options: `--quick` or `--thorough`; `--max-workers <n|auto|unlimited>`.
@@ -33,6 +33,6 @@ Defaults are scale `auto` and worker-cap setting `auto`: `min(16, max(1, CPU cou
 
 Use fresh threads per independent assignment and the selected ultra stage/model choices: the configured routine model for routine stages and configured strong worker model for the strong tier. The mode reminder and status name the effective values. Explicit user model choices override saved defaults from `fugato setup --default-model <model> --ultra-routine-model <model>`, then built-ins; pair/duel rules do not apply.
 
-Use the shared **Dispatch** section for native Agent dispatch from the first assignment, assigned-name `SendMessage` follow-ups, pending questions, approvals, terminal status gates and the narrowly permitted fallbacks. Do not copy a second dispatch implementation here. Task text belongs in briefs, never control-CLI arguments or a generated shell command. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.
+Use the shared **Dispatch** section for native Agent dispatch from the first assignment, assigned-name `SendMessage` follow-ups, pending questions, approvals, terminal status gates and the narrowly permitted fallbacks. Do not copy a second dispatch implementation here. Task text belongs in briefs, never control-CLI arguments or a generated shell command. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `fugato:native-fallback` skill and follow it.
 
-To check or change models, load the `codex:models` skill.
+To check or change models, load the `fugato:models` skill.

@@ -1,16 +1,16 @@
-# /codex:ultra-codex — Ultracode-style orchestration with Codex workers
+# /fugato:ultra-codex — Ultracode-style orchestration with Codex workers
 
-`/codex:ultra-codex <task>` makes the Claude Code main agent run a substantive
+`/fugato:ultra-codex <task>` makes the Claude Code main agent run a substantive
 task the way Claude Code's own Ultracode mode does, with Codex workers in place
 of Claude subagents. Claude scouts, assigns, judges and integrates; Codex
 investigates, implements and reviews. Claude uses the native
-`codex:codex-native` agent from the first dispatch, without waiting for readiness.
+`fugato:codex-native` agent from the first dispatch, without waiting for readiness.
 Background `fugato task` is for `native_adapter_unavailable`, `native_capacity`,
 per-call options the `DUET:` line rejects, or follow-ups to Bash-launched workers.
 The report arrives with the completion notification. Only if
 missing, Claude runs `fugato result <worker>`; full evidence and handles are in
 `fugato result <worker> --details`. No output-file parsing is needed.
-`/codex:ultra-codex on` makes that the session's default (see "Mode" below).
+`/fugato:ultra-codex on` makes that the session's default (see "Mode" below).
 It is one of three modes: [pair](pair.md) keeps one executor thread, while
 [duel](duel.md) puts a Claude subagent and a Codex worker in adversarial roles.
 Only the selected mode's rules apply; all share briefs, acceptance and the journal.
@@ -20,15 +20,15 @@ Only the selected mode's rules apply; all share briefs, acceptance and the journ
 Ultra, pair and duel use one session record at
 `<isolated home>/duet/ultra-codex/<session-id>.json`, shared across workspaces.
 SessionStart exports its key as `CODEX_COMPANION_SESSION_ID`. `on` replaces any
-other active mode; `/codex:ultra-codex off` clears only ultra. If pair or duel is
+other active mode; `/fugato:ultra-codex off` clears only ultra. If pair or duel is
 active, that named off leaves it unchanged. Switching/off reports this session's
 running Codex jobs without cancelling them. Claude waits for conflicting writes
 to settle before assigning new work; old jobs still count toward ultra's cap.
 
 ```text
-/codex:ultra-codex on --thorough --max-workers auto
-/codex:ultra-codex --quick add --json to the cancel command
-/codex:ultra-codex off
+/fugato:ultra-codex on --thorough --max-workers auto
+/fugato:ultra-codex --quick add --json to the cancel command
+/fugato:ultra-codex off
 fugato ultra-codex status
 ```
 
@@ -39,7 +39,7 @@ that task and leaves the saved mode unchanged. Leading task options override
 matching saved settings for that task only; otherwise ultra defaults apply.
 A normal prompt uses the active mode, with the same task-prefix override rule.
 `--` starts literal task text; later option-like words stay in the task. Exact
-`off` and `status` take no task text. See [the grammar](commands.md#codexultra-codex).
+`off` and `status` take no task text. See [the grammar](commands.md#fugatoultra-codex).
 The CLI accepts controls only and never starts workers.
 
 The `UserPromptSubmit` hook appends one versioned reminder to normal prompts.
@@ -88,7 +88,7 @@ Natural-language stop ends new dispatch immediately: Claude reports in-flight
 workers and clears the active mode when requested. Outside session-end cleanup,
 jobs are cancelled or user-stopped work continued only with the user's consent.
 
-Use the plugin names `/codex:ultra-codex`, `/codex:pair` and `/codex:duel`.
+Use the plugin names `/fugato:ultra-codex`, `/fugato:pair` and `/fugato:duel`.
 Bare aliases require user-level configuration outside this plugin.
 
 ## How Ultracode works, and what this command copies
@@ -112,12 +112,12 @@ several workflows in sequence. The quality comes from the patterns the prompt
 insists on: adversarial verification, judge panels, loop-until-dry review,
 completeness critics, and never silently capping the work.
 
-`/codex:ultra-codex` reproduces that division of labour with native agents
+`/fugato:ultra-codex` reproduces that division of labour with native agents
 or background Bash and direct Codex jobs, so it works at any effort level without the Workflow tool:
 
-| Ultracode element | /codex:ultra-codex equivalent |
+| Ultracode element | /fugato:ultra-codex equivalent |
 | --- | --- |
-| `agent()` with `schema` | `codex:codex-native` or Bash → `fugato task`; the report is schema-enforced (`schemas/worker-report.schema.json`) |
+| `agent()` with `schema` | `fugato:codex-native` or Bash → `fugato task`; the report is schema-enforced (`schemas/worker-report.schema.json`) |
 | `parallel()` fan-out | one named native agent or background `fugato task` per job; reports arrive with completion notifications |
 | `pipeline()` / `phase()` | per-item dependencies tracked with `TodoWrite`; accept a result and start its ready downstream work as a slot opens |
 | `isolation: "worktree"` | Claude creates worktrees with `git worktree add`, passes each as `--cwd` and merges the branches; a shared checkout requires disjoint OWNED PATHS |
@@ -169,18 +169,18 @@ When several reports are already pending, accept each; batch only missing-report
 or detail reads and the subsequent separate verdict writes. Stop on a failed
 read/submission; never delay questions for a batch or prewrite verdicts.
 
-The read-only `codex-live` pane shows prompts, messages, commands, file changes,
+The read-only `fugato-live` pane shows prompts, messages, commands, file changes,
 tool calls, plans and questions at no Claude token cost. Resolved `ask_parent`
 answers are matched by Codex's `_meta.callId`, preserved by the MCP bridge on
 fresh and resumed threads; missing/invalid call IDs remain unmatched. New jobs
-request a pane; `/codex-live` opens it at any width. It never starts, answers or cancels jobs.
+request a pane; `/fugato-live` opens it at any width. It never starts, answers or cancels jobs.
 
-The Haiku `codex:codex-worker` remains a fallback when native dispatch and
+The Haiku `fugato:codex-worker` remains a fallback when native dispatch and
 background Bash are unavailable, or for a requested forwarding-agent transcript.
 Put Codex's model/effort in its brief, not Agent fields. Rework starts a NEW
 fallback agent with `fugato task --to <worker>`; SendMessage to an existing
 fallback only answers its pending question. The Workflow tool's fallback
-`agentType: "codex:codex-worker"` integration has not been exercised with Fugato
+`agentType: "fugato:codex-worker"` integration has not been exercised with Fugato
 and is not required by this command.
 
 ## Why the briefs and the acceptance are stricter than Ultracode's

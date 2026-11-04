@@ -161,9 +161,9 @@ function appendActiveJobsTable(lines, jobs) {
   lines.push(`| Job | Worker | Model / effort | Kind | Status | Phase | Elapsed | Codex Session ID | Summary | Actions |${showSession ? " Claude session |" : ""}`);
   lines.push(`| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |${showSession ? " --- |" : ""}`);
   for (const job of jobs) {
-    const actions = [`/codex:status ${job.id}`];
+    const actions = [`/fugato:status ${job.id}`];
     if (job.status === "queued" || job.status === "running") {
-      actions.push(`/codex:cancel ${job.id}`);
+      actions.push(`/fugato:cancel ${job.id}`);
     }
     if (job.adoptCommand) actions.push(job.adoptCommand);
     const status = job.orphaned ? `${job.status} (orphaned; ${job.leaseRemainingSec}s lease)` : job.status;
@@ -205,14 +205,14 @@ function pushJobDetails(lines, job, options = {}) {
     lines.push(`  Log: ${job.logFile}`);
   }
   if ((job.status === "queued" || job.status === "running") && options.showCancelHint) {
-    lines.push(`  Cancel: /codex:cancel ${job.id}`);
+    lines.push(`  Cancel: /fugato:cancel ${job.id}`);
   }
   if (job.status !== "queued" && job.status !== "running" && options.showResultHint) {
-    lines.push(`  Result: /codex:result ${job.id}`);
+    lines.push(`  Result: /fugato:result ${job.id}`);
   }
   if (job.status !== "queued" && job.status !== "running" && job.jobClass === "task" && job.write && options.showReviewHint) {
-    lines.push("  Review changes: /codex:review --wait");
-    lines.push("  Stricter review: /codex:adversarial-review --wait");
+    lines.push("  Review changes: /fugato:review --wait");
+    lines.push("  Stricter review: /fugato:adversarial-review --wait");
   }
   if (job.progressPreview?.length) {
     lines.push("  Progress:");
@@ -455,7 +455,7 @@ export function renderStatusReport(report, options = {}) {
     }
     lines.push("");
   } else if (report.running.length === 0 && !report.latestFinished) {
-    lines.push(options.all ? "No jobs recorded for this workspace." : "No jobs in this session. Run /codex:status --all to see jobs from other sessions in this workspace.", "");
+    lines.push(options.all ? "No jobs recorded for this workspace." : "No jobs in this session. Run /fugato:status --all to see jobs from other sessions in this workspace.", "");
   }
 
   if (report.needsReview) {
@@ -560,7 +560,7 @@ export function renderCancelReport(job) {
   if (job.summary) {
     lines.push(`- Summary: ${job.summary}`);
   }
-  lines.push("- Check `/codex:status` for the updated queue.");
+  lines.push("- Check `/fugato:status` for the updated queue.");
 
   return cleanDisplayText(`${lines.join("\n").trimEnd()}\n`);
 }

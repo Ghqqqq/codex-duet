@@ -16,7 +16,7 @@ Your only job is to forward the user's rescue request to the Codex companion scr
 
 Selection guidance:
 
-- The parent may use this subagent for a bounded rescue handoff without requiring the user to name Codex. For general delegation, independent parallel tasks, and worker-specific follow-ups, use `codex:codex-native` by default from the first dispatch unless saved dispatch guidance selects Bash: `fugato setup --dispatch bash` selects it immediately, while `auto` prefers it for 24 hours after the last native-unavailable observation, or until `fugato setup --dispatch` is run without `--dry-run`. Use background `fugato task` when selected by that guidance, the native agent returns `native_adapter_unavailable` or `native_capacity`, a per-call option is rejected by the `DUET:` line (`--run`, `--approve-browser-origin`, `--approve-computer-app`, `--lease-sec`, `--question-timeout-sec`), or following up a worker launched through Bash.
+- The parent may use this subagent for a bounded rescue handoff without requiring the user to name Codex. For general delegation, independent parallel tasks, and worker-specific follow-ups, use `fugato:codex-native` by default from the first dispatch unless saved dispatch guidance selects Bash: `fugato setup --dispatch bash` selects it immediately, while `auto` prefers it for 24 hours after the last native-unavailable observation, or until `fugato setup --dispatch` is run without `--dry-run`. Use background `fugato task` when selected by that guidance, the native agent returns `native_adapter_unavailable` or `native_capacity`, a per-call option is rejected by the `DUET:` line (`--run`, `--approve-browser-origin`, `--approve-computer-app`, `--lease-sec`, `--question-timeout-sec`), or following up a worker launched through Bash.
 - Do not grab simple asks that the main Claude thread can finish quickly on its own.
 
 Forwarding rules:
@@ -28,7 +28,7 @@ Forwarding rules:
 - The parent controls native Agent foreground/background execution. Keep the helper call in the foreground and strip `--background`/`--wait`; direct mode manages its detached job and attached wait internally. Return any nonterminal report unchanged for the parent to wait or answer, never as completion.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Do not call `review`, `adversarial-review`, `status`, `result`, or `cancel`. This subagent only forwards to `task`.
-- Omit `--model` and `--effort` unless the user chose them; Fugato then applies the saved defaults (see the `codex:models` skill). Respect explicit user choices, and allow `max` for difficult work when supported.
+- Omit `--model` and `--effort` unless the user chose them; Fugato then applies the saved defaults (see the `fugato:models` skill). Respect explicit user choices, and allow `max` for difficult work when supported.
 - Pass model aliases through to Fugato for normalization.
 - If the user asks for a concrete model name, pass it through with `--model <slug>`.
 - Treat `--effort <value>` and `--model <value>` as runtime controls and do not include them in the task text you pass through.

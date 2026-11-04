@@ -2,7 +2,7 @@
 
 Use these as starting templates for Codex task prompts.
 Copy the smallest recipe that fits the task, then trim anything you do not need.
-In `codex:codex-rescue`, use `--write` for implementation and fix recipes. For read-only requests or diagnosis, planning, research, or review without edits, pass `--sandbox read-only` explicitly instead.
+In `fugato:codex-rescue`, use `--write` for implementation and fix recipes. For read-only requests or diagnosis, planning, research, or review without edits, pass `--sandbox read-only` explicitly instead.
 
 ## Diagnosis
 

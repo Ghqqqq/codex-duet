@@ -74,17 +74,17 @@ const TARGETS = [
         }
       },
       {
-        label: "plugins[codex].version",
-        get: (json) => findMarketplacePlugin(json, "codex").version,
+        label: "plugins[fugato].version",
+        get: (json) => findMarketplacePlugin(json, "fugato").version,
         set: (json, version) => {
-          findMarketplacePlugin(json, "codex").version = version;
+          findMarketplacePlugin(json, "fugato").version = version;
         }
       },
       {
-        label: "plugins[codex-live].version",
-        get: (json) => findMarketplacePlugin(json, "codex-live").version,
+        label: "plugins[fugato-live].version",
+        get: (json) => findMarketplacePlugin(json, "fugato-live").version,
         set: (json, version) => {
-          findMarketplacePlugin(json, "codex-live").version = version;
+          findMarketplacePlugin(json, "fugato-live").version = version;
         }
       }
     ]

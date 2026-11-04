@@ -1,11 +1,11 @@
 # Native worker lifecycle and protocol evidence
 
-Use `Agent(subagent_type: "codex:codex-native")` by default from the first dispatch,
+Use `Agent(subagent_type: "fugato:codex-native")` by default from the first dispatch,
 without waiting for a readiness notice, subject to the [saved dispatch route](configuration.md#worker-dispatch).
 Background `fugato task` is for
 `native_adapter_unavailable`, `native_capacity`, per-call options the `DUET:` line
 rejects, or follow-ups to Bash-launched workers. Reports arrive with completion notifications;
-only if missing, use `fugato result <worker>`. The Haiku `codex:codex-worker` is a
+only if missing, use `fugato result <worker>`. The Haiku `fugato:codex-worker` is a
 fallback when neither native dispatch nor background Bash is available, or for
 a user-requested forwarding-agent transcript. Native agents receive follow-ups
 and pending answers through SendMessage; see [direct mode](direct-mode.md).
@@ -95,11 +95,11 @@ with a new brief or `fugato task --continue <jobId> --cwd '<cwd>'`. After adopti
 use the new owner in one background `fugato wait <jobId> --owner '<newOwnerId>'`.
 
 The companion writes per-session markers under
-`<isolated home>/duet/sessions/<claudeSessionId>/`. The separate `codex-live`
-plugin (`/plugin install codex-live@fugato`) reads those markers and shows session
+`<isolated home>/duet/sessions/<claudeSessionId>/`. The separate `fugato-live`
+plugin (`/plugin install fugato-live@fugato`) reads those markers and shows session
 jobs and the selected job's live messages, commands, file changes, tool calls,
 plan and pending question. New jobs ask Claude Code to open the pane; Claude
-Code decides whether to show it at the current width. Its `codex-live` slash
+Code decides whether to show it at the current width. Its `fugato-live` slash
 command opens it at any width. It is read-only: it never starts, answers or
 cancels a job and costs no Claude tokens.
 
@@ -148,7 +148,7 @@ prompt, with an estimated cost of about 60 ms that varies by machine and state.
 
 ## Fallback and compatibility feed mode
 
-Never pass `model` or `effort` to `Agent(subagent_type: "codex:codex-worker")`;
+Never pass `model` or `effort` to `Agent(subagent_type: "fugato:codex-worker")`;
 Codex's choices belong in the brief. The Haiku forwarder keeps `effort: low`,
 `omitClaudeMd: true` and `autoCompactWindow: 100000`. It calls
 `fugato task --timeout-sec 570` in foreground Bash (`timeout: 600000`), then
@@ -217,7 +217,7 @@ owner at a time.
 Job records keep only the newest `ACTIVITY_RETAINED_MAX` (500) events.
 `activityTotals: { events, toolUses }` counts all appended activity; legacy
 records seed totals once from the events they still hold. The pane and
-`/codex:status` feed can show only retained events, so a reader that falls
+`/fugato:status` feed can show only retained events, so a reader that falls
 behind the window cannot recover older events there. Tool starts/completions
 are paired across window eviction using at most `ACTIVITY_PENDING_MAX` (100)
 hashed pending identities. Evicting an identity can overcount by one for each
@@ -327,7 +327,7 @@ same job-file flow (`askParentQuestion`) as the in-process dynamic fallback, so
 timeout plus 120 s (capped at 86400 s).
 
 The bridge records a valid `_meta.callId` in `questionHistory[].callId`, allowing
-`codex-live` to match the answer to the MCP tool item on fresh and resumed threads.
+`fugato-live` to match the answer to the MCP tool item on fresh and resumed threads.
 Missing or malformed call IDs stay null; the JSON-RPC request ID is never used
 for matching. Previously recorded answers without call IDs remain unmatched.
 
@@ -361,7 +361,7 @@ returned for detached/background and foreground tasks. `task --owner` remains an
 explicit override; ambient session/owner variables never select the owner.
 The Claude session ID is recorded separately as `sessionId`. A matching owner
 renews an unexpired lease; `fugato wait`/`answer` resolve it automatically. Explicit
-`--owner` handles remain supported. Observational `/codex:status`, `fugato status`
+`--owner` handles remain supported. Observational `/fugato:status`, `fugato status`
 and result reads do not renew; neither do ownerless compatibility companion waits.
 Foreground owners renew while alive; detached task-workers never renew themselves.
 The default lease is 1800 seconds in direct mode, 180 seconds otherwise.
@@ -653,7 +653,7 @@ disabled on its calls. Do not stop unrelated workers; use `x` on the smoke agent
 detail view, since Esc/Ctrl+C with empty main input stops ALL background agents.
 Before launching any replacement, obtain the user's explicit consent.
 
-Give one `codex:codex-worker` this read-only assignment:
+Give one `fugato:codex-worker` this read-only assignment:
 
 ```text
 Run three harmless node commands that print step numbers, separated by 3-second
@@ -708,9 +708,9 @@ must differ; passing the first owner to the second job's status must not renew i
 Cancel only that extra smoke job after recording the evidence.
 
 For adoption acceptance, let the owner wait return normally while the smoke job
-is still active, then use `/codex:status`. Stopping the attached owner interrupts
+is still active, then use `/fugato:status`. Stopping the attached owner interrupts
 the turn and requires `task --continue` instead. Before lease expiry, and with
-explicit user consent, launch a replacement `codex:codex-worker` with this
+explicit user consent, launch a replacement `fugato:codex-worker` with this
 assignment (substitute handles and workspace):
 
 ```text

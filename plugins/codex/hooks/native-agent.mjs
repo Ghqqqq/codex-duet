@@ -8,15 +8,17 @@ import { PERSONA_IDS } from '../scripts/lib/roundtable-personas.mjs';
 import { AGENT_TYPE, PRESETS, isNativeType, applyPreset } from './presets.mjs';
 import { PREFIX, BINDING_FAILED, keyFor, bindingFailedKey, startedTypes, knownTypes, ours } from './native-identity.mjs';
 import { register as teammateReceive, teammateUnsupported, paneTeammate } from './native-teams.mjs';
+import { cleanCommand, displayPath, quoteWord } from './command-display.mjs';
 export { AGENT_TYPE } from './presets.mjs';
 export { command, processBudget, ended };
+export { logEntry, foldEntries, eventRow, logRows, proseRows, headerRow, statusRow, reportMarkdown, textWidth };
 const ACTIVE = ['queued', 'running'];
 const WAIT_TIMEOUT_SEC = '3600';
 const HEARTBEAT_MS = 30000;
 const EARLY_HANDLES_MS = 1500;
-const READY = 'Native Codex workers ready: Agent(subagent_type: "codex:codex-native", prompt) — optional first line "DUET: <flags>"; SendMessage to continue or answer; stop from /tasks; live progress shows inside the agent and in codex-live.';
-const GUIDE_ID = 'codex:native-dispatch';
-const NATIVE_GUIDE = 'Native Codex workers are ready. Dispatch Codex with Agent(subagent_type: "codex:codex-native", prompt: "<brief>") (a valid caller name is kept when free; otherwise the plugin assigns a scientist name and reports it in context); use codex:codex-reviewer for read-only review, codex:codex-investigator for read-only investigation, or codex:codex-implementer for workspace-write implementation. Presets inherit saved model/effort/speed defaults. An optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast|--normal --fork --cwd <dir> sets task flags; preset sandbox overrides are refused. The agent result is the Fugato report; continue a worker or answer its question with SendMessage. In-process teammates support bounded assignments, parent follow-ups and stop; team task claiming, plan approval and peer mailboxes are unsupported. Browser work and Computer Use run natively: an app not yet approved arrives as an approval question answered through SendMessage. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.';
+const READY = 'Native Codex workers ready: Agent(subagent_type: "fugato:codex-native", prompt) — optional first line "DUET: <flags>"; SendMessage to continue or answer; stop from /tasks; live progress shows inside the agent and in fugato-live.';
+const GUIDE_ID = 'fugato:native-dispatch';
+const NATIVE_GUIDE = 'Native Codex workers are ready. Dispatch Codex with Agent(subagent_type: "fugato:codex-native", prompt: "<brief>") (a valid caller name is kept when free; otherwise the plugin assigns a scientist name and reports it in context); use fugato:codex-reviewer for read-only review, fugato:codex-investigator for read-only investigation, or fugato:codex-implementer for workspace-write implementation. Presets inherit saved model/effort/speed defaults. An optional first prompt line DUET: --model <model> --effort <effort> --sandbox <mode> --fast|--normal --fork --cwd <dir> sets task flags; preset sandbox overrides are refused. The agent result is the Fugato report; continue a worker or answer its question with SendMessage. In-process teammates support bounded assignments, parent follow-ups and stop; team task claiming, plan approval and peer mailboxes are unsupported. Browser work and Computer Use run natively: an app not yet approved arrives as an approval question answered through SendMessage. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `fugato:native-fallback` skill and follow it.';
 const PERSON_ORIGINS = ['composer', 'bridge', 'sdk'];
 const GUIDANCE_TTL_MS = 60000;
 let guidanceCache = null;
@@ -84,7 +86,7 @@ const ended = (job, state) => (['interrupted', 'cancelled'].includes(job.status)
     && (ENDED.includes(job.status) || failedEnded(job)));
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_RECORDS = 128, MAX_STORE_SIZE = 2 * 1024 * 1024;
-const nativeAgents = { plugin: 'codex', key: 'nativeAgents' };
+const nativeAgents = { plugin: 'fugato', key: 'nativeAgents' };
 // Display metadata only; the durable binding remains the execution authority.
 async function publishActivity($, state, job) {
   try {
@@ -236,13 +238,17 @@ function updateDisplay($, state, job) {
   if (job) settleLog($, state, job);
   const view = agentDisplays.get(state.agentId);
   if (!view || !liveProgress.has(state.agentId) || view.turnId !== (state.incoming?.turnId ?? state.intent?.turnId)) return;
-  liveProgress.get(state.agentId).cwd = job?.request?.cwd ?? state.cwd;
+  const feed = liveProgress.get(state.agentId);
+  feed.cwd = view.cwd = job?.request?.cwd ?? state.cwd;
+  view.role = state.roundtable?.persona || (/^fugato:codex-(reviewer|investigator|implementer)$/.exec(state.type)?.[1] ?? 'worker');
   view.name = state.worker || state.name || view.name;
   if (typeof state.effort === 'string') view.effort = state.effort;
   if (job) {
+    view.jobId = job.id || state.jobId;
     const request = job.request;
     if (typeof request?.model === 'string') view.model = request.model;
     if (typeof request?.effort === 'string') view.effort = request.effort;
+    if (typeof request?.sandbox === 'string') view.sandbox = request.sandbox;
     if (request && Object.hasOwn(request, 'serviceTier')) view.speed = request.serviceTier === 'priority' ? 'fast' : 'normal';
     view.question = ACTIVE.includes(job.status) && job.pendingQuestion?.answer === undefined
       && typeof job.pendingQuestion?.text === 'string' ? cleanDisplayText(job.pendingQuestion.text).slice(0, 200) : undefined;
@@ -251,15 +257,16 @@ function updateDisplay($, state, job) {
 }
 const elapsedDisplay = ms => {
   const seconds = Math.max(0, Math.floor((ms || 0) / 1000));
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+    : `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
 };
 const commandStart = text => /^▸/.test(text) || /^Bash\(.*\) · running\s*$/.test(text);
-const resultStyle = result => /^Done\b/.test(result) ? { color: 'success' }
-  : /^(?:Error|Failed|Blocked)\b/.test(result) ? { color: 'error' } : { dimColor: true };
 function logEntry(text) {
-  if (/^Codex worker .+ running · /.test(text)) return null;
+  if (/^Codex worker .+ (?:running|started) · /.test(text)
+    || /^Codex tokens \(provider:|^Open Codex activity:|^\s*(?:└|⎿)\s*Done\b/.test(text)) return null;
   if (text.startsWith('Codex:')) return { kind: 'message', title: text.slice(6).trim() };
-  if (/^Codex worker .+ started · /.test(text)) return { kind: 'info', title: text };
+  if (text.startsWith('? Waiting for Claude:')) return { kind: 'question', title: text.slice(21).trim() };
+  if (/^(?:↳ )?answered\b/i.test(text)) return { kind: 'answered', title: '↳ answered' };
   const event = (title, result) => ({ kind: 'event', title, result, running: result === 'running' });
   let match;
   if ((match = /^(Bash\(.*\)|(?:Update|Write|Delete)\(.*\)) · (.*)$/.exec(text))) return event(match[1], match[2]);
@@ -284,6 +291,7 @@ function appendLog($, log, text) {
   try {
     const entry = logEntry(text);
     if (!entry) return;
+    entry.at = log.view?.elapsedMs ?? 0;
     // Identical commands may overlap. Match their completions FIFO, as Codex
     // reports same-title completions in order; never dedupe a running start or
     // a completion that still has a running entry to consume.
@@ -383,66 +391,32 @@ function foldEntries(entries) {
     }
     if (end - i >= 2) {
       const detail = [...names].map(([name, count]) => name + (count > 1 ? ` ×${count}` : '')).join(', ');
-      folded.push({ kind: 'event', title: `Explored · ${end - i} commands (${detail})`, result: 'Done', running: false });
+      folded.push({ kind: 'event', title: 'explored', detail: `${end - i} commands · ${detail}`, result: 'Done', running: false });
       i = end;
     } else folded.push(entries[i++]);
   }
   return folded;
 }
-function displayPath(path, context = {}) {
-  const cwd = context.cwd?.replace(/\/+$/, ''), home = context.home?.replace(/\/+$/, '');
-  if (cwd && (path === cwd || path.startsWith(cwd + '/')) && !path.slice(cwd.length).split('/').includes('..')) return path.slice(cwd.length + 1) || '.';
-  if (home && (path === home || path.startsWith(home + '/'))) return '~' + path.slice(home.length);
-  return path;
-}
-function eventTitle(entry, context) {
-  const title = entry.title;
-  if (title.startsWith('Bash(')) {
-    const { parts } = commandParts(title.slice(5, -1));
-    let first = true;
-    const command = parts[0].replace(/(?:[^\s'"\\]+|'[^']*'|"(?:\\.|[^"\\])*"|\\.)+/g, token => {
-      const word = unquote(token), quote = word === token ? '' : token[0];
-      const path = first && word.startsWith('/') ? programName(word)
-        : word.replace(/^(--[^=]+=)?(\/.*)$/, (_, option, value) => (option ?? '') + displayPath(value, context));
-      first = false;
-      return quote + path + quote;
-    });
-    return { title: `Bash(${command})`, suffix: parts.length > 1 ? ` (+${parts.length - 1})` : '' };
+const span = (text, color = 'text', props = {}) => ({ type: 'Text', props: { color, ...props }, children: [cleanDisplayText(text)] });
+const spanText = node => typeof node === 'string' ? node : (node.children ?? []).map(spanText).join('');
+const displayWidth = e => Number.isFinite(e.viewport?.columns) ? Math.max(0, Math.floor(e.viewport.columns)) : 100;
+function clipSpans(children, width) {
+  if (textWidth(children.map(spanText).join('')) <= width) return children;
+  const clipped = [];
+  let left = Math.max(0, width - 1);
+  for (const child of children) {
+    const text = spanText(child), value = takeCells(textChars(text), left);
+    if (value) clipped.push(typeof child === 'string' ? value : { ...child, children: [value] });
+    left -= textWidth(value);
+    if (value !== text) break;
   }
-  return { title: title.replace(/^((?:Write|Update|Delete)\()(.*)\)$/, (_, action, path) => action + displayPath(path, context) + ')'), suffix: '' };
+  if (width > 0) clipped.push(span('…', 'subtle'));
+  return clipped;
 }
-function eventStatus(entry, context = {}) {
-  const result = entry.result;
-  if (entry.running) return context.interruption || '… running';
-  if (/^Done\b/.test(result)) return '✓' + result.slice(4).replace(/^\s*\((.*)\)$/, ' $1');
-  if (/^(?:Error|Failed|Blocked)\b/.test(result)) return '✗' + result.replace(/^(?:Error|Failed|Blocked)\b:?\s*/, ' ').replace(/\s+\([^)]*\)$/, '').trimEnd();
-  const added = /^\+(\d+|\?) [−-]0$/.exec(result);
-  if (entry.title.startsWith('Write(') && added) return `✓ new · ${added[1]} lines`;
-  return result;
-}
-const entryText = (entry, context) => {
-  if (entry.kind !== 'event') return entry.kind === 'message' ? `Codex: ${entry.title}` : entry.title;
-  const { title, suffix } = eventTitle(entry, context);
-  return `${title}${suffix} ${eventStatus(entry, context)}`;
-};
-const entryStyle = entry => entry.kind === 'event'
-  ? (/^\+\d+ [−-]\d+$/.test(entry.result) ? { color: 'success' } : resultStyle(entry.result))
-  : entry.kind === 'message' ? { color: 'text' } : { dimColor: true };
-function lineStyle(text) {
-  if (/^Codex:/.test(text)) return { color: 'text' };
-  if (/^✗/.test(text)) return { color: 'error' };
-  if (/^✓/.test(text)) return { color: 'success' };
-  if (/^▸/.test(text)) return { dimColor: true };
-  // A command mentioning "Failed" still takes the color of its own outcome.
-  const status = text.startsWith('Bash(') && text.includes(') · ') ? text.slice(text.lastIndexOf(') · ') + 2) : text;
-  return /· Done\b/.test(status) ? { color: 'success' }
-    : /· Error\b|\b(?:Failed|Blocked)\b/.test(status) ? { color: 'error' } : { dimColor: true };
-}
-const displayWidth = e => Number.isFinite(e.viewport?.columns) ? Math.max(0, Math.floor(e.viewport.columns)) : 120;
-const displayRow = (e, children, props = {}) => ({ type: 'Box', props: {
-  width: displayWidth(e)
-}, children: [{ type: 'Text', props: { wrap: 'truncate-end', ...props }, children }] });
-const progressRow = (e, text, prefix = '') => displayRow(e, [prefix + cleanDisplayText(text).replace(/\s+/g, ' ')], lineStyle(text));
+const displayRow = (e, children, props = {}) => ({ type: 'Box', props: { width: displayWidth(e) },
+  children: [{ type: 'Text', props: { wrap: 'truncate-end', color: 'text', ...props }, children: clipSpans(children, displayWidth(e)) }] });
+const lineStyle = text => ({ color: /^\?|\b(?:warning|unavailable)\b/i.test(text) ? 'warning' : 'subtle' });
+const progressRow = (e, text) => displayRow(e, [cleanDisplayText(text).replace(/\s+/g, ' ')], lineStyle(text));
 // A host without Intl.Segmenter falls back to code points rather than
 // failing to load the adapter.
 const graphemeSegmenter = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
@@ -460,62 +434,184 @@ function takeCells(chars, width, fromEnd = false) {
   }
   return result;
 }
-function middleText(text, width) {
-  if (textWidth(text) <= width) return text;
-  if (width < 1) return '';
-  const left = Math.ceil((width - 1) / 2), chars = textChars(text);
-  // Preserve the original clusters: reversed regional indicators pair differently.
-  return takeCells(chars, left) + '…' + takeCells(chars, width - 1 - left, true);
+function shortWord(word) {
+  return textWidth(word) > 40 ? takeCells(textChars(word), 24) + '…' + takeCells(textChars(word), 15, true) : word;
 }
-function eventRow(e, entry, context) {
-  const width = displayWidth(e), dotWidth = Math.min(2, width), status = eventStatus(entry, context);
-  const statusWidth = Math.min(width - dotWidth, textWidth(status) + 1), titleWidth = width - dotWidth - statusWidth;
-  const { title, suffix } = eventTitle(entry, context);
-  const label = middleText(title, Math.max(0, titleWidth - textWidth(suffix))) + suffix;
-  const cell = (width, children, props = {}, box = {}) => ({ type: 'Box', props: { width, flexShrink: 0, ...box },
-    children: [{ type: 'Text', props: { wrap: 'truncate-end', ...props }, children }] });
-  return { type: 'Box', props: { width, flexDirection: 'row' }, children: [
-    cell(dotWidth, ['● '], entryStyle(entry)),
-    cell(titleWidth, [label], { color: 'text', bold: true }, { flexGrow: 1, flexShrink: 1, minWidth: 0 }),
-    cell(statusWidth, [' ' + status], entryStyle(entry))
-  ] };
+const displayWord = word => quoteWord(word) === word ? shortWord(word) : quoteWord(shortWord(word));
+const isPathWord = word => word.includes('/') && !word.startsWith('-');
+function shorterPath(word) {
+  const segments = word.split('/').filter(Boolean);
+  if (segments[0] === '…') segments.shift();
+  return segments.length > 1 ? '…/' + segments.slice(1).join('/') + (word.endsWith('/') ? '/' : '') : null;
 }
-function logRows(e, entry, context) {
-  let rows;
-  if (entry.kind === 'message') {
-    const chars = textChars(entry.title.replace(/\s+/g, ' ')), width = Math.max(1, displayWidth(e) - 2);
-    rows = [];
-    while (chars.length && rows.length < 4) {
-      const last = rows.length === 3, overflow = textWidth(chars.join('')) > width;
-      let count = textChars(takeCells(chars, width - (last && overflow ? 1 : 0))).length;
-      count = Math.max(1, count);
-      const space = chars.slice(0, count).lastIndexOf(' ');
-      if (space > 0 && count < chars.length) count = space + 1;
-      const text = chars.splice(0, count).join('').trimEnd();
-      rows.push(displayRow(e, [(rows.length ? '  ' : '● ') + text + (last && chars.length ? '…' : '')], { color: 'text' }));
+function pathSpans(word) {
+  const slash = word.lastIndexOf('/');
+  return slash >= 0 && !word.startsWith('-') ? [span(word.slice(0, slash + 1), 'subtle'), span(word.slice(slash + 1))]
+    : [span(word, 'subtle')];
+}
+function eventTitle(entry, context = {}) {
+  if (entry.title.startsWith('Bash(')) return cleanCommand(entry.title.slice(5, -1), context);
+  const change = /^(?:Write|Update|Delete)\((.*)\)$/.exec(entry.title);
+  if (change) return { verb: 'edit', words: [displayPath(change[1], context)], change: true };
+  if (entry.detail) return { verb: 'explored', words: [], detail: entry.detail };
+  return { verb: entry.title === 'Update Todos' ? 'plan' : entry.title, words: [] };
+}
+function eventStatus(entry, context = {}) {
+  const result = entry.result;
+  if (entry.running) return context.interruption || `running ${elapsedDisplay(Math.max(0, (context.view?.elapsedMs ?? 0) - (entry.at ?? 0)))}`;
+  if (/^Done\b/.test(result)) {
+    const duration = /\((?:(\d+)m )?(\d+(?:\.\d+)?)s\)/.exec(result);
+    const ms = duration ? (Number(duration[1] ?? 0) * 60 + Number(duration[2])) * 1000 : 0;
+    return '✓' + (ms >= 1000 ? ' ' + elapsedDisplay(ms) : '');
+  }
+  if (/^(?:Error|Failed|Blocked)\b/.test(result)) {
+    const stopped = /\b(cancelled|declined|interrupted)\b/.exec(result);
+    if (stopped) return stopped[1];
+    const exit = /\bexit (-?\d+)/.exec(result);
+    return exit ? `✗ exit ${exit[1]}` : '✗ error';
+  }
+  if (/^exit unknown$|^outcome unknown$/.test(result)) return 'exit ?';
+  return result;
+}
+function entryStyle(entry, context = {}) {
+  if (entry.kind === 'message') return { color: 'text' };
+  if (entry.kind === 'question') return { color: 'warning' };
+  if (entry.kind !== 'event') return { color: 'subtle' };
+  const status = eventStatus(entry, context);
+  return { color: status.startsWith('✓') ? 'success' : status.startsWith('✗') ? 'error'
+    : status.startsWith('running') ? 'claude' : status === 'exit ?' ? 'warning' : 'inactive' };
+}
+function eventOutcome(entry, context) {
+  const status = eventStatus(entry, context), counts = /^(\+[\d?]+) ([−-][\d?]+)$/.exec(status);
+  if (counts) {
+    // A zero side is omitted when the other side changed: a new file reads `+2`.
+    const added = counts[1] !== '+0' || /^[−-]0$/.test(counts[2]), removed = !/^[−-]0$/.test(counts[2]) || counts[1] === '+0';
+    return { glyph: '✓', color: 'success', tail: [span('  ', 'subtle'), ...(added ? [span(counts[1], 'diffAdded')] : []),
+      ...(added && removed ? [span(' ', 'subtle')] : []), ...(removed ? [span(counts[2].replace('-', '−'), 'diffRemoved')] : [])] };
+  }
+  const color = entryStyle(entry, context).color;
+  const glyph = status.startsWith('✓') ? '✓' : status.startsWith('✗') ? '✗'
+    : status.startsWith('running') ? '●' : ['cancelled', 'declined', 'interrupted'].includes(status) ? '■' : '!';
+  const detail = /^[✓✗]/.test(status) ? status.slice(1).trim() : status;
+  return { glyph, color, tail: detail ? [span(' · ' + detail, glyph === '✓' ? 'subtle' : color)] : [] };
+}
+function eventRow(e, entry, context = {}) {
+  const width = displayWidth(e), title = eventTitle(entry, context), outcome = eventOutcome(entry, context);
+  const words = title.words.map(word => ({ text: isPathWord(word) ? word : shortWord(word),
+    quoted: quoteWord(word) !== word, path: isPathWord(word) }));
+  const wordText = word => word.quoted ? quoteWord(word.text) : word.text;
+  const leftSpans = () => [span('  ', 'subtle'), span(outcome.glyph, outcome.color), span(' ', 'subtle'), span(displayWord(title.verb)),
+    ...(title.detail ? [span(' ' + title.detail, 'subtle')] : []),
+    ...words.flatMap(word => [span(' ', 'subtle'), ...pathSpans(wordText(word))])];
+  const tail = clipSpans(outcome.tail, Math.max(0, width - Math.min(4, width)));
+  const tailWidth = textWidth(tail.map(spanText).join(''));
+  const suffix = title.extra ? ` +${title.extra}` : '';
+  const leftWidth = Math.max(0, width - tailWidth);
+  const suffixSpans = clipSpans(suffix ? [span(suffix, 'subtle')] : [], Math.max(0, leftWidth - Math.min(4, leftWidth)));
+  const argsWidth = Math.max(0, leftWidth - textWidth(suffixSpans.map(spanText).join('')));
+  let left = leftSpans();
+  while (textWidth(left.map(spanText).join('')) > argsWidth) {
+    const paths = words.filter(word => word.path && shorterPath(word.text) !== null);
+    if (!paths.length) break;
+    const longest = paths.reduce((a, b) => textWidth(wordText(a)) >= textWidth(wordText(b)) ? a : b);
+    longest.text = shorterPath(longest.text);
+    left = leftSpans();
+  }
+  return displayRow(e, [...clipSpans(left, argsWidth), ...suffixSpans, ...tail]);
+}
+function inlineSpans(text, color) {
+  const parts = [], pattern = /\*\*([^*]+)\*\*|__([^_]+)__|`([^`]+)`|\*([^*]+)\*|_([^_]+)_|\[([^\]]+)\]\([^)]+\)/g;
+  let start = 0, match;
+  while ((match = pattern.exec(text))) {
+    if (match.index > start) parts.push(span(text.slice(start, match.index), color));
+    parts.push(span(match.slice(1).find(value => value !== undefined), color,
+      match[1] || match[2] ? { bold: true } : match[4] || match[5] ? { italic: true } : {}));
+    start = pattern.lastIndex;
+  }
+  if (start < text.length) parts.push(span(text.slice(start), color));
+  return parts;
+}
+function proseRows(e, text, { marker, color = 'text', limit = 4 } = {}) {
+  const cleaned = cleanDisplayText(text.replace(/\r\n?/g, '\n')), rows = [];
+  const lines = marker ? cleaned.split(/\r\n?|\n|\u2028|\u2029/) : [cleaned.replace(/\s+/g, ' ').trim()];
+  const width = Math.max(1, displayWidth(e) - (marker ? 1 : 0));
+  for (let index = 0; index < lines.length && rows.length < limit; index++) {
+    const chars = inlineSpans(lines[index].replace(/\t/g, ' '), color)
+      .flatMap(part => textChars(spanText(part)).map(char => ({ char, props: part.props })));
+    if (!chars.length) {
+      const overflow = rows.length === limit - 1 && index + 1 < lines.length;
+      if (marker) rows.push(displayRow(e, [span('▏', marker), ...(overflow ? [span('…', color)] : [])]));
+      continue;
     }
-  } else if (entry.kind === 'event') rows = [eventRow(e, entry, context)];
-  else rows = [displayRow(e, [entry.title], { dimColor: true })];
+    while (chars.length && rows.length < limit) {
+      const values = chars.map(part => part.char), last = rows.length === limit - 1;
+      const overflow = textWidth(values.join('')) > width || index + 1 < lines.length;
+      let count = Math.max(1, textChars(takeCells(values, width - (last && overflow ? 1 : 0))).length);
+      const space = values.slice(0, count).lastIndexOf(' ');
+      if (space > 0 && count < chars.length) count = space + 1;
+      const line = chars.splice(0, count), parts = [];
+      while (line.at(-1)?.char === ' ') line.pop();
+      for (const part of line) {
+        const previous = parts.at(-1);
+        if (previous && JSON.stringify(previous.props) === JSON.stringify(part.props)) previous.children[0] += part.char;
+        else parts.push(span(part.char, color, part.props));
+      }
+      if (last && (chars.length || index + 1 < lines.length)) parts.push(span('…', color));
+      rows.push(displayRow(e, [...(marker ? [span('▏', marker)] : []), ...parts]));
+    }
+  }
+  return rows;
+}
+function logRows(e, entry, context = {}) {
+  const closing = entry.kind === 'message' && /^\[(?:completed|needs_input|needs_answer|blocked|failed|interrupted|cancelled|owner_stopped|ownership_moved)\](?:\s|$)/.test(entry.title);
+  const rows = closing ? [] : entry.kind === 'message' ? proseRows(e, entry.title)
+    : entry.kind === 'event' ? [eventRow(e, entry, context)]
+    : entry.kind === 'question' ? [displayRow(e, [span('  ? asks Claude · ' + entry.title.split('\n')[0], 'warning')])]
+    : [progressRow(e, entry.title)];
   return { type: 'Box', props: { flexDirection: 'column' }, children: rows };
 }
-const displayStatus = status => ({ completed: 'Done', blocked: 'Blocked', failed: 'Failed',
-  needs_answer: 'Needs answer', needs_input: 'Needs answer', interrupted: 'Interrupted',
-  cancelled: 'Interrupted', owner_stopped: 'Interrupted', ownership_moved: 'Interrupted' })[status] || 'Failed';
+// An empty Text has no height; a blank separator needs one cell of content.
+const blankRow = e => displayRow(e, [' ']);
+// While the turn runs, the Spinner row is its status line.
+const TERMINAL = new Set(['completed', 'blocked', 'failed', 'interrupted', 'cancelled', 'owner_stopped', 'ownership_moved']);
+const feedFinalStatus = view => view && !view.hasReport && (TERMINAL.has(view.status) || ['needs_answer', 'needs_input'].includes(view.status));
+function logFeed(e, log) {
+  const rows = [];
+  let previous;
+  for (const entry of foldEntries(log.entries)) {
+    const rendered = logRows(e, entry, log);
+    if (!rendered.children.length) continue;
+    if (previous && (entry.kind === 'message') !== (previous === 'message')) rows.push(blankRow(e));
+    rows.push(rendered);
+    previous = entry.kind;
+  }
+  return rows;
+}
+const displayStatus = status => ({ completed: 'done', blocked: 'blocked', failed: 'failed',
+  needs_answer: 'asks Claude', needs_input: 'asks Claude', interrupted: 'interrupted',
+  cancelled: 'cancelled', owner_stopped: 'interrupted', ownership_moved: 'interrupted' })[status] || status || 'failed';
+function headerRow(e, context = {}) {
+  const view = context.view ?? context, model = view.model?.replace(/^gpt-[\d.]+-(.+)$/, '$1');
+  const settings = [view.role || 'worker', [model, view.effort].filter(Boolean).join(' '),
+    view.sandbox === 'read-only' ? 'read-only' : '', (view.cwd ?? context.cwd)?.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1)].filter(Boolean);
+  return displayRow(e, [span(cleanDisplayText(view.name || 'Codex').replace(/\s+/g, ' '), 'text', { bold: true }),
+    span(' · ' + settings.join(' · '), 'subtle')]);
+}
+function statusRow(e, view) {
+  const word = displayStatus(view.status), color = word === 'running' ? 'claude' : word === 'done' ? 'success'
+    : ['failed', 'blocked'].includes(word) ? 'error' : word === 'asks Claude' ? 'warning' : 'inactive';
+  const details = [Number.isFinite(view.elapsedMs) ? elapsedDisplay(view.elapsedMs) : '',
+    Number.isSafeInteger(view.totalTokens) && view.totalTokens >= 0 ? `${compactNumber(view.totalTokens)} tokens` : '',
+    view.pane ? `/fugato-live ${cleanDisplayText(view.name).replace(/\s+/g, ' ')}` : ''].filter(Boolean);
+  return displayRow(e, [span(word, color), ...(details.length ? [span(' · ' + details.join(' · '), 'subtle')] : [])]);
+}
 function promptDisplay(text) {
   if (typeof text !== 'string') return null;
-  const { brief, flags, cwd } = parsePrompt(text);
-  if (brief === text) return null;
-  const value = flag => {
-    const index = flags.indexOf(flag);
-    return index < 0 ? undefined : flags[index + 1];
-  };
-  // Show only supplied settings; defaults and inherited settings are not known
-  // from the prompt. Keep the brief byte-for-byte as parsePrompt received it.
-  const parts = ['Codex', value('--model'), value('--effort'),
-    flags.includes('--fast') ? 'fast' : flags.includes('--normal') ? 'normal' : undefined,
-    value('--sandbox'), flags.includes('--fork') ? 'fork' : undefined,
-    cwd?.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || cwd];
-  return { text: brief, header: parts.filter(Boolean).map(part => part.replace(/\s+/g, ' ')).join(' · ') };
+  const { brief } = parsePrompt(text);
+  return { text: brief, first: cleanDisplayText(coordinatorBody(brief)).trim().split('\n')[0] || '' };
+}
+function claudeRow(e, prompt) {
+  return displayRow(e, [span('Claude › ', 'claude'), span(prompt.first, 'subtle', { italic: true })]);
 }
 const closedKey = (session, id) => `${CLOSED}${session}:${id}`;
 const nonceFor = (session, agent, turn) => [session, agent, turn].map(encodeURIComponent).join(':');
@@ -524,7 +620,7 @@ const nativeNext = (state, status, blockers = []) => {
     ['context_window_exceeded', 'provider_refused', 'auth_required', 'native_remote_isolation', 'native_teammate_unsupported'].includes(blocker.code));
   if (blocker?.code === 'context_window_exceeded') return 'Start a new native agent with a shorter brief.';
   if (blocker?.code === 'provider_refused') return 'Start a new native agent with a reworded brief.';
-  if (blocker?.code === 'auth_required') return 'Run /codex:setup, then start a new native agent.';
+  if (blocker?.code === 'auth_required') return 'Run /fugato:setup, then start a new native agent.';
   if (blocker?.code === 'native_remote_isolation') return 'Start a local native agent, optionally with isolation: "worktree".';
   if (blocker?.code === 'native_teammate_unsupported') return 'Use in-process teammate mode or a local subagent; stop any pane teammate already started.';
   return `SendMessage to ${state.name || state.agentId} ${status === 'needs_answer' ? 'with the answer' : 'to continue'}`;
@@ -555,7 +651,47 @@ const REPORT_FIELDS = new Set(['status', 'worker', 'jobId', 'summary', 'summaryT
   'changedFilesOmitted', 'keyFindingsOmitted', 'assumptionsOmitted', 'blockersOmitted',
   'verificationOmitted', 'claimedVerificationOmitted', 'touchedFilesOmitted', 'preExistingChangesOmitted',
   'approvedBrowserOriginsOmitted', 'approvedComputerAppsOmitted']);
-function reportMarkdown(props, model = 'unknown') {
+const compactNumber = value => value >= 1000000 ? `${Number((value / 1000000).toPrecision(3))}M`
+  : value >= 1000 ? `${Number((value / 1000).toPrecision(3))}k` : String(value);
+function reportDisplay(report) {
+  const views = [...turnLogs.values()].map(log => log.view).concat([...agentDisplays.values()]).filter(Boolean);
+  const matches = views.filter(view => report.jobId ? view.jobId === report.jobId : report.worker && view.name === report.worker);
+  return matches.findLast(view => view.report?.status === report.status && view.report?.summary === report.summary)
+    ?? matches.findLast(view => view.status === report.status);
+}
+function cappedRows(e, rows, limit) {
+  if (rows.length <= limit) return rows;
+  if (limit <= 0) return [];
+  const kept = rows.slice(0, limit), last = kept.at(-1).children[0].children;
+  kept[kept.length - 1] = displayRow(e, [...clipSpans(last, Math.max(0, displayWidth(e) - 1)), span('…', 'subtle')]);
+  return kept;
+}
+function factRows(e, label, values, color = 'text', limit = 60) {
+  const rows = [], width = Math.max(1, displayWidth(e) - 12);
+  for (const [index, value] of values.entries()) {
+    const chars = value.flatMap(part => textChars(spanText(part)).map(char => ({ char, props: part.props })));
+    while (chars.length && rows.length < limit) {
+      const values = chars.map(part => part.char);
+      let count = Math.max(1, textChars(takeCells(values, width)).length);
+      const space = values.slice(0, count).lastIndexOf(' ');
+      if (space > 0 && count < chars.length) count = space + 1;
+      const line = chars.splice(0, count), parts = [];
+      while (line.at(-1)?.char === ' ') line.pop();
+      for (const part of line) {
+        const previous = parts.at(-1);
+        if (previous && JSON.stringify(previous.props) === JSON.stringify(part.props)) previous.children[0] += part.char;
+        else parts.push(span(part.char, color, part.props));
+      }
+      const prefix = rows.length ? ' '.repeat(12) : '  ' + label.padEnd(10);
+      rows.push(displayRow(e, [span(prefix, color === 'warning' ? 'warning' : 'subtle'), ...parts]));
+    }
+    if (rows.length === limit && (chars.length || index + 1 < values.length)) {
+      return cappedRows(e, [...rows, blankRow(e)], limit);
+    }
+  }
+  return rows;
+}
+function reportMarkdown(props, e = {}, lineLimit = 60) {
   if (Object.hasOwn(props, 'isSummary') || typeof props.text !== 'string') return null;
   let report;
   try { report = JSON.parse(props.text.trim()); } catch { return null; }
@@ -578,47 +714,61 @@ function reportMarkdown(props, model = 'unknown') {
     const cleaned = cleanDisplayText(text), value = boundedText(cleaned, 600);
     return value === cleaned ? value : `${value}…`;
   };
-  const plain = value => typeof value === 'string'
-    ? clip(cleanDisplayText(value).replace(/\s+/g, ' ').trim()).replace(/[\\`*_{}\[\]<>#|]/g, '\\$&') : '';
-  const lines = [`**${plain(report.worker) || 'Codex'}** · ${report.status} · job ${plain(report.jobId) || '—'}`];
-  if (typeof report.summary === 'string' && report.summary.trim()) {
-    const summary = report.summary.trim().split(/\r\n?|\n|\u2028|\u2029/);
-    lines.push('', ...summary.slice(0, 12).map(clip));
-    if (summary.length > 12) lines[lines.length - 1] = '…';
-  }
-  const list = (title, values, limit = 10) => {
-    const items = Array.isArray(values) ? values.filter(value => typeof value === 'string' && value.trim()) : [];
-    if (!items.length) return;
-    lines.push('', `**${title}**`, ...items.slice(0, limit).map(value => `- ${plain(value)}`));
-    if (items.length > limit) lines.push('', `+${items.length - limit} more`);
+  const plain = value => typeof value === 'string' ? clip(cleanDisplayText(value).replace(/\s+/g, ' ').trim()) : '';
+  const strings = values => Array.isArray(values) ? values.map(plain).filter(Boolean) : [];
+  const count = value => Number.isSafeInteger(value) && value > 0 ? value : 0;
+  const view = reportDisplay(report), groups = [];
+  const add = (label, values, color = 'text') => {
+    if (values.length) groups.push({ label, rows: factRows(e, label, values, color) });
   };
-  list('Blockers', Array.isArray(report.blockers) ? report.blockers
-    .filter(blocker => typeof blocker?.code === 'string')
-    .map(blocker => `${blocker.code}${typeof blocker.message === 'string' ? `: ${blocker.message}` : ''}`) : []);
-  // Reserve blockers, the question and next action before less urgent sections.
-  const tail = [], question = typeof report.question === 'string' ? { text: report.question } : report.question;
-  if (report.notice) tail.push('', plain(report.notice));
-  if (question) {
-    const options = Array.isArray(question.options) ? question.options.filter(option => typeof option === 'string') : [];
-    lines.push('', '**Question**');
-    if (typeof question.text === 'string') lines.push(plain(question.text));
-    lines.push(...options.slice(0, 10).map(option => `- ${plain(option)}`));
-    const omitted = Math.max(0, options.length - 10)
-      + (Number.isSafeInteger(question.optionsOmitted) && question.optionsOmitted > 0 ? question.optionsOmitted : 0);
-    if (omitted) lines.push('', `+${omitted} more`);
+  const listed = (label, values, limit, omitted = 0) => {
+    const items = strings(values), more = Math.max(0, items.length - limit) + count(omitted);
+    add(label, [...items.slice(0, limit), ...(more ? [`+${more} more`] : [])].map(value => [span(value)]));
+  };
+  const paths = strings(report.changedFiles), changed = [];
+  for (const path of paths.slice(0, 5)) {
+    if (changed.length) changed.push(span(' · ', 'subtle'));
+    const relative = displayPath(path, view);
+    changed.push(...(relative.includes('/') ? pathSpans(relative) : [span(relative)]));
   }
-  list('Changed files', report.changedFiles, 5);
-  if (report.changedFilesNote) lines.push('', plain(report.changedFilesNote));
-  list('Checks run', report.checks?.ran);
-  list('Key findings', report.keyFindings);
-  const usage = [['inputTokens', 'input'], ['cachedInputTokens', 'cached'], ['outputTokens', 'output'],
-    ['reasoningOutputTokens', 'reasoning'], ['totalTokens', 'total']]
-    .filter(([key]) => Number.isSafeInteger(report.usage?.[key]) && report.usage[key] >= 0)
-    .map(([key, label]) => `${report.usage[key]} ${label}`);
-  if (usage.length) tail.push('', `Codex usage (provider: OpenAI Codex, model ${plain(model)}): ${usage.join(' · ')} tokens`);
-  if (report.next) tail.push('', plain(report.next));
-  // At most 60 lines, including all section/omission spacing and the next action.
-  return [...(lines.length + tail.length > 60 ? [...lines.slice(0, 59 - tail.length), '…'] : lines), ...tail].join('\n');
+  const morePaths = Math.max(0, paths.length - 5) + count(report.changedFilesOmitted);
+  if (morePaths) changed.push(span((changed.length ? ' · ' : '') + `+${morePaths} more`, 'subtle'));
+  if (changed.length) add('changed', [changed]);
+  const total = (Array.isArray(report.checks?.ran) ? report.checks.ran.length : 0) + count(report.checks?.omitted);
+  const failed = count(report.checks?.failed);
+  if (total || failed) add('checks', [[span(`${total} passed`), ...(failed ? [span(' · ', 'subtle'), span(`${failed} failed`, 'error')] : [])]]);
+  listed('claimed', report.checks?.claimed, 3, report.claimedVerificationOmitted);
+  listed('findings', report.keyFindings, 3, report.keyFindingsOmitted);
+  const blockers = Array.isArray(report.blockers) ? report.blockers.map(blocker =>
+    [plain(blocker?.code), plain(blocker?.message)].filter(Boolean).join(': ')).filter(Boolean) : [];
+  if (count(report.blockersOmitted)) blockers.push(`+${report.blockersOmitted} more`);
+  add('blocker', blockers.map(value => [span(value, 'warning')]), 'warning');
+  const question = typeof report.question === 'string' ? { text: report.question } : report.question;
+  const questionLines = plain(question?.text) ? [[span(plain(question.text), 'warning')]] : [];
+  const options = strings(question?.options).map((option, index) => `${index + 1}. ${option}`);
+  if (count(question?.optionsOmitted)) options.push(`+${question.optionsOmitted} more`);
+  if (options.length) questionLines.push([span(options.join('  '), 'warning')]);
+  add('question', questionLines, 'warning');
+  // Reserve the last status and essential facts before allocating summary rows.
+  const summary = typeof report.summary === 'string' && report.summary.trim() ? report.summary : '';
+  let budget = Math.max(0, lineLimit - (summary ? 1 : 0) - (summary && groups.length ? 1 : 0)
+    - (summary || groups.length ? 1 : 0) - 1);
+  const allocations = groups.map(() => budget-- > 0 ? 1 : 0);
+  for (const group of [...groups.filter(group => ['blocker', 'question'].includes(group.label)),
+    ...groups.filter(group => !['blocker', 'question'].includes(group.label))]) {
+    const index = groups.indexOf(group), extra = Math.min(Math.max(0, budget), group.rows.length - allocations[index]);
+    allocations[index] += extra; budget -= extra;
+  }
+  const facts = groups.flatMap((group, index) => cappedRows(e, group.rows, allocations[index]));
+  const summaryLimit = Math.max(0, lineLimit - facts.length - (summary && facts.length ? 1 : 0)
+    - (summary || facts.length ? 1 : 0) - 1);
+  const rows = summary ? proseRows(e, summary, { marker: report.status === 'completed' ? 'success'
+    : ['needs_input', 'needs_answer'].includes(report.status) ? 'warning' : 'error', limit: summaryLimit }) : [];
+  if (rows.length && facts.length) rows.push(blankRow(e));
+  rows.push(...facts);
+  if (rows.length) rows.push(blankRow(e));
+  rows.push(statusRow(e, { ...view, status: report.status, name: report.worker || view?.name || 'Codex', totalTokens: report.usage?.totalTokens }));
+  return { type: 'Box', props: { flexDirection: 'column' }, children: rows };
 }
 // Details name the exact job: a worker name moves to its newest job after a follow-up.
 const nativeDetails = state => state.jobId ? `fugato result '${state.jobId}' --details` : state.worker ? `fugato result ${state.worker} --details` : null;
@@ -677,7 +827,7 @@ function parsePrompt(text) {
 
 function admissionBlocked(code, state) {
   const [message, next] = code === 'native_capacity'
-    ? ['Native adapter capacity is full; nothing was launched.', 'Wait for active workers to finish or stop them before starting a new native agent. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.']
+    ? ['Native adapter capacity is full; nothing was launched.', 'Wait for active workers to finish or stop them before starting a new native agent. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `fugato:native-fallback` skill and follow it.']
     : code === 'native_message_too_large'
       ? ['Native message exceeds the adapter message limit; nothing was launched.', 'Start a new native agent with a shorter brief.']
       : ['The native agent binding is no longer retained; nothing was launched.', 'Start a new native agent.'];
@@ -765,7 +915,7 @@ async function prune($, { reserveCount = 0, reserveSize = 0, keepKey, pending = 
         // missing-job response. Inconclusive recovery keeps its binding.
         const error = result.stderr?.trim() || '';
         const missing = error.startsWith(`Worker ${JSON.stringify(value.jobId)}: no match. Pass a jobId or --thread <id>. Candidates: `)
-          || error === `No job found for "${value.jobId}". Run /codex:status to list known jobs.`;
+          || error === `No job found for "${value.jobId}". Run /fugato:status to list known jobs.`;
         if (result.exitCode !== 0) return result.exitCode === 1 && missing ? { job: null } : null;
         const status = parseReport(result.stdout, result.exitCode, result.stderr, true);
         if (!status?.job || typeof status.job !== 'object' || Array.isArray(status.job)
@@ -1100,7 +1250,7 @@ async function drive($, e, state, progress) {
     if (!state.incoming && !state.intent && bindingTurn(state) === undefined && !state.jobId) {
       await nativeHostState($, 'native-unavailable');
       return { ...blocked('The host did not deliver the native turn start; nothing was dispatched.', state, 'native_adapter_unavailable'),
-        next: 'Run `fugato status` first, then use background Bash `fugato task` as described in the `codex:native-fallback` skill.' };
+        next: 'Run `fugato status` first, then use background Bash `fugato task` as described in the `fugato:native-fallback` skill.' };
     }
     return blocked('Native dispatch context unavailable (store full, oversized message, or failed turn.start); nothing was launched.', state);
   }
@@ -1246,7 +1396,7 @@ async function drive($, e, state, progress) {
         await closeTurn($, state);
         const message = args[0] === 'task' && args.includes('--fork')
           ? error.message.replace('Retry with --source <path-to-claude-jsonl>.',
-            "Retry with --fork after this session's SessionStart has recorded the transcript, send a brief without --fork, or load the codex:native-fallback skill for an explicit --source.")
+            "Retry with --fork after this session's SessionStart has recorded the transcript, send a brief without --fork, or load the fugato:native-fallback skill for an explicit --source.")
           : error.message;
         return blocked(message, state);
       }
@@ -1499,9 +1649,10 @@ function progressFor($, e, state, publish, currentFlight) {
         lines.push(`Codex tokens (provider: OpenAI Codex, model ${model}) · ${count(value.inputTokens)} input · ${count(value.cachedInputTokens)} cached · ${count(value.outputTokens)} output · ${count(value.totalTokens)} total`);
       }
       try {
-        if ((await $.command.list()).some(command => command.name === 'codex-live')) {
+        if ((await $.command.list()).some(command => command.name === 'fugato-live')) {
+          if (feed?.view) feed.view.pane = true;
           const name = cleanDisplayText(state.worker || state.name || state.agentId).replace(/\s+/g, ' ').slice(0, 100);
-          lines.push(`Open Codex activity: /codex-live ${name}`);
+          lines.push(`Open Codex activity: /fugato-live ${name}`);
         }
       } catch { /* The companion pane is optional. */ }
       if (!lines.length) return;
@@ -1609,23 +1760,16 @@ export function register(on) {
     const prompt = promptDisplay(e.props.text);
     const engine = await next(prompt ? { ...e, props: { ...e.props, text: prompt.text } } : e);
     const log = turnLogs.get(logKey(turn.agentId, turn.turnId));
-    if (!prompt && !log?.entries.length) return engine;
-    return { type: 'Box', props: { flexDirection: 'column' }, children: [
-      ...(prompt ? [displayRow(e, [prompt.header], { dimColor: true })] : []),
-      engine,
-      ...(log?.omitted ? [displayRow(e, [`… ${log.omitted} earlier lines (ctrl+o for the full record)`], { dimColor: true })] : []),
-      ...(log ? foldEntries(log.entries).map(entry => logRows(e, entry, log)) : [])
+    if (!prompt || !log) return engine;
+    return { type: 'Box', props: { flexDirection: 'column', ...(e.props.isExpanded ? {} : { width: displayWidth(e) }) }, children: [
+      headerRow(e, log), e.props.isExpanded ? engine : claudeRow(e, prompt), blankRow(e),
+      ...(log.omitted ? [displayRow(e, [`… ${log.omitted} earlier lines (ctrl+o for the full record)`], { color: 'subtle' })] : []),
+      ...logFeed(e, log), ...(feedFinalStatus(log.view) ? [blankRow(e), statusRow(e, log.view)] : [])
     ] };
   }).catch(passthrough);
   on('ui.render', { component: 'Spinner' }, ($, e, next) => {
     const view = agentDisplays.get(e.requestId);
-    if (!view) return next(e);
-    return displayRow(e, [
-      { type: 'Text', props: { bold: true }, children: [view.name.replace(/\s+/g, ' ')] },
-      { type: 'Text', props: { dimColor: true }, children: [
-        ` · ${view.status === 'running' ? 'running' : displayStatus(view.status)} · ${elapsedDisplay(view.elapsedMs)}`
-      ] }
-    ]);
+    return view ? view.status === 'running' ? statusRow(e, view) : { type: 'Box', props: {}, children: [] } : next(e);
   }).catch(passthrough);
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (e.props.tool !== 'Agent' || !isNativeType(e.props.input?.subagent_type)) return next(e);
@@ -1633,27 +1777,22 @@ export function register(on) {
     if (!id) return next(e);
     const engine = await next(e), view = agentDisplays.get(id);
     if (!view) return engine;
-    const feed = liveProgress.get(id), rows = [];
-    if (feed) {
-      const rest = [view.model, view.effort, view.speed, elapsedDisplay(view.elapsedMs)]
-        .filter(Boolean).map(part => part.replace(/\s+/g, ' '));
-      rows.push(displayRow(e, [
-        { type: 'Text', props: { bold: true }, children: [view.name.replace(/\s+/g, ' ')] },
-        { type: 'Text', props: { dimColor: true }, children: [` · ${rest.join(' · ')}`] }
-      ]), ...foldEntries(feed.entries).slice(-3).map(entry => entry.kind === 'event' ? eventRow(e, entry, feed)
-        : displayRow(e, ['⎿ ' + entryText(entry, feed).replace(/\s+/g, ' ')], entryStyle(entry))));
-    } else rows.push(progressRow(e, `${view.name} · ${displayStatus(view.status)} · ${elapsedDisplay(view.elapsedMs)}`));
-    if (view.question) rows.push(progressRow(e, `Question: ${view.question}`, '⎿ '));
-    return { type: 'Box', props: { flexDirection: 'column' }, children: [engine, ...rows] };
+    const feed = liveProgress.get(id) ?? turnLogs.get(logKey(id, view.turnId));
+    const rows = feed ? foldEntries(feed.entries).flatMap(entry => logRows(e, entry, feed).children) : [];
+    if (view.question && !feed?.entries.some(entry => entry.kind === 'question' && entry.title === view.question)) {
+      rows.push(logRows(e, { kind: 'question', title: view.question }, feed).children[0]);
+    }
+    if (view.status === 'running' || feedFinalStatus(view)) rows.push(statusRow(e, view));
+    return { type: 'Box', props: { flexDirection: 'column' }, children: [engine, headerRow(e, view), ...rows.slice(-3)] };
   }).catch(passthrough);
-  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    let model;
-    try {
-      const report = JSON.parse(e.props.text);
-      if (report?.usage) model = await activityModel($, report.jobId);
-    } catch { /* Ordinary assistant message. */ }
-    const text = reportMarkdown(e.props, model);
-    return text === null ? next(e) : next({ ...e, props: { ...e.props, text } });
+  on('ui.render', { component: 'AssistantMessage' }, ($, e, next) => {
+    const drawn = reportMarkdown(e.props, e);
+    if (!drawn) return next(e);
+    // Stopped turns can acquire a report later. Redraw their feed once so the
+    // report takes ownership of its final status without leaving a cached copy.
+    const view = reportDisplay(JSON.parse(e.props.text));
+    if (view && !view.hasReport) { view.hasReport = true; invalidateProgress($); }
+    return drawn;
   }).catch(passthrough);
   // 2.1.302 d.ts 13296-13304, 16715-16716: tool.call carries the flat Agent
   // arguments, including isolation and explicit effort; turn.step's effort also
@@ -1903,6 +2042,7 @@ export function register(on) {
       running = { listeners: new Set(), done: false,
         feed: { agentId: e.agentId, turnId: e.turnId, entries: [], omitted: 0 },
         display: { turnId: e.turnId, name: agent.name || e.agentId, elapsedMs: 0, status: 'running' } };
+      running.feed.view = running.display;
       dispatching.set(key, running);
       flights.set(flight, running);
       liveProgress.set(e.agentId, running.feed);
@@ -1926,7 +2066,8 @@ export function register(on) {
           ...(agent.isTeammate || agent.teammateId ? { isTeammate: true } : {}) };
         if (notice && state.incoming?.turnId === e.turnId) state.incoming.notice = notice;
         // Display context only; never persist it or perform host I/O in render.
-        running.feed.cwd = state.cwd;
+        running.feed.cwd = running.display.cwd = state.cwd;
+        try { running.display.pane = (await $.command.list()).some(command => command.name === 'fugato-live'); } catch { /* Optional pane. */ }
         try { running.feed.home = await $.env.get('HOME'); } catch { /* Optional display shortening. */ }
         if (state.incoming?.turnId === e.turnId) rememberPrompt($, { ...e, text: state.incoming.text });
         if (await $.store.get(bindingFailedKey(session, e.agentId))) state.bindingPending = true;
@@ -1998,6 +2139,9 @@ export function register(on) {
           }
         }
         running.display.status = report.status;
+        running.display.jobId = report.jobId || state.jobId;
+        running.display.report = { status: report.status, summary: report.summary };
+        running.display.hasReport = !['interrupted', 'cancelled', 'owner_stopped', 'ownership_moved'].includes(report.status);
         running.display.name = report.worker || state.worker || state.name || running.display.name;
         running.display.question = ['needs_answer', 'needs_input'].includes(report.status)
           ? (typeof report.question === 'string' ? report.question : report.question?.text)?.slice(0, 200) : undefined;

@@ -6,7 +6,7 @@ user-invocable: false
 
 # Codex Prompting
 
-Use this skill when `codex:codex-rescue` needs to shape a prompt for the selected Codex model.
+Use this skill when `fugato:codex-rescue` needs to shape a prompt for the selected Codex model.
 
 Prompt Codex like an operator, not a collaborator. Keep prompts compact and block-structured with XML tags. State the task, the output contract, the follow-through defaults, and the small set of extra constraints that matter.
 

@@ -1170,7 +1170,7 @@ async function requestAcceptance(client, method, params, onRejected = null) {
   try { return await client.request(method, params, { timeoutMs }); }
   catch (error) {
     if (error.code === "ETIMEDOUT") {
-      error.message = `Codex ${method} acceptance timed out. Retry the task or rerun \`/codex:setup\`.`;
+      error.message = `Codex ${method} acceptance timed out. Retry the task or rerun \`/fugato:setup\`.`;
     }
     throw error;
   }
@@ -1599,7 +1599,7 @@ function acquireTurnConcurrency(cwd, options) {
 export async function runAppServerReview(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/fugato:setup`.");
   }
 
   const reservation = await acquireTurnConcurrency(cwd, options);
@@ -1668,7 +1668,7 @@ export async function runAppServerReview(cwd, options = {}) {
 export async function importExternalAgentSession(cwd, options = {}) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/fugato:setup`.");
   }
   if (!options.sourcePath) {
     throw new Error("A Claude session source path is required.");
@@ -1737,7 +1737,7 @@ export async function runAppServerTurn(cwd, options = {}) {
   };
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
-    throw Object.assign(new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`."), { turnStatus: "notStarted" });
+    throw Object.assign(new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/fugato:setup`."), { turnStatus: "notStarted" });
   }
 
   const serverRequestBlockers = [];
@@ -2083,7 +2083,7 @@ function appServerTurnResult(response, threadId, turnId) {
 export async function findLatestTaskThread(cwd) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/fugato:setup`.");
   }
 
   return withAppServer(cwd, async (client) => {

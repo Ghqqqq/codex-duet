@@ -108,7 +108,7 @@ function buildSetupNote(cwd) {
   }
 
   const detail = availability.detail ? ` ${availability.detail}.` : "";
-  return `Codex is not set up for the review gate.${detail} Run /codex:setup.`;
+  return `Codex is not set up for the review gate.${detail} Run /fugato:setup.`;
 }
 
 function parseStopReviewOutput(rawOutput, jobId) {
@@ -118,7 +118,7 @@ function parseStopReviewOutput(rawOutput, jobId) {
       ok: false,
       kind: "failure",
       reason:
-        "The stop-time Codex review task returned no final output. Run /codex:review --wait manually or bypass the gate."
+        "The stop-time Codex review task returned no final output. Run /fugato:review --wait manually or bypass the gate."
     };
   }
 
@@ -139,7 +139,7 @@ function parseStopReviewOutput(rawOutput, jobId) {
     ok: false,
     kind: "failure",
     reason:
-      "The stop-time Codex review task returned an unexpected answer. Run /codex:review --wait manually or bypass the gate."
+      "The stop-time Codex review task returned an unexpected answer. Run /fugato:review --wait manually or bypass the gate."
   };
 }
 
@@ -155,7 +155,7 @@ function runStopReview(cwd, input = {}) {
     ok: false,
     kind: "failure",
     reason:
-      "The stop-time Codex review task timed out within the 15-minute hook budget. Run /codex:review --wait manually or bypass the gate."
+      "The stop-time Codex review task timed out within the 15-minute hook budget. Run /fugato:review --wait manually or bypass the gate."
   };
   const timeout = Math.floor(STOP_REVIEW_BUDGET_MS - performance.now());
   if (timeout <= 0) return timeoutResult;
@@ -177,7 +177,7 @@ function runStopReview(cwd, input = {}) {
       kind: "failure",
       reason: detail
         ? `The stop-time Codex review task failed: ${detail}`
-        : "The stop-time Codex review task failed. Run /codex:review --wait manually or bypass the gate."
+        : "The stop-time Codex review task failed. Run /fugato:review --wait manually or bypass the gate."
     };
   }
 
@@ -189,7 +189,7 @@ function runStopReview(cwd, input = {}) {
       ok: false,
       kind: "failure",
       reason:
-        "The stop-time Codex review task returned invalid JSON. Run /codex:review --wait manually or bypass the gate."
+        "The stop-time Codex review task returned invalid JSON. Run /fugato:review --wait manually or bypass the gate."
     };
   }
 }
@@ -204,7 +204,7 @@ async function main() {
   const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(workspaceJobs, input));
   const runningJob = jobs.find((job) => job.status === "queued" || job.status === "running");
   const runningTaskNote = runningJob
-    ? `Codex task ${runningJob.id} is still running. Check /codex:status and use /codex:cancel ${runningJob.id} if you want to stop it before ending the session.`
+    ? `Codex task ${runningJob.id} is still running. Check /fugato:status and use /fugato:cancel ${runningJob.id} if you want to stop it before ending the session.`
     : null;
 
   if (!config.stopReviewGate) {
@@ -213,7 +213,7 @@ async function main() {
   }
 
   if (input.stop_hook_active === true) {
-    logNote("A Codex stop-time review already ran for this turn. Changes made afterwards are not re-reviewed automatically. Run /codex:review --wait to review them.");
+    logNote("A Codex stop-time review already ran for this turn. Changes made afterwards are not re-reviewed automatically. Run /fugato:review --wait to review them.");
     logNote(runningTaskNote);
     return;
   }

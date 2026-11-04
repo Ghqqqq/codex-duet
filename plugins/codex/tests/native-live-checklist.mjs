@@ -15,7 +15,7 @@ Preparation (repeat with a new fixture for each behavior below):
    authorized authentication method for the temporary CLAUDE_CONFIG_DIR;
    do not copy real settings or Codex homes. Both plugins are session-local.
 2. In a fresh session send a first user prompt and confirm its attached context
-   contains "Native Codex workers ready: Agent(subagent_type:" and codex-live
+   contains "Native Codex workers ready: Agent(subagent_type:" and fugato-live
    opens. A second prompt, a task notification, and /reload-plugins followed by
    another prompt must not attach it again; a fresh session must. SessionStart
    no longer supplies readiness. Missing function-hook entitlement is a failed
@@ -23,13 +23,13 @@ Preparation (repeat with a new fixture for each behavior below):
 
 A. Completion, continuation, and accounting (slow-task):
 3. Record the main session usage view before dispatch. Ask main to call:
-   Agent({subagent_type:"codex:codex-native",name:"native-live",
+   Agent({subagent_type:"fugato:codex-native",name:"native-live",
           description:"Native Fugato live gate",prompt:"Perform the first fake assignment."})
    This build's Agent schema does not expose run_in_background; background:true
    in codex-native.md supplies it. On a build exposing that field, pass
    run_in_background:true. Use the actual schema, never invent a tool argument.
 4. Record the returned native agent id. Observe one native row in /tasks and
-   its transcript, and a linked job in codex-live for this Claude session.
+   its transcript, and a linked job in fugato-live for this Claude session.
    The completion notification must contain the worker's C2 JSON (status,
    worker, jobId, summary first), not merely a path. Main must not need Read or
    Bash to retrieve it. next must say "SendMessage to native-live to continue";
@@ -37,7 +37,7 @@ A. Completion, continuation, and accounting (slow-task):
 5. Call SendMessage({to:"native-live",message:"Continue the same fake assignment."}).
    Expect a second completion on the same native id, a new jobId, and one
    Codex thread with two turns in $DUET_LIVE_ROOT/bin/fake-codex-state.json.
-   The thread cwd must still be $DUET_LIVE_ROOT/repo. codex-live groups the
+   The thread cwd must still be $DUET_LIVE_ROOT/repo. fugato-live groups the
    jobs on that thread. Also dispatch one Explore or general-purpose agent;
    it must retain its normal behavior and model usage.
 6. In the main session's usage view inspect the native agent's attribution:
@@ -72,7 +72,7 @@ C. Question and answer (new fixture: w5-parent):
     blocked and must not reinterpret the answer as a fresh assignment.
 
 D. Stop (new fixture: interruptible-slow-task):
-11. Dispatch native-live and wait for it to appear in codex-live. Stop the
+11. Dispatch native-live and wait for it to appear in fugato-live. Stop the
     native /tasks row. Expect fake lastInterrupt and no surviving running worker.
     Its final C2 text must say interrupted or cancelled, include the real worker
     and jobId, next "SendMessage to native-live to continue", and details
@@ -108,7 +108,7 @@ E. Fail-safe (only in a temporary copy beneath DUET_LIVE_ROOT):
     Node unavailable in an isolated session: expect a blocked prerequisite
     report, never permission to solve the task with Claude.
 
-Optional per-agent usage audit (temporary plugin, loaded after codex):
+Optional per-agent usage audit (temporary plugin, loaded after fugato):
 export function register(on) {
   on('turn.complete', ($, e, next) => {
     if (e.agentId) $.ui.log('NATIVE_USAGE ' + JSON.stringify({

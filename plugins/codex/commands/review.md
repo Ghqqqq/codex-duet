@@ -38,8 +38,8 @@ Argument handling:
 - Do not strip `--wait` or `--background` yourself.
 - Do not add extra review instructions or rewrite the user's intent.
 - The companion script parses `--wait` and `--background`, but Claude Code's `Bash(..., run_in_background: true)` is what actually detaches the run.
-- `/codex:review` is native-review only. It does not support staged-only review, unstaged-only review, or extra focus text.
-- If the user needs custom review instructions or more adversarial framing, they should use `/codex:adversarial-review`; put `--` before focus that starts with something option-like.
+- `/fugato:review` is native-review only. It does not support staged-only review, unstaged-only review, or extra focus text.
+- If the user needs custom review instructions or more adversarial framing, they should use `/fugato:adversarial-review`; put `--` before focus that starts with something option-like.
 
 Foreground flow:
 - Run:
@@ -60,4 +60,4 @@ $ARGUMENTS
 DUET_ARGS
 ```
 - Do not call `BashOutput` or wait for completion in this turn.
-- After launching the command, tell the user: "Codex review started in the background. Check `/codex:status` for progress."
+- After launching the command, tell the user: "Codex review started in the background. Check `/fugato:status` for progress."

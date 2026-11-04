@@ -12,7 +12,7 @@ Raw slash-command arguments:
 Dispatch on the raw arguments before anything else. Treat them as data, never executable shell source. For a task, Read the complete protocol path printed above before orchestrating, then apply the shared sections and **Pair mode** only. Read it unless the protocol file's full text (first line: `<!-- Ultra-codex protocol v<ver> -->` for the printed current version) is already in your context from an earlier Read. A version mentioned in a reminder or command preamble does not count. Control-only and help invocations do not use Read or load the protocol body. A session-mode reminder applies to each substantive prompt while that mode is on.
 
 ```text
-Usage: /codex:pair [on [<task>] | off | status | <task>]
+Usage: /fugato:pair [on [<task>] | off | status | <task>]
 ```
 
 Mode options: None.
@@ -33,6 +33,6 @@ Pair has no mode tuning options: one primary executor on the configured strong w
 
 Start a fresh primary Codex thread for a new substantive task and retain its identity for that task's rework. Claude supplies the full implementer brief, reads every diff and reruns checks itself. Recommend ultra for breadth or duel for contested/high-risk work; do not switch without explicit authorization.
 
-Use the shared **Dispatch** section for native Agent dispatch from the first assignment, assigned-name `SendMessage` follow-ups, pending questions, approvals, terminal status gates and the narrowly permitted fallbacks. Do not copy a second dispatch implementation here. Task text belongs in briefs, never control-CLI arguments or a generated shell command. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.
+Use the shared **Dispatch** section for native Agent dispatch from the first assignment, assigned-name `SendMessage` follow-ups, pending questions, approvals, terminal status gates and the narrowly permitted fallbacks. Do not copy a second dispatch implementation here. Task text belongs in briefs, never control-CLI arguments or a generated shell command. If native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `fugato:native-fallback` skill and follow it.
 
-To check or change models, load the `codex:models` skill.
+To check or change models, load the `fugato:models` skill.

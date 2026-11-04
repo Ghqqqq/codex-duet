@@ -248,7 +248,7 @@ function matchJobReference(jobs, reference, predicate = () => true) {
     throw new Error(`Job reference "${reference}" is ambiguous. Use a longer job id.`);
   }
 
-  throw new Error(`No job found for "${reference}". Run /codex:status to list known jobs.`);
+  throw new Error(`No job found for "${reference}". Run /fugato:status to list known jobs.`);
 }
 
 export function buildStatusSnapshot(cwd, options = {}) {
@@ -305,7 +305,7 @@ export function buildSingleJobSnapshot(cwd, reference, options = {}) {
   const jobs = sortJobsNewestFirst(listJobsFor(workspaceRoot, reference));
   const selected = matchJobReference(jobs, reference);
   if (!selected) {
-    throw new Error(`No job found for "${reference}". Run /codex:status to inspect known jobs.`);
+    throw new Error(`No job found for "${reference}". Run /fugato:status to inspect known jobs.`);
   }
 
   return {
@@ -320,20 +320,20 @@ export function resolveResultJob(cwd, reference) {
   const selected = reference ? matchJobReference(jobs, reference) : jobs.find(job => !["queued", "running"].includes(job.status));
 
   if (selected) {
-    if (["queued", "running"].includes(selected.status)) throw new Error(`Job ${selected.id} is still ${selected.status}. Check /codex:status and try again once it finishes.`);
+    if (["queued", "running"].includes(selected.status)) throw new Error(`Job ${selected.id} is still ${selected.status}. Check /fugato:status and try again once it finishes.`);
     return { workspaceRoot, job: selected };
   }
 
   const active = matchJobReference(jobs, reference, (job) => job.status === "queued" || job.status === "running");
   if (active) {
-    throw new Error(`Job ${active.id} is still ${active.status}. Check /codex:status and try again once it finishes.`);
+    throw new Error(`Job ${active.id} is still ${active.status}. Check /fugato:status and try again once it finishes.`);
   }
 
   if (reference) {
-    throw new Error(`No finished job found for "${reference}". Run /codex:status to inspect active jobs.`);
+    throw new Error(`No finished job found for "${reference}". Run /fugato:status to inspect active jobs.`);
   }
 
-  throw new Error("No finished Codex jobs in this session. Run /codex:status --all to see jobs from other sessions in this workspace.");
+  throw new Error("No finished Codex jobs in this session. Run /fugato:status --all to see jobs from other sessions in this workspace.");
 }
 
 export function resolveCancelableJob(cwd, reference, options = {}) {
@@ -355,7 +355,7 @@ export function resolveCancelableJob(cwd, reference, options = {}) {
     return { workspaceRoot, job: sessionScopedActiveJobs[0] };
   }
   if (sessionScopedActiveJobs.length > 1) {
-    throw new Error("Multiple Codex jobs are active. Pass a job id to /codex:cancel.");
+    throw new Error("Multiple Codex jobs are active. Pass a job id to /fugato:cancel.");
   }
 
   if (getCurrentSessionId(options)) {

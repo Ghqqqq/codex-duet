@@ -103,7 +103,7 @@ test("first context captures only loaded instructions, freezes filtered inventor
   const capped = renderClaudeInstructions({ ...saved, entries: [saved.entries[0], { ...saved.entries[1], text: "x".repeat(INSTRUCTION_LIMIT) }] });
   assert.ok(capped.developerInstructions.length <= INSTRUCTION_LIMIT);
   assert.deepEqual(capped.omittedPaths, [saved.entries[1].path]);
-  await hooks.get("classic.SubagentStart")($, { agent_type: "codex:codex-native" }, async forwarded => forwarded);
+  await hooks.get("classic.SubagentStart")($, { agent_type: "fugato:codex-native" }, async forwarded => forwarded);
   load(); await observe({ ...event, instructionFiles: [] });
   assert.deepEqual(readClaudeSnapshot(sessionId, f.env), saved);
   assert.equal(captures, 1);

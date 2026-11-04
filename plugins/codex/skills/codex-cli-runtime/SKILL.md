@@ -6,10 +6,10 @@ user-invocable: false
 
 # Codex Runtime
 
-Use this skill only inside the `codex:codex-rescue` subagent. Its restrictions apply to that wrapper. The parent Claude agent owns planning, parallel task assignments, integration, verification, and user-facing summaries. The self-contained `codex:codex-worker` agent uses its own instructions for fallback delegation and worker-specific follow-ups; do not load this rescue-only skill there.
+Use this skill only inside the `fugato:codex-rescue` subagent. Its restrictions apply to that wrapper. The parent Claude agent owns planning, parallel task assignments, integration, verification, and user-facing summaries. The self-contained `fugato:codex-worker` agent uses its own instructions for fallback delegation and worker-specific follow-ups; do not load this rescue-only skill there.
 
-The parent uses `Agent(subagent_type: "codex:codex-native")` by default from the first dispatch unless saved dispatch guidance selects Bash: `fugato setup --dispatch bash` selects it immediately, while `auto` prefers it for 24 hours after the last native-unavailable observation, or until `fugato setup --dispatch` is run without `--dry-run`.
-If saved dispatch guidance selects Bash, native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `codex:native-fallback` skill and follow it.
+The parent uses `Agent(subagent_type: "fugato:codex-native")` by default from the first dispatch unless saved dispatch guidance selects Bash: `fugato setup --dispatch bash` selects it immediately, while `auto` prefers it for 24 hours after the last native-unavailable observation, or until `fugato setup --dispatch` is run without `--dry-run`.
+If saved dispatch guidance selects Bash, native dispatch returns `native_adapter_unavailable` or `native_capacity`, needs a per-call option the `DUET:` line rejects, or you must follow up a worker launched through Bash, load the `fugato:native-fallback` skill and follow it.
 Native agents receive follow-ups and answers through SendMessage, which pins the displayed question. Do not parse output files.
 
 For a Computer Use approval, the parent submits only an exact displayed option
@@ -30,11 +30,11 @@ Execution rules:
 - On an unreachable/sandbox/socket/timeout failure before any job handle, retry once outside the Bash sandbox and report it. If a handle exists, return it for the parent's status/result recovery; never automatically submit another turn.
 - The rescue subagent is a forwarder, not an orchestrator. Its only job is to invoke `task` once and return that stdout unchanged.
 - Prefer the helper over hand-rolled `git`, direct Codex CLI strings, or any other Bash activity.
-- Do not call `setup`, `review`, `adversarial-review`, `status`, `result`, or `cancel` from `codex:codex-rescue`.
+- Do not call `setup`, `review`, `adversarial-review`, `status`, `result`, or `cancel` from `fugato:codex-rescue`.
 - Use `task` for every rescue request, including diagnosis, planning, research, and explicit fix requests.
 - Forward the request verbatim apart from extracting routing and runtime flags. Never tighten, rewrite, summarize, or add instructions to the task text.
 - Do not inspect the repo, solve the task yourself, or add independent analysis.
-- Omit `--model` and `--effort` unless the user chose them; Fugato then applies the saved defaults (see the `codex:models` skill). Respect explicit user choices, and allow `max` for difficult work when supported.
+- Omit `--model` and `--effort` unless the user chose them; Fugato then applies the saved defaults (see the `fugato:models` skill). Respect explicit user choices, and allow `max` for difficult work when supported.
 - Pass an explicit `spark` model choice through unchanged as `--model spark`; the runtime resolves the alias.
 - For implementation and fix requests, add `--write`. For read-only requests or review, diagnosis, planning, or research without edits, pass `--sandbox read-only` explicitly instead.
 
@@ -53,7 +53,7 @@ Command selection:
 - For a clearly requested sequential follow-up such as "keep going", "resume", "apply the top fix" or "dig deeper", use `--resume-last` only when the parent supplied neither `--to` nor `--fresh`; an offered candidate always uses its exact job ID.
 
 Safety rules:
-- Default to write-capable Codex work in `codex:codex-rescue` for implementation and fix requests. Pass `--sandbox read-only` explicitly for diagnosis, planning, research, and review without requested edits.
+- Default to write-capable Codex work in `fugato:codex-rescue` for implementation and fix requests. Pass `--sandbox read-only` explicitly for diagnosis, planning, research, and review without requested edits.
 - Pass task text through a single-quoted `DUET_TASK` heredoc with its delimiter absent as a complete line from the prompt. Keep runtime flags separate and shell-quote their values. Do not interpolate prompt text into shell command syntax.
 - Preserve the user's task text as-is apart from stripping routing and runtime flags.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.

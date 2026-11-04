@@ -83,7 +83,7 @@ test("modes switch on and off across workspaces while reminders and lifecycle st
     assert.ok(reminder.length > 0);
     assert.ok(reminder.includes(`v${protocolVersion()}`));
     assert.equal(f.prompt("task", "another-session").stdout, "");
-    assert.equal(f.prompt(`/codex:${mode.verb} off`).stdout, "");
+    assert.equal(f.prompt(`/fugato:${mode.verb} off`).stdout, "");
     assert.equal(f.lifecycle("SessionEnd", { reason: "prompt_input_exit", cwd: other }).status, 0);
     assert.equal(context(f.lifecycle("SessionStart", { source: "resume", cwd: other })), `${baseline}\n${reminder}`);
     assert.equal(context(f.lifecycle("SessionStart", { source: "compact" })), `${baseline}\n${reminder}`);

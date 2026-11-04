@@ -373,7 +373,7 @@ test("transfer imports the selected Claude session over inherited paths and hono
       { type: "custom-title", customTitle: "Native transfer" },
       { type: "user", cwd: repo, message: { role: "user", content: "Initial request" } },
       { type: "assistant", cwd: repo, message: { role: "assistant", content: "Initial answer" } },
-      { type: "user", cwd: repo, message: { role: "user", content: "/codex:transfer" } }
+      { type: "user", cwd: repo, message: { role: "user", content: "/fugato:transfer" } }
     ].map((entry) => JSON.stringify(entry)).join("\n") + "\n",
     "utf8"
   );
@@ -400,7 +400,7 @@ test("transfer imports the selected Claude session over inherited paths and hono
   assert.equal(fs.existsSync(fakeState.lastExternalAgentImport.sourcePath), false);
   assert.deepEqual(
     fakeState.threads[0].visibleMessages.map((message) => message.text),
-    ["Initial request", "Initial answer", "/codex:transfer"]
+    ["Initial request", "Initial answer", "/fugato:transfer"]
   );
   const explicit = run("node", [SCRIPT, "transfer", "--session", sessionId, "--source", parentPath, "--json"], { cwd: repo, env });
   assert.equal(explicit.status, 0, explicit.stderr);

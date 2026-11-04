@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.7.0
+
+- Rename the Claude Code plugins `codex` to `fugato` and `codex-live` to
+  `fugato-live`: commands use `/fugato:<name>` and `/fugato-live`, agents and
+  skills use the `fugato:` namespace, and install IDs are `fugato@fugato` and
+  `fugato-live@fugato`.
+  Agent and skill names after the colon are unchanged. Old names have no
+  aliases. Follow the [upgrade guide](../../docs/upgrading-from-duet.md) to
+  replace existing installs and update saved instructions.
+- Add a read-only roundtable forum view to the live pane. Select this session's
+  chaired rooms to follow posts, or open the newest room with
+  `/fugato-live forum` and a specific room with `/fugato-live forum <roomId>`.
+  Posts open collapsed as an index of titles; press a post to read it, or use
+  `expand all`. Closed rooms are drawn as finished and `Clear finished` hides
+  them; every roundtable starts in a new room.
+- Redesign the live pane and the agent view in Claude Code around one row
+  grammar: Codex's words as plain text, actions as `› <verb> <args>` with the
+  status on the same row, edits with `+a −r`, Claude's brief and follow-ups as
+  `Claude ›` rows, and the final answer marked with a thin coloured rule.
+  Commands are shown without shell wrappers, `git -c` pairs or environment
+  prefixes, and paths shorten by whole segments. The worker list shares one
+  time axis, so workers that start one after another show as staggered bars
+  and a roundtable's posts as dots on the same scale. In the agent view each
+  action starts with its status (`✓`, `✗`, `●`) and the worker's report ends
+  the turn as one block: the summary, a few fact rows (changed files, checks,
+  findings, any question) and a single status line. Heredoc bodies are never
+  shown and redirections such as `2>&1` stay as written. Display only: what
+  Codex runs is unchanged.
+
 ## 1.6.0
 
 - Duet is now Fugato. Use the `fugato` CLI; `duet` remains a compatibility alias

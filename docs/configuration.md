@@ -171,7 +171,7 @@ and `--json`, but run separately from other setup changes.
 Memory is stored under `<isolated-home>/duet/agent-memory/<workspace-hash>/<role-hash>/MEMORY.md`
 and loaded up to 200 lines / 25 KiB. Workers may update it only when their
 existing sandbox permits that path; enabling memory grants no extra write
-access. Current native dispatch records `codex:codex-native` for memory/skill
+access. Current native dispatch records `fugato:codex-native` for memory/skill
 lookup, including preset agents; these presets therefore share that memory scope.
 Ordinary companion workers use the `worker` scope.
 
@@ -187,7 +187,7 @@ declare no skills. Fork import omissions are visible as `forkSlice` in
 
 Discover the current account's model names with `fugato models` (or `--json`),
 then choose using the returned descriptions and supported efforts. Add `--all`
-to include hidden models. Agents load the model-invocable `codex:models` skill
+to include hidden models. Agents load the model-invocable `fugato:models` skill
 when asked to check, compare or change worker models or efforts, or when a
 dispatch fails on an unknown model. Do not rely on remembered model names.
 
@@ -214,12 +214,12 @@ fugato setup --default-model <model|default> [--default-effort <effort|default>]
 Each flag can also be used alone. The three flags may combine with one another
 and `--dry-run`, but not with another setup change such as `--default-mode` or
 `--default-sandbox`. All supplied values are validated before any write.
-`/codex:setup` passes the same flags:
+`/fugato:setup` passes the same flags:
 
 ```bash
 fugato setup --default-model gpt-6.1-sol --default-effort high --ultra-routine-model gpt-6.1-sol --dry-run
 fugato setup --default-model gpt-6.1-sol --default-effort high --ultra-routine-model gpt-6.1-sol
-/codex:setup --default-model gpt-6-astra --default-effort xhigh
+/fugato:setup --default-model gpt-6-astra --default-effort xhigh
 fugato setup --ultra-routine-model spark
 ```
 
@@ -265,7 +265,7 @@ each model has `slug`, `displayName`, `description`, `efforts`, `defaultEffort`,
 or the cache's recorded fetch time. An unavailable context window is `null`
 (`unknown` in text); the pinned app-server schema does not expose it. Cache
 identity and account credentials are never included. If both sources are
-unavailable, the command exits nonzero with a `/codex:setup` hint.
+unavailable, the command exits nonzero with a `/fugato:setup` hint.
 
 ## Worker dispatch
 
@@ -278,7 +278,7 @@ receives about dispatching workers. Run it separately from other setup changes;
 | --- | --- |
 | `auto` (built-in default) | Start with the native agent; prefer background Bash after a recent native-unavailable observation. |
 | `native` | Always advertise native dispatch, even with a recorded unavailable observation. |
-| `bash` | Use background `fugato task` through `codex:native-fallback` from the first dispatch. |
+| `bash` | Use background `fugato task` through `fugato:native-fallback` from the first dispatch. |
 | `default` | Remove the saved route and restore `auto`. |
 
 Fugato records an unavailable observation when the host never delivers the native
@@ -436,7 +436,7 @@ model = "gpt-5.4-mini"
 model_reasoning_effort = "high"
 ```
 
-`/codex:review` and adversarial reviews pass the saved
+`/fugato:review` and adversarial reviews pass the saved
 [worker defaults](#default-worker-models) or built-ins explicitly unless overridden
 on the call; these `config.toml` model settings do not apply to them.
 

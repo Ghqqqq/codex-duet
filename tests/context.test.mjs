@@ -50,15 +50,15 @@ test("git context precedes the task, bounds changed paths and skips non-git/opt-
 test("only declared agent skills cross over as supported items or bounded fallback text", t => {
   const f = fixture(t), pluginRoot = path.join(f.root, "plugin");
   const file = path.join(pluginRoot, "skills", "review", "SKILL.md");
-  put(path.join(pluginRoot, "agents", "codex-native.md"), "---\nname: codex-native\nskills:\n  - codex:review\n---\nAgent.");
+  put(path.join(pluginRoot, "agents", "codex-native.md"), "---\nname: codex-native\nskills:\n  - fugato:review\n---\nAgent.");
   put(file, "# Review\nFollow the review contract.");
-  const options = { agentType: "codex:codex-native", pluginRoot, cwd: f.repo };
+  const options = { agentType: "fugato:codex-native", pluginRoot, cwd: f.repo };
   const fallback = prepareClaudeSkills(options, f.env);
   assert.match(fallback.text, /Follow the review contract/);
   assert.deepEqual(fallback.skills, []);
   const supported = prepareClaudeSkills({ ...options, skillItemsSupported: true }, f.env);
   assert.equal(supported.text, "");
-  assert.deepEqual(buildTurnInput("brief", supported.skills).at(-1), { type: "skill", name: "codex:review", path: file });
+  assert.deepEqual(buildTurnInput("brief", supported.skills).at(-1), { type: "skill", name: "fugato:review", path: file });
   assert.deepEqual(prepareClaudeSkills({ agentType: "unknown", pluginRoot, cwd: f.repo }, f.env), { text: "", skills: [] });
   assert.deepEqual(prepareClaudeSkills({ ...options, skills: [] }, f.env), { text: "", skills: [] });
   assert.deepEqual(skillInventory([{ name: "bad", text: "x".repeat(30001) }]), []);
@@ -90,6 +90,8 @@ test("agent memory is opt-in, scoped by workspace/role, bounded and injected wit
   assert.equal(fs.existsSync(path.join(f.env.CODEX_COMPANION_HOME, "duet", "agent-memory")), false);
   const setup = f.call("setup", "--agent-memory", "on", "--json");
   assert.equal(setup.agentMemory, "on");
+  assert.equal(prepareAgentMemory({ workspace: f.repo, role: "fugato:codex-native" }, f.env).agentMemory.path,
+    agentMemoryFile(f.repo, "codex:codex-native", f.env), "native workers retain their 1.6.0 memory path");
   const file = agentMemoryFile(f.repo, "worker", f.env);
   put(file, Array.from({ length: 250 }, (_, i) => `memory-line-${i}`).join("\n"));
   const memory = prepareAgentMemory(options, f.env);

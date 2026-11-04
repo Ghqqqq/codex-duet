@@ -5,7 +5,7 @@ description: Load when saved dispatch guidance selects Bash, native dispatch ret
 
 # Native dispatch fallback
 
-Native `Agent(subagent_type: "codex:codex-native", …)` dispatch is the default from the first assignment unless saved dispatch guidance selects Bash. Load this skill only for the triggers in its description. Browser work and Computer Use run natively; they do not by themselves require fallback.
+Native `Agent(subagent_type: "fugato:codex-native", …)` dispatch is the default from the first assignment unless saved dispatch guidance selects Bash. Load this skill only for the triggers in its description. Browser work and Computer Use run natively; they do not by themselves require fallback.
 
 The saved `fugato setup --dispatch bash` preference also selects this background Bash route from the first dispatch; `auto` prefers it for 24 hours after the last native-unavailable observation, or until `fugato setup --dispatch` is run without `--dry-run`, while `native` keeps native guidance.
 
@@ -53,4 +53,4 @@ Check `fugato status` before retrying an unavailable native adapter: dispatch is
 
 ## Forwarding-agent fallback
 
-Fallback only: use `Agent(subagent_type: "codex:codex-worker")` when neither native dispatch nor background Bash is available, or the user asks for a forwarding-agent transcript. Never pass `model` or `effort` to that Haiku forwarder; put Codex's choices in the assignment text. Follow-ups use a NEW fallback agent with `fugato task --to <worker>`; SendMessage to an existing fallback agent is only for its pending question.
+Fallback only: use `Agent(subagent_type: "fugato:codex-worker")` when neither native dispatch nor background Bash is available, or the user asks for a forwarding-agent transcript. Never pass `model` or `effort` to that Haiku forwarder; put Codex's choices in the assignment text. Follow-ups use a NEW fallback agent with `fugato task --to <worker>`; SendMessage to an existing fallback agent is only for its pending question.

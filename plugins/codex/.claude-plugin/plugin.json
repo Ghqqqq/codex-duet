@@ -1,7 +1,7 @@
 {
-  "name": "codex",
+  "name": "fugato",
   "types": "./types/index.d.ts",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Fugato: delegate coding, research and review from Claude Code to parallel Codex workers.",
   "author": {
     "name": "OpenAI"

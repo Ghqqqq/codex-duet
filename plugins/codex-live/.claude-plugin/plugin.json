@@ -1,6 +1,6 @@
 {
-  "name": "codex-live",
-  "version": "1.6.0",
+  "name": "fugato-live",
+  "version": "1.7.0",
   "description": "Read-only live pane for this Claude session's Fugato Codex jobs.",
   "types": "./types/index.d.ts",
   "author": {

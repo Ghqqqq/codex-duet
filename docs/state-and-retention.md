@@ -64,7 +64,7 @@ Each job keeps its newest 500 activity events, independently of job-record age
 retention. `activityTotals.events` and `activityTotals.toolUses` count all appended
 activity; legacy jobs seed them once from retained events. Up to 100 hashed
 pending tool identities support start/completion pairing; eviction can overcount
-a later matching completion. The pane and `/codex:status` show retained events
+a later matching completion. The pane and `/fugato:status` show retained events
 only. See [activity limits](worker-lifecycle.md#fallback-and-compatibility-feed-mode).
 
 If a writer cannot read or parse a workspace's `state.json` after brief retries,

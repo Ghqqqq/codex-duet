@@ -1,5 +1,11 @@
 import { limitChars } from './text';
-import type { CodexLiveEvent, CodexLiveJob, CodexLiveMarker, CodexLiveSession, CodexLiveState, CodexLiveUsage, CodexLiveUsageEntry } from '../types';
+import type { CodexLiveEvent, CodexLiveJob, CodexLiveMarker, CodexLiveSession, CodexLiveState, CodexLiveUsage, CodexLiveUsageEntry, ForumRoom } from '../types';
+
+export const EXPANDED_ID_LIMIT = 5000;
+const EXPANDED_ID_LENGTH = 200;
+const FORUM_FEED_LIMIT = 20;
+const FORUM_FEED_BUDGET = 100_000;
+export const forumFeedId = (id: string) => /^forum:rt-[a-z0-9]+-[a-z0-9-]+$/.test(id) && id.length <= 134;
 
 const object = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -17,7 +23,7 @@ export function usageView(value: unknown): CodexLiveUsage | undefined {
 }
 export function usageSnapshots(previous: CodexLiveState['usageByJob'], jobs: readonly CodexLiveJob[]) {
   const snapshots = { ...previous };
-  for (const job of jobs) if (job.usage) snapshots[job.id] = { model: job.model || 'unknown', usage: job.usage };
+  for (const job of jobs) if (job.usage) snapshots[job.id] = { model: job.model || 'unknown', usage: job.usage, sessionId: sessionId(job) };
   return snapshots;
 }
 export function usageLines(entries: Record<string, CodexLiveUsageEntry>, label = 'Codex session total'): string[] {
@@ -49,7 +55,7 @@ export function validView(value: unknown): value is CodexLiveState {
   const job = (v: unknown) => record(v) &&
     ['id', 'label', 'status', 'createdAt', 'startedAt', 'completedAt', 'model', 'effort', 'sandbox', 'finalStatus'].every(key => text(v[key])) &&
     ['active', 'finished', 'fast', 'detailsUnavailable'].every(key => bool(v[key])) &&
-    optional(v, ['threadId', 'agentName', 'workspaceRoot', 'prompt', 'currentOperation', 'lastActivityAt', 'terminalQuestion'], text) &&
+    optional(v, ['threadId', 'agentName', 'role', 'homeDir', 'cwd', 'workspaceRoot', 'prompt', 'currentOperation', 'lastActivityAt', 'terminalQuestion'], text) &&
     optional(v, ['blockerCode'], validBlockerCode) &&
     optional(v, ['unresolved', 'notStarted', 'promptReport', 'detailsLoaded', 'detailsOmitted'], bool) &&
     optional(v, ['toolUses', 'lastUpdateMs'], finite) && (v.fileCount === null || finite(v.fileCount)) &&
@@ -58,16 +64,26 @@ export function validView(value: unknown): value is CodexLiveState {
       optional(v.question, ['createdAt'], text) && optional(v.question, ['expiresAt'], finite)) &&
     list(v.events, event);
   const feed = (v: unknown) => record(v) && finite(v.feedOffset) && bool(v.following) && finite(v.seenLines) &&
-    optional(v, ['columns', 'rows'], finite) && optional(v, ['surface'], text) && optional(v, ['expandedPromptIds'], strings) &&
+    optional(v, ['columns', 'rows'], finite) && optional(v, ['surface'], text) && optional(v, ['keepStopped'], bool) &&
+    optional(v, ['expandedPromptIds'], ids => strings(ids) && (ids as string[]).length <= EXPANDED_ID_LIMIT) &&
     optional(v, ['anchor'], a => record(a) && text(a.source) && finite(a.offset)) &&
     optional(v, ['seenItems'], items => dictionary(items, item => record(item) && finite(item.length) && finite(item.hash)));
-  return record(value) && list(value.jobs, job) && (value.selectedId === null || text(value.selectedId)) && finite(value.nowMs) &&
+  const post = (v: unknown) => record(v) && finite(v.seq) && text(v.at) && record(v.author) &&
+    text(v.author.kind) && text(v.author.name) && ['idea', 'finding', 'question', 'request', 'intent', 'candidate', 'decision'].includes(String(v.kind)) &&
+    optional(v, ['initial'], bool) && finite(v.thread) && (v.replyTo === null || finite(v.replyTo)) && ['title', 'body', 'label'].every(key => text(v[key])) && strings(v.refs) && strings(v.mentions);
+  const room = (v: unknown) => record(v) && ['roomId', 'sessionId', 'goal', 'intensity', 'createdAt'].every(key => text(v[key])) &&
+    ['open', 'paused', 'closed'].includes(String(v.status)) && strings(v.members) && finite(v.postCount) &&
+    optional(v, ['viewedPosts', 'malformed', 'omitted'], finite) && optional(v, ['warning'], text) &&
+    optional(v, ['posts'], posts => list(posts, post)) && optional(v, ['timeline'], times => list(times, finite));
+  return record(value) && optional(value, ['forumRooms'], rooms => list(rooms, room)) && list(value.jobs, job) && (value.selectedId === null || text(value.selectedId)) && finite(value.nowMs) &&
     optional(value, ['sessionId', 'discoveryWarning', 'openedJobId'], text) && optional(value, ['jobsExpanded'], bool) &&
     optional(value, ['hiddenFinishedBefore', 'spinnerTick', 'historyPage', 'attentionOmitted'], finite) &&
     optional(value, ['newSessionIds', 'viewedSessionIds', 'hiddenJobIds', 'recentEndedIds', 'seenJobIds', 'autoOpenedJobIds'], strings) &&
+    optional(value, ['hiddenRoomIds'], ids => list(ids, id => typeof id === 'string' && forumFeedId(`forum:${id}`)) &&
+      (ids as string[]).length <= 2000) &&
     optional(value, ['turnCounts', 'firstEndedAtMs'], v => dictionary(v, finite)) &&
     optional(value, ['usagePartial'], bool) &&
-    optional(value, ['usageByJob'], v => dictionary(v, entry => record(entry) && text(entry.model) && usageView(entry.usage) !== undefined)) &&
+    optional(value, ['usageByJob'], v => dictionary(v, entry => record(entry) && text(entry.model) && optional(entry, ['sessionId'], text) && usageView(entry.usage) !== undefined)) &&
     optional(value, ['feeds'], v => dictionary(v, feed));
 }
 
@@ -197,16 +213,47 @@ function unresolvedTask(job: Record<string, unknown>): boolean {
     /^(Codex broker connection closed during startup\.|Connection to Codex closed while the turn was running\.|Codex connection closed before turn completion; recover the recorded job\.)$/i.test(string(result.error ?? job.errorMessage));
 }
 
+// Match activity.mjs's commandExcerpt: hide only environment prefixes whose
+// meaning is known, retaining assignments that can change a reader's behavior.
+function stripEnvironment(command: string): string {
+  const inert = /^(?:LANG|LANGUAGE|LC_[A-Z]+|TZ|TERM|COLUMNS|LINES|NO_COLOR|FORCE_COLOR|CLICOLOR(?:_FORCE)?|CI|npm_config_[A-Za-z0-9_]+)$/;
+  const reader = /^(?:rg|grep|nl|cat|head|tail|ls|wc|find|tree|file|stat|sed|git|zsh|bash|sh)$/;
+  const word = /^(?:[^\s'"\\;&|<>()`]|'[^']*'|"(?:\\.|[^"\\])*"|\\.)+(?=\s|[;&|<>()]|$)/;
+  let rest = command, env = false, options = false, assigned = false;
+  for (;;) {
+    const token = word.exec(rest)?.[0];
+    if (!token || token.startsWith('#')) return command;
+    if (token === 'env' && !env) { env = true; options = true; }
+    else if (options && token === '-i') { /* ignore inherited environment */ }
+    else if (options && token === '-u') {
+      const next = rest.slice(token.length).trimStart();
+      const name = word.exec(next)?.[0];
+      if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return command;
+      rest = next.slice(name.length).trimStart();
+      continue;
+    } else if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+      if (/[$`\\]/.test(token)) return command;
+      assigned ||= !inert.test(token.slice(0, token.indexOf('=')));
+      options = false;
+    } else {
+      if (env && (token.startsWith('-') || /^['"][A-Za-z_][A-Za-z0-9_]*=/.test(token))) return command;
+      return assigned && reader.test(token.replace(/['"\\]/g, '').split('/').at(-1)!) ? command : rest;
+    }
+    rest = rest.slice(token.length).trimStart();
+  }
+}
+
 export function unwrapCommand(command: string): string {
   let result = clean(command);
   const wrapper = /^(?:\/bin\/)?(?:zsh|bash|sh)\s+-(?:lc|c)\s+/;
-  if (!wrapper.test(result)) return result;
+  if (!wrapper.test(result)) return stripEnvironment(result);
   result = result.replace(wrapper, '');
   const quote = result[0];
   if (quote === "'" || quote === '"') {
     result = result.slice(1);
     if (result.endsWith(quote)) result = result.slice(0, -1);
   }
+  if (quote !== '"' || !result.includes('\\')) result = stripEnvironment(result);
   return result.replace(/'"'"'/g, "'");
 }
 
@@ -278,7 +325,7 @@ export function jobView(value: unknown, marker: CodexLiveMarker, details = true,
     const callId = object(activity[event.index]).callId;
     const question = ['dynamicToolCall', 'mcpToolCall'].includes(event.type) && event.tool === 'ask_parent' && typeof callId === 'string'
       ? history.get(callId) : undefined;
-    return { ...projected, command: limitChars(clean(projected.command), 2000),
+    return { ...projected, command: limitChars(cleanBody(projected.command), 2000),
       ...(typeof question?.text === 'string' ? { questionText: limitChars(clean(question.text), 2000),
         ...(question.resolution === 'answered' && typeof question.answer === 'string'
           ? { answer: limitChars(clean(question.answer), 2000) } : {}) } : {}) };
@@ -287,6 +334,9 @@ export function jobView(value: unknown, marker: CodexLiveMarker, details = true,
     id: marker.jobId, label: taskText(marker.summary || job.summary || marker.title) || 'Codex Task', status,
     threadId: string(job.threadId).trim() || undefined,
     agentName: limitChars(clean(job.agentName), 100) || marker.name,
+    role: limitChars(clean(object(job.roundtable).persona || object(request.roundtable).persona || request.persona || job.agentType || request.agentType || job.agent_type || job.preset || request.preset), 100) || undefined,
+    homeDir: isAbsolutePath(string(job.homeDir)) ? string(job.homeDir) : undefined,
+    cwd: isAbsolutePath(string(request.cwd)) ? limitChars(clean(request.cwd), 1000) : marker.workspaceRoot,
     active, finished, unresolved, notStarted,
     createdAt: marker.createdAt || string(job.createdAt),
     startedAt: string(job.startedAt) || marker.createdAt || string(job.createdAt),
@@ -469,7 +519,11 @@ export function normalizeSessions(state: CodexLiveState): CodexLiveState {
   const entries = Object.entries(state.feeds).sort(([a], [b]) => priority(a) - priority(b));
   for (const [id, feed] of entries) {
     const session = sessionForId(sessions, id);
-    if (!session || feeds[session.id]) continue;
+    if (!session) {
+      if (forumFeedId(id)) feeds[id] = feed;
+      continue;
+    }
+    if (feeds[session.id]) continue;
     feeds[session.id] = id === session.id ? feed : {
       ...feed,
       anchor: feed.anchor ? { ...feed.anchor, source: turnKey(feed.anchor.source, id) } : undefined,
@@ -501,6 +555,13 @@ export function visibleSessions(state: CodexLiveState): CodexLiveSession[] {
     session.active || session.unresolved || !isHiddenJob(state, session.turns.find(job => job.id === session.lifecycleJobId)!));
 }
 
+export function isHiddenRoom(state: CodexLiveState, room: ForumRoom): boolean {
+  return room.status === 'closed' && !!state.hiddenRoomIds?.includes(room.roomId);
+}
+
+export const visibleForums = (state: CodexLiveState): ForumRoom[] =>
+  (state.forumRooms ?? []).filter(room => !isHiddenRoom(state, room));
+
 export function clearFinished(state: CodexLiveState, nowMs: number): CodexLiveState {
   const clearing = { ...state, openedJobId: undefined, hiddenFinishedBefore: Math.max(state.hiddenFinishedBefore ?? nowMs, nowMs) };
   // A concurrent poll may have added completions after the captured clear time.
@@ -508,11 +569,16 @@ export function clearFinished(state: CodexLiveState, nowMs: number): CodexLiveSt
     ...visibleSessions(state).filter(session => !session.active && !session.unresolved)
       .map(session => session.turns.find(job => job.id === session.lifecycleJobId)!)
       .filter(job => isHiddenJob(clearing, job)).map(job => job.id)])];
-  const cleared = { ...clearing, hiddenJobIds };
+  const hiddenRoomIds = [...new Set([...(state.hiddenRoomIds ?? []),
+    ...(state.forumRooms ?? []).filter(room => room.status === 'closed').map(room => room.roomId)])].slice(-2000);
+  const forumRooms = state.forumRooms?.filter(room => room.status !== 'closed' || !hiddenRoomIds.includes(room.roomId));
+  const cleared = { ...clearing, hiddenJobIds, hiddenRoomIds, forumRooms };
   const jobs = visibleSessions(cleared).sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
-  const selectedId = sessionForId(jobs, state.selectedId)?.id
-    ?? jobs.find(job => jobLifecycle(job).active)?.id ?? jobs[0]?.id ?? null;
+  const nextRoom = forumRooms?.find(room => room.status === 'open') ?? forumRooms?.[0];
+  const selectedId = forumRooms?.some(room => `forum:${room.roomId}` === state.selectedId) ? state.selectedId : sessionForId(jobs, state.selectedId)?.id
+    ?? jobs.find(job => jobLifecycle(job).active)?.id ?? jobs[0]?.id
+    ?? (nextRoom ? `forum:${nextRoom.roomId}` : null);
   return { ...cleared, selectedId, historyPage: 0, attentionOmitted: 0 };
 }
 
@@ -528,6 +594,16 @@ export function jobSummary(job: CodexLiveJob): CodexLiveJob {
 }
 
 export function boundState(state: CodexLiveState): CodexLiveState {
+  if (state.forumRooms) {
+    const rooms = visibleForums(state).sort((a, b) => Number(b.status === 'open') - Number(a.status === 'open') ||
+      b.createdAt.localeCompare(a.createdAt) || b.roomId.localeCompare(a.roomId));
+    const selected = state.forumRooms.find(room => `forum:${room.roomId}` === state.selectedId);
+    const shown = rooms.slice(0, 3);
+    if (selected && !shown.some(room => room.roomId === selected.roomId)) shown.push(selected);
+    state = { ...state, forumRooms: shown
+      .map(room => `forum:${room.roomId}` === state.selectedId ? room
+        : { ...room, posts: undefined, malformed: undefined, omitted: undefined, warning: undefined }) };
+  }
   if (state.usageByJob || state.jobs.some(job => job.usage)) state = { ...state, usageByJob: usageSnapshots(state.usageByJob, state.jobs) };
   state = normalizeSessions(state);
   const sessions = groupedSessions(state.jobs, state.turnCounts);
@@ -565,7 +641,9 @@ export function boundState(state: CodexLiveState): CodexLiveState {
   }
   const feeds = state.feeds && Object.fromEntries(Object.entries(state.feeds).map(([id, feed]) => [id,
     feed.expandedPromptIds ? { ...feed, expandedPromptIds: [...new Set(feed.expandedPromptIds)]
-      .filter(turnId => jobs.some(job => job.id === turnId && sessionId(job) === id)) } : feed]));
+      .filter(turnId => turnId.length <= EXPANDED_ID_LENGTH && (jobs.some(job => job.id === turnId && sessionId(job) === id) ||
+        forumFeedId(id) && /^post:[1-9]\d{0,15}$/.test(turnId) && Number.isSafeInteger(Number(turnId.slice(5)))))
+      .slice(-EXPANDED_ID_LIMIT) } : feed]));
   return fitState({ ...state, jobs, turnCounts, feeds });
 }
 
@@ -587,18 +665,31 @@ export function fitState(state: CodexLiveState): CodexLiveState {
   // Run before measurement and after eviction so a failed publish can recover.
   const trim = (value: CodexLiveState): CodexLiveState => {
     const jobIds = new Set(value.jobs.map(job => job.id));
-    const ids = new Set(value.jobs.map(sessionId));
+    const ids = new Set([...value.jobs.map(sessionId), ...(value.forumRooms ?? []).map(room => `forum:${room.roomId}`)]);
+    let forumFeeds = 0;
+    let forumBytes = 0;
     return { ...value,
       seenJobIds: value.seenJobIds?.filter(id => jobIds.has(id)),
       autoOpenedJobIds: value.autoOpenedJobIds?.filter(id => jobIds.has(id)),
       // Tombstones also cover cleared jobs no longer in the visible cache.
       hiddenJobIds: value.hiddenJobIds?.slice(-2000),
+      hiddenRoomIds: value.hiddenRoomIds?.slice(-2000),
       firstEndedAtMs: value.firstEndedAtMs && Object.fromEntries(Object.entries(value.firstEndedAtMs).filter(([id]) => jobIds.has(id))),
       turnCounts: value.turnCounts && Object.fromEntries(Object.entries(value.turnCounts).filter(([id]) => ids.has(id))),
       viewedSessionIds: value.viewedSessionIds?.filter(id => ids.has(id)),
       newSessionIds: value.newSessionIds?.filter(id => ids.has(id)),
       recentEndedIds: value.recentEndedIds?.filter(id => ids.has(id)),
-      feeds: value.feeds && Object.fromEntries(Object.entries(value.feeds).filter(([id]) => ids.has(id))),
+      feeds: value.feeds && Object.fromEntries(Object.entries(value.feeds)
+        .sort(([a], [b]) => Number(b === value.selectedId) - Number(a === value.selectedId))
+        .filter(([id]) => ids.has(id) || forumFeedId(id)).filter(([id, feed]) => {
+          if (!forumFeedId(id)) return true;
+          // Keep the selected window; older room windows share a small cache
+          // budget so their snapshots cannot crowd out the live transcript.
+          const size = id === value.selectedId ? 0 : JSON.stringify(feed).length;
+          if (forumFeeds >= FORUM_FEED_LIMIT || forumBytes + size > FORUM_FEED_BUDGET) return false;
+          forumFeeds++; forumBytes += size;
+          return true;
+        })),
     };
   };
   state = trim(state);

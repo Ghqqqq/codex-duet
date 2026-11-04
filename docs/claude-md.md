@@ -1,7 +1,7 @@
 # Optional CLAUDE.md policy
 
 Fugato works without a personal CLAUDE.md. SessionStart supplies native dispatch
-guidance, a pointer to the `codex:native-fallback` skill, and generic rules for
+guidance, a pointer to the `fugato:native-fallback` skill, and generic rules for
 explicit dispatch settings, job ownership, briefs and evidence-based acceptance.
 Active orchestration modes supply their own reminders and protocols. The optional
 policy below adds proactive delegation outside a mode and a stated model policy.
@@ -47,14 +47,14 @@ For orchestration in every fresh session without a CLAUDE.md, use
   acceptance criteria and verification commands.
 - Honor the dispatch route in SessionStart guidance; use native dispatch from
   the first task when that route selects it:
-  `Agent(subagent_type: "codex:codex-native", description: "<purpose>", prompt: "DUET: --model <model> --effort <effort> --normal [--sandbox <mode>] [--cwd <dir>]\n<brief>")`.
+  `Agent(subagent_type: "fugato:codex-native", description: "<purpose>", prompt: "DUET: --model <model> --effort <effort> --normal [--sandbox <mode>] [--cwd <dir>]\n<brief>")`.
   A valid, free caller `name` is kept; otherwise Fugato assigns a scientist pool
   name. Use the returned name for SendMessage steering, follow-ups and answers.
   Wait for the actual result; never poll or treat a launch
   receipt or a `running` payload as completed work.
 - If native dispatch returns `native_adapter_unavailable` or `native_capacity`,
   needs a per-call option the `DUET:` line rejects, or a Bash-launched worker needs
-  a follow-up, load the `codex:native-fallback` skill and follow it.
+  a follow-up, load the `fugato:native-fallback` skill and follow it.
 - Give each independent job a fresh native agent; never run two jobs on one
   thread at once. Concurrent edits require disjoint owned paths. Serialize edits
   to shared files, indexes and generated outputs, or use separate worktrees.

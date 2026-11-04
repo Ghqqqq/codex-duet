@@ -16,23 +16,24 @@ In Claude Code:
 
 ```text
 /plugin marketplace add Ghqqqq/fugato
-/plugin install codex@fugato
+/plugin install fugato@fugato
 /reload-plugins
-/codex:setup
+/fugato:setup
 ```
 
 Setup checks the runtime and, when sign-in is needed, prints the login command
 for Fugato's separate Codex home. Requires Claude Code 2.1.302+, Node.js 18.18+
 and a Codex CLI with `app-server` support (tested with 0.146.0). Sign in with a
 ChatGPT plan or an OpenAI API key; workers count toward your Codex usage.
-For the live pane, add `/plugin install codex-live@fugato`.
+For the live pane, add `/plugin install fugato-live@fugato`.
 
-Coming from Duet? Your state carries over: see the [upgrade guide](docs/upgrading-from-duet.md).
+Upgrading from Duet or Fugato 1.6.0? Your state carries over: see the
+[upgrade guide](docs/upgrading-from-duet.md).
 
 ## Quick start
 
 ```text
-/codex:pair fix the failing parser test
+/fugato:pair fix the failing parser test
 ```
 
 Claude scopes the task and writes the brief. One Codex worker investigates,
@@ -57,7 +58,7 @@ review the retry logic in src/net/ in parallel. Keep both tasks read-only.
 <td>
 <b><a href="docs/ultra-codex.md">Ultra</a></b><br>
 Broad work fanned out to many bounded workers: parallel readers, independent designs, one owner per area, area&nbsp;×&nbsp;lens review and adversarial checks. Each result is accepted before it moves on.<br>
-<code>/codex:ultra-codex &lt;task&gt;</code>
+<code>/fugato:ultra-codex &lt;task&gt;</code>
 </td>
 </tr>
 <tr>
@@ -70,7 +71,7 @@ Broad work fanned out to many bounded workers: parallel readers, independent des
 <td>
 <b><a href="docs/pair.md">Pair</a></b><br>
 One task, one Codex executor on one thread. Claude reads every diff and reruns the checks; at most two rework rounds.<br>
-<code>/codex:pair &lt;task&gt;</code>
+<code>/fugato:pair &lt;task&gt;</code>
 </td>
 </tr>
 <tr>
@@ -83,7 +84,7 @@ One task, one Codex executor on one thread. Claude reads every diff and reruns t
 <td>
 <b><a href="docs/duel.md">Duel</a></b><br>
 A Codex worker and a Claude subagent build and break, or draft and cross-review. Claude relays the evidence and decides.<br>
-<code>/codex:duel &lt;task&gt;</code>
+<code>/fugato:duel &lt;task&gt;</code>
 </td>
 </tr>
 <tr>
@@ -96,12 +97,12 @@ A Codex worker and a Claude subagent build and break, or draft and cross-review.
 <td>
 <b><a href="docs/roundtable.md">Roundtable</a></b><br>
 Persistent Codex personas pursue one goal through a shared forum. Claude chairs and accepts the final candidate on evidence.<br>
-<code>/codex:roundtable &lt;task&gt;</code>
+<code>/fugato:roundtable &lt;task&gt;</code>
 </td>
 </tr>
 </table>
 
-Add `on` to keep a mode for the session, as in `/codex:pair on`; without it a
+Add `on` to keep a mode for the session, as in `/fugato:pair on`; without it a
 task runs once. Duel's Claude participant uses your Claude quota.
 
 ### Ultra
@@ -166,14 +167,14 @@ another in threads; Claude chairs and accepts a reviewed candidate on evidence. 
 
 ## Highlights
 
-- **Native subagents.** `Agent(subagent_type: "codex:codex-native")` runs a Codex
+- **Native subagents.** `Agent(subagent_type: "fugato:codex-native")` runs a Codex
   worker like any Claude Code subagent. SendMessage steers it; `/tasks` stops it.
 - **Evidence over claims.** Captured commands are kept apart from what Codex says
   it ran, so acceptance rests on what was observed.
 - **A journal that survives compaction.** Goal, criteria, verdicts and linked
   briefs stay in a run journal: `fugato journal show`.
-- **Live view.** The optional `codex-live` pane shows each worker's commands,
-  edits and questions at no Claude token cost.
+- **Live view.** The optional `fugato-live` pane shows each worker's commands,
+  edits and questions, plus this session's roundtable forums, at no Claude token cost.
 - **A separate Codex home.** Sign-in, threads and job state live in
   `~/.claude/codex-isolated`; your everyday `~/.codex` is left alone.
 
@@ -183,7 +184,7 @@ another in threads; Claude chairs and accepts a reviewed candidate on evidence. 
   files: give parallel writers disjoint paths or separate worktrees.
 - Codex edits bypass Claude Code's permission prompts unless you turn on
   permission mapping with `fugato setup --permission-mapping claude`.
-- Codex tokens appear in Fugato reports and `codex-live`, not in Claude's `/usage`.
+- Codex tokens appear in Fugato reports and `fugato-live`, not in Claude's `/usage`.
 
 ## Documentation
 

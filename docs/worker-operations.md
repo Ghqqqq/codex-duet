@@ -1,6 +1,6 @@
 # Isolated workers in unattended workflows
 
-Use `Agent(subagent_type: "codex:codex-native")` by default from the first dispatch,
+Use `Agent(subagent_type: "fugato:codex-native")` by default from the first dispatch,
 without waiting for readiness, subject to the [saved dispatch route](configuration.md#worker-dispatch).
 Background `fugato task` is also selected by `--dispatch bash` or, in `auto`,
 for 24 hours after the last native-unavailable observation, or until
@@ -109,13 +109,13 @@ keep their name. `fugato task --name <label>` requests a fresh worker name;
 collisions fall back to the pool. See [direct mode](direct-mode.md) for naming,
 live progress and native capacity rules.
 
-The read-only `codex-live` pane shows prompts, messages, commands, file changes,
+The read-only `fugato-live` pane shows prompts, messages, commands, file changes,
 tool calls, plans and pending questions. Resolved `ask_parent` calls show answers
 matched by Codex's `_meta.callId`, preserved by the MCP bridge on fresh and
 resumed threads. Missing/invalid call IDs remain unmatched, including older
 stored answers. New jobs request a pane;
-`/codex-live` opens it at any width; `/codex-live <name>` opens a native worker's
-activity. Native notices offer `Open Codex activity: /codex-live <name>` when
+`/fugato-live` opens it at any width; `/fugato-live <name>` opens a native worker's
+activity. Native notices offer `Open Codex activity: /fugato-live <name>` when
 the pane is installed. Native notices/rendered reports and the pane label token
 counts with provider `OpenAI Codex` and model; the pane also totals retained
 session usage by model and labels partial history. Missing usage stays unknown.
@@ -129,10 +129,10 @@ Use a preset as the Agent tool's `subagent_type`:
 
 | Agent type | Role | Sandbox |
 | --- | --- | --- |
-| `codex:codex-native` | General bounded work | Configured default |
-| `codex:codex-reviewer` | Correctness, regression and security review | read-only |
-| `codex:codex-investigator` | Trace code and evidence; distinguish observations from hypotheses | read-only |
-| `codex:codex-implementer` | Implement within owned paths and verify | workspace-write |
+| `fugato:codex-native` | General bounded work | Configured default |
+| `fugato:codex-reviewer` | Correctness, regression and security review | read-only |
+| `fugato:codex-investigator` | Trace code and evidence; distinguish observations from hypotheses | read-only |
+| `fugato:codex-implementer` | Implement within owned paths and verify | workspace-write |
 
 Presets prefix each assignment with role instructions and retain the role on
 follow-ups. They use the usual saved model/effort defaults and recorded thread
@@ -142,7 +142,7 @@ refused with `native_preset_sandbox`. Plan mode clamps even the implementer to
 read-only; an explicitly writable header is refused.
 
 ```text
-Agent(subagent_type: "codex:codex-reviewer", name: "api-review", prompt: "DUET: --max-minutes 5\nReview src/api; report supported findings and checks.")
+Agent(subagent_type: "fugato:codex-reviewer", name: "api-review", prompt: "DUET: --max-minutes 5\nReview src/api; report supported findings and checks.")
 ```
 
 With agent teams enabled, Fugato recognizes native/preset agents by their declared
@@ -215,7 +215,7 @@ agent definition are eligible for bounded preload; the parent's invoked skills
 are not inherited. The shipped native/preset agents currently declare none.
 Optional `fugato setup --agent-memory on` loads Fugato-owned workspace/role memory
 without widening the sandbox. Current native presets share the recorded
-`codex:codex-native` memory/skill scope; ordinary companion workers use `worker`.
+`fugato:codex-native` memory/skill scope; ordinary companion workers use `worker`.
 See [context settings](configuration.md#worker-context-and-concurrency) for
 bounds, storage and the opt-in Fugato-wide `--max-concurrent` queue.
 
@@ -226,7 +226,7 @@ makes omissions inspectable; import fidelity is still not verified.
 
 ## Haiku fallback and shared rules
 
-Use `Agent(subagent_type: "codex:codex-worker")` only when native dispatch and
+Use `Agent(subagent_type: "fugato:codex-worker")` only when native dispatch and
 background Bash are unavailable, or the user asks for a forwarding-agent
 transcript. It stays Haiku with low effort, `omitClaudeMd: true` and
 `autoCompactWindow: 100000`; put Codex's model/effort in the brief, not Agent
@@ -297,9 +297,9 @@ for the setup warning and stable CLI pins.
 Prerequisites must be handled before unattended execution: an installed runtime,
 isolated authentication (or an independently configured provider), and Claude
 permission rules allowing the companion command. Missing prerequisites are
-reported as blockers. The interactive `/codex:setup` install offer and
-`/codex:rescue` continuation chooser are separate user-facing paths; dynamic
-workflows should use the native agent or `fugato task`, with `codex:codex-worker` only as fallback,
+reported as blockers. The interactive `/fugato:setup` install offer and
+`/fugato:rescue` continuation chooser are separate user-facing paths; dynamic
+workflows should use the native agent or `fugato task`, with `fugato:codex-worker` only as fallback,
 not those choosers.
 Codex server requests for approval/input are logged safely. Supported Computer Use
 approvals reach the parent on owned jobs; the explicit origin policy and registered
@@ -457,7 +457,7 @@ Answer submission, including submit-only mode, rejects an explicit mismatched
 owner, expired question/lease or stopping job under the same state lock. Retired
 owners still receive `ownership_moved`; ownerless compatibility helpers remain
 supported.
-Observational `/codex:status`, `fugato status` and `fugato result` do not renew;
+Observational `/fugato:status`, `fugato status` and `fugato result` do not renew;
 `fugato status <job> --wait --owner <id>` renews that owner for the whole wait;
 ownerless compatibility companion waits also do not renew. Foreground tasks renew while their owning
 process runs and stop with `parent_exit` once the process that launched them dies;
@@ -495,7 +495,7 @@ Adoption after expiry or completion returns `lease_expired` or `job_ended`
 (exit 2) with the same `continuationCommand`, and never runs it. Cancellation in
 progress also refuses adoption. Wait for pending interruption to finish before
 continuing. Thread context and on-disk edits persist; missing thread handles
-preclude a continuation command. `/codex:status` shows orphaned running jobs,
+preclude a continuation command. `/fugato:status` shows orphaned running jobs,
 remaining seconds and an exact adopt instruction after no renewal for half the
 lease in direct mode (900 s with the default 1800 s lease), or the smaller of
 65 s and half the lease for other jobs. See [stop actions and recovery](direct-mode.md#if-a-worker-is-stopped).
@@ -627,7 +627,7 @@ or managed policy can still prevent unattended execution. Do not add broad
 
 ## Optional tool configuration sync
 
-Run these commands outside the Bash sandbox (or through `/codex:setup`):
+Run these commands outside the Bash sandbox (or through `/fugato:setup`):
 
 ```bash
 fugato setup --sync-tools --dry-run --json

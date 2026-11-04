@@ -1,10 +1,193 @@
 import { test, expect, mock } from 'claude-code/testing';
 import { captures as recordedCaptures } from './native-captures.mjs';
-import { register as registerNative } from '../hooks/native-agent.mjs';
+import { register as registerNative, logEntry, foldEntries, eventRow, logRows, proseRows, headerRow, statusRow, reportMarkdown, textWidth } from '../hooks/native-agent.mjs';
+import { cleanCommand } from '../hooks/command-display.mjs';
 
 const root = '/private/tmp/duet14-g-fixture';
-const TYPE = 'codex:codex-native';
+const TYPE = 'fugato:codex-native';
 const clone = (value: any) => JSON.parse(JSON.stringify(value));
+test('command display follows every spec vector without changing shell words', () => {
+  const vectors: [string, string, string, string?][] = [
+    [String.raw`/bin/zsh -lc "rg -n --hidden -g '!native-captures.mjs' 'codex:|codex@fugato' plugins"`, 'rg', "-n --hidden -g '!native-captures.mjs' 'codex:|codex@fugato' plugins"],
+    [String.raw`/bin/zsh -lc 'rg -n -g '"'"'!x'"'"' foo'`, 'rg', "-n -g '!x' foo"],
+    [String.raw`/bin/zsh -lc "git -c user.name=Ghqqqq -c user.email=a@b commit -m \"Rename main\""`, 'git', "commit -m 'Rename main'"],
+    [String.raw`/bin/zsh -lc "nl -ba plugins/codex-live/hooks/poll.ts | sed -n '1,80p'"`, 'nl', '-ba plugins/codex-live/hooks/poll.ts +1'],
+    [String.raw`/bin/zsh -lc "N=/x/node env -u CLAUDE_CONFIG_DIR npm_config_offline=true node --test a.mjs"`, 'node', '--test a.mjs'],
+    ['/usr/bin/git status --short', 'git', 'status --short'],
+    ['/bin/zsh -lc "cd /work/repo && npm test"', 'cd', '. +1'],
+    [String.raw`env -i -u HOME FOO='a b' /bin/bash -l -c 'git -C /work/repo -c x=y status'`, 'git', '-C . status'],
+    [String.raw`rg 'a|b' "c;d" a\ b a'bc'"de" 'it'\''s' /home/me/x /work/repository/x`, 'rg', String.raw`'a|b' 'c;d' 'a b' abcde 'it'\''s' ~/x /work/repository/x`],
+    ['echo one && echo two || echo three; echo four | cat', 'echo', 'one +4'],
+    ["echo $(printf \"a && b\") && node a.mjs", "echo", "'$(printf \"a && b\")' +1"],
+    ["echo `printf \"a && b\"` && node a.mjs", "echo", "'`printf \"a && b\"`' +1"],
+    ["/bin/zsh -lc \"python3 - <<'PY'\nfrom pathlib import Path\nPY\"", 'python3', "- <<'PY'", '/x'],
+    ["/bin/zsh -lc \"cat > check.mjs <<'EOF'\nimport x\nEOF\"", 'cat', "> check.mjs <<'EOF'", '/x'],
+    ['/bin/zsh -lc "npm test 2>&1 | tail -5"', 'npm', 'test 2>&1 +1', '/x'],
+    ['/bin/zsh -lc "cd /x\nnpm test"', 'cd', '. +1', '/x'],
+    ['/bin/zsh -lc "rg foo < list.txt > out.txt"', 'rg', 'foo < list.txt > out.txt', '/x'],
+    ['cat <<EOF > a.txt\nhi\nEOF\necho done', 'cat', '<<EOF > a.txt +1', '/x'],
+    ['sort <<< "b a"', 'sort', "<<< 'b a'", '/x'],
+    ['cat <<"EOF"\nnot EOF\nEOF\necho done', 'cat', '<<"EOF" +1', '/x'],
+    ["cat <<-EOF\n\thi\n\tEOF\necho done", 'cat', '<<-EOF +1', '/x'],
+    ["cat <<'A' <<\\B\nbody && hidden\nA\nmore | hidden\nB\necho done", 'cat', "<<'A' <<\\B +1", '/x'],
+    ["cat << 'END'\nbody\nEND\n\n echo done\n\n pwd", 'cat', "<< 'END' +2", '/x'],
+    ["cat <<'EOF'\nunfinished body && hidden", 'cat', "<<'EOF'", '/x'],
+    ['node a.mjs >out.txt >>more.txt <in.txt 2>err.txt 1>&2 0<&3 &>all.txt &>>log.txt >|force.txt',
+      'node', 'a.mjs > out.txt >> more.txt < in.txt 2> err.txt 1>&2 0<&3 &> all.txt &>> log.txt >| force.txt', '/x'],
+    ['echo hi 2>& 1 && echo done', 'echo', 'hi 2>& 1 +1', '/x'],
+    ['rg foo < /x/list.txt > "/x/out file.txt"', 'rg', "foo < list.txt > 'out file.txt'", '/x'],
+    [String.raw`echo '>' '<<EOF' '2>&1' \> \|`, 'echo', "'>' '<<EOF' '2>&1' '>' '|'", '/x'],
+    ['npm \\\n test\necho done', 'npm', 'test +1', '/x'],
+    ['\\\n echo fo\\\no\n\necho done', 'echo', 'foo +1', '/x'],
+    ['npm test 2>\\\n&1 |\\\n| echo failed', 'npm', 'test 2>&1 +1', '/x'],
+    ['echo "a\nb"\necho done', 'echo', "'a\nb' +1", '/x'],
+    ["echo 'a\\\nb'\necho done", 'echo', "'a\\\nb' +1", '/x'],
+  ];
+  const plain = (node: any): string => typeof node === 'string' ? node : (node.children ?? []).map(plain).join('');
+  for (const [raw, verb, args, cwd = '/work/repo'] of vectors) {
+    const context = { cwd, home: '/home/me' };
+    const actual = cleanCommand(raw, context);
+    expect({ raw, verb: actual.verb, args: actual.args }).toEqual({ raw, verb, args });
+    // Exercise the native renderer's own quoting too; keep width shortening
+    // and literal newlines inside quoted arguments out of this comparison.
+    if (cwd === '/x' && verb.length + args.length < 90 && !args.includes('\n')) {
+      const row = eventRow({ viewport: { columns: 100 } },
+        { kind: 'event', title: `Bash(${raw})`, result: 'Done', running: false }, context);
+      expect(plain(row)).toBe(`  ✓ ${verb} ${args}`);
+    }
+  }
+});
+
+test('agent rows use a left status gutter, trailing detail and the full viewport', () => {
+  const plain = (node: any): string => typeof node === 'string' ? node : (node.children ?? []).map(plain).join('');
+  const nodes = (node: any): any[] => typeof node === 'string' ? [] : [node, ...(node.children ?? []).flatMap(nodes)];
+  const view = { name: 'Carnot', role: 'reviewer', model: 'gpt-6-astra', effort: 'xhigh', sandbox: 'read-only',
+    cwd: '/work/rc-main', status: 'running', elapsedMs: 105000, pane: true };
+  const context = { view, cwd: view.cwd, home: '/home/me' };
+  const entries = [
+    ...foldEntries(['Bash(rg --files) · Done', 'Bash(git status --short) · Done'].map(logEntry)),
+    logEntry('Bash(node --test plugins/codex/tests/native-integration.mjs) · Done (2s)'),
+    logEntry('Bash(git diff HEAD -- plugins/codex/hooks/native-agent.mjs) · Done (0.3s)'),
+    logEntry('Bash(nl -ba plugins/codex-live/hooks/poll.ts | sed -n 1,80p) · Error: exit 1'),
+    logEntry('Update(/work/rc-main/plugins/codex/hooks/native-agent.mjs) · +6 −1'),
+    logEntry('Bash(npm test) · running'),
+    logEntry('Bash(npm test) · cancelled'),
+    logEntry('Bash(node ' + 'word '.repeat(40) + ') · Error: exit 3'),
+  ];
+  for (let columns = 0; columns <= 200; columns++) {
+    const e = { viewport: { columns } }, rows = entries.map(entry => eventRow(e, entry, context));
+    const all = [headerRow(e, view), ...logRows(e, logEntry('Codex: I’ll check the native adapter and keep its execution behavior unchanged.'), context).children,
+      ...rows, statusRow(e, view)];
+    expect(all.every(row => textWidth(plain(row)) <= columns)).toBe(true);
+    expect(all.some(row => plain(row).includes('  › ') || /[└⎿] Done/.test(plain(row)))).toBe(false);
+    expect(nodes({ children: all }).filter(node => node.props?.color).every(node =>
+      ['text', 'subtle', 'inactive', 'success', 'error', 'warning', 'claude', 'suggestion', 'diffAdded', 'diffRemoved'].includes(node.props.color))).toBe(true);
+    if (columns >= 60) {
+      expect(plain(rows[0])).toBe('  ✓ explored 2 commands · rg, git');
+      expect(plain(rows[1])).toMatch(/^  ✓ .* · 2s$/);
+      expect(plain(rows[2])).toMatch(/^  ✓ /);
+      expect(plain(rows[2])).not.toContain(' · ');
+      expect(plain(rows[3])).toMatch(/^  ✗ .* · exit 1$/);
+      expect(plain(rows[4])).toMatch(/^  ✓ edit .*  \+6 −1$/);
+      expect(plain(rows[5])).toBe('  ● npm test · running 1m 45s');
+      expect(plain(rows[6])).toBe('  ■ npm test · cancelled');
+      expect(plain(rows[7])).toMatch(/^  ✗ node .*… · exit 3$/);
+      expect(plain(headerRow(e, view))).toBe('Carnot · reviewer · astra xhigh · read-only · rc-main');
+      expect(plain(statusRow(e, view))).toBe('running · 1m 45s · /fugato-live Carnot');
+    }
+  }
+  const coloured = entries.map(entry => eventRow({ viewport: { columns: 120 } }, entry, context));
+  for (const [index, glyph, color] of [[0, '✓', 'success'], [3, '✗', 'error'], [5, '●', 'claude'], [6, '■', 'inactive']] as const) {
+    expect(nodes(coloured[index]).some(node => node.props?.color === color && plain(node) === glyph)).toBe(true);
+  }
+  for (const [index, detail, color] of [[1, ' · 2s', 'subtle'], [3, ' · exit 1', 'error'],
+    [5, ' · running 1m 45s', 'claude'], [6, ' · cancelled', 'inactive'], [4, '+6', 'diffAdded'], [4, '−1', 'diffRemoved']] as const) {
+    expect(nodes(coloured[index]).some(node => node.props?.color === color && plain(node) === detail)).toBe(true);
+  }
+  const pathRow = (columns: number, text: string) => plain(eventRow({ viewport: { columns } }, logEntry(text), context));
+  expect([
+    pathRow(100, 'Bash(node --test plugins/codex/tests/native-integration.mjs) · Done (2m 44s)'),
+    pathRow(60, 'Bash(node --test plugins/codex/tests/native-integration.mjs) · Done (2m 44s)'),
+    pathRow(100, 'Update(plugins/codex/scripts/codex-companion.mjs) · +6 −1'),
+  ]).toEqual([
+    '  ✓ node --test plugins/codex/tests/native-integration.mjs · 2m 44s',
+    '  ✓ node --test …/tests/native-integration.mjs · 2m 44s',
+    '  ✓ edit plugins/codex/scripts/codex-companion.mjs  +6 −1',
+  ]);
+  const status = (text: string, extra = {}) => plain(eventRow({ viewport: { columns: 60 } }, logEntry(text), { ...context, ...extra })).trimEnd();
+  expect(status('Bash(npm test) · running')).toMatch(/ running 1m 45s$/);
+  expect(status('Bash(npm test) · running', { interruption: 'cancelled' })).toMatch(/ cancelled$/);
+  expect(status('Bash(npm test) · Error')).toBe('  ✗ npm test · error');
+  expect(status('Bash(npm test) · exit unknown')).toBe('  ! npm test · exit ?');
+  expect(status('Bash(npm test) · Done (2m 5s)')).toBe('  ✓ npm test · 2m 5s');
+  expect(plain(eventRow({ viewport: { columns: 100 } }, logEntry('Bash(node ' + 'a'.repeat(50) + '🇺🇸🇨) · Done'), context)))
+    .toContain("'" + 'a'.repeat(24) + '…' + 'a'.repeat(11) + "🇺🇸🇨'");
+  const final = proseRows({ viewport: { columns: 28 } }, '**Renamed** the plugin and kept `DUET:` unchanged.', { marker: 'success', limit: 12 });
+  expect(final.every(row => plain(row).startsWith('▏') && textWidth(plain(row)) <= 28)).toBe(true);
+  expect(nodes({ children: final }).some(node => node.props?.bold && plain(node) === 'Renamed')).toBe(true);
+  expect(final.every(row => row.children[0].children[0].props.color === 'success')).toBe(true);
+  expect(['first\rsecond', 'first\r\nsecond'].map(text =>
+    proseRows({ viewport: { columns: 60 } }, text, { marker: 'success' }).map(plain)))
+    .toEqual([['▏first', '▏second'], ['▏first', '▏second']]);
+  const compound = status('Bash(node ' + 'a'.repeat(100) + ' b'.repeat(20) + ' && npm test) · Done');
+  expect(compound).toMatch(/^  ✓ .*… \+1$/);
+  expect(proseRows({ viewport: { columns: 120 } }, 'a'.repeat(115)).map(plain)).toEqual(['a'.repeat(115)]);
+  expect(plain(logRows({ viewport: { columns: 120 } }, { kind: 'question', title: 'Which branch?' })))
+    .toBe('  ? asks Claude · Which branch?');
+  expect(plain(logRows({}, logEntry('Codex: [completed] Final summary.')))).toBe('');
+  expect(plain(logRows({}, logEntry('Codex: [needs_input] Choose a branch.')))).toBe('');
+  expect(plain(logRows({}, logEntry('Codex: [notes] Ordinary progress.')))).toBe('[notes] Ordinary progress.');
+  expect(plain(logRows({ viewport: { columns: 60 } }, logEntry('Write(/work/rc-main/new.mjs) · +2 −0'), context)).trimEnd()).toBe('  ✓ edit new.mjs  +2');
+  expect(logEntry('└ Done (0.0s)')).toBe(null);
+  expect(logEntry('⎿ Done')).toBe(null);
+});
+
+test('report blocks preserve summary lines, ordered facts, colours and the sixty-row budget', () => {
+  const plain = (node: any): string => typeof node === 'string' ? node : (node.children ?? []).map(plain).join('');
+  const nodes = (node: any): any[] => typeof node === 'string' ? [] : [node, ...(node.children ?? []).flatMap(nodes)];
+  const report = { status: 'completed', worker: 'Benett', jobId: 'task-display',
+    summary: 'Updated the native view.\n\nKept the report readable.\n- Preserved line breaks.\n- Added bounded facts.',
+    changedFiles: ['src/view.mjs', 'notes.txt', 'src/a.mjs', 'src/b.mjs', 'src/c.mjs', 'src/d.mjs', 'src/e.mjs'],
+    checks: { ran: Array(7).fill('hidden raw command'), omitted: 2, failed: 2,
+      claimed: ['fixture check: passed', 'manual check: passed', 'display check: passed', 'fourth claim', 'fifth claim'] },
+    keyFindings: ['Commands keep their status glyphs.', 'Reports end with one status line.'],
+    assumptions: ['hidden assumption'], next: 'SendMessage to Benett to continue', details: 'fugato result task-display --details',
+    usage: { totalTokens: 200000, inputTokens: 180000 } };
+  const question = { ...report, status: 'needs_input', summary: 'A branch choice is needed.',
+    changedFiles: [], checks: undefined, keyFindings: [], usage: undefined,
+    blockers: [{ code: 'branch_required', message: 'Choose a destination branch.' }],
+    question: { text: 'Which branch should I use?', options: ['main', 'rc-int'] } };
+  const input = JSON.stringify(report);
+  for (let columns = 0; columns <= 200; columns++) {
+    for (const value of [report, question, { ...report, summary: Array(90).fill('More summary.').join('\n') }]) {
+      const rows = reportMarkdown({ text: JSON.stringify(value) }, { viewport: { columns } }).children;
+      expect(rows.length <= 60).toBe(true);
+      expect(rows.every((row: any) => textWidth(plain(row)) <= columns)).toBe(true);
+    }
+  }
+  const drawn = reportMarkdown({ text: input }, { viewport: { columns: 120 } });
+  const rows = drawn.children.map(plain);
+  expect(rows.slice(0, 6)).toEqual(['▏Updated the native view.', '▏', '▏Kept the report readable.',
+    '▏- Preserved line breaks.', '▏- Added bounded facts.', ' ']);
+  expect(rows.filter((row: string) => /^  [a-z]/.test(row)).map((row: string) => row.slice(2, 12).trim()))
+    .toEqual(['changed', 'checks', 'claimed', 'findings']);
+  expect(rows.find((row: string) => row.startsWith('  changed'))).toContain('src/c.mjs · +2 more');
+  expect(rows).toContain('  checks    9 passed · 2 failed');
+  expect(rows).toContain('            +2 more');
+  expect(rows.slice(-2)).toEqual([' ', 'done · 200k tokens']);
+  expect(nodes(drawn).some(node => node.props?.color === 'error' && plain(node) === '2 failed')).toBe(true);
+  expect(nodes(drawn).some(node => node.props?.color === 'subtle' && plain(node) === 'src/')).toBe(true);
+  expect(nodes(drawn).some(node => node.props?.color === 'text' && plain(node) === 'view.mjs')).toBe(true);
+  expect(rows.join('\n')).not.toMatch(/hidden|Checks run|provider:|SendMessage|details|job task/);
+  const asked = reportMarkdown({ text: JSON.stringify(question) }, { viewport: { columns: 60 } });
+  expect(asked.children.map(plain).slice(-4)).toEqual(['  question  Which branch should I use?',
+    '            1. main  2. rc-int', ' ', 'asks Claude']);
+  expect(nodes(asked).some(node => node.props?.color === 'warning' && plain(node) === 'Which branch should I use?')).toBe(true);
+  const passed = reportMarkdown({ text: JSON.stringify({ ...question, checks: { ran: ['check'], failed: 0 } }) });
+  expect(passed.children.map(plain)).toContain('  checks    1 passed');
+  expect(JSON.stringify(report)).toBe(input);
+  expect(reportMarkdown({ text: input, isSummary: true })).toBe(null);
+});
 // Migrate only the two captured usage labels; preserve the recorded execution.
 const captures = recordedCaptures.map(capture => {
   const started = capture.notices.find((notice: any) => notice.message.content[0].text.includes('started · job '));
@@ -145,7 +328,7 @@ async function displayReplay(exercise?: (api: any) => Promise<void>) {
     } };
   });
   const capture: any = captures[3], text = 'Identical native brief.';
-  let current: any, phaseTrees: any[] = [], summaryTrees: any[] = [], forwarded: any, columns = 120;
+  let current: any, phaseTrees: any[] = [], summaryTrees: any[] = [], forwarded: any, columns = 120, now = 1800000000000;
   const renderAccess: string[] = [];
   const renderHost = new Proxy({}, { get(_, key) { renderAccess.push(String(key)); throw new Error('Render must use display state only'); } });
   const $: any = {
@@ -154,7 +337,7 @@ async function displayReplay(exercise?: (api: any) => Promise<void>) {
     fs: { stat: async (path: string) => ({ kind: 'dir', realPath: path }) },
     agent: { list: async () => [{ id: current.agentId, name: current.agentId, type: TYPE }] },
     store: { delete: async (key: string) => { store.delete(key); }, get: async (key: string) => clone(store.get(key) ?? null), set: async (key: string, value: any) => { store.set(key, clone(value)); } },
-    clock: { now: async () => 1800000000000, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) },
+    clock: { now: async () => now, every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) },
     process: { run: async (argv: string[], init: any) => {
       if (argv[0] === 'node') return { exitCode: 0, stdout: '/host/node\n' };
       expect(argv[2]).toBe('status');
@@ -174,15 +357,22 @@ async function displayReplay(exercise?: (api: any) => Promise<void>) {
           if (exercise) summaryTrees.push(await hooks.get('ToolUse')(renderHost, { component: 'ToolUse', surface: 'terminal',
             viewport: { columns }, props: { tool: 'Agent', tool_use_id: current.uuid, input: { subagent_type: TYPE } } }, async () => engine));
         }
-        for (const chunk of record.chunks) yield { ...chunk,
-          text: chunk.text.replaceAll('native-session:native-agent:turn-1', `native-session:${current.agentId}:${current.turnId}`) };
+        if (command === 'task') now += current.elapsedMs || 0;
+        for (const chunk of record.chunks) {
+          let text = chunk.text.replaceAll('native-session:native-agent:turn-1', `native-session:${current.agentId}:${current.turnId}`);
+          if (command === 'task' && chunk.stream === 'stdout' && current.report) text = text.split('\n').map((line: string) => {
+            try { const value = JSON.parse(line); return value.status ? JSON.stringify({ ...value, ...current.report }) : line; }
+            catch { return line; }
+          }).join('\n');
+          yield { ...chunk, text };
+        }
       })();
       return Object.assign(stream, { result: Promise.resolve({ code: 0 }) });
     } },
   };
-  const render = async (uuid: string, kind = 'unclassified', body = text) => {
+  const render = async (uuid: string, kind = 'unclassified', body = text, isExpanded = true) => {
     const input = { component: 'UserMessage', surface: 'terminal', requestId: uuid, viewport: { columns },
-      props: { text: body, origin: { kind }, isExpanded: true } };
+      props: { text: body, origin: { kind }, isExpanded } };
     const original = clone(input);
     let drawing: any;
     const tree = await hooks.get('UserMessage')(renderHost, input, async (e: any) => { drawing = forwarded = clone(e); return engine; });
@@ -199,10 +389,10 @@ async function displayReplay(exercise?: (api: any) => Promise<void>) {
     expect(await (hooks.has('session.append') ? hooks.get('session.append')($, input, next) : next(input))).toEqual(result);
   };
   const run = async (agentId: string, turnId: string, before: boolean, lines: string[], body = text, appended = body, plain = false,
-    row: { uuid?: string, echo?: boolean, append?: boolean } = {}) => {
+    row: { uuid?: string, echo?: boolean, append?: boolean, report?: any, elapsedMs?: number } = {}) => {
     const uuid = row.uuid ?? `${agentId}:${turnId}`;
     current = { agentId, turnId, uuid, requestId: row.echo ? `${uuid}-echo` : uuid,
-      kind: row.echo ? 'coordinator' : 'unclassified', lines, text: body };
+      kind: row.echo ? 'coordinator' : 'unclassified', lines, text: body, report: row.report, elapsedMs: row.elapsedMs };
     // plain: like a SendMessage follow-up, the row's content is a string and
     // turn.start receives the same framed text.
     const started = plain ? appended : body;
@@ -221,8 +411,13 @@ async function displayReplay(exercise?: (api: any) => Promise<void>) {
     await write(body);
     phaseTrees = []; summaryTrees = [];
     const result = await drain(hooks.get('turn.step')($, { agentId, turnId, index: 0 }, () => { throw new Error('Unexpected model'); }));
-    expect({ agentId, turnId, report: JSON.parse(result.result.answer) }).toEqual({ agentId, turnId, report: expect.objectContaining({ status: 'completed' }) });
-    return { tree: clone(await render(current.requestId, current.kind, body)), phases: clone(phaseTrees), summaries: clone(summaryTrees) };
+    const report = JSON.parse(result.result.answer), requestId = current.requestId, kind = current.kind;
+    expect({ agentId, turnId, report }).toEqual({ agentId, turnId, report: expect.objectContaining({ status: row.report?.status || 'completed' }) });
+    return { tree: clone(await render(requestId, kind, body)), phases: clone(phaseTrees), summaries: clone(summaryTrees), report,
+      redraw: () => render(requestId, kind, body),
+      drawReport: (fields = {}) => hooks.get('AssistantMessage')(renderHost, { component: 'AssistantMessage', viewport: { columns },
+        props: { text: JSON.stringify({ ...report, ...fields }) } }, async () => engine),
+      spinner: () => hooks.get('Spinner')(renderHost, { requestId: agentId, viewport: { columns } }, async () => engine) };
   };
   await append('parent');
   const first = await run('agent-a', 'turn-1', true,
@@ -261,8 +456,9 @@ async function displayReplay(exercise?: (api: any) => Promise<void>) {
     frame('Unappended follow-up.'), true, { echo: true, append: false });
   const oldTurnsRetained = [first, second].map((value, i) =>
     render(`${i ? 'agent-b' : 'agent-a'}:turn-1`).then((tree: any) => JSON.stringify(tree) === JSON.stringify(value.tree)));
-  const events = (tree: any) => (tree.children ?? []).slice(1).filter((row: any) => row.children?.[0]?.children?.[1]?.children?.[0]?.props.bold);
-  const phases = first.phases.map(tree => events(tree).map((entry: any) => entry.children[0].children[0].children[0].props.color ?? 'dim'));
+  const plainText = (node: any): string => typeof node === 'string' ? node : (node.children ?? []).map(plainText).join('');
+  const events = (tree: any) => (tree.children ?? []).filter((row: any) => row.props?.flexDirection === 'column' && /^  [✓✗●■!]/.test(plainText(row)));
+  const phases = first.phases.map(tree => events(tree).map((entry: any) => entry.children[0].children[0].children.find((node: any) => /^(?:✓|✗|●)/.test(node.children?.[0])).props.color));
   const observed = { parent, unidentified, decorated: [first, second, followup].map(value => value.tree.type === 'Box'),
     firstRetained, oldTurnsRetained: await Promise.all(oldTurnsRetained), phases, appendCalls,
     binding: { followupLog, normalizedId, ambiguousPrefix, nonCoordinator, unmatchedCoordinator, echoOrder, echoRetained, extraEcho,
@@ -274,12 +470,16 @@ async function displayReplay(exercise?: (api: any) => Promise<void>) {
   const nodes = (tree: any): any[] => typeof tree === 'object' ? [tree, ...(tree.children ?? []).flatMap(nodes)] : [];
   const plain = await render(current.uuid, 'unclassified', brief);
   expect(forwarded.props.text).toBe(brief);
+  const collapsed = await render(current.uuid, 'unclassified', header + brief, false);
+  expect({ expanded: projected.tree.children[1], collapsed: collapsed.children[1].children[0].children.map((node: any) => node.children[0]) })
+    .toEqual({ expanded: engine, collapsed: ['Claude › ', 'Keep this brief.'] });
   const nonNative = await render('unidentified', 'unclassified', header + brief);
   expect(forwarded.props.text).toBe(header + brief);
   const invalid = 'DUET: --unsupported\n' + brief;
   const fallback = await render(current.uuid, 'unclassified', invalid);
   expect(forwarded.props.text).toBe(invalid);
   if (exercise) await exercise({ run, setColumns: (value: number) => { columns = value; },
+    setPane: () => { $.command = { list: async () => [{ name: 'fugato-live' }] }; },
     setHome: (value: string) => { $.env.get = async (name: string) => name === 'HOME' ? value : undefined; } });
   const shared = 'Same follow-up for different agents.';
   await run('agent-ambiguous-a', 'turn-1', true, ['Codex: first candidate'], shared, frame(shared), true);
@@ -468,7 +668,7 @@ function fixture(on: any, observeProgress?: (notices: any) => Promise<void>) {
     async isolation($: any, discoveryDown = false) {
       const before = calls;
       listFailure = discoveryDown;
-      for (const type of [undefined, 'general-purpose', 'Explore', 'fork', 'other-plugin:codex-native', 'codex:codex-worker']) {
+      for (const type of [undefined, 'general-purpose', 'Explore', 'fork', 'other-plugin:codex-native', 'fugato:codex-worker']) {
         const agentId = type ? `other-${type}` : undefined;
         agents = type ? [{ id: agentId, type, status: 'running', description: 'unchanged' }] : [];
         // A stale record must not hijack a live agent of a different type.
@@ -539,7 +739,7 @@ for (const [index, capture] of captures.entries()) {
     if (index === 0) {
       on('ui.render', { component: 'UserMessage' }, () => engine as any);
       for (const event of capture.events.filter((event: any) => event.event === 'turn.start')) {
-        prompts.push(await $.ui.mount({ plugin: 'codex', surface: 'terminal', component: 'UserMessage',
+        prompts.push(await $.ui.mount({ plugin: 'fugato', surface: 'terminal', component: 'UserMessage',
           requestId: `${event.input.agentId}:${event.input.turnId}`,
           props: { text: event.input.text, origin: { kind: 'unclassified' }, isExpanded: true } }));
       }
@@ -550,7 +750,8 @@ for (const [index, capture] of captures.entries()) {
       // A follow-up must retain the preceding turn's log under its own prompt.
       for (const ui of prompts) {
         const tree = await ui.drawn();
-        expect(tree.children[0]).toEqual(engine);
+        expect(tree.children[0].children[0].children[0].props.bold).toBe(true);
+        expect(tree.children[1]).toEqual(engine);
         expect(tree.children.length > 1).toBe(true);
       }
     } finally { for (const ui of prompts) await ui.unmount(); }
@@ -565,8 +766,10 @@ test('other loops pass untouched; process and hook failures block without a mode
 
 test('typed blockers preserve runtime recovery and only native reports are projected', async ($, on) => {
   const f = fixture(on), reports = new Map();
-  let drawn: any;
-  on('ui.render', { component: 'AssistantMessage' }, (_, e) => { drawn = e; return { type: 'engine', ref: 0 }; });
+  let fallbackText = '';
+  const plain = (node: any): string => typeof node === 'string' ? node
+    : (node.props?.text || '') + (node.children ?? []).map(plain).join('');
+  on('ui.render', { component: 'AssistantMessage' }, (_, e) => { fallbackText = e.props.text; return { type: 'engine', ref: 0 }; });
   for (const code of ['fixture_blocker', 'context_window_exceeded', 'provider_refused', 'auth_required']) {
     reports.set(code, await f.report($, { status: 'blocked', blockers: [{ code }] }));
   }
@@ -576,8 +779,9 @@ test('typed blockers preserve runtime recovery and only native reports are proje
     expect((await f.report($, { status: 'blocked', blockers: [{ code }, { code: 'thread_busy' }], next })).next).toBe(next);
   }
   const render = async (text: string) => {
-    await $.ui.render({ surface: 'terminal', component: 'AssistantMessage', requestId: 'report', props: { text } });
-    return drawn.props.text;
+    const ui = await $.ui.mount({ plugin: 'fugato', surface: 'terminal', component: 'AssistantMessage', requestId: 'report', props: { text } });
+    try { const tree: any = await ui.drawn(); return tree.type === 'engine' ? fallbackText : plain(tree); }
+    finally { await ui.unmount(); }
   };
   const native = captures[3].events.find((event: any) => event.event === 'turn.step').result.answer;
   expect(await render(native)).not.toBe(native);
@@ -651,7 +855,8 @@ test('progress is bounded, split lines survive, duplicate notices collapse, and 
     expect((await spinner.drawn()).type).toBe('Box');
     expect(nativeSpinnerHostCalls).toBe(0);
     const tree = await promptRow.drawn();
-    expect(tree.children[0]).toEqual(engine);
+    expect(tree.children[0].children[0].children[0].props.bold).toBe(true);
+    expect(tree.children[1]).toEqual(engine);
     expect(tree.children.length > 1).toBe(true);
     expect((await toolRow.drawn()).children[0]).toEqual(engine);
     endedLog = clone(tree);
@@ -659,12 +864,12 @@ test('progress is bounded, split lines survive, duplicate notices collapse, and 
   on('ui.render', { component: 'Spinner' }, () => { nativeSpinnerHostCalls++; return engine as any; });
   on('ui.render', { component: 'ToolUse' }, () => engine as any);
   on('ui.render', { component: 'UserMessage' }, () => engine as any);
-  spinner = await $.ui.mount({ plugin: 'codex', surface: 'terminal', component: 'Spinner', requestId: 'native-agent',
+  spinner = await $.ui.mount({ plugin: 'fugato', surface: 'terminal', component: 'Spinner', requestId: 'native-agent',
     props: { word: 'Working', message: null, suffix: '…', mode: 'thinking' } });
-  promptRow = await $.ui.mount({ plugin: 'codex', surface: 'terminal', component: 'UserMessage',
+  promptRow = await $.ui.mount({ plugin: 'fugato', surface: 'terminal', component: 'UserMessage',
     requestId: 'native-agent:turn-1', props: { text: capture.events.find((event: any) => event.event === 'turn.start').input.text,
       origin: { kind: 'unclassified' }, isExpanded: true } });
-  toolRow = await $.ui.mount({ plugin: 'codex', surface: 'terminal', component: 'ToolUse', requestId: 'spawn-1',
+  toolRow = await $.ui.mount({ plugin: 'fugato', surface: 'terminal', component: 'ToolUse', requestId: 'spawn-1',
     props: { tool_use_id: 'spawn-1', tool: 'Agent', input: { subagent_type: TYPE },
       isRunning: false, isErrored: false, isInterrupted: false } });
   try {
@@ -672,7 +877,12 @@ test('progress is bounded, split lines survive, duplicate notices collapse, and 
     nativeSpinnerHostCalls = 0;
     replayedChunks = await f.replay($, capture);
     expect(counts).toEqual([1, 5, capture.notices.length]);
-    expect(await promptRow.drawn()).toEqual(endedLog);
+    // While running the Spinner carries the status; a returned report owns the final status.
+    const plainRow = (node: any): string => typeof node === 'string' ? node : (node.children ?? []).map(plainRow).join('');
+    expect(endedLog.children.some((row: any) => /^running · /.test(plainRow(row)))).toBe(false);
+    const ended = await promptRow.drawn();
+    expect(ended.children).toEqual(endedLog.children);
+    expect(ended.children.some((row: any) => /^done(?: · |$)/.test(plainRow(row)))).toBe(false);
     expect(f.notices().filter((notice: any) => liveOnly.includes(notice.message.content[0].text))).toHaveLength(0);
     await $.turn.start({ agentId: 'native-agent', turnId: 'refused-turn', text: 'x'.repeat(65537) });
     const refused = await drain($.turn.step({ ...step.input, turnId: 'refused-turn' }));
@@ -693,7 +903,7 @@ test('progress is bounded, split lines survive, duplicate notices collapse, and 
   const queue = await faultKeepalives('queue'), display = await displayReplay();
   expect({ queue, display }).toEqual({ queue: { maxHeartbeatPending: 1, heartbeatPending: 1 }, display: {
     parent: engine, unidentified: engine, decorated: [true, true, true], firstRetained: true, oldTurnsRetained: [true, true],
-    phases: [['dim'], ['dim', 'dim'], ['success', 'dim'], ['success', 'success']], appendCalls: 15,
+    phases: [['claude'], ['claude', 'claude'], ['success', 'claude'], ['success', 'success']], appendCalls: 15,
     binding: { followupLog: true, normalizedId: true, ambiguousPrefix: engine, nonCoordinator: engine, unmatchedCoordinator: engine,
       echoOrder: [engine, engine], echoRetained: [engine, engine], extraEcho: engine, bareFallback: engine, unappended: true },
     ambiguity: { ambiguous: [engine, engine], resolved: engine, consumed: engine },
@@ -707,15 +917,14 @@ test('progress is bounded, split lines survive, duplicate notices collapse, and 
 test('compact logs retain failed and unfamiliar commands beside folded exploration', async () => {
   await displayReplay(async ({ run }: any) => {
     const plain = (node: any): string => typeof node === 'string' ? node : (node.children ?? []).map(plain).join('');
-    const entries = (tree: any) => tree.children.filter((entry: any) => entry.props?.flexDirection === 'column'
-      && (entry.children[0]?.children.length === 3 || entry.children[0]?.children[0]?.props.color === 'text'));
-    const foldCount = (entry: any) => Number(/· (\d+) commands/.exec(plain(entry))?.[1] ?? 0);
+    const entries = (tree: any) => tree.children.filter((entry: any) => entry.props?.flexDirection === 'column' && /^  [✓✗●■!]/.test(plain(entry)));
+    const foldCount = (entry: any) => Number(/explored (\d+) commands/.exec(plain(entry))?.[1] ?? 0);
     const command = (text: string, result = 'Done') => `Bash(${text}) · ${result}`;
     const result = await run('compact', 'turn-1', true, [command('cat a'), command('rg --files lib'),
       command('node change.mjs', 'Error: exit 1')]);
     const log = entries(result.phases.at(-1));
     expect(log.map(foldCount)).toEqual([2, 0]);
-    expect(log.at(-1).children[0].children[0].children[0].props.color).toBe('error');
+    expect(log.at(-1).children[0].children[0].children.at(-1).props.color).toBe('error');
     // Commands the display cannot classify must remain visible individually.
     for (const [index, text] of ['cat b > output', 'find . -de"lete"', 'rg --pre=script x b'].entries()) {
       const boundary = await run(`boundary-${index}`, 'turn-1', true, ['cat a', text, 'cat c'].map(value => command(value)));
@@ -724,5 +933,49 @@ test('compact logs retain failed and unfamiliar commands beside folded explorati
     const paired = await run('paired', 'turn-1', true, [command('cat a', 'running'), command('cat a', 'running'),
       command('cat a'), command('cat a'), command('rg x b', 'running'), command('rg x b', 'Error: exit 3')]);
     expect(entries(paired.phases.at(-1)).map(foldCount)).toEqual([2, 0]);
+  });
+});
+
+test('each turn gives its final status to the report or to the interrupted feed, never both', async () => {
+  await displayReplay(async ({ run, setColumns, setPane }: any) => {
+    setPane();
+    const plain = (node: any): string => typeof node === 'string' ? node : (node.children ?? []).map(plain).join('');
+    const rows = (node: any): string[] => typeof node === 'string' ? []
+      : node.type === 'Box' && node.children?.[0]?.type === 'Text' ? [plain(node)] : (node.children ?? []).flatMap(rows);
+    for (const status of ['completed', 'needs_answer', 'needs_input', 'blocked', 'failed', 'interrupted', 'cancelled', 'owner_stopped', 'ownership_moved']) {
+      setColumns(120);
+      const stopped = ['interrupted', 'cancelled', 'owner_stopped', 'ownership_moved'].includes(status);
+      const word = status === 'completed' ? 'done' : status.startsWith('needs_') ? 'asks Claude'
+        : ['owner_stopped', 'ownership_moved'].includes(status) ? 'interrupted' : status;
+      const result = await run(`status-${status}`, 'turn-1', true,
+        ['Codex: Progress stays visible.', `Codex: [${status}] Duplicate closing summary.`, 'Bash(npm test) · Done (2s)'],
+        `Check ${status}.`, undefined, false, { elapsedMs: 68000, report: {
+          status, worker: 'Benett', summary: `Final ${status}.`, usage: { totalTokens: 200000 },
+          ...(status.startsWith('needs_') ? { question: { text: 'Which branch?', options: ['main', 'rc-int'] } } : {}) } });
+      const final = `${word} · 1m 8s · /fugato-live Benett`;
+      expect(rows(result.tree).filter(row => row === final)).toHaveLength(stopped ? 1 : 0);
+      if (stopped) expect(rows(result.tree).slice(-2)).toEqual([' ', final]);
+      expect(plain(result.tree)).not.toContain('Duplicate closing summary.');
+      expect(plain(result.tree)).toContain('Progress stays visible.');
+      expect(result.summaries.some((tree: any) => plain(tree).includes('  ✓ npm test · 2s'))).toBe(true);
+      expect(plain(await result.spinner())).toBe('');
+      expect(result.phases.every((phase: any) => !rows(phase).some(row => row.startsWith('running · ')))).toBe(true);
+      if (status === 'interrupted') for (let columns = 0; columns <= 200; columns++) {
+        setColumns(columns);
+        expect(rows(await result.redraw()).every(row => textWidth(row) <= columns)).toBe(true);
+      }
+      for (const columns of [120, 60]) {
+        setColumns(columns);
+        const report = await result.drawReport();
+        expect(rows(report).at(-1)).toBe(`${word} · 1m 8s · 200k tokens · /fugato-live Benett`);
+        expect(rows(await result.redraw()).some(row => row === final)).toBe(false);
+      }
+      if (status === 'needs_input' || status === 'interrupted') {
+        for (let columns = 0; columns <= 200; columns++) {
+          setColumns(columns);
+          expect([...rows(await result.drawReport()), ...rows(await result.redraw())].every(row => textWidth(row) <= columns)).toBe(true);
+        }
+      }
+    }
   });
 });

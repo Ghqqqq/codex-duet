@@ -1,7 +1,7 @@
 import { test, expect, mock } from 'claude-code/testing';
 import type { EngineInterface, On, PaneOpenArgs, UiScrollArgs } from 'claude-code';
 import { ATTENTION_SESSION_LIMIT, attention, attentionCounts, boundState, clearFinished, elapsed, usageLines, validView, visibleJobs, visibleSessions } from '../hooks/model';
-import { feedItems, feedLines, feedWindow, jobRow, jobRowColor, normalizeFeed, scrollFeed, selectedJob } from '../hooks/layout';
+import { feedItems, feedLines, feedWindow, jobRow, jobRowColor, normalizeFeed, scrollFeed, selectedJob, footerLayout, tableRow, width } from '../hooks/layout';
 import { createPoller } from '../hooks/poll';
 import { writeView } from '../hooks/runtime';
 import type { CodexLiveState } from '../types';
@@ -15,6 +15,7 @@ function fixture(on: On, failure: () => string | undefined = () => undefined) {
   const files = new Map<string, { text: string; mtime: number }>();
   const errors = new Map<string, string>();
   const reads: string[] = [];
+  const stats: string[] = [];
   const lists: string[] = [];
   const opens: PaneOpenArgs[] = [];
   const statuses: (string | undefined)[] = [];
@@ -24,12 +25,13 @@ function fixture(on: On, failure: () => string | undefined = () => undefined) {
   on('session.start', ($, e) => ({ cwd: e.cwd }));
   on('session.id', () => ({ value: session }));
   on('command.register', ($, e) => ({ value: { command: e.name } }));
-  on('ui.panes', () => ({ value: open ? [{ id: 'codex-live', title: 'Codex',
+  on('ui.panes', () => ({ value: open ? [{ id: 'fugato-live', title: 'Fugato',
     isShown: true, isFocused: false, isPlaced: true }] : [] }));
   on('ui.open', ($, e) => { opens.push(e); open = true; return { value: { isPlaced: true } }; });
   on('ui.status', ($, e) => { statuses.push(e.text); return { value: undefined }; });
   on('fs.exists', () => ({ value: true }));
   on('fs.stat', ($, e) => {
+    stats.push(e.path);
     if (errors.has(e.path)) return { deny: errors.get(e.path)! };
     if (e.path === '/alias') return { value: {
       kind: 'dir', size: 0, mtimeMs: 0, isLink: true, realPath: '/canonical',
@@ -41,9 +43,10 @@ function fixture(on: On, failure: () => string | undefined = () => undefined) {
   on('fs.list', ($, e) => {
     lists.push(e.path);
     if (errors.has(e.path)) return { deny: errors.get(e.path)! };
-    return { value: [...files.keys()].filter(path => path.startsWith(`${e.path}/`)).map(path => ({
-      name: path.slice(e.path.length + 1), kind: 'file' as const, size: 1, mtimeMs: 1, isLink: false,
-    })) };
+    const names = [...new Set([...files.keys()].filter(path => path.startsWith(`${e.path}/`))
+      .map(path => path.slice(e.path.length + 1).split('/')[0]!))];
+    return { value: names.map(name => ({ name, kind: files.has(`${e.path}/${name}`) ? 'file' as const : 'dir' as const,
+      size: 1, mtimeMs: 1, isLink: false })) };
   });
   on('fs.read', ($, e) => {
     reads.push(e.path);
@@ -68,7 +71,7 @@ function fixture(on: On, failure: () => string | undefined = () => undefined) {
       id, status, createdAt, startedAt: createdAt, activity: [{ seq: 1, type: 'agentMessage', text: 'Working' }],
     }) });
   }
-  return { clock, files, errors, reads, lists, opens, statuses, writes, add,
+  return { clock, files, errors, reads, stats, lists, opens, statuses, writes, add,
     close: () => { open = false; }, switchSession: () => { session = 'session-b'; },
     latest: () => writes[writes.length - 1],
   };
@@ -95,7 +98,7 @@ function scrollFixture(diagnostics?: Parameters<typeof createPoller>[1], environ
   let rejectWrite = false;
   const engine = {
     ui: {
-      panes: async () => open ? [{ id: 'codex-live', isFocused: false }] : [],
+      panes: async () => open ? [{ id: 'fugato-live', isFocused: false }] : [],
       open: async (args: PaneOpenArgs) => { opens.push(args); open = true; return { isPlaced: true }; },
       status: (text: string | undefined) => { statuses.push(text); },
       log: (message: string) => { logs.push(message); },
@@ -185,7 +188,7 @@ function patchJob(files: Map<string, { text: string; mtime: number }>, id: strin
 }
 
 const created = (ms: number) => new Date(ms).toISOString();
-const historyPane = { title: 'Codex', isFocused: true, bodyColumns: 56, placement: 'inline' as const,
+const historyPane = { title: 'Fugato', isFocused: true, bodyColumns: 56, placement: 'inline' as const,
   scroll: { offset: 0, bodyRows: 14 }, view: {} };
 
 test('Codex usage replaces per-job snapshots across polls, follow-ups, retention and reload', async () => {
@@ -204,8 +207,8 @@ test('Codex usage replaces per-job snapshots across polls, follow-ups, retention
   const total = 'Codex session total (provider: OpenAI Codex, model gpt-6-astra): 2,200 input · 1,320 cached · 440 output · 2,640 total';
   expect(usageLines(f.latest().usageByJob!)).toEqual([total]);
   const selected = selectedJob(f.latest())!;
-  expect(feedItems(selected, epoch).some(item => item.results.some(result => result.text.includes('100 input · 60 cached · 20 output · 120 total')))).toBe(true);
-  expect(feedItems(selected, epoch).at(-1)?.title).toBe('Codex session total');
+  expect(footerLayout(selected, f.latest(), 100, true, 0).right).toBe('2.64k tokens');
+  expect(selected.usage?.totalTokens).toBe(120);
   const reloaded = f.reload();
   f.advance(10000);
   await reloaded(true);
@@ -222,19 +225,19 @@ test('a person can focus a named native agent through the shared job mapping', a
   const f = fixture(on);
   f.add('old', 'completed', -2); f.add('follow-up', 'completed', -1); f.add('other', 'running');
   for (const id of ['old', 'follow-up']) patchJob(f.files, id, { threadId: 'codex-thread', completedAt: created(epoch - 1000) });
-  on('state.get', { plugin: 'codex', key: 'nativeAgents' }, () => ({ value: { value: {
+  on('state.get', { plugin: 'fugato', key: 'nativeAgents' }, () => ({ value: { value: {
     'agent-1': { name: 'Ada', jobId: 'follow-up', threadId: 'codex-thread', workspace: '/workspace', model: 'gpt-6-astra' },
   }, version: 1 } }));
   await $.session.start(start);
   await f.clock.advance(1000);
   await writeView($, state => clearFinished(state, epoch));
-  const command = { command: 'codex-live', args: 'Ada', origin: { kind: 'composer' as const },
+  const command = { command: 'fugato-live', args: 'Ada', origin: { kind: 'composer' as const },
     presentation: { isFullscreen: false, columns: 56 } };
   await $.command.run(command);
-  expect(f.opens.at(-1)).toMatchObject({ id: 'codex-live', focus: true });
+  expect(f.opens.at(-1)).toMatchObject({ id: 'fugato-live', focus: true });
   expect(f.latest()?.selectedId).toBe('thread:codex-thread');
   expect(selectedJob(f.latest()!)?.turns.map(job => job.id)).toEqual(['old', 'follow-up']);
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props: historyPane });
   expect((await ui.find({ key: 'transcript' }))?.text).toContain('Working');
   await ui.unmount();
   const count = f.opens.length;
@@ -321,7 +324,7 @@ test('unreadable unselected jobs show stale rows and deduplicate failure and rec
   await f.poll(true);
   const stale = visibleSessions(f.latest()).find(job => job.id === 'unselected')!;
   expect(stale.detailsUnavailable).toBe(true);
-  expect(Object.values(jobRow(stale, false, 100, f.latest().nowMs)).join('')).toContain('stale');
+  expect(jobRow(stale, false, 100, f.latest().nowMs).map(span => span.text).join('')).toContain('⚠');
   expect(jobRowColor(stale)).toBe('warning');
   expect(f.logs.length).toBe(1);
   expect(f.logs[0]).toContain('unselected');
@@ -338,7 +341,7 @@ test('discovery caches unchanged files, respects closed panes and opens new acti
   await $.session.start(start);
   await $.session.start(start); // One timer even after repeated starts.
   await f.clock.advance(5000);
-  expect(f.lists.length).toBe(1);
+  expect(f.lists).toEqual(['/canonical/duet/roundtables', '/canonical/duet/sessions/session-a']);
   f.add('a');
   patchJob(f.files, 'a', { sessionId: 'session-a', request: { prompt: 'Original A task' } });
   await f.clock.advance(1000);
@@ -424,7 +427,7 @@ test('discovery caches unchanged files, respects closed panes and opens new acti
     })), readJob: g.reads.includes(`${sample.jobRoot}${sample.separator}local.json`) });
   }
   expect(discovered).toEqual(pathCases.map(sample => ({ name: sample.name,
-    folders: [`${sample.home}/duet/sessions/session-a`],
+    folders: [`${sample.home}/duet/roundtables`, `${sample.home}/duet/sessions/session-a`],
     jobs: [{ id: 'local', workspaceRoot: sample.workspaceRoot, active: true, detailsUnavailable: false }], readJob: true,
   })));
 });
@@ -469,8 +472,8 @@ test('a new waiting worker is pinned without moving the stopped reader and is ac
   })) });
   await $.session.start(start);
   await f.clock.advance(1000);
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
-  await $.ui.scroll({ component: 'Pane', requestId: 'codex-live', offset: 0, by: -20, bodyRows: 14,
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props: historyPane });
+  await $.ui.scroll({ component: 'Pane', requestId: 'fugato-live', offset: 0, by: -20, bodyRows: 14,
     contentRows: 100, origin: { kind: 'person' } });
   const anchor = f.latest()?.feeds?.ada?.anchor;
   expect(anchor).toBeDefined();
@@ -510,7 +513,7 @@ test('malformed markers and missing jobs recover while preserving the last trans
   await f.clock.advance(5000);
   expect(f.latest()?.selectedId).toBe('a');
   const original = f.latest()?.jobs[0]?.events;
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props: historyPane });
   f.files.set('/jobs/a.json', { mtime: 2, text: '{' });
   await f.clock.advance(1000);
   expect(f.latest()?.jobs[0]?.detailsUnavailable).toBe(true);
@@ -548,7 +551,7 @@ test('malformed markers and missing jobs recover while preserving the last trans
   // also retains its discovery warning.
   f.add('active');
   await f.clock.advance(1000);
-  const recovering = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
+  const recovering = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props: historyPane });
   await recovering.press({ key: 'active' });
   await f.clock.advance(1000);
   const activeFile = f.files.get('/jobs/active.json')!;
@@ -711,8 +714,8 @@ const revise = (lines: number) => patchJob(f.files, 'a', {
   revise(35);
   await $.session.start(start);
   await f.clock.advance(1000);
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
-  await $.ui.scroll({ component: 'Pane', requestId: 'codex-live', offset: 0, by: -5,
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props: historyPane });
+  await $.ui.scroll({ component: 'Pane', requestId: 'fugato-live', offset: 0, by: -5,
     bodyRows: 14, contentRows: 15, origin: { kind: 'person' } });
   const stopped = (await ui.find({ key: 'transcript' }))?.text;
   const anchor = f.latest()?.feeds?.a?.anchor;
@@ -747,7 +750,7 @@ test('recent history expires by completion or first observation without deleting
   const observed = f.latest()?.firstEndedAtMs?.missing;
   expect(observed).toBe(epoch + 182000);
   expect(f.latest()?.recentEndedIds).toEqual(['missing']);
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props: historyPane });
   expect(await ui.find({ key: 'missing' })).toBeDefined();
   const files = [...f.files.entries()];
   await f.clock.advance(120000);
@@ -770,7 +773,7 @@ test('D1: rejected state writes show a pinned error and debug log until recovery
   on('ui.log', ($, e) => { logs.push(e); return { value: undefined }; });
   await $.session.start(start);
   await f.clock.advance(1000);
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live',
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live',
     props: { ...historyPane, placement: 'dock', bodyColumns: 120 } });
   expect((await ui.find({ key: 'live-status' }))?.children[0]).toMatchObject({ props: { color: 'error' } });
   expect(logs.some(log => log.to === 'debug' && log.text.includes('simulated state capacity failure'))).toBe(true);
@@ -825,11 +828,11 @@ test('Clear finished survives polling, leaves disk records intact and resets for
     if (n % 2 === 0) patchJob(f.files, `done-${n}`, { completedAt: created(epoch - 10000) });
   }
   await $.session.start(start);
-  await $.command.run({ command: 'codex-live', args: '', origin: { kind: 'composer' },
+  await $.command.run({ command: 'fugato-live', args: '', origin: { kind: 'composer' },
     presentation: { isFullscreen: false, columns: 56 } });
-  expect(f.opens.at(-1)).toMatchObject({ id: 'codex-live', focus: true });
+  expect(f.opens.at(-1)).toMatchObject({ id: 'fugato-live', focus: true });
   await f.clock.advance(1000);
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props: historyPane });
   const files = [...f.files.entries()];
   await ui.press({ key: 'clear-finished' });
   const reads = f.reads.filter(path => path.startsWith('/jobs/')).length;
@@ -842,7 +845,7 @@ test('Clear finished survives polling, leaves disk records intact and resets for
   expect(f.latest()?.selectedId).toBe(null);
   expect(f.latest()?.viewedSessionIds).toEqual([]);
   expect([...f.files.entries()]).toEqual(files);
-  expect(await ui.find({ key: 'hidden-notice' })).toBeDefined();
+  expect(await ui.find({ key: 'empty-message' })).toBeDefined();
   f.add('rediscovered', 'blocked', -7200);
   patchJob(f.files, 'rediscovered', { completedAt: created(epoch - 3600000) });
   await f.clock.advance(1000);
@@ -866,7 +869,7 @@ test('jobs active at Clear stay visible when they finish, and new jobs remain se
   f.add('missing-end', 'running', -1);
   await $.session.start(start);
   await f.clock.advance(1000);
-  const ui = await $.ui.mount({ plugin: 'codex-live', surface: 'terminal', component: 'Pane', requestId: 'codex-live', props: historyPane });
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props: historyPane });
   await ui.press({ key: 'clear-finished' });
   expect(f.latest()?.hiddenFinishedBefore).toBe(epoch + 1000);
   f.files.set('/jobs/running.json', { mtime: 2, text: JSON.stringify({
@@ -929,7 +932,7 @@ test('evicted history reuses mtimes, drops missing marker memos and detects revi
   const f = fixture(on);
   for (let n = 0; n < 25; n++) f.add(`old-${n}`, 'completed', n - 25);
   await $.session.start(start);
-  await $.command.run({ command: 'codex-live', args: '', origin: { kind: 'composer' },
+  await $.command.run({ command: 'fugato-live', args: '', origin: { kind: 'composer' },
     presentation: { isFullscreen: false, columns: 100 } });
   await f.clock.advance(1000);
   const jobReads = () => f.reads.filter(path => path.startsWith('/jobs/'));
@@ -1175,7 +1178,7 @@ test('retention counts twenty sessions, protects active and selected sessions an
   expect(f.logs.length).toBe(1);
   await f.poll(true);
   expect(f.latest().jobs.some(job => job.id === 'after-prune' && job.active)).toBe(true);
-  expect(f.opens.filter(open => open.id === 'codex-live').length).toBe(3);
+  expect(f.opens.filter(open => open.id === 'fugato-live').length).toBe(3);
   const retainedIds = f.latest().jobs.map(job => job.id);
   const retainedSessions = visibleSessions(f.latest()).map(session => session.id);
   expect(f.latest().seenJobIds?.every(id => retainedIds.includes(id))).toBe(true);
@@ -1265,7 +1268,7 @@ test("unchanged large conversations reread no jobs and retain bounded details", 
   expect(f.latest().jobs.find(job => job.id === 'turn-23')?.question).toBe(null);
   expect(selectedJob(f.latest())?.events.map(event => event.seq)).toEqual([201]);
   // Reopening performs the deferred layout, using current content and the saved feed.
-  await f.engine.ui.open({ id: 'codex-live', title: 'Codex' });
+  await f.engine.ui.open({ id: 'fugato-live', title: 'Fugato' });
   await f.poll(true);
   expect(validView(f.latest())).toBe(true);
   expect(f.logs).toEqual([]);
@@ -1342,7 +1345,7 @@ test("unavailable evicted details recover without blocking a follow-up", async (
   expect(f.reads.filter(path => path === '/jobs/earlier.json').length).toBe(reads + 2);
   expect(f.latest().jobs.find(job => job.id === 'earlier')).toMatchObject({ detailsUnavailable: false, detailsLoaded: true });
   expect(f.latest().jobs.find(job => job.id === 'earlier')?.events[0]?.text).toBe('Working');
-  expect(f.logs).toEqual(['codex-live: Job earlier unreadable · Simulated unreadable job', 'codex-live: Job earlier read recovered']);
+  expect(f.logs).toEqual(['fugato-live: Job earlier unreadable · Simulated unreadable job', 'fugato-live: Job earlier read recovered']);
 });
 
 test('a poll publishes immediately while preserving a concurrent selection and history page', async () => {
@@ -1422,7 +1425,7 @@ test('scroll conflicts on six consecutive polls never starve a waiting follow-up
 
 test('the second state budget pass evicts history when a new feed snapshot crosses the ceiling', async () => {
   const f = scrollFixture();
-  await f.engine.ui.open({ id: 'codex-live', title: 'Codex' });
+  await f.engine.ui.open({ id: 'fugato-live', title: 'Fugato' });
   const activity = Array.from({ length: 200 }, (_, seq) => ({ seq, type: 'agentMessage', body: 'x'.repeat(4000) }));
   for (let session = 0; session < 20; session++) for (let turn = 0; turn < 20; turn++) {
     const id = `s${session}-t${turn}`;
@@ -1454,4 +1457,249 @@ test('the second state budget pass evicts history when a new feed snapshot cross
   expect(Object.keys(f.latest().feeds?.[selectedId]?.seenItems ?? {}).length).toBe(400);
   expect(f.latest().jobs.length < previousIds.size).toBe(true);
   expect(f.latest().jobs.every(job => previousIds.has(job.id))).toBe(true);
+});
+
+
+function forumFixture(on: On) {
+  const f = fixture(on);
+  const room = (id: string, sessionId = 'session-a', status = 'open', n = 0, posts = 2) => {
+    f.files.set(`/canonical/duet/roundtables/${id}/room.json`, { mtime: 1, text: JSON.stringify({
+      roomId: id, sessionId, status, goal: 'Choose a safe release', intensity: 'standard', createdAt: created(epoch + n * 1000),
+      nextSeq: posts + 1, members: [{ name: 'conjecturer', persona: 'conjecturer' }, { name: 'critic', persona: 'critic' }],
+    }) });
+    f.files.set(`/canonical/duet/roundtables/${id}/events.jsonl`, { mtime: 1, text: '' });
+  };
+  const post = (seq: number, fields = {}) => ({ seq, at: created(epoch), kind: 'idea',
+    author: { kind: 'member', name: 'conjecturer' }, thread: 1, replyTo: null, title: 'Safe rollout',
+    body: 'Start with a canary.', label: 'hypothesis', refs: ['release.md'], mentions: ['critic'], ...fields });
+  const log = (id: string, lines: unknown[], mtime = 2) => f.files.set(`/canonical/duet/roundtables/${id}/events.jsonl`,
+    { mtime, text: lines.map(line => typeof line === 'string' ? line : JSON.stringify(line)).join('\n') + '\n' });
+  return { ...f, room, post, log };
+}
+
+const forumPane = { ...historyPane, bodyColumns: 110, scroll: { offset: 0, bodyRows: 28 } };
+
+test('roundtable expansion persists through polling and reload while new posts stay collapsed and following works', async ($, on) => {
+  const f = forumFixture(on);
+  f.add('worker');
+  f.room('rt-a-local'); f.room('rt-b-foreign', 'session-b');
+  for (const [id, createdAt] of [['rt-c-number', 0], ['rt-d-array', [created(epoch)]]] as const) {
+    f.room(id);
+    const file = f.files.get(`/canonical/duet/roundtables/${id}/room.json`)!;
+    file.text = JSON.stringify({ ...JSON.parse(file.text), createdAt });
+  }
+  const first = f.post(1, { body: Array.from({ length: 9 }, (_, i) => `Body line ${i + 1}`).join('\n') });
+  f.log('rt-a-local', [f.post(2, { kind: 'decision', author: { kind: 'chair', name: 'chair' }, replyTo: 1,
+    title: 'Ship the canary', body: 'Watch error rates.', label: 'observed', refs: ['metrics.md'], mentions: ['conjecturer'] }),
+    'malformed JSON', f.post(3, { at: 0 }), f.post(4, { at: [created(epoch)] }), first]);
+  await $.session.start(start);
+  await f.clock.advance(1000);
+  const mount = () => $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props: forumPane });
+  let ui = await mount();
+  expect((await ui.find({ key: 'header-forum:rt-a-local' }))?.text).toContain('◆ Roundtable   Choose a safe release');
+  expect((await ui.find({ key: 'header-forum:rt-a-local' }))?.text).toContain('2 posts');
+  expect(await ui.find({ key: 'header-forum:rt-b-foreign' })).toBe(undefined);
+  expect(f.latest()?.forumRooms?.map(room => room.roomId)).toEqual(['rt-a-local']);
+  expect(await ui.find({ key: 'header-worker' })).not.toBe(undefined);
+  expect(f.reads.filter(path => path.endsWith('/events.jsonl'))).toEqual(['/canonical/duet/roundtables/rt-a-local/events.jsonl']);
+  await ui.press({ key: 'forum:rt-a-local' });
+  expect(f.latest()?.selectedId).toBe('forum:rt-a-local');
+  expect((await ui.find({ key: 'forum-pinned-0' }))?.text).toBe('Choose a safe release · standard · open · 2 posts');
+  expect((await ui.find({ key: 'forum-pinned-1' }))?.text).toBe('conjecturer · critic');
+  const transcript = (await ui.find({ key: 'transcript' }))!.text;
+  expect(transcript).toContain('3 malformed forum lines skipped.');
+  expect(transcript.indexOf('  1 idea')).toBeLessThan(transcript.indexOf('  2 decision'));
+  for (const text of ['  1 idea       conjecturer → critic', '  2 decision   chair → conjecturer ↳ 1',
+    'Safe rollout', 'Ship the canary']) {
+    expect(transcript).toContain(text);
+  }
+  expect((await ui.find({ key: 'live-status' }))?.text).toBe('forum · open · 2 posts · following');
+  expect(transcript).not.toContain('Body line 1');
+  expect(transcript).not.toContain('refs');
+  expect((await ui.find({ key: 'toggle-forum-posts' }))?.text).toBe('expand all');
+  await ui.press({ key: 'toggle-post-post:1-meta' });
+  expect((await ui.find({ key: 'transcript' }))?.text).toContain('Body line 9');
+  expect((await ui.find({ key: 'transcript' }))?.text).toContain('refs  release.md');
+  await ui.press({ key: 'toggle-post-post:1-title' });
+  expect((await ui.find({ key: 'transcript' }))?.text).not.toContain('Body line 1');
+  await ui.press({ key: 'toggle-forum-posts' });
+  expect((await ui.find({ key: 'toggle-forum-posts' }))?.text).toBe('collapse all');
+  expect(f.latest()?.feeds?.['forum:rt-a-local']?.expandedPromptIds).toEqual(['post:1', 'post:2']);
+  await ui.press({ key: 'toggle-forum-posts' });
+  await ui.press({ key: 'toggle-post-post:1-title' });
+  const reloaded: CodexLiveState = JSON.parse(JSON.stringify(f.latest()));
+  expect({ persistedExpansion: validView(reloaded) }).toEqual({ persistedExpansion: true });
+  expect(validView({ ...reloaded, feeds: { bad: { feedOffset: 0, following: true, seenLines: 0, expandedPromptIds: [4] } } })).toBe(false);
+  expect(validView({ ...reloaded, feeds: { bad: { feedOffset: 0, following: true, seenLines: 0, expandedPromptIds: Array(5001).fill('post:1') } } })).toBe(false);
+  expect(boundState({ ...reloaded, forumRooms: [] }).feeds?.['forum:rt-a-local']?.expandedPromptIds).toEqual(['post:1']);
+  const cached = boundState({ ...reloaded, feeds: { ...reloaded.feeds, ...Object.fromEntries(Array.from({ length: 25 }, (_, i) =>
+    [`forum:rt-${i}-cached`, { feedOffset: 0, following: true, seenLines: 0, expandedPromptIds: ['post:1'] }])) } });
+  expect(Object.keys(cached.feeds ?? {}).filter(id => id.startsWith('forum:')).length).toBe(20);
+  expect(cached.feeds?.['forum:rt-a-local']?.expandedPromptIds).toEqual(['post:1']);
+  const oversized = { ...reloaded, feeds: { ...reloaded.feeds, 'forum:rt-a-local': { ...reloaded.feeds!['forum:rt-a-local']!,
+    expandedPromptIds: ['post:1', 'post:' + '1'.repeat(950000), 'post:0', 'post:01', 'post:-1', 'post:9007199254740992', 'post:1'] } } };
+  const repaired = boundState(oversized);
+  const cache = scrollFixture();
+  cache.seedState(oversized);
+  const repairs = [await writeView(cache.engine as unknown as EngineInterface, state => state),
+    await writeView(cache.engine as unknown as EngineInterface, state => state)];
+  expect({ ids: repaired.feeds?.['forum:rt-a-local']?.expandedPromptIds, repairs,
+    savedIds: cache.latest().feeds?.['forum:rt-a-local']?.expandedPromptIds,
+    valid: validView(cache.latest()), bounded: JSON.stringify(cache.latest()).length < 900000,
+    jobs: cache.latest().jobs.map(job => job.id) }).toEqual({
+    ids: ['post:1'], repairs: [true, true], savedIds: ['post:1'], valid: true, bounded: true, jobs: reloaded.jobs.map(job => job.id),
+  });
+  await ui.unmount();
+  ui = await mount();
+  expect((await ui.find({ key: 'transcript' }))?.text).toContain('Body line 9');
+  const eventFile = '/canonical/duet/roundtables/rt-a-local/events.jsonl';
+  const readCount = () => f.reads.filter(path => path === eventFile).length;
+  const discoveryCount = () => f.lists.filter(path => path.endsWith('/roundtables')).length;
+  expect(readCount()).toBe(1);
+  await f.clock.advance(4000);
+  expect(discoveryCount()).toBe(1);
+  expect(readCount()).toBe(1);
+  f.log('rt-a-local', [first, f.post(2), f.post(3, { kind: 'question', title: 'Ready?', body: 'Can we ship?' })], 3);
+  await f.clock.advance(1000);
+  expect(discoveryCount()).toBe(2);
+  expect(readCount()).toBe(2);
+  expect((await ui.find({ key: 'transcript' }))?.text).toContain('Ready?');
+  expect((await ui.find({ key: 'transcript' }))?.text).not.toContain('Can we ship?');
+  expect(f.latest()?.feeds?.['forum:rt-a-local']?.expandedPromptIds).toEqual(['post:1']);
+  f.log('rt-a-local', [first, ...[2, 3, 4, 5].map(seq => f.post(seq))], 4);
+  await f.clock.advance(1000);
+  await $.ui.scroll({ component: 'Pane', requestId: 'fugato-live', offset: 0, by: -100, bodyRows: 28,
+    contentRows: 29, origin: { kind: 'person' } });
+  const stopped = f.latest()!.feeds!['forum:rt-a-local']!;
+  expect(stopped.following).toBe(false);
+  await ui.press({ key: 'toggle-post-post:1-title' });
+  expect(f.latest()?.feeds?.['forum:rt-a-local']?.anchor).toEqual(stopped.anchor);
+  await ui.press({ key: 'toggle-post-post:1-meta' });
+  f.log('rt-a-local', [first, ...[2, 3, 4, 5, 6].map(seq => f.post(seq))], 5);
+  await f.clock.advance(1000);
+  expect(f.latest()?.feeds?.['forum:rt-a-local']?.anchor).toEqual(stopped.anchor);
+  expect((await ui.find({ key: 'jump-bottom' }))?.text).toBe('↓ 2 new');
+  await ui.press({ key: 'jump-bottom' });
+  expect({ jumpedToBottom: f.latest()?.feeds?.['forum:rt-a-local']?.following }).toEqual({ jumpedToBottom: true });
+  await ui.press({ key: 'worker' });
+  expect(f.latest()?.selectedId).toBe('worker');
+  const metadata = f.files.get('/canonical/duet/roundtables/rt-a-local/room.json')!;
+  metadata.text = JSON.stringify({ ...JSON.parse(metadata.text), nextSeq: 8 }); metadata.mtime++;
+  f.log('rt-a-local', [first, ...[2, 3, 4, 5, 6, 7].map(seq => f.post(seq))], 6);
+  await f.clock.advance(5000);
+  expect((await ui.find({ key: 'header-forum:rt-a-local' }))?.text).toContain('7 posts');
+  expect((await ui.findAll({ type: 'Text' })).some(text => text.text.trim() === '7 posts' && text.props.color === 'suggestion')).toBe(true);
+  f.files.set(eventFile, { mtime: 4, text: 'x'.repeat(4 * 1024 * 1024 + 1) });
+  const before = readCount();
+  await ui.press({ key: 'forum:rt-a-local' });
+  expect(readCount()).toBe(before);
+  expect((await ui.find({ key: 'transcript' }))?.text).toContain('Forum exceeds 4 MiB · fugato forum read rt-a-local');
+  expect((await ui.find({ key: 'transcript' }))?.text).not.toContain('Start with a canary.');
+  expect({ persistedForum: validView(f.latest()) }).toEqual({ persistedForum: true });
+  await ui.unmount();
+});
+
+test('closed room rows are clearable before the cap and explicit forum navigation still opens hidden rooms', async ($, on) => {
+  const f = forumFixture(on);
+  f.room('rt-a-old', 'session-a', 'open', 0, 0);
+  f.room('rt-b-new', 'session-a', 'open', 1, 0);
+  f.room('rt-c-closed', 'session-a', 'closed', 4, 0);
+  f.room('rt-d-paused', 'session-a', 'paused', 3, 0);
+  f.room('rt-e-foreign', 'session-b', 'open', 4, 0);
+  await $.session.start(start);
+  const command = { command: 'fugato-live', args: 'forum', origin: { kind: 'composer' as const },
+    presentation: { isFullscreen: false, columns: 110 } };
+  await $.command.run(command);
+  expect(f.latest()?.selectedId).toBe('forum:rt-b-new');
+  expect(f.opens.at(-1)).toMatchObject({ id: 'fugato-live', title: 'Fugato', focus: true });
+  const ui = await $.ui.mount({ plugin: 'fugato-live', surface: 'terminal', component: 'Pane', requestId: 'fugato-live', props: forumPane });
+  expect((await ui.find({ key: 'transcript' }))?.text).toContain('No forum posts yet.');
+  expect((await ui.find({ key: 'header-forum:rt-c-closed' }))?.text).toContain('◇ Roundtable  closed · Choose a safe release');
+  expect(await ui.find({ key: 'clear-finished' })).not.toBe(undefined);
+  const closed = f.latest()!.forumRooms!.find(room => room.status === 'closed')!;
+  const paused = { ...closed, roomId: 'rt-p-paused', status: 'paused' as const, postCount: 3, viewedPosts: 0 };
+  const unseen = { ...closed, postCount: 3, viewedPosts: 0 };
+  for (let columns = 0; columns <= 100; columns++) {
+    const closedRow = tableRow(unseen, false, columns, f.latest()!, [unseen, paused]);
+    const pausedRow = tableRow(paused, false, columns, f.latest()!, [unseen, paused]);
+    expect(width(closedRow.map(span => span.text).join('')) <= columns).toBe(true);
+    expect(width(pausedRow.map(span => span.text).join('')) <= columns).toBe(true);
+    if (columns !== 60 && columns !== 100) continue;
+    expect(closedRow.some(span => span.text === '◇ ' && span.color === 'inactive')).toBe(true);
+    expect(closedRow.some(span => span.text.includes('closed · Choose') && span.color === 'subtle')).toBe(true);
+    expect(closedRow.at(-1)?.color).toBe('subtle');
+    expect(pausedRow.some(span => span.text === '◆ ' && span.color === 'suggestion')).toBe(true);
+    expect(pausedRow.some(span => span.text.includes('paused · Choose') && span.color === 'subtle')).toBe(true);
+  }
+  const before = f.opens.length;
+  const foreign = await $.command.run({ ...command, args: 'forum rt-e-foreign' });
+  expect(foreign.text).toContain('was not found in this Claude session');
+  expect(f.opens.length).toBe(before);
+  expect(f.latest()?.selectedId).toBe('forum:rt-b-new');
+  await $.command.run({ ...command, args: 'forum rt-c-closed' });
+  expect(f.latest()?.selectedId).toBe('forum:rt-c-closed');
+  await ui.press({ key: 'clear-finished' });
+  expect(f.latest()?.hiddenRoomIds).toEqual(['rt-c-closed']);
+  expect(f.latest()?.selectedId).toBe('forum:rt-b-new');
+  expect(f.latest()?.forumRooms?.map(room => room.roomId)).toEqual(['rt-b-new', 'rt-a-old', 'rt-d-paused']);
+  expect(await ui.find({ key: 'header-forum:rt-c-closed' })).toBe(undefined);
+  expect((await ui.find({ key: 'header-forum:rt-d-paused' }))?.text).toContain('paused · Choose a safe release');
+  expect(await ui.find({ key: 'clear-finished' })).toBe(undefined);
+  const saved = JSON.parse(JSON.stringify(f.latest()));
+  expect(validView(saved)).toBe(true);
+  expect(validView({ ...saved, hiddenRoomIds: [4] })).toBe(false);
+  expect(validView({ ...saved, hiddenRoomIds: Array(2001).fill('rt-c-closed') })).toBe(false);
+  const bounded = boundState({ ...saved, hiddenRoomIds: Array.from({ length: 2005 }, (_, i) => `rt-${i}-closed`) });
+  expect(bounded.hiddenRoomIds?.length).toBe(2000);
+  await $.command.run({ ...command, args: 'forum rt-c-closed' });
+  expect(f.latest()?.selectedId).toBe('forum:rt-c-closed');
+  expect(f.latest()?.hiddenRoomIds).toEqual(['rt-c-closed']);
+  expect(f.latest()?.forumRooms?.map(room => room.roomId)).toEqual(['rt-b-new', 'rt-a-old', 'rt-d-paused', 'rt-c-closed']);
+  expect((await ui.find({ key: 'forum-pinned-0' }))?.text).toContain('closed');
+  await $.command.run(command);
+  expect(f.latest()?.selectedId).toBe('forum:rt-b-new');
+  for (const id of ['rt-a-old', 'rt-b-new']) {
+    const file = f.files.get(`/canonical/duet/roundtables/${id}/room.json`)!;
+    file.text = JSON.stringify({ ...JSON.parse(file.text), status: 'closed' }); file.mtime++;
+  }
+  await f.clock.advance(5000);
+  await $.command.run(command);
+  expect(f.latest()?.selectedId).toBe('forum:rt-d-paused');
+  expect(f.latest()?.forumRooms?.length).toBeLessThanOrEqual(4);
+  expect((await ui.find({ key: 'pane' }))?.text).not.toContain('rt-e-foreign');
+  await ui.unmount();
+});
+
+
+test('roundtable discovery caches unchanged and foreign metadata while advancing in bounded batches', async ($, on) => {
+  const f = forumFixture(on);
+  f.add('worker');
+  for (let i = 0; i < 80; i++) f.room(`rt-${String(i).padStart(3, '0')}-old`, i === 79 ? 'session-a' : 'session-b', 'open', i, 0);
+  const roomReads = () => f.reads.filter(path => path.endsWith('/room.json'));
+  const roomStats = () => f.stats.filter(path => path.endsWith('/room.json'));
+  await $.session.start(start);
+  await f.clock.advance(1000);
+  expect(roomReads().length).toBe(16);
+  patchJob(f.files, 'worker', { activity: [{ seq: 2, type: 'agentMessage', text: 'Worker update during discovery' }] });
+  await f.clock.advance(1000);
+  expect(f.latest()?.jobs[0]?.events[0]?.text).toBe('Worker update during discovery');
+  expect(roomReads().length).toBe(16);
+  for (let tick = 0; tick < 4; tick++) {
+    const beforeReads = roomReads().length, beforeStats = roomStats().length;
+    await f.clock.advance(5000);
+    expect(roomReads().length - beforeReads).toBeLessThanOrEqual(16);
+    expect(roomStats().length - beforeStats).toBeLessThanOrEqual(64);
+  }
+  expect(roomReads().length).toBe(80);
+  expect(f.latest()?.forumRooms?.map(room => room.roomId)).toEqual(['rt-079-old']);
+  const before = roomReads().length;
+  await f.clock.advance(10000);
+  expect(roomReads().length).toBe(before);
+  const changedPath = '/canonical/duet/roundtables/rt-000-old/room.json';
+  const changed = f.files.get(changedPath)!;
+  changed.text = JSON.stringify({ ...JSON.parse(changed.text), sessionId: 'session-a' }); changed.mtime++;
+  await f.clock.advance(10000);
+  expect(roomReads().filter(path => path === changedPath).length).toBe(2);
+  expect(roomReads().length).toBe(before + 1);
+  expect(f.latest()?.forumRooms?.map(room => room.roomId)).toEqual(['rt-079-old', 'rt-000-old']);
 });

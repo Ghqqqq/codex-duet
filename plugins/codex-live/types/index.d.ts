@@ -24,7 +24,7 @@ export type CodexLiveUsage = {
   outputTokens: number;
   totalTokens: number;
 };
-export type CodexLiveUsageEntry = { model: string; usage: CodexLiveUsage };
+export type CodexLiveUsageEntry = { model: string; usage: CodexLiveUsage; sessionId?: string };
 
 export type CodexLiveEvent = {
   seq: number;
@@ -54,6 +54,9 @@ export type CodexLiveJob = {
   threadId?: string;
   label: string;
   agentName?: string;
+  role?: string;
+  homeDir?: string;
+  cwd?: string;
   status: string;
   active: boolean;
   finished: boolean;
@@ -96,7 +99,10 @@ export type CodexLiveSession = CodexLiveJob & { turns: CodexLiveJob[]; turnCount
 export type CodexLiveFeedView = {
   feedOffset: number;
   following: boolean;
+  // Bulk expansion stays stopped through reflow until a person scrolls/toggles.
+  keepStopped?: boolean;
   seenLines: number;
+  // Worker turn IDs, or post:<seq> IDs in a forum:<roomId> feed (at most 5000).
   expandedPromptIds?: string[];
   // Originating surface measurements; content anchors survive different wrapping.
   columns?: number;
@@ -106,7 +112,40 @@ export type CodexLiveFeedView = {
   seenItems?: Record<string, { length: number; hash: number }>;
 };
 
+export type ForumPost = {
+  seq: number;
+  at: string;
+  initial?: boolean;
+  author: { kind: string; name: string };
+  kind: 'idea' | 'finding' | 'question' | 'request' | 'intent' | 'candidate' | 'decision';
+  thread: number;
+  replyTo: number | null;
+  title: string;
+  body: string;
+  label: string;
+  refs: string[];
+  mentions: string[];
+};
+export type ForumRoom = {
+  roomId: string;
+  sessionId: string;
+  goal: string;
+  status: 'open' | 'paused' | 'closed';
+  intensity: string;
+  members: string[];
+  createdAt: string;
+  postCount: number;
+  viewedPosts?: number;
+  posts?: ForumPost[];
+  // Positive member timestamps; negative chair-decision timestamps.
+  timeline?: number[];
+  malformed?: number;
+  omitted?: number;
+  warning?: string;
+};
+
 export type CodexLiveState = {
+  forumRooms?: ForumRoom[];
   jobs: CodexLiveJob[];
   // Thread session ID, or a legacy/unthreaded job ID.
   selectedId: string | null;
@@ -122,6 +161,8 @@ export type CodexLiveState = {
   feeds?: Record<string, CodexLiveFeedView>;
   jobsExpanded?: boolean;
   hiddenJobIds?: string[];
+  // Closed-room tombstones; explicit selection can still reveal one room.
+  hiddenRoomIds?: string[];
   // Clear time in epoch milliseconds, including finished jobs outside the cache.
   hiddenFinishedBefore?: number;
   spinnerTick?: number;
@@ -143,7 +184,7 @@ export type CodexLiveState = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'codex-live': { view: CodexLiveState };
-    codex: { nativeAgents: Record<string, CodexNativeActivity> };
+    'fugato-live': { view: CodexLiveState };
+    fugato: { nativeAgents: Record<string, CodexNativeActivity> };
   }
 }

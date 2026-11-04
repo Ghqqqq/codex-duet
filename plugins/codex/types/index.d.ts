@@ -10,6 +10,6 @@ export type CodexNativeActivity = {
 
 declare module 'claude-code' {
   interface PluginState {
-    codex: { nativeAgents: Record<string, CodexNativeActivity> };
+    fugato: { nativeAgents: Record<string, CodexNativeActivity> };
   }
 }

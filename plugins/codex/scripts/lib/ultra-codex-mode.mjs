@@ -16,7 +16,7 @@ export const DEFAULT_DUEL_ROUNDS = 3;
 export const MODE_NAMES = ["ultra", "pair", "duel", "roundtable"];
 const MODE_DIR = "ultra-codex";
 const SESSION_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
-const COMMAND_PROMPT = /^\s*\/(?:codex:)?(?:ultra-codex|pair|duel|roundtable)(?=\s|$)/;
+const COMMAND_PROMPT = /^\s*\/(?:fugato:)?(?:ultra-codex|pair|duel|roundtable)(?=\s|$)/;
 const OPTION_KEYS = { ultra: ["scale", "maxWorkers"], pair: [], duel: ["rounds"], roundtable: ["intensity", "roles"] };
 
 function isObject(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }

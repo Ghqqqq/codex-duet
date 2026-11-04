@@ -4,9 +4,10 @@ import type { CodexLiveJob, CodexLiveMarker, CodexLiveState } from '../types';
 import { ATTENTION_SESSION_LIMIT, attention, boundState, clean, detailedTurns, expireQuestion, fitState, groupedSessions, jobSummary, jobView, markerView, normalizeSessions, oldestJob,
   retainedTurns, sessionForId, sessionId, statusLine, unavailableJob, usageSnapshots, visibleSessions } from './model';
 import { feedLines, paneLayout, normalizeFeed, recentEndedJobIds, selectedJob } from './layout';
+import { createForumPoller, forumId, selectedForum } from './forum';
 import { checkedView, publishView, reportFailure, updateFailure, viewports } from './runtime';
 
-const view = atom({ plugin: 'codex-live', key: 'view' } as const,
+const view = atom({ plugin: 'fugato-live', key: 'view' } as const,
   { jobs: [], selectedId: null, nowMs: 0 } as CodexLiveState);
 
 // Charge serialized UTF-16 bytes, including escaping, separately from the
@@ -33,10 +34,12 @@ export function createPoller($: EngineInterface, diagnostics?: {
   onCompose?(): void; onBound?(): void; onLayout?(): void;
   onPayloadCache?(snapshot: { bytes: number; budget: number; ids: string[] }): void;
 }): (force?: boolean) => Promise<void> {
+  const pollForum = createForumPoller($);
   let busy = false;
   let tick = 0;
   let session = '';
   let home = '';
+  let displayHome = '';
   let canonical = false;
   let lastStatus: string | undefined;
   const cache = new Map<string, Cached>();
@@ -90,8 +93,8 @@ export function createPoller($: EngineInterface, diagnostics?: {
       let current = checkedView($, stored);
       const repaired = current !== stored;
       const expected = JSON.stringify(stored);
-      const paneOpen = (await $.ui.panes()).some(pane => pane.id === 'codex-live');
-      if (!force && !repaired && !groupedSessions(current.jobs).some(job => job.active) && !paneOpen && tick % 5 !== 1) return;
+      const paneOpen = (await $.ui.panes()).some(pane => pane.id === 'fugato-live');
+      if (!force && !repaired && !groupedSessions(current.jobs).some(job => job.active) && !selectedForum(current) && !paneOpen && tick % 5 !== 1) return;
       const now = await $.clock.now();
       const currentSession = await $.session.id();
       const sessionChanged = !!current.sessionId && current.sessionId !== currentSession;
@@ -116,6 +119,7 @@ export function createPoller($: EngineInterface, diagnostics?: {
       if (!home) {
         const override = await $.env.get('CODEX_COMPANION_HOME');
         const userHome = await $.env.get('HOME') || await $.env.get('USERPROFILE');
+        displayHome = userHome || '';
         home = override || (userHome ? `${userHome}/.claude/codex-isolated` : '');
         if (!home) return;
       }
@@ -123,6 +127,7 @@ export function createPoller($: EngineInterface, diagnostics?: {
         home = (await $.fs.stat(home, { resolve: true })).realPath || home;
         canonical = true;
       }
+      const forumRooms = await pollForum(home.replace(/\/$/, ''), currentSession, now, current);
       const folder = `${home.replace(/\/$/, '')}/duet/sessions/${session}`;
       let directoryError = '';
       const diagnostic = (error: unknown) => clean(error instanceof Error ? error.message : String(error)).slice(0, 300);
@@ -186,17 +191,17 @@ export function createPoller($: EngineInterface, diagnostics?: {
         : markerErrors.size ? `Discovery warning: ${markerErrors.size} unreadable session markers; inventory may be incomplete` : undefined;
       const discovery = discoveryWarning ? JSON.stringify([directoryError, [...markerErrors].sort()]) : '';
       if (discovery !== lastDiscovery) {
-        $.ui.log(`codex-live: ${discoveryWarning ?? 'Discovery recovered'}${directoryError ? ` · ${directoryError}` : ''}`, { to: 'debug' });
+        $.ui.log(`fugato-live: ${discoveryWarning ?? 'Discovery recovered'}${directoryError ? ` · ${directoryError}` : ''}`, { to: 'debug' });
         lastDiscovery = discovery;
       }
       const newlyActive: string[] = [];
       const recovered = (entry: Cached) => {
-        if (jobErrors.delete(entry.job.id)) $.ui.log(`codex-live: Job ${clean(entry.job.id)} read recovered`, { to: 'debug' });
+        if (jobErrors.delete(entry.job.id)) $.ui.log(`fugato-live: Job ${clean(entry.job.id)} read recovered`, { to: 'debug' });
       };
       const unreadable = async (entry: Cached, error: unknown) => {
         const reason = diagnostic(error) || 'Job unreadable';
         if (jobErrors.get(entry.job.id) !== reason) {
-          $.ui.log(`codex-live: Job ${clean(entry.job.id)} unreadable · ${reason}`, { to: 'debug' });
+          $.ui.log(`fugato-live: Job ${clean(entry.job.id)} unreadable · ${reason}`, { to: 'debug' });
           jobErrors.set(entry.job.id, reason);
         }
         entry.job = { ...entry.job, detailsUnavailable: true };
@@ -304,6 +309,11 @@ export function createPoller($: EngineInterface, diagnostics?: {
       // Selection and hydration use lightweight summaries, before any event
       // serialization or transcript layout. Replanning is cheap after hydration.
       const plan = (latest: CodexLiveState) => {
+        const rooms = [...forumRooms];
+        // A command can select an older room during this tick's filesystem
+        // reads. Preserve that choice through CAS; hydrate it on the next tick.
+        const openedForum = selectedForum(latest);
+        if (openedForum?.sessionId === currentSession && !rooms.some(room => room.roomId === openedForum.roomId)) rooms.push(openedForum);
         const turnCounts = { ...latest.turnCounts };
         for (const entry of newest) if ((!previouslyKnown.has(entry.job.id) && seen.has(entry.job.id)) || joinedThreads.has(entry.job.id)) {
           const id = sessionId(entry.job);
@@ -319,14 +329,14 @@ export function createPoller($: EngineInterface, diagnostics?: {
         const feeds = removedSessions.size && latest.feeds
           ? Object.fromEntries(Object.entries(latest.feeds).filter(([id]) => !foreignJobs.has(id) && !removedJobs.has(id) && !removedSessions.has(id)))
           : latest.feeds;
-        const visibility = normalizeSessions({ ...latest, jobs: newest.map(entry => entry.job), feeds, firstEndedAtMs, turnCounts });
+        const visibility = normalizeSessions({ ...latest, forumRooms: rooms, jobs: newest.map(entry => entry.job), feeds, firstEndedAtMs, turnCounts });
         const visible = visibleSessions(visibility);
         const selectedSession = sessionForId(visible, visibility.selectedId);
         const activated = visible.filter(session => session.turns.some(job => newlyActive.includes(job.id)));
         // Preserve the reader's conversation, including stopped feed anchors.
         // Follow-ups already share its session ID; only an absent selection
         // allows a newly activated conversation to take focus.
-        const selectedId = selectedSession?.id ?? activated[0]?.id
+        const selectedId = selectedForum(visibility) ? visibility.selectedId : selectedSession?.id ?? activated[0]?.id
           ?? visible.find(session => session.active)?.id ?? visible[0]?.id ?? null;
         const protectedAttention = new Set(visible.filter(session => attention(session) === 'blocked')
           .sort((a, b) => oldestJob(b, a)).slice(0, ATTENTION_SESSION_LIMIT).map(session => session.id));
@@ -421,23 +431,25 @@ export function createPoller($: EngineInterface, diagnostics?: {
         const sources: (object | undefined)[] = [];
         const jobs = newest.filter(entry => retainedIds.has(entry.job.id)).map(entry => {
           sources.push(entry.job);
-          if (!detailedIds.has(entry.job.id)) return entry.job;
+          if (!detailedIds.has(entry.job.id)) return { ...entry.job, homeDir: displayHome || undefined };
           if (!details.has(entry.job.id)) projectDetails(entry);
           const detail = details.get(entry.job.id);
           // Identity tokens keep the memo from retaining an evicted full payload.
           sources.push(detail?.source);
-          return detail ? { ...detail.full, detailsUnavailable: entry.job.detailsUnavailable, lastUpdateMs: entry.job.lastUpdateMs } : entry.job;
+          return detail ? { ...detail.full, homeDir: displayHome || undefined, detailsUnavailable: entry.job.detailsUnavailable, lastUpdateMs: entry.job.lastUpdateMs } : entry.job;
         });
         const active = retained.some(session => session.active);
         const stale = jobs.some(job => job.detailsUnavailable);
-        const nowMs = stale || jobs.some(job => !job.finished) ? Math.floor(now / 5000) * 5000 : latest.nowMs;
-        let candidate: CodexLiveState = { ...latest, jobs, selectedId, nowMs, sessionId: currentSession,
+        const nowMs = forumRooms.length ? Math.floor(now / 1000) * 1000 : stale || jobs.some(job => !job.finished) ? Math.floor(now / 5000) * 5000 : latest.nowMs;
+        let candidate: CodexLiveState = { ...latest, forumRooms: visibility.forumRooms?.map(room => ({ ...room,
+          viewedPosts: forumId(room) === selectedId ? room.postCount : latest.forumRooms?.find(old => old.roomId === room.roomId)?.viewedPosts })),
+          jobs, selectedId, nowMs, sessionId: currentSession,
           ...(latest.usageByJob || newest.some(entry => entry.job.usage) ? { usageByJob: usageSnapshots(
             Object.fromEntries(Object.entries(latest.usageByJob ?? {}).filter(([id]) => !foreignJobs.has(id))), newest.map(entry => entry.job)) } : {}),
           turnCounts: Object.fromEntries(Object.entries(turnCounts).filter(([id]) => retainedSessions.has(id))),
           discoveryWarning, attentionOmitted,
           spinnerTick: active && (paneOpen || newlyActive.length) ? Math.floor(now / 1000) : latest.spinnerTick,
-          feeds: visibility.feeds && Object.fromEntries(Object.entries(visibility.feeds).filter(([id]) => retainedSessions.has(id))),
+          feeds: visibility.feeds && Object.fromEntries(Object.entries(visibility.feeds).filter(([id]) => retainedSessions.has(id) || id.startsWith('forum:'))),
           viewedSessionIds: visibility.viewedSessionIds,
           newSessionIds: [...new Set([...(visibility.newSessionIds ?? []),
             ...retained.filter(session => session.turns.some(job => newlyActive.includes(job.id)) &&
@@ -467,15 +479,15 @@ export function createPoller($: EngineInterface, diagnostics?: {
         }
         // Only the selected transcript is laid out. Other stopped windows keep
         // their small content anchors/snapshots until selected again.
-        const selected = selectedJob(candidate);
+        const selected = selectedForum(candidate) ?? selectedJob(candidate);
         const feed = selectedId ? candidate.feeds?.[selectedId] : undefined;
         if (paneOpen && selected && feed) {
           const measured = viewports.get(feed.surface ?? 'terminal');
           const columns = measured?.columns ?? feed.columns;
-          const rows = measured ? paneLayout(candidate, selected, measured.bodyRows).rows : feed.rows ?? 8;
+          const rows = measured ? paneLayout(candidate, selected, measured.bodyRows, false, columns).rows : feed.rows ?? 8;
           if (columns) {
             diagnostics?.onLayout?.();
-            candidate.feeds = { ...candidate.feeds, [selected.id]: normalizeFeed(feedLines(selected, nowMs, columns, feed), rows, { ...feed, columns }) };
+            candidate.feeds = { ...candidate.feeds, ['roomId' in selected ? forumId(selected) : selected.id]: normalizeFeed(feedLines(selected, nowMs, columns, feed), rows, { ...feed, columns }) };
           }
         }
         return fitState(candidate);
@@ -511,7 +523,7 @@ export function createPoller($: EngineInterface, diagnostics?: {
       }
       const status = [candidate.discoveryWarning, statusLine(candidate.jobs, candidate.attentionOmitted)].filter(Boolean).join(' · ') || undefined;
       if (status !== lastStatus) { $.ui.status(status); lastStatus = status; }
-      if (newlyActive.length) await $.ui.open({ id: 'codex-live', title: 'Codex' });
+      if (newlyActive.length) await $.ui.open({ id: 'fugato-live', title: 'Fugato' });
     } catch (error) { reportFailure($, error); }
     finally {
       // Also release candidates after a rejected publication. Keep summaries and

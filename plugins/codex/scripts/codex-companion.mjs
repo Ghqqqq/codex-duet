@@ -362,7 +362,7 @@ Set or inspect ultra orchestration for this Claude session (default action: stat
   --for-command  With status, print a versioned task-only protocol Read instruction.
   --cwd, -C <dir>  Workspace; --session <id>  Override the Claude session id.
   --json  JSON output; --help, -h  Show help without changing mode.
-Tasks run through /codex:ultra-codex <task>; this CLI accepts controls only.`,
+Tasks run through /fugato:ultra-codex <task>; this CLI accepts controls only.`,
   pair: `Usage: fugato pair [on|off|status] [options]
 Set or inspect pair orchestration for this Claude session (default action: status).
   on replaces another active mode; off disables pair only; status reports the active mode.
@@ -370,7 +370,7 @@ Set or inspect pair orchestration for this Claude session (default action: statu
   --for-command  With status, print a versioned task-only protocol Read instruction.
   --cwd, -C <dir>  Workspace; --session <id>  Override the Claude session id.
   --json  JSON output; --help, -h  Show help without changing mode.
-Tasks run through /codex:pair <task>; this CLI accepts controls only.`,
+Tasks run through /fugato:pair <task>; this CLI accepts controls only.`,
   duel: `Usage: fugato duel [on|off|status] [options]
 Set or inspect duel orchestration for this Claude session (default action: status).
   on replaces another active mode; off disables duel only; status reports the active mode.
@@ -378,7 +378,7 @@ Set or inspect duel orchestration for this Claude session (default action: statu
   --for-command  With status, print a versioned task-only protocol Read instruction.
   --cwd, -C <dir>  Workspace; --session <id>  Override the Claude session id.
   --json  JSON output; --help, -h  Show help without changing mode.
-Tasks run through /codex:duel <task>; this CLI accepts controls only.`,
+Tasks run through /fugato:duel <task>; this CLI accepts controls only.`,
   roundtable: `Usage: fugato roundtable [on|off|status] [options]
 Set or inspect roundtable orchestration for this Claude session (default action: status).
   on replaces another active mode; off disables roundtable only.
@@ -387,7 +387,7 @@ Set or inspect roundtable orchestration for this Claude session (default action:
   --for-command  With status, print a versioned task-only protocol Read instruction.
   --cwd, -C <dir>  Workspace; --session <id>  Override the Claude session id.
   --json  JSON output; --help, -h  Show help without changing mode.
-Tasks run through /codex:roundtable <task>. Room commands: start, status <roomId>, pause, resume, close.`,
+Tasks run through /fugato:roundtable <task>. Room commands: start, status <roomId>, pause, resume, close.`,
   "task-worker": `Usage: fugato task-worker --job-id <id> [--cwd <dir>]
 Internal detached worker entry point; --job-id selects a stored task.
   --cwd, -C  Workspace; --help, -h  Show help without starting a worker.`,
@@ -555,7 +555,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     nextSteps.push(`If browser login is blocked, retry with \`${isolatedCodexCommand(["login", "--device-auth"])}\` (inside Claude Code, add a leading \`!\`).`);
   }
   if (!config.stopReviewGate) {
-    nextSteps.push("Optional: run `/codex:setup --enable-review-gate` to require a fresh review before stop.");
+    nextSteps.push("Optional: run `/fugato:setup --enable-review-gate` to require a fresh review before stop.");
   }
 
   return {
@@ -767,13 +767,13 @@ function buildNativeReviewTarget(target) {
 function validateNativeReviewRequest(target, focusText) {
   if (focusText.trim()) {
     throw new Error(
-      `\`/codex:review\` now maps directly to the built-in reviewer and does not support custom focus text. Retry with \`/codex:adversarial-review ${focusText.trim()}\` for focused review instructions.`
+      `\`/fugato:review\` now maps directly to the built-in reviewer and does not support custom focus text. Retry with \`/fugato:adversarial-review ${focusText.trim()}\` for focused review instructions.`
     );
   }
 
   const nativeTarget = buildNativeReviewTarget(target);
   if (!nativeTarget) {
-    throw new Error("This `/codex:review` target is not supported by the built-in reviewer. Retry with `/codex:adversarial-review` for custom targeting.");
+    throw new Error("This `/fugato:review` target is not supported by the built-in reviewer. Retry with `/fugato:adversarial-review` for custom targeting.");
   }
 
   return nativeTarget;
@@ -838,7 +838,7 @@ async function resolveLatestTrackedTaskThread(cwd, options = {}) {
   const visibleJobs = filterJobsForCurrentClaudeSession(jobs);
   const activeTask = visibleJobs.find((job) => job.jobClass === "task" && (job.status === "queued" || job.status === "running"));
   if (activeTask) {
-    throw new Error(`Task ${activeTask.id} is still running. Use /codex:status before continuing it.`);
+    throw new Error(`Task ${activeTask.id} is still running. Use /fugato:status before continuing it.`);
   }
 
   const trackedTask = findLatestResumableTaskJob(visibleJobs);
@@ -1267,7 +1267,7 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
 }
 
 function renderQueuedTaskLaunch(payload) {
-  return `${payload.title} started in the background as ${payload.jobId}. Check /codex:status ${payload.jobId} for progress.\nApproved browser origins (this job): ${(payload.approvedBrowserOrigins ?? []).join(", ") || "none"}\nApproved Computer Use apps (this job): ${(payload.approvedComputerApps ?? []).join(", ") || "none"}\n`;
+  return `${payload.title} started in the background as ${payload.jobId}. Check /fugato:status ${payload.jobId} for progress.\nApproved browser origins (this job): ${(payload.approvedBrowserOrigins ?? []).join(", ") || "none"}\nApproved Computer Use apps (this job): ${(payload.approvedComputerApps ?? []).join(", ") || "none"}\n`;
 }
 
 function getJobKindLabel(kind, jobClass) {
@@ -1695,7 +1695,7 @@ async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, nativePermissionOptions({ ...COMMAND_OPTIONS.task,
     internalValueOptions: [...(COMMAND_OPTIONS.task.internalValueOptions ?? []), "agent-type"] }));
   const declaredAgentType = options["agent-type"];
-  if (declaredAgentType !== undefined && !["codex:codex-native", "codex:codex-reviewer", "codex:codex-implementer", "codex:codex-investigator"].includes(declaredAgentType)) {
+  if (declaredAgentType !== undefined && !["fugato:codex-native", "fugato:codex-reviewer", "fugato:codex-implementer", "fugato:codex-investigator"].includes(declaredAgentType)) {
     throw new Error("--agent-type requires a declared native agent type.");
   }
   const budgetDefaults = budgetDefaultsSetup();
@@ -1873,7 +1873,7 @@ async function handleTask(argv) {
   const permissionPolicy = taskPermissionPolicy(options, cwd, previousRequest?.permissionPolicy);
   if (permissionPolicy) sandbox = permissionPolicy.sandbox;
   write = sandbox !== "read-only";
-  const agentType = contextRequest?.agentType ?? declaredAgentType ?? (nativeAgentName ? "codex:codex-native" : null);
+  const agentType = contextRequest?.agentType ?? declaredAgentType ?? (nativeAgentName ? "fugato:codex-native" : null);
   const skillContext = threadId ? { skills: contextRequest?.skills ?? [], text: "" } : prepareClaudeSkills({ agentType, cwd });
   const memoryContext = threadId ? { agentMemory: contextRequest?.agentMemory ?? { enabled: false }, text: "" }
     : prepareAgentMemory({ workspace: workspaceRoot, role: agentType ?? "worker" });
@@ -2971,7 +2971,7 @@ async function waitForJob(workspaceRoot, job, { owner, timeoutSec, minIntervalSe
           progress.push(line);
         } else if (!json && (feedMax === 0 || streamed < feedMax)) {
           streamed += 1;
-          const line = streamed === feedMax ? `${formatActivity(event, { root: current.request?.cwd ?? workspaceRoot })}\n… feed paused after ${feedMax} lines; later events are counted in the final JSON (activityCount) and shown by /codex:status` : formatActivity(event, { root: current.request?.cwd ?? workspaceRoot });
+          const line = streamed === feedMax ? `${formatActivity(event, { root: current.request?.cwd ?? workspaceRoot })}\n… feed paused after ${feedMax} lines; later events are counted in the final JSON (activityCount) and shown by /fugato:status` : formatActivity(event, { root: current.request?.cwd ?? workspaceRoot });
           try { await writeLine(line); }
           catch (error) { if (error.code !== "EPIPE") throw error; detach("stdout_closed"); process.exitCode = 130; return; }
         }
@@ -3087,14 +3087,14 @@ const MODE_COMMANDS = {
 };
 function renderOrchestrationMode(activeMode, requestedName) {
   const { label, verb } = MODE_COMMANDS[requestedName];
-  if (!activeMode) return `${label} mode: off for this session. No orchestration mode is active. Turn it on with /codex:${verb} on; a task given as arguments is orchestrated once without changing the mode.`;
-  if (activeMode.name !== requestedName) return `${label} mode: off for this session. Active mode: ${activeMode.name}. Turn it off with /codex:${MODE_COMMANDS[activeMode.name].verb} off.`;
+  if (!activeMode) return `${label} mode: off for this session. No orchestration mode is active. Turn it on with /fugato:${verb} on; a task given as arguments is orchestrated once without changing the mode.`;
+  if (activeMode.name !== requestedName) return `${label} mode: off for this session. Active mode: ${activeMode.name}. Turn it off with /fugato:${MODE_COMMANDS[activeMode.name].verb} off.`;
   const { options } = activeMode;
   const cap = requestedName === "ultra" ? (options.maxWorkers === "auto" ? `${effectiveMaxWorkers("auto")} (auto)` : options.maxWorkers) : null;
   const description = requestedName === "ultra" ? `scale: ${options.scale}; max workers: ${cap}`
     : requestedName === "roundtable" ? `intensity: ${options.intensity}; roles: ${options.roles?.join(",") ?? "recommend for confirmation"}`
     : requestedName === "pair" ? `one primary Codex worker; max rework rounds: ${PAIR_MAX_REWORK_ROUNDS}` : `Claude vs Codex; max rounds: ${options.rounds}`;
-  return `${label} mode: on for this session since ${activeMode.since ?? "unknown"} (${description}). Turn it off with /codex:${verb} off.`;
+  return `${label} mode: on for this session since ${activeMode.since ?? "unknown"} (${description}). Turn it off with /fugato:${verb} off.`;
 }
 function modeSummary(mode) {
   return mode ? { name: mode.name, options: mode.options, since: mode.since } : null;
@@ -3112,7 +3112,7 @@ function modeRunningJobs(workspaceRoot, sessionId) {
   return listSessionJobs(workspaceRoot, sessionId).filter(job => ACTIVE.has(job.status)).map(job => ({ jobId: job.id, ...(job.agentName ? { agentName: job.agentName } : {}), title: job.title ?? null, status: job.status }));
 }
 function modeJobLines(running) {
-  return [running.length ? `Codex jobs from this session still running: ${running.map(job => `${job.jobId} (${job.status})`).join(", ")}. Cancel them only if the user asks:` : "No Codex jobs from this session are still running.", ...running.map(job => `/codex:cancel ${job.jobId}`)];
+  return [running.length ? `Codex jobs from this session still running: ${running.map(job => `${job.jobId} (${job.status})`).join(", ")}. Cancel them only if the user asks:` : "No Codex jobs from this session are still running.", ...running.map(job => `/fugato:cancel ${job.jobId}`)];
 }
 async function handleOrchestrationMode(argv, modeName) {
   const { label, verb, heading, usage } = MODE_COMMANDS[modeName];
@@ -3142,7 +3142,7 @@ async function handleOrchestrationMode(argv, modeName) {
     const payload = { ...modePayload(mode, modeName, sessionId), defaultMode, models, ...(personaModels ? { personaModels } : {}),
       ...(modeName === "roundtable" && !options["for-command"] ? { latestRoom, attentionCount: latestRoom?.attention.length ?? 0 } : {}) };
     const preamble = options["for-command"]
-      ? `Usage: /codex:${verb} ${usage}\nIf the arguments describe a task, Read ${PROTOCOL_PATH} (protocol v${payload.protocolVersion}) before orchestrating; otherwise do not read it.\nFor this task, apply the shared sections and "${heading}" only. Task-prefix options override saved options; a one-shot task leaves the session mode unchanged.\n`
+      ? `Usage: /fugato:${verb} ${usage}\nIf the arguments describe a task, Read ${PROTOCOL_PATH} (protocol v${payload.protocolVersion}) before orchestrating; otherwise do not read it.\nFor this task, apply the shared sections and "${heading}" only. Task-prefix options override saved options; a one-shot task leaves the session mode unchanged.\n`
       : "";
     const defaultLine = defaultMode === "off" ? "" : `default mode: ${defaultMode} (fugato setup --default-mode)\n`;
     const modelLine = personaModels ? `persona models: ${Object.entries(personaModels).map(([id, entry]) => `${id} ${entry.model.value}/${entry.effort.value}`).join(", ")}`

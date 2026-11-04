@@ -100,7 +100,7 @@ export async function listModels({ env = process.env, cwd = process.cwd(), all =
     if (client) await client.close();
   }
   catalog ??= readModelCache(env);
-  if (!catalog) throw new Error("Codex models are unavailable from the app-server and isolated model cache. Run /codex:setup to check the runtime and sign in, then retry fugato models.");
+  if (!catalog) throw new Error("Codex models are unavailable from the app-server and isolated model cache. Run /fugato:setup to check the runtime and sign in, then retry fugato models.");
   return { ...catalog, models: catalog.models.filter(model => all || model.visibility !== "hide") };
 }
 
